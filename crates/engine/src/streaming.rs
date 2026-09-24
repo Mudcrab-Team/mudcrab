@@ -226,7 +226,7 @@ fn plan_cells(
             continuity.edges.remove(key);
             profiler.event(format!("{key:?}"), "unloaded", None);
             if let CellStatus::Resident { root } = status {
-                commands.entity(*root).despawn();
+                commands.entity(*root).try_despawn();
             }
         }
         keep
