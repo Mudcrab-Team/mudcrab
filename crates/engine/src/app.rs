@@ -33,7 +33,7 @@ use bevy::{
 };
 use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Deserialize;
 use std::{
     fs,
@@ -1305,7 +1305,7 @@ fn initial_camera_ground_height(
     database_path: &std::path::Path,
     cache: &CellCache,
 ) -> Result<f32> {
-    let connection = Connection::open(database_path)
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", database_path.display()))?;
     let cell_id = connection
         .query_row(
@@ -1575,5 +1575,84 @@ mod tests {
                 "{truncated_file}"
             );
         }
+    }
+
+    #[test]
+    fn ground_height_query_reads_the_right_cell() {
+        let database_directory = tempfile::tempdir().unwrap();
+        let database_path = database_directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
+                 CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
+                 INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(42,7,0,0);
+                 INSERT INTO land(cell_id) VALUES(42);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let cache_directory = tempfile::tempdir().unwrap();
+        let cache_path = cache_directory.path().join("cell_cache.rkyv");
+        let source = shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: vec![shared::CachedLand {
+                cell_id: 42,
+                width: 2,
+                height: 2,
+                heights: vec![1.0, 2.0, 3.0, 4.0],
+                normals: vec![0; 12],
+                vertex_colors: vec![255; 12],
+                layers: vec![],
+                water_height: None,
+                water_type_form_id: None,
+            }],
+        };
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&source).unwrap();
+        std::fs::write(&cache_path, bytes).unwrap();
+        let cache = CellCache::open(&cache_path).unwrap();
+
+        let config = EngineConfig {
+            worldspace_id: 7,
+            start_grid: (0, 0),
+            ..default()
+        };
+
+        let ground_height = initial_camera_ground_height(&config, &database_path, &cache).unwrap();
+        assert_eq!(ground_height, 4.0);
+    }
+
+    #[test]
+    fn ground_height_query_does_not_create_a_missing_database() {
+        // The old code opened with `Connection::open`, which is
+        // read-write-and-create-if-missing: querying a database that does not
+        // exist yet silently created an empty one as a side effect. An
+        // explicit read-only open must instead fail without creating
+        // anything.
+        let database_directory = tempfile::tempdir().unwrap();
+        let database_path = database_directory.path().join("skyrim_world.db");
+        assert!(!database_path.exists());
+
+        let cache_directory = tempfile::tempdir().unwrap();
+        let cache_path = cache_directory.path().join("cell_cache.rkyv");
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: vec![],
+        })
+        .unwrap();
+        std::fs::write(&cache_path, bytes).unwrap();
+        let cache = CellCache::open(&cache_path).unwrap();
+
+        let config = EngineConfig {
+            worldspace_id: 7,
+            start_grid: (0, 0),
+            ..default()
+        };
+
+        assert!(initial_camera_ground_height(&config, &database_path, &cache).is_err());
+        assert!(
+            !database_path.exists(),
+            "a read-only ground-height query must not create a missing database file"
+        );
     }
 }

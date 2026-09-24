@@ -130,12 +130,24 @@ fn converted_texture_path(path: String) -> Option<String> {
         .strip_prefix("textures/")
         .or_else(|| normalized.strip_prefix("Textures/"))
         .unwrap_or(&normalized);
-    if without_prefix.is_empty() {
+    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
         return None;
     }
     let mut converted = std::path::PathBuf::from("textures").join(without_prefix);
     converted.set_extension("ktx2");
     Some(converted.to_string_lossy().replace('\\', "/"))
+}
+
+/// Rejects a database-supplied relative path that could escape the assets
+/// root once re-rooted under `textures/` or `meshes/` with `PathBuf::join`.
+/// A `..` segment walks back out of the base directory, and a rooted or
+/// drive-prefixed path makes `PathBuf::join` replace the base entirely
+/// instead of appending to it (see the `std::path::PathBuf::push` docs).
+/// Every component must therefore be a plain, non-empty path segment.
+fn is_safe_relative_asset_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 impl WorldDatabase {
@@ -373,6 +385,36 @@ mod tests {
             Some("architecture/wall.nif")
         );
         assert_eq!(payload.references[0].bounds_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn rejects_traversal_and_rooted_texture_paths() {
+        assert_eq!(
+            converted_texture_path("textures/../../secrets.dds".to_owned()),
+            None
+        );
+        assert_eq!(
+            converted_texture_path("textures//etc/passwd".to_owned()),
+            None
+        );
+        assert_eq!(
+            converted_texture_path(r"textures\..\..\secrets.dds".to_owned()),
+            None
+        );
+        // Windows treats a drive-prefixed path as absolute (and `PathBuf::join`
+        // would let it replace the base path entirely); Rust's path parsing is
+        // OS-native, so this case only bites on the Windows target this engine
+        // ships for.
+        #[cfg(windows)]
+        assert_eq!(
+            converted_texture_path("textures/C:/Windows/evil.dds".to_owned()),
+            None
+        );
+        // A plain relative path is unaffected.
+        assert_eq!(
+            converted_texture_path("textures/land/grass.dds".to_owned()),
+            Some("textures/land/grass.ktx2".to_owned())
+        );
     }
 
     #[test]
