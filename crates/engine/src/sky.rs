@@ -10,6 +10,10 @@
 //! fragment to the far plane, so it never hides geometry however far that geometry is. It is
 //! alpha-blended with no depth write, which also keeps it out of the depth prepass. The camera's
 //! clear colour is the weather's Fog Far colour, which fills the dome's transparent band.
+//!
+//! The same Fog Far colour is the colour of the distance fog every world camera carries, fitted
+//! to the weather's `FNAM` fog distances, so terrain fades into the band the dome leaves open at
+//! the horizon.
 
 use crate::world::database::CellKey;
 use bevy::{
@@ -17,7 +21,9 @@ use bevy::{
     camera::visibility::NoFrustumCulling,
     light::NotShadowCaster,
     mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology},
-    pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin},
+    pbr::{
+        DistanceFog, FogFalloff, Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin,
+    },
     prelude::*,
     render::render_resource::{
         AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
@@ -206,9 +212,90 @@ impl CameraSpace {
     }
 }
 
+/// A weather's fog distance: the four `FNAM` numbers of the weather record.
+///
+/// Vanilla's fog amount at a distance `d` is `min(max, t ^ power)`, where
+/// `t = clamp((d - near) / (far - near), 0, 1)`, and its fog colour is the Near-to-Far colour
+/// lerp taken at that amount. The amount caps at `max` instead of reaching 1, and it follows a
+/// power of the distance rather than an exponential, so the engine fits Bevy's
+/// [`FogFalloff::Exponential`] to the curve as well as one number allows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VanillaFog {
+    pub near: f32,
+    pub far: f32,
+    pub power: f32,
+    pub max: f32,
+}
+
+impl VanillaFog {
+    /// The vanilla fog amount at a distance: `min(max, t ^ power)`.
+    pub fn amount(&self, distance: f32) -> f32 {
+        let span = self.far - self.near;
+        if span <= 0.0 {
+            return self.max;
+        }
+        let t = ((distance - self.near) / span).clamp(0.0, 1.0);
+        t.powf(self.power).min(self.max)
+    }
+
+    /// The distance at which vanilla's fog reaches its full strength: the amount is `max` where
+    /// `t = max ^ (1 / power)`. Everything past it is fogged at `max`, never at 1.
+    pub fn full_strength_distance(&self) -> f32 {
+        self.near + (self.far - self.near) * self.max.powf(self.power.recip())
+    }
+}
+
+/// `SkyrimClear`'s fog distance (`WTHR` 0x0000081A, `FNAM`, as left by Update.esm), day column:
+/// the fog starts at the camera, follows the 0.4 power of distance and reaches its full strength
+/// of 0.85 at 53_289 units. The night column is the same curve over 40_000 units; the engine's one
+/// time of day is the day.
+pub const SKYRIM_CLEAR_FOG: VanillaFog = VanillaFog {
+    near: 0.0,
+    far: 80_000.0,
+    power: 0.4,
+    max: 0.85,
+};
+
+/// Density of the engine's distance fog, in inverse world units: the least-squares fit of
+/// `1 - exp(-density * d)` to [`SKYRIM_CLEAR_FOG`]'s curve over 0 to 120_000 units, 6.2e-5 with an
+/// RMSE of 0.034. The fit runs thin close in and thick far out: 0.10 against vanilla's 0.23 at
+/// 2_048 units, and 0.54 against 0.53 at 16_384 units.
+///
+/// Vanilla stops at 0.85 and the exponential does not, so the cap rides on the fog colour's alpha
+/// instead (see [`fog_for`]). A weather record will bring its own density once weathers are
+/// loaded.
+pub const FOG_DENSITY: f32 = 6.2e-5;
+
+/// The distance fog for one weather: vanilla's fitted density in the Fog Far colour.
+pub fn fog_for(palette: &SkyPalette) -> DistanceFog {
+    // The fog colour is the clear colour - the Fog Far colour the dome's transparent band lets
+    // through - carrying vanilla's maximum fog strength as its alpha, because Bevy multiplies the
+    // falloff by the fog colour's alpha. The camera's own clear colour stays opaque. Vanilla lerps
+    // Fog Near to Fog Far by the fog amount and Bevy's fog has no such lerp, so the far colour is
+    // the one the fog takes throughout.
+    let color = palette
+        .clear_colour(CameraSpace::Exterior)
+        .with_alpha(SKYRIM_CLEAR_FOG.max);
+    DistanceFog {
+        color,
+        // The sun's glow in the fog needs a sun in the sky. Until there is one, the fog is the
+        // plain Fog Far colour in every direction.
+        directional_light_color: color,
+        falloff: FogFalloff::Exponential {
+            density: FOG_DENSITY,
+        },
+        ..default()
+    }
+}
+
 /// Marks a camera that gets a sky dome and whose clear colour the sky controls.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct SkyCamera;
+
+/// Marks a camera that renders the world and therefore sees its distance fog: the streaming
+/// world camera and the fixture cameras that draw converted meshes, terrain and water.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct FogCamera;
 
 /// The dome drawn for one [`SkyCamera`].
 #[derive(Component, Debug, Clone, Copy)]
@@ -305,7 +392,7 @@ impl Plugin for SkyPlugin {
             .init_resource::<CameraSpace>()
             .add_systems(
                 PostUpdate,
-                (spawn_sky_domes, follow_sky_cameras, apply_sky)
+                (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog)
                     .chain()
                     .before(TransformSystems::Propagate),
             );
@@ -424,6 +511,57 @@ fn apply_sky(
         {
             sky_material.sky = SkyUniform::new(&palette);
         }
+    }
+}
+
+/// Gives every [`FogCamera`] the weather's distance fog, and takes it away inside an interior,
+/// where there is no weather and nothing far enough away to hide. The fog's colour and its
+/// density only change when the palette does, so the component is written then and left alone
+/// otherwise.
+fn apply_fog(
+    mut commands: Commands,
+    palette: Res<SkyPalette>,
+    space: Res<CameraSpace>,
+    cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
+) {
+    let wanted = match *space {
+        CameraSpace::Exterior => Some(fog_for(&palette)),
+        CameraSpace::Interior => None,
+    };
+    for (camera, current) in &cameras {
+        let up_to_date = match (&wanted, current) {
+            (Some(fog), Some(current)) => same_fog(current, fog),
+            (None, None) => true,
+            _ => false,
+        };
+        if up_to_date {
+            continue;
+        }
+        match &wanted {
+            Some(fog) => commands.entity(camera).insert(fog.clone()),
+            None => commands.entity(camera).remove::<DistanceFog>(),
+        };
+    }
+}
+
+/// Whether a camera already carries the fog the sky asks for. `DistanceFog` is not `PartialEq`,
+/// so the fields the engine sets are compared one by one.
+fn same_fog(current: &DistanceFog, wanted: &DistanceFog) -> bool {
+    if current.color != wanted.color
+        || current.directional_light_color != wanted.directional_light_color
+    {
+        return false;
+    }
+    match (&current.falloff, &wanted.falloff) {
+        (
+            FogFalloff::Exponential {
+                density: current_density,
+            },
+            FogFalloff::Exponential {
+                density: wanted_density,
+            },
+        ) => current_density == wanted_density,
+        _ => false,
     }
 }
 
@@ -619,7 +757,7 @@ mod tests {
             .init_resource::<CameraSpace>()
             .add_systems(
                 Update,
-                (spawn_sky_domes, follow_sky_cameras, apply_sky).chain(),
+                (spawn_sky_domes, follow_sky_cameras, apply_sky, apply_fog).chain(),
             );
         app
     }
@@ -745,5 +883,134 @@ mod tests {
             materials.get(&handle).unwrap().sky,
             SkyUniform::new(&dimmer)
         );
+    }
+
+    /// Relative check for the fit's very small numbers, which [`assert_close`] cannot see.
+    fn assert_relative(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= expected.abs() * 1.0e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    /// The `FNAM` fog amounts of `SkyrimClear`'s day column, sampled where the design notes
+    /// measured the fit, to three decimals.
+    const MEASURED_FOG: [(f32, f32); 5] = [
+        (2_048.0, 0.231),
+        (4_096.0, 0.305),
+        (16_384.0, 0.530),
+        (36_864.0, 0.734),
+        (65_536.0, 0.850),
+    ];
+
+    /// The engine's fog strength at a distance, as the fog shader computes it: Bevy's exponential
+    /// falloff times the fog colour's alpha, which carries vanilla's cap.
+    fn engine_fog(distance: f32) -> f32 {
+        SKYRIM_CLEAR_FOG.max * (1.0 - (-FOG_DENSITY * distance).exp())
+    }
+
+    #[test]
+    fn vanilla_fog_follows_the_measured_clear_day_curve() {
+        let fog = SKYRIM_CLEAR_FOG;
+        assert_eq!(
+            fog,
+            VanillaFog {
+                near: 0.0,
+                far: 80_000.0,
+                power: 0.4,
+                max: 0.85,
+            }
+        );
+        // `min(Max, t ^ Power)` with `t = (d - Near) / (Far - Near)`, at the measured samples.
+        assert_close(fog.amount(0.0), 0.0);
+        assert_close(fog.amount(-1_000.0), 0.0);
+        for (distance, amount) in MEASURED_FOG {
+            assert!(
+                (fog.amount(distance) - amount).abs() <= 1.0e-3,
+                "vanilla is {} at {distance} units, not {amount}",
+                fog.amount(distance)
+            );
+        }
+        // The cap holds from 53_289 units on.
+        let full = fog.full_strength_distance();
+        assert!((full - 53_289.0).abs() < 1.0, "full strength at {full}");
+        assert_close(fog.amount(53_289.0), 0.85);
+        assert_close(fog.amount(1_000_000.0), 0.85);
+    }
+
+    #[test]
+    fn the_fog_fit_tracks_the_measured_clear_day_curve() {
+        // The fitted density, pinned, and the error table it was chosen by: the exponential runs
+        // thin near the camera and within 0.035 of vanilla from the ring's far edge outward.
+        assert_relative(FOG_DENSITY, 6.2e-5);
+        for (distance, fitted) in [
+            (2_048.0, 0.101),
+            (4_096.0, 0.191),
+            (16_384.0, 0.542),
+            (36_864.0, 0.764),
+            (65_536.0, 0.835),
+        ] {
+            let engine = engine_fog(distance);
+            assert!(
+                (engine - fitted).abs() <= 1.0e-3,
+                "the fit is {engine} at {distance} units, not {fitted}"
+            );
+            let error = (engine - SKYRIM_CLEAR_FOG.amount(distance)).abs();
+            assert!(error <= 0.14, "the fit is {error} off at {distance} units");
+            if distance >= 16_384.0 {
+                assert!(error <= 0.035, "the fit is {error} off at {distance} units");
+            }
+        }
+        // At the far edge of the default streamed ring, three cells of 4_096 units away, the fit
+        // is at its closest to vanilla: 0.45 against vanilla's 0.47, and 0.74 at the default far
+        // plane against vanilla's 0.70. Whatever the ring's edge looks like, it is the haze
+        // vanilla would draw at that distance, not the fit falling short.
+        assert!((engine_fog(12_288.0) - 0.453).abs() <= 1.0e-3);
+        assert!((engine_fog(32_768.0) - 0.739).abs() <= 1.0e-3);
+    }
+
+    #[test]
+    fn fog_cameras_get_the_weathers_fog_and_lose_it_inside() {
+        let mut app = sky_app();
+        let palette = SkyPalette::SKYRIM_CLEAR_DAY;
+        let unfogged = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default()))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), FogCamera))
+            .id();
+        app.update();
+
+        let fog = app
+            .world()
+            .get::<DistanceFog>(camera)
+            .cloned()
+            .expect("a fog camera carries fog outside");
+        assert_eq!(
+            fog.color.with_alpha(1.0),
+            palette.clear_colour(CameraSpace::Exterior),
+            "the fog colour is the colour the sky clears to"
+        );
+        assert_eq!(
+            fog.color.alpha(),
+            SKYRIM_CLEAR_FOG.max,
+            "the fog colour's alpha is the cap vanilla puts on its fog"
+        );
+        assert_eq!(fog.directional_light_color, fog.color);
+        match &fog.falloff {
+            FogFalloff::Exponential { density } => assert_relative(*density, FOG_DENSITY),
+            other => panic!("expected an exponential falloff, got {other:?}"),
+        }
+        assert!(app.world().get::<DistanceFog>(unfogged).is_none());
+
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+
+        *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Exterior;
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
     }
 }
