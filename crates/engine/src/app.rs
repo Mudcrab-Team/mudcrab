@@ -6,6 +6,7 @@ use crate::{
         RendererMetrics, TerrainExtension, TerrainMaterial, VercidiumRendererPlugin,
         WaterExtension, WaterMaterial, WaterReflectionTexture,
     },
+    sky::{SkyCamera, SkyPlugin},
     streaming::{
         AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, build_terrain_quadrant_mesh,
         validate_standard_material,
@@ -124,7 +125,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ProfilingPlugin,
             RenderDiagnosticsPlugin,
         ))
-        .add_plugins(VercidiumRendererPlugin)
+        .add_plugins((VercidiumRendererPlugin, SkyPlugin))
         .add_systems(Update, (fly_camera, capture_acceptance_screenshot));
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
@@ -1272,6 +1273,8 @@ fn setup_world(
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y),
         StreamingCamera,
+        // The sky draws a dome around this camera and clears it to the weather's fog colour.
+        SkyCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
