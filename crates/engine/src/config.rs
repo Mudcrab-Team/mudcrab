@@ -16,6 +16,10 @@ pub struct EngineConfig {
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
     pub benchmark_output: PathBuf,
+    /// Where to write every measured frame time, in order, as CSV (`--benchmark-frame-times`).
+    /// Off by default: the report's summary is what acceptance reads; the series is for choosing
+    /// run lengths and spotting drift within a run.
+    pub benchmark_frame_times: Option<PathBuf>,
     pub accept_min_fps: f64,
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
@@ -53,6 +57,7 @@ impl Default for EngineConfig {
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
             benchmark_output: PathBuf::from("benchmark-report.json"),
+            benchmark_frame_times: None,
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
@@ -138,6 +143,11 @@ impl EngineConfig {
                 "--benchmark-output" => {
                     if let Some(value) = args.next() {
                         config.benchmark_output = value.into();
+                    }
+                }
+                "--benchmark-frame-times" => {
+                    if let Some(value) = args.next() {
+                        config.benchmark_frame_times = Some(value.into());
                     }
                 }
                 "--accept-min-fps" => {
