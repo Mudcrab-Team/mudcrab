@@ -188,17 +188,34 @@ fn configure_benchmark_priority(_benchmark_active: bool) -> Result<()> {
     Ok(())
 }
 
+/// The stack each IO task pool thread reserves.
+///
+/// Asset loads nest on these stacks. bevy_asset runs every load as a task on the IO pool, and
+/// bevy_gltf's loader loads a file's textures inside `IoTaskPool::scope`, whose `block_on` ticks
+/// the pool's shared executor on the calling thread while it waits. So a glTF load waiting for its
+/// textures picks up the next queued glTF load and runs it on the same stack, that one does the
+/// same, and so on: the nesting is as deep as the queue of model loads. Measured while
+/// streaming Markarth's dense city interiors: each nested load costs about 85 KiB, and one thread
+/// reached 8,074 KiB (about 95 loads deep) and overflowed the 8 MiB this used to be. A dense cell
+/// queues hundreds of distinct models at once (the largest interior has 522), plus its
+/// neighbours, so the reservation has to cover the whole queue, not a typical load.
+///
+/// 128 MiB is room for about 1,500 nested loads. It is address space, not memory: the thread's stack is
+/// reserved, and pages are committed only as deep as the thread reaches.
+const IO_TASK_STACK_BYTES: usize = 128 * 1024 * 1024;
+
+fn io_task_pool_builder(threads: usize) -> TaskPoolBuilder {
+    TaskPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name("IO Task Pool".to_owned())
+        .stack_size(IO_TASK_STACK_BYTES)
+}
+
 fn configure_io_task_pool() {
     let threads = std::thread::available_parallelism()
         .map(|count| count.get().div_ceil(4).clamp(1, 4))
         .unwrap_or(1);
-    IoTaskPool::get_or_init(|| {
-        TaskPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name("IO Task Pool".to_owned())
-            .stack_size(8 * 1024 * 1024)
-            .build()
-    });
+    IoTaskPool::get_or_init(|| io_task_pool_builder(threads).build());
 }
 
 struct StreamingFixtureDirectory {
@@ -1481,6 +1498,66 @@ struct ScreenshotCaptureState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The IO pool's stack has to hold a whole queue of loads nested inside one another, because a
+    /// scope opened on a pool thread (bevy_gltf's texture scope) runs the other queued tasks on its
+    /// own stack while it waits. This queues `LOADS` tasks behind a blocked single-thread pool,
+    /// each of which takes a 64 KiB frame and then opens a scope, the shape of a glTF load. They
+    /// nest far past the 8 MiB the pool used to have (the overflow seen streaming a dense city), and must finish
+    /// on [`IO_TASK_STACK_BYTES`].
+    #[test]
+    fn the_io_pool_stack_holds_a_queue_of_loads_nested_in_scopes() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+
+        const LOADS: usize = 300;
+        const FRAME_BYTES: usize = 64 * 1024;
+
+        fn load(pool: &bevy::tasks::TaskPool, depth: &AtomicUsize, deepest: &AtomicUsize) {
+            let frame = [0u8; FRAME_BYTES];
+            std::hint::black_box(&frame);
+            let now = depth.fetch_add(1, Ordering::SeqCst) + 1;
+            deepest.fetch_max(now, Ordering::SeqCst);
+            pool.scope(|scope| scope.spawn(async {}));
+            depth.fetch_sub(1, Ordering::SeqCst);
+            std::hint::black_box(&frame);
+        }
+
+        let pool = Arc::new(io_task_pool_builder(1).build());
+        let depth = Arc::new(AtomicUsize::new(0));
+        let deepest = Arc::new(AtomicUsize::new(0));
+
+        // Hold the only thread until every load is queued, so the nesting does not depend on
+        // how fast this thread can spawn.
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let blocker = pool.spawn(async move {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        started_rx.recv().unwrap();
+
+        let tasks: Vec<_> = (0..LOADS)
+            .map(|_| {
+                let (pool_ref, depth, deepest) = (pool.clone(), depth.clone(), deepest.clone());
+                pool.spawn(async move { load(&pool_ref, &depth, &deepest) })
+            })
+            .collect();
+        release_tx.send(()).unwrap();
+        bevy::tasks::block_on(blocker);
+        for task in tasks {
+            bevy::tasks::block_on(task);
+        }
+
+        let deepest = deepest.load(Ordering::SeqCst);
+        assert!(
+            deepest * FRAME_BYTES > 8 * 1024 * 1024,
+            "the loads nested only {deepest} deep, too shallow to test the stack"
+        );
+    }
 
     #[test]
     fn automatic_flight_reverses_before_leaving_the_representative_world_area() {
