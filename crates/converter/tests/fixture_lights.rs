@@ -1,35 +1,49 @@
 //! The generated light and the reference that places it, through the real ESM
-//! parser: one `LIGH` base record with the 48-byte `DATA` layout and an `FNAM`
-//! fade, and one `REFR` carrying an `XRDS` radius override.
+//! parser and then through the database export: one `LIGH` base record with the
+//! 48-byte `DATA` layout and an `FNAM` fade, and one `REFR` carrying an `XRDS`
+//! radius override.
 
 use converter::esm::{
     binary::{parse_group, parse_plugin_file, parse_record_header},
+    exporter::{create_tables, export_to_db, validate_database},
     records::RawRecord,
 };
 use dummy_content::{
     esm::{self, Plugin},
     layout,
 };
-use std::{fs, path::Path};
+use rusqlite::Connection;
+use std::{collections::HashMap, fs, path::Path};
+
+/// The spec `dummy-content gen --with-lights` assembles: one exterior cell, its
+/// static and the light, built from the same `layout` constants the command
+/// uses so this file cannot drift from the plugin the command publishes.
+fn spec() -> Plugin<'static> {
+    Plugin {
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        cells: &[esm::PRESET_EXTERIOR_CELL],
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    }
+}
 
 /// The bytes `dummy-content gen --with-lights` writes: one exterior cell, one
-/// `LIGH` base record and the one reference that places it. The spec is
-/// assembled from the same `layout` constants the command uses, so this file
-/// cannot drift from the plugin the command publishes.
+/// `LIGH` base record and the one reference that places it.
 fn preset_plugin() -> Vec<u8> {
-    let cells = [esm::PRESET_EXTERIOR_CELL];
-    esm::plugin_with_lights(
-        &Plugin {
-            author: layout::GENERATED_AUTHOR,
-            worldspace: layout::GENERATED_WORLDSPACE,
-            cells: &cells,
-            model_path: layout::GENERATED_MODEL_PATH,
-            diffuse: layout::GENERATED_DIFFUSE_PATH,
-            normal_texture: layout::GENERATED_NORMAL_PATH,
-        },
-        &esm::PRESET_LIGHT,
-    )
-    .unwrap()
+    esm::plugin_with_lights(&spec(), &esm::PRESET_LIGHT).unwrap()
+}
+
+/// The same preset with the base record's model taken away. Most `LIGH`
+/// records in the game are like this: they light the space with nothing to
+/// draw, so they have no `MODL` to hang a mesh on.
+fn preset_plugin_without_a_light_model() -> Vec<u8> {
+    let invisible = esm::Light {
+        model_path: None,
+        ..esm::PRESET_LIGHT
+    };
+    esm::plugin_with_lights(&spec(), &invisible).unwrap()
 }
 
 fn write_plugin(directory: &Path) -> std::path::PathBuf {
@@ -227,4 +241,166 @@ fn generated_light_plugin_never_panics_under_truncation_or_mutation() {
             "ESM parser panicked on mutation at {index}"
         );
     }
+}
+
+/// The parsed plugin through the converter's database export: the same
+/// `create_tables` + `export_to_db` pair the pipeline runs on `Skyrim.esm`.
+fn export_to_database(records: Vec<RawRecord>) -> Connection {
+    let connection = Connection::open_in_memory().unwrap();
+    create_tables(&connection).unwrap();
+    let master: HashMap<u32, RawRecord> = records
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+    export_to_db(&connection, &master).unwrap();
+    connection
+}
+
+/// The `LIGH` base record of a parsed plugin.
+fn light_form_id(records: &[RawRecord]) -> u32 {
+    records
+        .iter()
+        .find(|record| &record.record_type == b"LIGH")
+        .expect("the LIGH base record")
+        .form_id
+}
+
+/// The exported pair the runtime places a point light from: a `lights` row for
+/// the base record and the placing reference's own radius in
+/// `references.radius_override`.
+///
+/// The expected values are the preset's: radius 512 (a `DATA` u32 the exporter
+/// widens to a float), the warm colour, flags clear so the light is on and
+/// positive, falloff 1.0 and the `FNAM` fade 1.0. The reference's override is
+/// 1024 against the base record's 512, so a reader cannot mistake one for the
+/// other, and the static placement beside it has no `XRDS` at all.
+#[test]
+fn generated_light_plugin_exports_a_lights_row_and_a_reference_radius_override() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = parse_plugin_file(&write_plugin(directory.path())).unwrap();
+    let base_form_id = light_form_id(&records);
+    let (lit_ref_id, static_ref_id) = {
+        let mut lit = None;
+        let mut placement = None;
+        for record in records.iter().filter(|r| &r.record_type == b"REFR") {
+            if subrecord(record, b"XRDS").is_some() {
+                lit = Some(record.form_id);
+            } else {
+                placement = Some(record.form_id);
+            }
+        }
+        (
+            lit.expect("the light's reference"),
+            placement.expect("the static placement"),
+        )
+    };
+
+    let connection = export_to_database(records);
+
+    type LightRow = (String, f64, i64, i64, i64, i64, f64, f64);
+    let light: LightRow = connection
+        .query_row(
+            "SELECT editor_id,radius,color_r,color_g,color_b,flags,falloff,fade FROM lights WHERE id=?1",
+            [base_form_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        light,
+        (
+            "GeneratedLight01".to_owned(),
+            512.0,
+            216,
+            128,
+            39,
+            0,
+            1.0,
+            1.0
+        )
+    );
+
+    let radius_override = |id: u32| -> Option<f64> {
+        connection
+            .query_row(
+                "SELECT radius_override FROM \"references\" WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(radius_override(lit_ref_id), Some(1024.0));
+    assert_eq!(
+        radius_override(static_ref_id),
+        None,
+        "a reference without XRDS has no override"
+    );
+
+    // This preset's light does carry the generated mesh, so it is a static too:
+    // the `LIGH` arm stores the model a reference of it draws.
+    let model_path: Option<String> = connection
+        .query_row(
+            "SELECT model_path FROM statics WHERE id=?1",
+            [base_form_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(model_path.as_deref(), Some(layout::GENERATED_MODEL_PATH));
+
+    let version: u32 = connection
+        .query_row("SELECT version FROM schema_info LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        version, 4,
+        "the lights table and the radius_override column are schema 4"
+    );
+    // The exporter's stamp and the contract the engine checks are one version.
+    validate_database(&connection).unwrap();
+}
+
+/// A `LIGH` without a `MODL` still lights the space, so it gets a `lights` row
+/// like any other, and no `statics` row: there is no mesh to draw, and one
+/// meshless static per candle would be most of the game's lights.
+#[test]
+fn a_light_without_a_model_exports_a_lights_row_and_no_statics_row() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Skyrim.esm");
+    fs::write(&path, preset_plugin_without_a_light_model()).unwrap();
+    let records = parse_plugin_file(&path).unwrap();
+    let base_form_id = light_form_id(&records);
+
+    let connection = export_to_database(records);
+
+    let radius: f64 = connection
+        .query_row(
+            "SELECT radius FROM lights WHERE id=?1",
+            [base_form_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(radius, 512.0, "an invisible light still lights a space");
+    let statics: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM statics WHERE id=?1",
+            [base_form_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(statics, 0, "a model-less LIGH is not a static");
+    let all_statics: i64 = connection
+        .query_row("SELECT count(*) FROM statics", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(all_statics, 1, "only the fixture's own STAT is in statics");
 }
