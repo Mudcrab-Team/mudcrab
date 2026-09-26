@@ -207,9 +207,8 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             // records without MODL (triggers, markers) store NULL and are
             // skipped at spawn time. `LIGH` is handled above: the light goes
             // in `lights` and only a light with geometry lands in `statics`.
-            "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI"
-            | "WEAP" | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
-            | "ARMO" => {
+            "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "WEAP"
+            | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL" | "ARMO" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
                 // gendered MOD2/MOD3 slots (male first, female fallback).
