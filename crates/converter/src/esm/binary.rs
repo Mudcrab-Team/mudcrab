@@ -35,8 +35,7 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
             return Err(eyre!("truncated compressed TES4 record"));
         }
         let expected = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
-        let mut output = Vec::with_capacity(expected);
-        ZlibDecoder::new(&payload[4..]).read_to_end(&mut output)?;
+        let output = read_bounded(ZlibDecoder::new(&payload[4..]), expected)?;
         if output.len() != expected {
             return Err(eyre!("TES4 decompressed size mismatch"));
         }
@@ -58,6 +57,20 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
         masters,
         flags: header.flags,
     })
+}
+
+/// Decompressed output is reserved up to this size; anything larger grows as
+/// it is read, so a corrupt declared size cannot reserve gigabytes up front.
+const MAX_RESERVATION: usize = 64 * 1024 * 1024;
+
+/// Reads at most one byte past `expected`, so a stream longer than declared
+/// shows up as a size mismatch instead of being read to its end.
+fn read_bounded(reader: impl Read, expected: usize) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(expected.min(MAX_RESERVATION));
+    reader
+        .take((expected as u64).saturating_add(1))
+        .read_to_end(&mut output)?;
+    Ok(output)
 }
 
 /// For STAT / MSTT / FURN
@@ -174,17 +187,14 @@ pub fn parse_group(
                     ]) as usize;
 
                     let compressed_bytes = &raw_payload[4..];
-                    let mut decoder = ZlibDecoder::new(compressed_bytes);
-                    let mut decompressed_data = Vec::with_capacity(decompressed_size);
-
-                    decoder
-                        .read_to_end(&mut decompressed_data)
-                        .map_err(|error| {
-                            eyre!(
-                                "failed to decompress record {:08x}: {error}",
-                                header.form_id
-                            )
-                        })?;
+                    let decompressed_data =
+                        read_bounded(ZlibDecoder::new(compressed_bytes), decompressed_size)
+                            .map_err(|error| {
+                                eyre!(
+                                    "failed to decompress record {:08x}: {error}",
+                                    header.form_id
+                                )
+                            })?;
                     if decompressed_data.len() != decompressed_size {
                         return Err(eyre!(
                             "decompressed size mismatch for {:08x}: expected {decompressed_size}, got {}",
@@ -370,6 +380,58 @@ mod tests {
             );
         }
         assert!(EsmReader::open(directory.path().join("missing.esm")).is_err());
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn compressed_record(type_tag: &[u8; 4], declared: u32, data: &[u8]) -> Vec<u8> {
+        let mut payload = declared.to_le_bytes().to_vec();
+        payload.extend_from_slice(&zlib(data));
+        let mut bytes = type_tag.to_vec();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    #[test]
+    fn compressed_records_reject_corrupt_declared_sizes() {
+        let subrecord = [b"EDID".as_slice(), &4u16.to_le_bytes(), b"Test"].concat();
+        let mut records = Vec::new();
+        let valid = compressed_record(b"STAT", subrecord.len() as u32, &subrecord);
+        parse_group(&valid, None, None, &mut records).unwrap();
+        assert_eq!(records[0].subrecords[0].1, b"Test");
+
+        for declared in [u32::MAX, subrecord.len() as u32 - 1] {
+            let corrupt = compressed_record(b"STAT", declared, &subrecord);
+            let error = parse_group(&corrupt, None, None, &mut Vec::new()).unwrap_err();
+            assert!(error.to_string().contains("decompressed size mismatch"));
+        }
+    }
+
+    #[test]
+    fn compressed_plugin_headers_reject_corrupt_declared_sizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let master = [b"MAST".as_slice(), &9u16.to_le_bytes(), b"Base.esm\0"].concat();
+        for (declared, valid) in [
+            (master.len() as u32, true),
+            (u32::MAX, false),
+            (master.len() as u32 - 1, false),
+        ] {
+            let path = directory.path().join("compressed.esp");
+            std::fs::write(&path, compressed_record(b"TES4", declared, &master)).unwrap();
+            let metadata = parse_plugin_metadata(&path);
+            assert_eq!(metadata.is_ok(), valid, "declared size {declared}");
+            if valid {
+                assert_eq!(metadata.unwrap().masters, ["Base.esm"]);
+            }
+        }
     }
 
     proptest! {
