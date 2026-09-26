@@ -332,6 +332,7 @@ mod tests {
         assert_eq!(manifest.configuration_hash, "configuration");
         assert_eq!(manifest.inputs_by_kind.get("nif"), Some(&4));
         assert!(manifest.pruned_texture_references.is_empty());
+    }
 
     #[test]
     fn journal_keeps_the_last_record_and_drops_a_truncated_tail() {
