@@ -146,3 +146,8 @@ in the converter unit tests; the generated pipeline is covered end to end by
 `crates/converter/tests/fixture_interior_pipeline.rs` (which asserts the exported world's
 `references_without_model` count) together with the parser-level checks in
 `crates/converter/tests/fixture_doors.rs`.
+
+Property tests (`proptest`, fixed seed, run by the normal test suite) extend those sweeps: the
+ESM, VMAD, LAND, BSA, BA2, PEX, LIP and NIF parsers must return an error, never panic or abort,
+on arbitrary bytes and on generated fixtures with overwritten bytes, extreme size and count
+words, and truncation. Shared strategies live in `crates/converter/src/test_strategies.rs`.

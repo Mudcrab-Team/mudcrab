@@ -751,6 +751,8 @@ mod remap_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config};
+    use proptest::prelude::*;
 
     /// A VMAD with one script holding one array property of `property_type`
     /// whose element count is `count`, followed by `tail`.
@@ -776,6 +778,30 @@ mod tests {
         for property_type in 11..=15 {
             let bytes = array_property_vmad(property_type, u32::MAX, &[0; 16]);
             assert!(parse_vmad(&bytes, b"STAT").is_err());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn vmad_parsers_never_panic_on_arbitrary_bytes(
+            bytes in arbitrary_bytes(512),
+            record_tag in prop::sample::select(vec![*b"INFO", *b"PACK", *b"PERK", *b"QUST", *b"SCEN", *b"STAT"]),
+        ) {
+            let _ = parse_vmad(&bytes, &record_tag);
+            let mut remapped = bytes.clone();
+            let _ = remap_primary_form_ids(&mut remapped, Ok);
+        }
+
+        #[test]
+        fn array_counts_never_reserve_beyond_the_field(
+            property_type in 11u8..=15,
+            count in any::<u32>(),
+            tail in arbitrary_bytes(64),
+        ) {
+            let bytes = array_property_vmad(property_type, count, &tail);
+            let _ = parse_vmad(&bytes, b"STAT");
         }
     }
 }

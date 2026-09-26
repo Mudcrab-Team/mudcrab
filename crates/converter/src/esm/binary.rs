@@ -291,6 +291,8 @@ pub fn parse_refr_record(input: &[u8], form_id: u32) -> IResult<&[u8], WorldRefe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
 
     fn plugin_bytes() -> Vec<u8> {
         let cells = [
@@ -342,6 +344,63 @@ mod tests {
             mutated[index] ^= 0xff;
             let result = std::panic::catch_unwind(|| parse_prefix(&mutated));
             assert!(result.is_ok(), "ESM parser panicked on mutation at {index}");
+        }
+    }
+
+    #[test]
+    fn empty_and_foreign_files_are_rejected_as_plugins() {
+        let directory = tempfile::tempdir().unwrap();
+        let group_first = [b"GRUP".as_slice(), &24u32.to_le_bytes(), &[0; 16]].concat();
+        let cases: [(&str, &[u8]); 4] = [
+            ("empty.esm", b""),
+            ("text.esp", b"not a plugin"),
+            ("tag-only.esm", b"TES4"),
+            ("group-first.esm", &group_first),
+        ];
+        for (name, bytes) in cases {
+            let path = directory.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                parse_plugin_file(&path).is_err(),
+                "{name} parsed as a plugin"
+            );
+            assert!(
+                parse_plugin_metadata(&path).is_err(),
+                "{name} parsed as a plugin"
+            );
+        }
+        assert!(EsmReader::open(directory.path().join("missing.esm")).is_err());
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn record_parsers_never_panic_on_arbitrary_bytes(bytes in arbitrary_bytes(1024)) {
+            let _ = parse_record_header(&bytes);
+            let _ = parse_group_header(&bytes);
+            let _ = parse_refr_record(&bytes, 0);
+            let _ = extract_subrecords(&bytes);
+            let _ = parse_group(&bytes, None, None, &mut Vec::new());
+        }
+
+        #[test]
+        fn corrupted_plugins_never_panic(bytes in corrupted(plugin_bytes())) {
+            let _ = parse_prefix(&bytes);
+        }
+    }
+
+    proptest! {
+        // Each case writes a file, so fewer cases keep the suite quick.
+        #![proptest_config(config(64))]
+
+        #[test]
+        fn plugin_files_never_panic_on_arbitrary_contents(bytes in arbitrary_bytes(256)) {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("arbitrary.esp");
+            std::fs::write(&path, &bytes).unwrap();
+            let _ = parse_plugin_file(&path);
+            let _ = parse_plugin_metadata(&path);
         }
     }
 }

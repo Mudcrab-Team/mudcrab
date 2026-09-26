@@ -279,6 +279,8 @@ fn slice_at<'a>(bytes: &'a [u8], start: usize, length: usize, field: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
     use std::io::Write;
 
     fn uncompressed_fixture() -> Vec<u8> {
@@ -515,5 +517,59 @@ mod tests {
         payload.extend_from_slice(&compressed);
 
         assert_eq!(decompress(&payload, 105).unwrap(), source);
+    }
+
+    fn fixtures() -> Vec<Vec<u8>> {
+        let entries = [
+            dummy_content::Entry::new("scripts/one.pex", b"PEX"),
+            dummy_content::Entry::new("textures/two.dds", b"DDS DATA"),
+        ];
+        vec![
+            dummy_content::bsa::v104(&entries, dummy_content::bsa::Compression::Zlib).unwrap(),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::Lz4).unwrap(),
+        ]
+    }
+
+    fn read_all(bytes: &[u8]) {
+        if let Ok(entries) = iter_raw_entries(bytes) {
+            for entry in entries {
+                let _ = entry.decompress();
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn headers_never_panic_on_arbitrary_bytes(
+            version in prop_oneof![Just(104u32), Just(105u32), any::<u32>()],
+            tail in arbitrary_bytes(512),
+        ) {
+            let mut bytes = b"BSA\0".to_vec();
+            bytes.extend_from_slice(&version.to_le_bytes());
+            bytes.extend_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+            bytes.extend_from_slice(&tail);
+            read_all(&bytes);
+        }
+
+        #[test]
+        fn corrupted_archives_never_panic(
+            bytes in prop::sample::select(fixtures()).prop_flat_map(corrupted),
+        ) {
+            read_all(&bytes);
+        }
+
+        #[test]
+        fn corrupted_payloads_never_panic(
+            version in prop_oneof![Just(104u32), Just(105u32)],
+            expected in prop_oneof![Just(0u32), 0u32..4096],
+            compressed in arbitrary_bytes(256),
+        ) {
+            let mut payload = expected.to_le_bytes().to_vec();
+            payload.extend_from_slice(&compressed);
+            let _ = decompress(&payload, version);
+        }
     }
 }
