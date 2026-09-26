@@ -12,7 +12,7 @@ expression: snapshot
       "grid_x": 0,
       "grid_y": 0,
       "id": 16,
-      "interior_name": "GeneratedCell\u0000",
+      "interior_name": "GeneratedCell",
       "worldspace_id": 1
     },
     {
@@ -23,7 +23,7 @@ expression: snapshot
       "grid_x": null,
       "grid_y": null,
       "id": 65536,
-      "interior_name": "GeneratedInterior\u0000",
+      "interior_name": "GeneratedInterior",
       "worldspace_id": null
     }
   ],
