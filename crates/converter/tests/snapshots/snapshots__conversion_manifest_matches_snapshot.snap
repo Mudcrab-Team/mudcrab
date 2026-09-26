@@ -1,0 +1,122 @@
+---
+source: crates/converter/tests/snapshots.rs
+expression: manifest
+---
+{
+  "archives": {
+    "skyrim - meshes.bsa": {
+      "files": [
+        {
+          "hash": "[hash]",
+          "path": "meshes/generated.nif",
+          "size": 724
+        }
+      ],
+      "source_hash": "[source_hash]"
+    },
+    "skyrim - misc.bsa": {
+      "files": [
+        {
+          "hash": "[hash]",
+          "path": "scripts/generated.pex",
+          "size": 134
+        },
+        {
+          "hash": "[hash]",
+          "path": "scripts/second.pex",
+          "size": 131
+        }
+      ],
+      "source_hash": "[source_hash]"
+    },
+    "skyrim - textures.ba2": {
+      "files": [
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_color.dds",
+          "size": 2892
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_normal.dds",
+          "size": 5636
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_color_x8.dds",
+          "size": 5588
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_cube.dds",
+          "size": 4324
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_volume.dds",
+          "size": 2876
+        }
+      ],
+      "source_hash": "[source_hash]"
+    }
+  },
+  "complete": true,
+  "configuration_hash": "1a56351b088bb4a65b89e4313abc9a0813c5f4fa29dae55695316b6d8970fa41",
+  "entries": {
+    "meshes/generated.nif": {
+      "output": "meshes/generated.glb",
+      "output_hash": "[output_hash]",
+      "output_size": 1780,
+      "source_hash": "[source_hash]"
+    },
+    "scripts/generated.pex": {
+      "output": "scripts/generated.luau",
+      "output_hash": "[output_hash]",
+      "output_size": 995,
+      "source_hash": "[source_hash]"
+    },
+    "scripts/second.pex": {
+      "output": "scripts/second.luau",
+      "output_hash": "[output_hash]",
+      "output_size": 992,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_color.dds": {
+      "output": "textures/generated_color.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 5824,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_color_x8.dds": {
+      "output": "textures/generated_color_x8.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 1696,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_cube.dds": {
+      "output": "textures/generated_cube.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 8656,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_normal.dds": {
+      "output": "textures/generated_normal.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 5824,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_volume.dds": {
+      "output": "textures/generated_volume.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 5008,
+      "source_hash": "[source_hash]"
+    }
+  },
+  "failures": {},
+  "inputs_by_kind": {
+    "dds": 5,
+    "nif": 1,
+    "pex": 2
+  },
+  "schema_version": 14
+}

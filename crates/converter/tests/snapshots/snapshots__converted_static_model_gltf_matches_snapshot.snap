@@ -1,0 +1,183 @@
+---
+source: crates/converter/tests/snapshots.rs
+expression: document
+---
+{
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "max": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "min": [
+        -1.0,
+        -1.0,
+        0.0
+      ],
+      "name": "POSITIONS | MESH:0",
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 4,
+      "name": "NORMALS | MESH:0",
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 4,
+      "name": "UVS | MESH:0",
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 6,
+      "name": "TRIANGLES | MESH:0",
+      "type": "SCALAR"
+    }
+  ],
+  "asset": {
+    "version": "2.0"
+  },
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 48,
+      "byteOffset": 0
+    },
+    {
+      "buffer": 0,
+      "byteLength": 48,
+      "byteOffset": 48
+    },
+    {
+      "buffer": 0,
+      "byteLength": 32,
+      "byteOffset": 96
+    },
+    {
+      "buffer": 0,
+      "byteLength": 12,
+      "byteOffset": 128
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 140
+    }
+  ],
+  "extensionsUsed": [
+    "KHR_materials_specular"
+  ],
+  "images": [
+    {
+      "uri": "../textures/generated_color.opensky-srgb.ktx2"
+    },
+    {
+      "uri": "../textures/generated_normal.ktx2"
+    }
+  ],
+  "materials": [
+    {
+      "alphaMode": "OPAQUE",
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularColorFactor": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "specularFactor": 1.0
+        }
+      },
+      "extras": {
+        "openSkyrim": {
+          "shaderBlock": 2,
+          "shapeBlock": 1
+        }
+      },
+      "name": "GeneratedQuad",
+      "normalTexture": {
+        "index": 1,
+        "scale": 1.0,
+        "texCoord": 0
+      },
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 0
+        },
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.19999998807907104
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "GeneratedQuad",
+      "primitives": [
+        {
+          "attributes": {
+            "NORMAL": 1,
+            "POSITION": 0,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "children": [
+        1
+      ]
+    },
+    {
+      "mesh": 0,
+      "name": "GeneratedQuad"
+    },
+    {
+      "children": [
+        0
+      ],
+      "name": "Creation-to-glTF basis",
+      "rotation": [
+        -0.70710677,
+        0.0,
+        0.0,
+        0.70710677
+      ]
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        2
+      ]
+    }
+  ],
+  "textures": [
+    {
+      "source": 0
+    },
+    {
+      "source": 1
+    }
+  ]
+}
