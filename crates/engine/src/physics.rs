@@ -5,7 +5,11 @@
 //! validate the walking controller and dynamic bodies before streamed terrain
 //! (P2) and static (P3) collision arrive. All units are Creation units.
 
-use bevy::prelude::*;
+use bevy::{
+    input::mouse::MouseMotion,
+    prelude::*,
+    window::{CursorGrabMode, CursorOptions},
+};
 use bevy_rapier3d::prelude::*;
 
 use crate::{
@@ -145,8 +149,25 @@ impl Plugin for PhysicsFixturePlugin {
             .init_resource::<PhysicsFixtureState>()
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
+            .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
-            .add_systems(Startup, setup_physics_fixture)
+            .init_resource::<CursorCapture>()
+            .add_systems(
+                Startup,
+                (setup_physics_fixture, setup_fixture_player).chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    cursor_lifecycle_system,
+                    look_input_system,
+                    noclip_flight_system,
+                    walk_intent_system,
+                    toggle_mode_system,
+                    overlay_system,
+                )
+                    .chain(),
+            )
             .add_systems(
                 FixedUpdate,
                 (walk_movement_system, walk_camera_follow_system).chain(),
@@ -676,6 +697,7 @@ mod simulation_tests {
         app.add_plugins((
             MinimalPlugins,
             TransformPlugin,
+            bevy::input::InputPlugin,
             AssetPlugin::default(),
             MeshPlugin,
             MaterialPlugin::<StandardMaterial>::default(),
@@ -738,10 +760,21 @@ mod simulation_tests {
         let mut app = headless_fixture_app();
         let tuning = app.world().resource::<MovementTuning>().clone();
         let spawn = Vec3::new(120.0, 300.0, 120.0);
-        app.world_mut().spawn((
-            player_controller_bundle(&tuning),
-            Transform::from_translation(spawn),
-        ));
+        {
+            let mut query = app.world_mut().query_filtered::<(
+                Entity,
+                &mut Transform,
+                Option<&RigidBodyDisabled>,
+            ), With<PlayerBody>>();
+            let (entity, mut transform, disabled) =
+                query.single_mut(app.world_mut()).expect("fixture player");
+            transform.translation = spawn;
+            if disabled.is_some() {
+                app.world_mut()
+                    .entity_mut(entity)
+                    .remove::<RigidBodyDisabled>();
+            }
+        }
         app.insert_resource(MoveMode::Walk);
         app.insert_resource(WalkIntent {
             wish_dir: Vec3::ZERO,
@@ -791,11 +824,21 @@ mod simulation_tests {
     #[test]
     fn jump_launches_and_returns_to_ground() {
         let mut app = headless_fixture_app();
-        let tuning = app.world().resource::<MovementTuning>().clone();
-        app.world_mut().spawn((
-            player_controller_bundle(&tuning),
-            Transform::from_xyz(120.0, 200.0, 120.0),
-        ));
+        {
+            let mut query = app.world_mut().query_filtered::<(
+                Entity,
+                &mut Transform,
+                Option<&RigidBodyDisabled>,
+            ), With<PlayerBody>>();
+            let (entity, mut transform, disabled) =
+                query.single_mut(app.world_mut()).expect("fixture player");
+            transform.translation = Vec3::new(120.0, 200.0, 120.0);
+            if disabled.is_some() {
+                app.world_mut()
+                    .entity_mut(entity)
+                    .remove::<RigidBodyDisabled>();
+            }
+        }
         app.insert_resource(MoveMode::Walk);
         app.insert_resource(WalkIntent::default());
         for _ in 0..240 {
@@ -832,5 +875,371 @@ mod simulation_tests {
             apex - rest_y > 30.0,
             "jump apex {apex} too low above rest {rest_y}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T3: mouse-look NOCLIP, V toggle, overlay, cursor lifecycle.
+// ---------------------------------------------------------------------------
+
+/// Noclip flight tuning (V6).
+pub const NOCLIP_SPEED: f32 = 900.0;
+pub const NOCLIP_FAST_MULTIPLIER: f32 = 4.0;
+pub const MOUSE_SENSITIVITY: f32 = 0.0025;
+pub const MAX_PITCH_RADIANS: f32 = 1.5533;
+
+/// Sampled look intent (V6, V18).
+#[derive(Debug, Clone, Copy, Default, Resource)]
+pub struct LookIntent {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+/// Marker for the NOCLIP status overlay text (V7).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct NoclipOverlay;
+
+/// Marker for the physics-fixture player rig (V5).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct FixturePlayer;
+
+/// Cursor capture state machine (V6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Resource)]
+pub enum CursorCapture {
+    #[default]
+    Released,
+    Captured,
+}
+
+/// Clamp pitch into the bounded look range (V6).
+pub fn clamp_pitch(pitch: f32) -> f32 {
+    pitch.clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS)
+}
+
+/// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6).
+pub fn sample_look_intent(capture: &CursorCapture, mouse_delta: Vec2, intent: &mut LookIntent) {
+    if *capture != CursorCapture::Captured {
+        return;
+    }
+    intent.yaw -= mouse_delta.x * MOUSE_SENSITIVITY;
+    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * MOUSE_SENSITIVITY);
+}
+
+/// Noclip displacement from held keys relative to the view (V6).
+pub fn noclip_displacement(
+    forward: Vec3,
+    right: Vec3,
+    fly_up: bool,
+    fly_down: bool,
+    strafe: Vec2,
+    fast: bool,
+    dt: f32,
+) -> Vec3 {
+    let mut direction = forward * -strafe.y + right * strafe.x;
+    if fly_up {
+        direction += Vec3::Y;
+    }
+    if fly_down {
+        direction -= Vec3::Y;
+    }
+    let speed = if fast {
+        NOCLIP_SPEED * NOCLIP_FAST_MULTIPLIER
+    } else {
+        NOCLIP_SPEED
+    };
+    direction.normalize_or_zero() * speed * dt
+}
+
+fn noclip_overlay_text(mode: MoveMode, status: &WalkEntryStatus) -> String {
+    let base = match mode {
+        MoveMode::Noclip => "NOCLIP: ON  [V]",
+        MoveMode::Walk => "NOCLIP: OFF  [V]",
+    };
+    match (&mode, &status.blocked_reason) {
+        (MoveMode::Noclip, Some(reason)) => format!("{base}  WALK blocked: {reason}"),
+        _ => base.to_owned(),
+    }
+}
+
+fn setup_fixture_player(
+    mut commands: Commands,
+    tuning: Res<MovementTuning>,
+    camera: Query<Entity, With<StreamingCamera>>,
+) {
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+    // Player capsule starts parked at the camera; WALK entry repositions it.
+    let body = commands
+        .spawn((
+            FixturePlayer,
+            player_controller_bundle(&tuning),
+            Transform::from_xyz(120.0, 300.0, 120.0),
+        ))
+        .id();
+    // Noclip starts ON with the capsule disabled (V5, V8).
+    commands.entity(body).insert(RigidBodyDisabled);
+    commands.entity(camera).insert(FixturePlayer);
+    commands.spawn((
+        Name::new("Noclip overlay"),
+        NoclipOverlay,
+        Text::new("NOCLIP: ON  [V]"),
+        TextFont::from_font_size(18.0),
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+    ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cursor_lifecycle_system(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    windows: Query<(Entity, Option<&Window>)>,
+    mut capture: ResMut<CursorCapture>,
+    mut cursor_options: Query<&mut CursorOptions>,
+    mut intent: ResMut<WalkIntent>,
+    mut states: Query<&mut WalkState>,
+    mut controllers: Query<&mut KinematicCharacterController>,
+) {
+    // Focus loss or Escape releases; click recaptures (V6).
+    let focused = windows
+        .iter()
+        .all(|(_, window)| window.map(|window| window.focused).unwrap_or(true));
+    if !focused || keyboard.just_pressed(KeyCode::Escape) {
+        if *capture == CursorCapture::Captured {
+            *capture = CursorCapture::Released;
+            clear_motion_state(&mut intent, &mut states, &mut controllers);
+        }
+    } else if mouse_buttons.just_pressed(MouseButton::Left) && *capture == CursorCapture::Released {
+        *capture = CursorCapture::Captured;
+    }
+    let (grab_mode, visible) = match *capture {
+        CursorCapture::Captured => (CursorGrabMode::Locked, false),
+        CursorCapture::Released => (CursorGrabMode::None, true),
+    };
+    for mut options in &mut cursor_options {
+        options.grab_mode = grab_mode;
+        options.visible = visible;
+    }
+}
+
+fn look_input_system(
+    capture: Res<CursorCapture>,
+    mut mouse_motion: MessageReader<MouseMotion>,
+    mut intent: ResMut<LookIntent>,
+) {
+    let mut delta = Vec2::ZERO;
+    for motion in mouse_motion.read() {
+        delta += motion.delta;
+    }
+    sample_look_intent(&capture, delta, &mut intent);
+}
+
+fn noclip_flight_system(
+    mode: Res<MoveMode>,
+    capture: Res<CursorCapture>,
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    look: Res<LookIntent>,
+    mut camera: Query<&mut Transform, (With<StreamingCamera>, With<FixturePlayer>)>,
+) {
+    if *mode != MoveMode::Noclip || *capture != CursorCapture::Captured {
+        return;
+    }
+    let Ok(mut transform) = camera.single_mut() else {
+        return;
+    };
+    transform.rotation = Quat::from_euler(EulerRot::YXZ, look.yaw, look.pitch, 0.0);
+    let forward = transform.forward().as_vec3();
+    let right = transform.right().as_vec3();
+    let strafe = Vec2::new(
+        (keyboard.pressed(KeyCode::KeyD) as i8 - keyboard.pressed(KeyCode::KeyA) as i8) as f32,
+        (keyboard.pressed(KeyCode::KeyS) as i8 - keyboard.pressed(KeyCode::KeyW) as i8) as f32,
+    );
+    transform.translation += noclip_displacement(
+        forward,
+        right,
+        keyboard.pressed(KeyCode::Space),
+        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight),
+        strafe,
+        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight),
+        time.delta_secs(),
+    );
+}
+
+fn walk_intent_system(
+    mode: Res<MoveMode>,
+    capture: Res<CursorCapture>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    tuning: Res<MovementTuning>,
+    look: Res<LookIntent>,
+    mut intent: ResMut<WalkIntent>,
+    mut player: Query<&mut Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+) {
+    if *mode != MoveMode::Walk || *capture != CursorCapture::Captured {
+        return;
+    }
+    let Ok(mut body) = player.single_mut() else {
+        return;
+    };
+    // Yaw moves body, pitch moves view (V9).
+    body.rotation = Quat::from_axis_angle(Vec3::Y, look.yaw);
+    let forward = Vec3::new(-look.yaw.sin(), 0.0, -look.yaw.cos());
+    let right = Vec3::new(look.yaw.cos(), 0.0, -look.yaw.sin());
+    let strafe = Vec2::new(
+        (keyboard.pressed(KeyCode::KeyD) as i8 - keyboard.pressed(KeyCode::KeyA) as i8) as f32,
+        (keyboard.pressed(KeyCode::KeyS) as i8 - keyboard.pressed(KeyCode::KeyW) as i8) as f32,
+    );
+    let wish = (right * strafe.x - forward * strafe.y).normalize_or_zero();
+    let slow = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    let sprint = keyboard.pressed(KeyCode::AltLeft) || keyboard.pressed(KeyCode::AltRight);
+    intent.wish_dir = wish;
+    intent.target_speed = if sprint {
+        tuning.sprint_speed
+    } else if slow {
+        tuning.walk_speed
+    } else if wish.length_squared() > 0.0 {
+        tuning.run_speed
+    } else {
+        0.0
+    };
+    intent.jump_pressed = keyboard.just_pressed(KeyCode::Space);
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn toggle_mode_system(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    capture: Res<CursorCapture>,
+    tuning: Res<MovementTuning>,
+    context: ReadRapierContext,
+    mut mode: ResMut<MoveMode>,
+    mut status: ResMut<WalkEntryStatus>,
+    mut intent: ResMut<WalkIntent>,
+    mut look: ResMut<LookIntent>,
+    camera: Query<&Transform, (With<StreamingCamera>, With<FixturePlayer>)>,
+    mut player: Query<
+        (Entity, &mut Transform, &Collider),
+        (With<PlayerBody>, Without<StreamingCamera>),
+    >,
+    mut states: Query<&mut WalkState>,
+    mut controllers: Query<&mut KinematicCharacterController>,
+    mut commands: Commands,
+) {
+    if !keyboard.just_pressed(KeyCode::KeyV) || *capture != CursorCapture::Captured {
+        return;
+    }
+    match *mode {
+        MoveMode::Noclip => {
+            let (Ok(camera), Ok((entity, mut body, collider)), Ok(context)) =
+                (camera.single(), player.single_mut(), context.single())
+            else {
+                return;
+            };
+            match try_enter_walk(&context, &tuning, camera.translation, collider) {
+                Ok(spawn) => {
+                    body.translation = spawn;
+                    let (yaw, _, _) = camera.rotation.to_euler(EulerRot::YXZ);
+                    body.rotation = Quat::from_axis_angle(Vec3::Y, yaw);
+                    look.yaw = yaw;
+                    commands.entity(entity).remove::<RigidBodyDisabled>();
+                    status.blocked_reason = None;
+                    *mode = MoveMode::Walk;
+                }
+                Err(reason) => {
+                    status.blocked_reason = Some(reason);
+                }
+            }
+        }
+        MoveMode::Walk => {
+            let Ok((entity, _, _)) = player.single() else {
+                return;
+            };
+            commands.entity(entity).insert(RigidBodyDisabled);
+            status.blocked_reason = None;
+            *mode = MoveMode::Noclip;
+        }
+    }
+    clear_motion_state(&mut intent, &mut states, &mut controllers);
+}
+
+fn overlay_system(
+    mode: Res<MoveMode>,
+    status: Res<WalkEntryStatus>,
+    mut overlay: Query<&mut Text, With<NoclipOverlay>>,
+) {
+    let Ok(mut text) = overlay.single_mut() else {
+        return;
+    };
+    **text = noclip_overlay_text(*mode, &status);
+}
+
+#[cfg(test)]
+mod noclip_tests {
+    use super::*;
+
+    #[test]
+    fn pitch_clamps_inside_bounded_range() {
+        assert_eq!(clamp_pitch(5.0), MAX_PITCH_RADIANS);
+        assert_eq!(clamp_pitch(-5.0), -MAX_PITCH_RADIANS);
+        assert_eq!(clamp_pitch(0.3), 0.3);
+    }
+
+    #[test]
+    fn uncaptured_pointer_yields_no_look_intent() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(&CursorCapture::Released, Vec2::new(40.0, 20.0), &mut intent);
+        assert_eq!(intent.yaw, 0.0);
+        assert_eq!(intent.pitch, 0.0);
+        sample_look_intent(&CursorCapture::Captured, Vec2::new(40.0, 20.0), &mut intent);
+        assert!(intent.yaw < 0.0);
+        assert!(intent.pitch < 0.0);
+    }
+
+    #[test]
+    fn noclip_flies_relative_to_view_with_fast_multiplier() {
+        let slow = noclip_displacement(
+            Vec3::NEG_Z,
+            Vec3::X,
+            false,
+            false,
+            Vec2::new(0.0, -1.0),
+            false,
+            1.0,
+        );
+        assert!((slow - Vec3::NEG_Z * NOCLIP_SPEED).length() < 0.01);
+        let fast = noclip_displacement(
+            Vec3::NEG_Z,
+            Vec3::X,
+            false,
+            false,
+            Vec2::new(0.0, -1.0),
+            true,
+            1.0,
+        );
+        assert!((fast.length() - NOCLIP_SPEED * NOCLIP_FAST_MULTIPLIER).abs() < 0.01);
+        let rise = noclip_displacement(Vec3::NEG_Z, Vec3::X, true, false, Vec2::ZERO, false, 1.0);
+        assert!((rise - Vec3::Y * NOCLIP_SPEED).length() < 0.01);
+    }
+
+    #[test]
+    fn overlay_reports_mode_with_key_hint_and_block_reason() {
+        let status = WalkEntryStatus::default();
+        assert_eq!(
+            noclip_overlay_text(MoveMode::Noclip, &status),
+            "NOCLIP: ON  [V]"
+        );
+        assert_eq!(
+            noclip_overlay_text(MoveMode::Walk, &status),
+            "NOCLIP: OFF  [V]"
+        );
+        let blocked = WalkEntryStatus {
+            blocked_reason: Some("no walkable ground below".to_owned()),
+        };
+        assert!(noclip_overlay_text(MoveMode::Noclip, &blocked).contains("WALK blocked"));
     }
 }
