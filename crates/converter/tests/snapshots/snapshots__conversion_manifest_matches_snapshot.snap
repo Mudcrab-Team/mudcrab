@@ -61,7 +61,7 @@ expression: manifest
     }
   },
   "complete": true,
-  "configuration_hash": "1a56351b088bb4a65b89e4313abc9a0813c5f4fa29dae55695316b6d8970fa41",
+  "configuration_hash": "9a58fda00b27d0f2a8e46afb9334ea869602556393a35bffd7fcb39582a08a4f",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -118,5 +118,6 @@ expression: manifest
     "nif": 1,
     "pex": 2
   },
-  "schema_version": 14
+  "pruned_texture_references": {},
+  "schema_version": 15
 }

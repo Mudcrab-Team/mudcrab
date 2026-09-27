@@ -1011,9 +1011,9 @@ mod tests {
         assert_eq!(sampler.mipmap_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.anisotropy_clamp, 1);
     }
+    use crate::world::cache::TerrainLayerSnapshot;
     use bevy::app::Propagate;
     use bevy::asset::AssetApp;
-    use crate::world::cache::TerrainLayerSnapshot;
     use bevy::{
         image::ImageFilterMode,
         mesh::VertexAttributeValues,

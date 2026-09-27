@@ -3,8 +3,8 @@ use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
     render::{
-        PLACED_OBJECT_RENDER_LAYERS, TerrainExtension, TerrainMaterial, WATER_LAYER,
-        WaterExtension, WaterMaterial, WaterReflectionTexture, QUADRANT_WEIGHT_SAMPLES,
+        PLACED_OBJECT_RENDER_LAYERS, QUADRANT_WEIGHT_SAMPLES, TerrainExtension, TerrainMaterial,
+        WATER_LAYER, WaterExtension, WaterMaterial, WaterReflectionTexture,
     },
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
@@ -1058,8 +1058,7 @@ fn track_surface_readiness(
                     &images,
                     &pending.normals,
                     SurfaceImageKind::TerrainNormal,
-                )
-                {
+                ) {
                     // A normal map is optional detail: without it the quadrant is lit by its
                     // geometric normal, as a quadrant whose layers have none is.
                     SurfaceDependencyState::Failed(reason) => {
@@ -1225,8 +1224,10 @@ fn validate_surface_dependencies(
         if let Err(reason) = validate_image_sampler("surface", &image.sampler) {
             return SurfaceDependencyState::Failed(reason);
         }
-        if matches!(kind, SurfaceImageKind::Terrain | SurfaceImageKind::TerrainNormal)
-            && !terrain_sampler_repeats(&image.sampler)
+        if matches!(
+            kind,
+            SurfaceImageKind::Terrain | SurfaceImageKind::TerrainNormal
+        ) && !terrain_sampler_repeats(&image.sampler)
         {
             return SurfaceDependencyState::Failed(format!(
                 "terrain image {:?} did not load with a repeating sampler",
@@ -3307,6 +3308,8 @@ mod tests {
             &mut terrain_materials,
             &mut water_materials,
             IVec2::ZERO,
+            false,
+            false,
             CellPayload {
                 generation: 1,
                 key: CellKey::Exterior {
@@ -3319,6 +3322,8 @@ mod tests {
                     form_id: 0x00F9907,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
+                    light: None,
+                    light_radius_override: None,
                     model_path: Some("meshes\\furniture\\creatureexit\\wispambush.nif".to_owned()),
                     position: [0.0, 0.0, 0.0],
                     rotation: [0.0; 3],
@@ -3330,7 +3335,8 @@ mod tests {
             },
             Some(terrain),
             &mut profiler,
-        );
+        )
+        .expect("the layer fixture cell should spawn");
     }
 
     /// What the emptiness rule reads: the converted model's own node and mesh count, taken from
@@ -3829,7 +3835,7 @@ mod tests {
         assert_eq!((min, max), (Vec3::splat(-0.5), Vec3::splat(0.5)));
     }
 
-    use crate::world::database::{LightRow, ReferenceRow};
+    use crate::world::database::LightRow;
 
     fn light_row(radius: f32, color: [u8; 3], flags: u32) -> LightRow {
         LightRow {

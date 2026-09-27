@@ -717,7 +717,7 @@ mod tests {
         }
         assert_eq!(
             converted_texture_path("Textures\\Land\\Grass01.dds".to_owned()).as_deref(),
-            Some("textures/Land/Grass01.ktx2")
+            Some("textures/land/grass01.ktx2")
         );
         assert_eq!(
             converted_texture_path("land/grass..old.dds".to_owned()).as_deref(),
