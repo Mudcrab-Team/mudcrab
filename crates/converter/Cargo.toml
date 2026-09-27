@@ -31,6 +31,7 @@ mlua.workspace = true
 
 [dev-dependencies]
 tempfile = "3.20"
+insta = { version = "1.48", features = ["json", "redactions"] }
 ruzstd = "0.8"
 dummy-content = { path = "../dummy-content" }
 

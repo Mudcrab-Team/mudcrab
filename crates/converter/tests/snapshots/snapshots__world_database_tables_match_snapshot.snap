@@ -1,0 +1,227 @@
+---
+source: crates/converter/tests/snapshots.rs
+expression: snapshot
+---
+{
+  "cells": [
+    {
+      "data": {
+        "encoded_bytes": 56
+      },
+      "flags": 0,
+      "grid_x": 0,
+      "grid_y": 0,
+      "id": 16,
+      "interior_name": "GeneratedCell\u0000",
+      "worldspace_id": 1
+    },
+    {
+      "data": {
+        "encoded_bytes": 84
+      },
+      "flags": 0,
+      "grid_x": null,
+      "grid_y": null,
+      "id": 65536,
+      "interior_name": "GeneratedInterior\u0000",
+      "worldspace_id": null
+    }
+  ],
+  "formid_map": [
+    {
+      "form_id": 1,
+      "internal_id": 1,
+      "plugin_name": "merged",
+      "record_type": "WRLD"
+    },
+    {
+      "form_id": 2,
+      "internal_id": 2,
+      "plugin_name": "merged",
+      "record_type": "TXST"
+    },
+    {
+      "form_id": 3,
+      "internal_id": 3,
+      "plugin_name": "merged",
+      "record_type": "STAT"
+    },
+    {
+      "form_id": 4,
+      "internal_id": 4,
+      "plugin_name": "merged",
+      "record_type": "LTEX"
+    },
+    {
+      "form_id": 5,
+      "internal_id": 5,
+      "plugin_name": "merged",
+      "record_type": "DOOR"
+    },
+    {
+      "form_id": 6,
+      "internal_id": 6,
+      "plugin_name": "merged",
+      "record_type": "DOOR"
+    },
+    {
+      "form_id": 16,
+      "internal_id": 16,
+      "plugin_name": "merged",
+      "record_type": "CELL"
+    },
+    {
+      "form_id": 17,
+      "internal_id": 17,
+      "plugin_name": "merged",
+      "record_type": "LAND"
+    },
+    {
+      "form_id": 18,
+      "internal_id": 18,
+      "plugin_name": "merged",
+      "record_type": "REFR"
+    },
+    {
+      "form_id": 19,
+      "internal_id": 19,
+      "plugin_name": "merged",
+      "record_type": "REFR"
+    },
+    {
+      "form_id": 65536,
+      "internal_id": 65536,
+      "plugin_name": "merged",
+      "record_type": "CELL"
+    },
+    {
+      "form_id": 65537,
+      "internal_id": 65537,
+      "plugin_name": "merged",
+      "record_type": "REFR"
+    }
+  ],
+  "land": [
+    {
+      "cell_id": 16,
+      "heightmap": {
+        "encoded_bytes": 1096
+      },
+      "normals": {
+        "encoded_bytes": 0
+      },
+      "vclr": {
+        "encoded_bytes": 0
+      },
+      "vtex": {
+        "encoded_bytes": 0
+      }
+    }
+  ],
+  "landscape_textures": [
+    {
+      "editor_id": "GeneratedLandscape",
+      "friction": null,
+      "id": 4,
+      "material_type": 0,
+      "restitution": null,
+      "texture_set_id": 2
+    }
+  ],
+  "references": [
+    {
+      "base_form_id": 3,
+      "cell_id": 16,
+      "data": {
+        "encoded_bytes": 60
+      },
+      "id": 18,
+      "is_exterior": 1,
+      "local_x": 2048.0,
+      "local_y": 2048.0,
+      "pos_x": 2048.0,
+      "pos_y": 2048.0,
+      "pos_z": 0.0,
+      "rot_x": 0.0,
+      "rot_y": 0.0,
+      "rot_z": 0.0,
+      "scale": 1.0,
+      "worldspace_id": 1
+    },
+    {
+      "base_form_id": 5,
+      "cell_id": 16,
+      "data": {
+        "encoded_bytes": 104
+      },
+      "id": 19,
+      "is_exterior": 1,
+      "local_x": 2048.0,
+      "local_y": 1024.0,
+      "pos_x": 2048.0,
+      "pos_y": 1024.0,
+      "pos_z": 0.0,
+      "rot_x": 0.0,
+      "rot_y": 0.0,
+      "rot_z": 0.0,
+      "scale": 1.0,
+      "worldspace_id": 1
+    },
+    {
+      "base_form_id": 6,
+      "cell_id": 65536,
+      "data": {
+        "encoded_bytes": 104
+      },
+      "id": 65537,
+      "is_exterior": 0,
+      "local_x": null,
+      "local_y": null,
+      "pos_x": 128.0,
+      "pos_y": 512.0,
+      "pos_z": 0.0,
+      "rot_x": 0.0,
+      "rot_y": 0.0,
+      "rot_z": 0.0,
+      "scale": 1.0,
+      "worldspace_id": null
+    }
+  ],
+  "statics": [
+    {
+      "bounds_max_x": 64.0,
+      "bounds_max_y": 64.0,
+      "bounds_max_z": 64.0,
+      "bounds_min_x": -64.0,
+      "bounds_min_y": -64.0,
+      "bounds_min_z": -64.0,
+      "bounds_valid": 0,
+      "editor_id": "GeneratedStatic",
+      "flags": 0,
+      "id": 3,
+      "model_path": "meshes/generated.nif"
+    }
+  ],
+  "texture_sets": [
+    {
+      "detail_path": null,
+      "diffuse_path": "textures/generated_color.dds",
+      "editor_id": "GeneratedTextures",
+      "environment_path": null,
+      "glow_path": null,
+      "height_path": null,
+      "id": 2,
+      "mask_path": null,
+      "normal_path": "textures/generated_normal.dds",
+      "specular_path": null
+    }
+  ],
+  "worldspaces": [
+    {
+      "editor_id": "GeneratedWorld",
+      "flags": 0,
+      "id": 1,
+      "parent_world": null
+    }
+  ]
+}
