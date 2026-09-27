@@ -58,7 +58,7 @@ lto = "thin"
 # Optimised builds for trying changes, not for measuring them: release without link-time
 # optimisation and with the incremental cache, so a one-file edit relinks in well under a
 # minute instead of several. Frame times are not comparable with `release`; benchmarks and
-# acceptance runs keep `--release`. Usage: `cargo build --profile quick -p engine`.
+# acceptance runs keep `--release`. Usage: `cargo build --profile quick --bin engine`.
 [profile.quick]
 inherits = "release"
 lto = false

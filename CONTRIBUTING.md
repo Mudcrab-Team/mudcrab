@@ -69,7 +69,7 @@ format coverage and library API. ESM/NIF writers are planned as a follow-up.
 The engine is slow in a debug build and `--release` spends most of a rebuild on link-time
 optimisation. For trying a change, use the `quick` profile (release without LTO, incremental):
 ```bash
-cargo build --profile quick -p engine
+cargo build --profile quick --bin engine
 ```
 The binary lands in `target/quick/`. Use `--release` for anything you measure (benchmarks,
 acceptance runs), since `quick` frame times are not comparable.
