@@ -16,6 +16,13 @@ pub struct EngineConfig {
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
     pub benchmark_output: PathBuf,
+    /// Where to write every measured frame time, in order, as CSV (`--benchmark-frame-times`).
+    /// Off by default: the report's summary is what acceptance reads; the series is for choosing
+    /// run lengths and spotting drift within a run.
+    pub benchmark_frame_times: Option<PathBuf>,
+    /// `--run-label <text>`: names an automated run in its window title, e.g. a benchmark's
+    /// variant and round ([`EngineConfig::window_title`]).
+    pub run_label: Option<String>,
     pub accept_min_fps: f64,
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
@@ -53,6 +60,8 @@ impl Default for EngineConfig {
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
             benchmark_output: PathBuf::from("benchmark-report.json"),
+            benchmark_frame_times: None,
+            run_label: None,
             accept_min_fps: 60.0,
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
@@ -79,6 +88,24 @@ impl Default for EngineConfig {
 impl EngineConfig {
     pub fn from_env() -> Self {
         Self::from_args(std::env::args().skip(1))
+    }
+
+    /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
+    /// the taskbar says what it is. An interactive run is plain "OpenSkyrim".
+    pub fn window_title(&self) -> String {
+        let kind = if self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some() {
+            Some("benchmark")
+        } else if self.streaming_fixture {
+            Some("streaming fixture")
+        } else {
+            None
+        };
+        match (kind, self.run_label.as_deref()) {
+            (Some(kind), Some(label)) => format!("OpenSkyrim - {kind}: {label}"),
+            (Some(kind), None) => format!("OpenSkyrim - {kind}"),
+            (None, Some(label)) => format!("OpenSkyrim - {label}"),
+            (None, None) => "OpenSkyrim".to_owned(),
+        }
     }
 
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
@@ -138,6 +165,12 @@ impl EngineConfig {
                 "--benchmark-output" => {
                     if let Some(value) = args.next() {
                         config.benchmark_output = value.into();
+                    }
+                }
+                "--run-label" => config.run_label = args.next(),
+                "--benchmark-frame-times" => {
+                    if let Some(value) = args.next() {
+                        config.benchmark_frame_times = Some(value.into());
                     }
                 }
                 "--accept-min-fps" => {
@@ -225,6 +258,25 @@ mod tests {
         let config = EngineConfig::default();
         assert_eq!(config.max_cell_commits_per_frame, 1);
         assert_eq!(config.max_commit_micros_per_frame, 16_670);
+    }
+
+    #[test]
+    fn an_automated_run_says_what_it_is_in_its_title() {
+        let args =
+            |list: &[&str]| EngineConfig::from_args(list.iter().map(|value| (*value).to_owned()));
+        assert_eq!(
+            args(&["--benchmark-duration", "20", "--run-label", "main rural r1"]).window_title(),
+            "OpenSkyrim - benchmark: main rural r1"
+        );
+        assert_eq!(
+            args(&["--benchmark-frames", "600"]).window_title(),
+            "OpenSkyrim - benchmark"
+        );
+        assert_eq!(
+            args(&["--streaming-fixture"]).window_title(),
+            "OpenSkyrim - streaming fixture"
+        );
+        assert_eq!(args(&[]).window_title(), "OpenSkyrim");
     }
 
     #[test]

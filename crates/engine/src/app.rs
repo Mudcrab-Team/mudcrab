@@ -28,7 +28,7 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     render::view::screenshot::{Screenshot, save_to_disk},
     tasks::{IoTaskPool, TaskPoolBuilder},
-    window::{PresentMode, WindowPlugin},
+    window::{MonitorSelection, PresentMode, WindowPlugin, WindowPosition},
     winit::WinitSettings,
 };
 use color_eyre::Result;
@@ -85,8 +85,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
     configure_benchmark_priority(benchmark_active)?;
     let window = (!config.headless).then(|| Window {
-        title: "OpenSkyrim".into(),
+        title: config.window_title(),
         resolution: (1600, 900).into(),
+        // A timing run opens on screen, in the middle, so whoever is at the machine can see what
+        // is measuring and not disturb it.
+        position: if benchmark_active {
+            WindowPosition::Centered(MonitorSelection::Primary)
+        } else {
+            WindowPosition::Automatic
+        },
         present_mode: if benchmark_active {
             PresentMode::AutoNoVsync
         } else {
