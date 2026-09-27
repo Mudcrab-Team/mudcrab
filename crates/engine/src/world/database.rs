@@ -143,17 +143,40 @@ impl AssetCatalog {
     }
 }
 
+/// Maps a texture path stored in the world database to the converted `.ktx2` under `textures/`.
+///
+/// The database is input the engine did not write, so a path that could leave `textures/` - a
+/// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
+/// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
 fn converted_texture_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
     let without_prefix = normalized.strip_prefix("textures/").unwrap_or(&normalized);
-    if without_prefix.is_empty() {
+    if without_prefix.is_empty()
+        || !is_safe_relative_asset_path(without_prefix)
+        || without_prefix.contains(':')
+        || without_prefix
+            .split('/')
+            .any(|segment| matches!(segment, "" | "." | ".."))
+    {
         return None;
     }
     let mut converted = std::path::PathBuf::from("textures").join(without_prefix);
     converted.set_extension("ktx2");
     Some(converted.to_string_lossy().replace('\\', "/"))
+}
+
+/// Rejects a database-supplied relative path that could escape the assets
+/// root once re-rooted under `textures/` or `meshes/` with `PathBuf::join`.
+/// A `..` segment walks back out of the base directory, and a rooted or
+/// drive-prefixed path makes `PathBuf::join` replace the base entirely
+/// instead of appending to it (see the `std::path::PathBuf::push` docs).
+/// Every component must therefore be a plain, non-empty path segment.
+fn is_safe_relative_asset_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 impl WorldDatabase {
@@ -507,6 +530,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_traversal_and_rooted_texture_paths() {
+        assert_eq!(
+            converted_texture_path("textures/../../secrets.dds".to_owned()),
+            None
+        );
+        assert_eq!(
+            converted_texture_path("textures//etc/passwd".to_owned()),
+            None
+        );
+        assert_eq!(
+            converted_texture_path(r"textures\..\..\secrets.dds".to_owned()),
+            None
+        );
+        // Windows treats a drive-prefixed path as absolute (and `PathBuf::join`
+        // would let it replace the base path entirely); Rust's path parsing is
+        // OS-native, so this case only bites on the Windows target this engine
+        // ships for.
+        #[cfg(windows)]
+        assert_eq!(
+            converted_texture_path("textures/C:/Windows/evil.dds".to_owned()),
+            None
+        );
+        // A plain relative path is unaffected.
+        assert_eq!(
+            converted_texture_path("textures/land/grass.dds".to_owned()),
+            Some("textures/land/grass.ktx2".to_owned())
+        );
+    }
+
+    #[test]
     fn catalog_rewrites_landscape_texture_paths() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
@@ -523,6 +576,34 @@ mod tests {
             Some("textures/landscape/tundra02.ktx2")
         );
         assert_eq!(catalog.water_flow(9), Some("textures/water/flow.ktx2"));
+    }
+
+    #[test]
+    fn texture_paths_that_could_leave_the_textures_folder_are_refused() {
+        for path in [
+            "textures/../../secret.dds",
+            "..\\..\\secret.dds",
+            "textures/land/../../../secret.dds",
+            "/etc/secret.dds",
+            "C:/Windows/secret.dds",
+            "C:secret.dds",
+            "textures//grass.dds",
+            "textures/./grass.dds",
+            "embedded://grass.dds",
+            "textures/grass.dds:stream",
+            "",
+            "textures/",
+        ] {
+            assert_eq!(converted_texture_path(path.to_owned()), None, "{path}");
+        }
+        assert_eq!(
+            converted_texture_path("Textures\\Land\\Grass01.dds".to_owned()).as_deref(),
+            Some("textures/Land/Grass01.ktx2")
+        );
+        assert_eq!(
+            converted_texture_path("land/grass..old.dds".to_owned()).as_deref(),
+            Some("textures/land/grass..old.ktx2")
+        );
     }
 
     #[test]

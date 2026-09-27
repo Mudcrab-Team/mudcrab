@@ -347,7 +347,7 @@ fn plan_cells(
             continuity.edges.remove(key);
             profiler.event(format!("{key:?}"), "unloaded", None);
             if let CellStatus::Resident { root } = status {
-                commands.entity(*root).despawn();
+                commands.entity(*root).try_despawn();
             }
         }
         keep
@@ -1655,12 +1655,24 @@ fn converted_model_path(path: String) -> Option<String> {
         return None;
     }
     let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    if without_prefix.is_empty() {
+    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
         return None;
     }
     let mut converted = std::path::PathBuf::from("meshes").join(without_prefix);
     converted.set_extension("glb");
     Some(converted.to_string_lossy().replace('\\', "/"))
+}
+
+/// Rejects a database-supplied relative path that could escape the assets
+/// root once re-rooted under `meshes/` with `PathBuf::join`. A `..` segment
+/// walks back out of the base directory, and a rooted or drive-prefixed path
+/// makes `PathBuf::join` replace the base entirely instead of appending to it
+/// (see the `std::path::PathBuf::push` docs). Every component must therefore
+/// be a plain, non-empty path segment.
+fn is_safe_relative_asset_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 pub(crate) fn quadrant_layers(
@@ -2384,6 +2396,33 @@ mod tests {
         assert_eq!(
             converted_model_path("meshes/Furniture/SitLedgeMarker.nif".into()),
             None
+        );
+    }
+
+    #[test]
+    fn rejects_traversal_and_rooted_model_paths() {
+        assert_eq!(
+            converted_model_path("meshes/../../secrets.nif".into()),
+            None
+        );
+        assert_eq!(converted_model_path("meshes//etc/passwd".into()), None);
+        assert_eq!(
+            converted_model_path(r"meshes\..\..\secrets.nif".into()),
+            None
+        );
+        // Windows treats a drive-prefixed path as absolute (and `PathBuf::join`
+        // would let it replace the base path entirely); Rust's path parsing is
+        // OS-native, so this case only bites on the Windows target this engine
+        // ships for.
+        #[cfg(windows)]
+        assert_eq!(
+            converted_model_path("meshes/C:/Windows/evil.nif".into()),
+            None
+        );
+        // A plain relative path is unaffected.
+        assert_eq!(
+            converted_model_path("meshes/architecture/wall.nif".into()).as_deref(),
+            Some("meshes/architecture/wall.glb")
         );
     }
 
