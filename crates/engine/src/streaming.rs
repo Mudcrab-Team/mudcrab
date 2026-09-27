@@ -20,7 +20,7 @@ use bevy::{
     app::Propagate,
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
     camera::{primitives::MeshAabb, visibility::RenderLayers},
-    gltf::GltfExtras,
+    gltf::{GltfExtras, GltfMaterialName},
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
@@ -823,19 +823,38 @@ fn terrain_collider_from_mesh(mesh: &Mesh) -> Result<Collider, String> {
         .map_err(|error| format!("invalid terrain trimesh: {error}"))
 }
 
-/// Only these fixed STAT families have a declared render-triangle proxy policy. Other records
-/// may move, animate, be decorative, or have intentionally different Havok geometry.
+/// Fixed Riverwood solids with a declared render-triangle proxy policy. Record type remains
+/// authoritative: plant TREE records outside the pine family and movable clutter stay excluded.
 fn static_proxy_eligible(record_type: Option<&str>, path: &str) -> bool {
-    record_type == Some("STAT")
-        && (path.starts_with("meshes/landscape/rocks/") || path.starts_with("meshes/architecture/"))
+    let pine = path.starts_with("meshes/landscape/trees/treepineforest");
+    match record_type {
+        Some("TREE") => pine,
+        Some("STAT") => {
+            path.starts_with("meshes/landscape/rocks/")
+                || path.starts_with("meshes/architecture/")
+                || pine
+                || path.starts_with("meshes/clutter/firewood/firewoodpile")
+                || (path.starts_with("meshes/landscape/roads/road") && path.contains("ramp"))
+        }
+        _ => false,
+    }
 }
 
-fn static_proxy_material_allowed(path: &str, material: &StandardMaterial) -> bool {
+fn static_proxy_material_allowed(
+    path: &str,
+    material_name: Option<&str>,
+    material: &StandardMaterial,
+) -> bool {
     matches!(material.alpha_mode, AlphaMode::Opaque)
         // Riverwood RockCliff GLBs put the large rock faces in BLEND primitives. Their masked
         // detail primitives stay excluded, as do blended materials on unrelated models.
         || (path.starts_with("meshes/landscape/rocks/rockcliff")
             && matches!(material.alpha_mode, AlphaMode::Blend))
+        // The lumbermill's walkable ramp/boards are woodwalkway01 with MASK alpha. Rope and
+        // roof cutouts remain excluded; the material name comes from the converted GLB.
+        || (path == "meshes/architecture/farmhouse/lumbermill01.glb"
+            && material_name.is_some_and(|name| name.starts_with("LumbermillMesh:19"))
+            && matches!(material.alpha_mode, AlphaMode::Mask(_)))
 }
 
 /// Build one model-local proxy from the validated spawned scene. Bevy/Rapier apply the reference
@@ -861,11 +880,17 @@ fn static_proxy_from_hierarchy(
             .get(entity)
             .map_err(|_| format!("static proxy node {entity:?} has no transform"))?;
         let node_to_root = parent_to_root * local.compute_affine();
-        if let Ok((mesh_handle, material_handle, extras)) = primitives.get(entity)
+        if let Ok((mesh_handle, material_handle, material_name, extras)) = primitives.get(entity)
             && !extras.is_some_and(has_explicit_material_exclusion)
         {
             let material = material_handle.and_then(|handle| materials.get(handle));
-            if material.is_some_and(|material| static_proxy_material_allowed(path, material)) {
+            if material.is_some_and(|material| {
+                static_proxy_material_allowed(
+                    path,
+                    material_name.map(|name| name.0.as_str()),
+                    material,
+                )
+            }) {
                 let mesh = meshes.get(mesh_handle).ok_or_else(|| {
                     format!("static proxy mesh {:?} is missing", mesh_handle.id())
                 })?;
@@ -950,6 +975,7 @@ type RenderPrimitiveQuery<'world, 'state> = Query<
     (
         &'static Mesh3d,
         Option<&'static MeshMaterial3d<StandardMaterial>>,
+        Option<&'static GltfMaterialName>,
         Option<&'static GltfExtras>,
     ),
 >;
@@ -1581,7 +1607,7 @@ fn accumulate_relative_bounds(
         validate_transform(&format!("hierarchy node {entity:?}"), local, global)?;
         *nodes += 1;
         let relative_to_root = parent_to_root * local.compute_affine();
-        if let Ok((mesh_handle, _, _)) = primitives.get(entity) {
+        if let Ok((mesh_handle, _, _, _)) = primitives.get(entity) {
             let mesh = meshes.get(mesh_handle).ok_or_else(|| {
                 format!(
                     "mesh {:?} is absent while validating bounds",
@@ -1652,7 +1678,7 @@ fn validate_spawned_asset(
 ) -> Result<AssetValidationSummary, String> {
     let mut summary = AssetValidationSummary::default();
     for descendant in children.iter_descendants(root) {
-        let Ok((mesh, material_handle, extras)) = primitives.get(descendant) else {
+        let Ok((mesh, material_handle, _, extras)) = primitives.get(descendant) else {
             continue;
         };
         if meshes.get(mesh).is_none() {
@@ -2592,6 +2618,21 @@ mod tests {
             Some("STAT"),
             "meshes/architecture/farmhouse/inn01.glb"
         ));
+        for path in [
+            "meshes/clutter/firewood/firewoodpilelarge01.glb",
+            "meshes/landscape/trees/treepineforestlog01.glb",
+            "meshes/landscape/roads/roadstraightlongramp01.glb",
+        ] {
+            assert!(static_proxy_eligible(Some("STAT"), path), "{path}");
+        }
+        assert!(static_proxy_eligible(
+            Some("TREE"),
+            "meshes/landscape/trees/treepineforest01.glb"
+        ));
+        assert!(!static_proxy_eligible(
+            Some("TREE"),
+            "meshes/landscape/plants/clover01.glb"
+        ));
         for kind in [None, Some("MISC"), Some("TREE"), Some("MSTT"), Some("DOOR")] {
             assert!(!static_proxy_eligible(
                 kind,
@@ -2612,18 +2653,37 @@ mod tests {
         };
         assert!(static_proxy_material_allowed(
             "meshes/landscape/rocks/rockcliff02.glb",
+            None,
             &blended
         ));
         assert!(!static_proxy_material_allowed(
             "meshes/landscape/rocks/rockl01.glb",
+            None,
             &blended
         ));
         assert!(!static_proxy_material_allowed(
             "meshes/architecture/farmhouse/ivy01.glb",
+            None,
             &masked
         ));
         assert!(!static_proxy_material_allowed(
             "meshes/landscape/rocks/rockcliff02.glb",
+            None,
+            &masked
+        ));
+        assert!(static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/lumbermill01.glb",
+            Some("LumbermillMesh:19 - L1_Posts01:19"),
+            &masked
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/lumbermill01.glb",
+            Some("LumbermillMesh:20"),
+            &masked
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/inn01.glb",
+            Some("LumbermillMesh:19"),
             &masked
         ));
     }
@@ -2738,6 +2798,74 @@ mod tests {
             .unwrap();
         assert!(post_hit.is_some(), "scaled, rotated post had no contact");
         assert!(gap_hit.is_none(), "scaled, rotated opening was filled");
+    }
+
+    #[test]
+    fn lumbermill_walkway_mask_contributes_without_roof_mask() {
+        use bevy_rapier3d::rapier::parry::{math::Pose, query::Ray};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let slab = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(20.0, 4.0, 20.0));
+        let masked = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                alpha_mode: AlphaMode::Mask(0.5),
+                ..default()
+            });
+        let root = app.world_mut().spawn(Transform::default()).id();
+        for (x, name) in [
+            (0.0, "LumbermillMesh:19 - L1_Posts01:19"),
+            (100.0, "LumbermillMesh:20"),
+        ] {
+            app.world_mut().spawn((
+                Mesh3d(slab.clone()),
+                MeshMaterial3d(masked.clone()),
+                GltfMaterialName(name.to_owned()),
+                Transform::from_xyz(x, 10.0, 0.0),
+                ChildOf(root),
+            ));
+        }
+        app.update();
+        let proxy = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_proxy_from_hierarchy(
+                        "meshes/architecture/farmhouse/lumbermill01.glb",
+                        root,
+                        &children,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        for (x, expected) in [(0.0, true), (100.0, false)] {
+            let ray = Ray::new(Vec3::new(x, 50.0, 0.0), Vec3::NEG_Y);
+            assert_eq!(
+                proxy
+                    .raw
+                    .cast_ray(&Pose::IDENTITY, &ray, 100.0, true)
+                    .is_some(),
+                expected,
+                "unexpected lumbermill proxy contact at x={x}"
+            );
+        }
     }
 
     #[test]
@@ -4194,7 +4322,7 @@ mod tests {
         let mut old_min = Vec3::splat(f32::INFINITY);
         let mut old_max = Vec3::splat(f32::NEG_INFINITY);
         for descendant in children.iter_descendants(root) {
-            let Ok((mesh_handle, _, _)) = primitives.get(descendant) else {
+            let Ok((mesh_handle, _, _, _)) = primitives.get(descendant) else {
                 continue;
             };
             let mesh = meshes.get(mesh_handle).unwrap();
