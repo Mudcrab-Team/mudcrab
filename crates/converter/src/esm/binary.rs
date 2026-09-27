@@ -63,18 +63,22 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
 /// it is read, so a corrupt declared size cannot reserve gigabytes up front.
 const MAX_RESERVATION: usize = 64 * 1024 * 1024;
 
-/// The most a zlib stream can expand: deflate's best case is about 1032:1, plus
-/// room for a tiny stream's fixed overhead.
+/// The most a record may inflate to: deflate's best case is about 1032:1, plus
+/// room for a tiny stream's fixed overhead, and never more than 64 MiB (the
+/// largest record in the shipped plugins inflates to under 100 KB).
 fn max_inflated_size(compressed_len: usize) -> usize {
-    compressed_len.saturating_mul(1032).saturating_add(4096)
+    compressed_len
+        .saturating_mul(1032)
+        .saturating_add(4096)
+        .min(MAX_RESERVATION)
 }
 
 /// Inflates `compressed`, reading at most one byte past `expected` so a stream
 /// longer than declared shows up as a size mismatch instead of being read to
 /// its end. A declared size no zlib stream of this length could reach is
 /// refused before anything is read: the size is the record's own claim, and
-/// retaining up to 4 GiB per record for a few bytes of input would let a
-/// damaged plugin exhaust memory.
+/// every record's payload is kept, so an unbounded claim would let a damaged
+/// plugin exhaust memory.
 fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> {
     if expected > max_inflated_size(compressed.len()) {
         return Err(std::io::Error::new(

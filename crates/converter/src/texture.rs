@@ -549,7 +549,8 @@ fn encode_l8_volume(
     etc1s_quality: u8,
     uastc_level: u8,
 ) -> Result<EncodedVolume> {
-    let mip_count = dds.get_num_mipmap_levels();
+    // A header may declare zero mip levels; the base level is always there.
+    let mip_count = dds.get_num_mipmap_levels().max(1);
     let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), dds.get_depth());
     ensure!(
         mip_count <= max_levels,
@@ -568,7 +569,9 @@ fn encode_l8_volume(
         let slice_len = (width as usize)
             .checked_mul(height as usize)
             .ok_or_else(|| color_eyre::eyre::eyre!("L8 DDS volume size overflow"))?;
-        let mut encoded_slices = Vec::with_capacity(depth as usize);
+        // The depth is the header's claim; the payload checks below reject a volume that does
+        // not hold that many slices, so only a bounded reservation is made up front.
+        let mut encoded_slices = Vec::with_capacity((depth as usize).min(256));
         for slice in 0..depth {
             let end = offset
                 .checked_add(slice_len)
@@ -842,7 +845,8 @@ fn encode_x8r8g8b8(
 }
 
 fn decode_x8r8g8b8_mips(dds: &Dds) -> Result<Vec<(u32, u32, Vec<u8>)>> {
-    let mip_count = dds.get_num_mipmap_levels();
+    // A header may declare zero mip levels; the base level is always there.
+    let mip_count = dds.get_num_mipmap_levels().max(1);
     let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), 1);
     ensure!(
         mip_count <= max_levels,
@@ -1447,6 +1451,18 @@ mod tests {
         let error = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap_err();
         let chain = format!("{error:#}");
         assert!(chain.contains("mip levels"), "{chain}");
+    }
+
+    #[test]
+    fn a_declared_mip_count_of_zero_converts_the_base_level() {
+        let bytes = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 2, 1),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        let bytes = with_declared_mip_count(bytes, 0);
+
+        TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap();
     }
 
     #[test]
