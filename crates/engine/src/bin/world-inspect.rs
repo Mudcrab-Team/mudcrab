@@ -3,7 +3,7 @@ use engine::world::{
     cache::CellCache,
     components::{InstanceBounds, WorldPosition},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -236,13 +236,18 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
         .canonicalize()
         .unwrap_or_else(|_| options.assets.clone());
     let database_path = assets.join("skyrim_world.db");
-    let connection = Connection::open(&database_path)
+    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", database_path.display()))?;
-    let database_schema = connection
+    let database_schema: u32 = connection
         .query_row("SELECT version FROM schema_info LIMIT 1", [], |row| {
             row.get(0)
         })
         .wrap_err("world database has no schema version")?;
+    color_eyre::eyre::ensure!(
+        database_schema == shared::WORLD_DATABASE_SCHEMA_VERSION,
+        "world database schema {database_schema} is unsupported; reconvert assets for version {}",
+        shared::WORLD_DATABASE_SCHEMA_VERSION
+    );
     let cache = CellCache::open(&assets.join("cell_cache.rkyv"))?;
     let mut cells = Vec::new();
     let mut rows = Vec::new();
@@ -819,5 +824,44 @@ mod tests {
         );
         assert_eq!(options.reference, Some(0x123));
         assert_eq!(options.output, Some(PathBuf::from("report.json")));
+    }
+
+    #[test]
+    fn rejects_mismatched_schema_before_any_further_query() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER NOT NULL);
+                 INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION + 1
+            ))
+            .unwrap();
+        drop(connection);
+        // Intentionally no `cells` table (or cell_cache.rkyv): the old code
+        // queried the database before checking the schema version, so on a
+        // stale database it failed with an unrelated "no such table" error
+        // instead of the schema-mismatch message checked for below.
+
+        let options = Options {
+            assets: directory.path().to_owned(),
+            worldspace: 0x3c,
+            grid_x: 0,
+            grid_y: 0,
+            radius: 0,
+            reference: None,
+            output: None,
+        };
+        let error = inspect_world(&options).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("schema") && message.contains("unsupported"),
+            "expected a schema-mismatch error, got: {message}"
+        );
+        assert!(
+            !message.contains("no such table"),
+            "must not run further queries before the schema check: {message}"
+        );
     }
 }

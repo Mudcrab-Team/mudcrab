@@ -55,7 +55,14 @@ impl CellCache {
     }
 
     pub fn terrain(&self, cell_id: u32) -> Option<TerrainSnapshot> {
-        let archived = rkyv::access::<shared::ArchivedCellCache, Error>(&self.mmap).ok()?;
+        // SAFETY: `open` already validated these exact bytes with `rkyv::access`
+        // (which runs bytecheck over the whole `ArchivedCellCache`) before this
+        // `CellCache` was constructed. `self.mmap` is never remapped or mutated
+        // after `open` returns, so the bytes still describe a valid
+        // `ArchivedCellCache` at the default root position, and re-validating on
+        // every lookup (this is called once per committed cell) would be wasted
+        // work.
+        let archived = unsafe { rkyv::access_unchecked::<shared::ArchivedCellCache>(&self.mmap) };
         let cell = archived.cells.get(*self.index.get(&cell_id)?)?;
         Some(TerrainSnapshot {
             cell_id: cell.cell_id.into(),
@@ -123,6 +130,53 @@ mod tests {
         assert_eq!(terrain.heights, [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(terrain.water_height, Some(8.0));
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn repeated_terrain_lookups_return_the_right_cells() {
+        // `terrain` used to re-validate the whole mapped file (`rkyv::access`)
+        // on every call; it now trusts the one-time validation done in `open`
+        // and reads with `rkyv::access_unchecked` instead. Multiple cells and
+        // repeated, out-of-order lookups exercise that the unchecked access
+        // still indexes the right cell every time, not just once.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cell_cache.rkyv");
+        let source = shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: vec![
+                shared::CachedLand {
+                    cell_id: 42,
+                    width: 2,
+                    height: 2,
+                    heights: vec![1.0, 2.0, 3.0, 4.0],
+                    normals: vec![0; 12],
+                    vertex_colors: vec![255; 12],
+                    layers: vec![],
+                    water_height: Some(8.0),
+                    water_type_form_id: Some(7),
+                },
+                shared::CachedLand {
+                    cell_id: 99,
+                    width: 2,
+                    height: 2,
+                    heights: vec![10.0, 20.0, 30.0, 40.0],
+                    normals: vec![0; 12],
+                    vertex_colors: vec![255; 12],
+                    layers: vec![],
+                    water_height: None,
+                    water_type_form_id: None,
+                },
+            ],
+        };
+        let bytes = rkyv::to_bytes::<Error>(&source).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        let cache = CellCache::open(&path).unwrap();
+        assert_eq!(cache.terrain(99).unwrap().heights, [10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(cache.terrain(42).unwrap().heights, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(cache.terrain(42).unwrap().water_height, Some(8.0));
+        assert!(cache.terrain(7).is_none());
+        assert_eq!(cache.terrain(99).unwrap().heights, [10.0, 20.0, 30.0, 40.0]);
     }
 
     #[test]
