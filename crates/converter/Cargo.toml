@@ -31,6 +31,8 @@ mlua.workspace = true
 
 [dev-dependencies]
 tempfile = "3.20"
+insta = { version = "1.48", features = ["json", "redactions"] }
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 ruzstd = "0.8"
 dummy-content = { path = "../dummy-content" }
 project-wormhole-shared = "0.1.0"

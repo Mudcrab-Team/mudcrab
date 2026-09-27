@@ -14,6 +14,9 @@ pub mod progress;
 pub mod script;
 pub mod texture;
 
+#[cfg(test)]
+mod test_strategies;
+
 pub use config::PipelineConfig;
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;

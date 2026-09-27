@@ -160,3 +160,8 @@ in the converter unit tests; the generated pipeline is covered end to end by
 `references_without_model` count) together with the parser-level checks in
 `crates/converter/tests/fixture_doors.rs`. The `--with-lights` plugin's `LIGH` `DATA`/`FNAM`
 bytes and its reference's `XRDS` are read back by `crates/converter/tests/fixture_lights.rs`.
+
+Property tests (`proptest`, fixed seed, run by the normal test suite) extend those sweeps: the
+ESM, VMAD, LAND, BSA, BA2, PEX, LIP and NIF parsers must return an error, never panic or abort,
+on arbitrary bytes and on generated fixtures with overwritten bytes, extreme size and count
+words, and truncation. Shared strategies live in `crates/converter/src/test_strategies.rs`.

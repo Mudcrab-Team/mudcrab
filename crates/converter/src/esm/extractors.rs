@@ -75,7 +75,12 @@ pub fn extract_cell_info(
                 grid_y = Some(i32::from_le_bytes([data[4], data[5], data[6], data[7]]));
             }
             "EDID" => {
-                interior_name = Some(String::from_utf8_lossy(data).to_string());
+                // Editor IDs are zero-terminated strings; the terminator is not part of the name.
+                interior_name = Some(
+                    String::from_utf8_lossy(data)
+                        .trim_end_matches('\0')
+                        .to_owned(),
+                );
             }
             _ => {}
         }

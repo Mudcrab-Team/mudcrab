@@ -1479,6 +1479,8 @@ fn actor_root(path: &Path) -> Option<(PathBuf, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
 
     #[test]
     fn rejects_invalid_nif_without_panicking() {
@@ -1992,5 +1994,50 @@ mod tests {
         let opaque = &model.static_meshes[1].colors;
         assert_eq!(opaque.len(), 1);
         assert_eq!(opaque[0].0.w, 0.0);
+    }
+
+    fn static_nif() -> Vec<u8> {
+        dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+            name: "PropertyQuad",
+            positions: &[
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [-1.0, 1.0, 0.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 4],
+            uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            indices: &[[0, 1, 2], [0, 2, 3]],
+            diffuse: "textures/generated_color.dds",
+            normal_texture: "textures/generated_normal.dds",
+        })
+        .unwrap()
+    }
+
+    fn inspect_and_convert(bytes: &[u8]) {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("property.nif");
+        fs::write(&input, bytes).unwrap();
+        let _ = MeshConverter::inspect_nif(&input);
+        let _ = MeshConverter::convert_nif_to_glb(&input, &directory.path().join("property.glb"));
+    }
+
+    proptest! {
+        // Each case writes a file and runs the exporter, so fewer cases keep
+        // the suite quick.
+        #![proptest_config(config(64))]
+
+        #[test]
+        fn nif_never_panics_on_arbitrary_bytes(tail in arbitrary_bytes(512)) {
+            // The Skyrim SE signature line, so the header fields are reached.
+            let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+            bytes.extend_from_slice(&tail);
+            inspect_and_convert(&bytes);
+        }
+
+        #[test]
+        fn corrupted_nif_never_panics(bytes in corrupted(static_nif())) {
+            inspect_and_convert(&bytes);
+        }
     }
 }

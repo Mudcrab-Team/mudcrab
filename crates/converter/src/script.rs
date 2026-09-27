@@ -964,6 +964,8 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
 
     fn minimal_pex() -> Vec<u8> {
         dummy_content::pex::minimal("TestScript").unwrap()
@@ -1057,5 +1059,30 @@ mod tests {
             ..empty
         };
         assert_eq!(build_cfg(&jumping).unwrap().blocks[0].successors, vec![1]);
+    }
+
+    fn parse_and_emit(bytes: &[u8]) {
+        if let Ok(pex) = ScriptConverter::parse(bytes)
+            && ScriptConverter::verify(&pex).is_ok()
+        {
+            let _ = ScriptConverter::emit_luau(&pex);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn pex_never_panics_on_arbitrary_bytes(tail in arbitrary_bytes(512)) {
+            // The magic and a supported version, so the tables are reached.
+            let mut bytes = minimal_pex()[..8].to_vec();
+            bytes.extend_from_slice(&tail);
+            parse_and_emit(&bytes);
+        }
+
+        #[test]
+        fn corrupted_pex_never_panics(bytes in corrupted(minimal_pex())) {
+            parse_and_emit(&bytes);
+        }
     }
 }

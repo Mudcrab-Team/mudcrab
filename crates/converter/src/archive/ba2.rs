@@ -515,10 +515,12 @@ fn u64_at(bytes: &[u8], offset: usize) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
     use flate2::{
         Compression as FlateCompression,
         write::{DeflateEncoder, ZlibEncoder},
     };
+    use proptest::prelude::*;
     use std::io::Write;
 
     fn base_archive(version: u32, kind: &[u8; 4], count: u32, names_offset: usize) -> Vec<u8> {
@@ -693,5 +695,51 @@ mod tests {
             decompress(&packed, expected.len(), Compression::Lz4).unwrap(),
             expected
         );
+    }
+
+    fn fixtures() -> Vec<Vec<u8>> {
+        vec![
+            dummy_content::ba2::general(
+                &[
+                    dummy_content::Entry::new("textures/one.dds", b"DDS DATA"),
+                    dummy_content::Entry::new("meshes/two.nif", b"NIF DATA"),
+                ],
+                dummy_content::ba2::Compression::Zlib,
+            )
+            .unwrap(),
+            dummy_content::ba2::dx10(&[dummy_content::ba2::Dx10Texture::new(
+                "textures/dx10.dds",
+                4,
+                4,
+                71,
+                &[0xAB; 8],
+            )])
+            .unwrap(),
+            general_archive(true, true),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn headers_never_panic_on_arbitrary_bytes(
+            version in prop_oneof![Just(1u32), Just(2), Just(3), Just(7), Just(8), any::<u32>()],
+            kind in prop::sample::select(vec![*b"GNRL", *b"DX10"]),
+            tail in arbitrary_bytes(512),
+        ) {
+            let mut bytes = b"BTDX".to_vec();
+            bytes.extend_from_slice(&version.to_le_bytes());
+            bytes.extend_from_slice(&kind);
+            bytes.extend_from_slice(&tail);
+            let _ = read_entries(&bytes);
+        }
+
+        #[test]
+        fn corrupted_archives_never_panic(
+            bytes in prop::sample::select(fixtures()).prop_flat_map(corrupted),
+        ) {
+            let _ = read_entries(&bytes);
+        }
     }
 }
