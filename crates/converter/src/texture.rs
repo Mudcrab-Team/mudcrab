@@ -533,6 +533,16 @@ fn is_l8_volume(dds: &Dds) -> bool {
             .contains(PixelFormatFlags::ALPHA_PIXELS)
 }
 
+/// The longest mip chain a texture of these dimensions can have: one level per
+/// halving until the longest edge is a single texel, and never more than 32.
+///
+/// Headers may claim any count they like; this bounds what the dimensions can
+/// hold so that a hostile header cannot size a reservation.
+fn max_mip_levels(width: u32, height: u32, depth: u32) -> u32 {
+    let longest_edge = width.max(height).max(depth).max(1);
+    u32::BITS - longest_edge.leading_zeros()
+}
+
 fn encode_l8_volume(
     dds: &Dds,
     encoding: TextureEncoding,
@@ -540,6 +550,14 @@ fn encode_l8_volume(
     uastc_level: u8,
 ) -> Result<EncodedVolume> {
     let mip_count = dds.get_num_mipmap_levels();
+    let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), dds.get_depth());
+    ensure!(
+        mip_count <= max_levels,
+        "L8 DDS volume declares {mip_count} mip levels, but its {}x{}x{} dimensions allow at most {max_levels}",
+        dds.get_width(),
+        dds.get_height(),
+        dds.get_depth()
+    );
     let mut offset = 0usize;
     let mut encoded_levels = Vec::with_capacity(mip_count as usize);
     let mut base_rgba = None;
@@ -824,9 +842,17 @@ fn encode_x8r8g8b8(
 }
 
 fn decode_x8r8g8b8_mips(dds: &Dds) -> Result<Vec<(u32, u32, Vec<u8>)>> {
+    let mip_count = dds.get_num_mipmap_levels();
+    let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), 1);
+    ensure!(
+        mip_count <= max_levels,
+        "X8R8G8B8 DDS declares {mip_count} mip levels, but its {}x{} dimensions allow at most {max_levels}",
+        dds.get_width(),
+        dds.get_height()
+    );
     let mut offset = 0usize;
-    let mut levels = Vec::with_capacity(dds.get_num_mipmap_levels() as usize);
-    for mip in 0..dds.get_num_mipmap_levels() {
+    let mut levels = Vec::with_capacity(mip_count as usize);
+    for mip in 0..mip_count {
         let width_u32 = (dds.get_width() >> mip).max(1);
         let height_u32 = (dds.get_height() >> mip).max(1);
         let width = usize::try_from(width_u32).wrap_err("DDS width does not fit in memory")?;
@@ -1396,6 +1422,58 @@ mod tests {
         let metadata = inspect_ktx2(&ktx2, TextureEncoding::DataLinear).unwrap();
         assert_eq!(metadata.levels, 3);
         assert_eq!((metadata.width, metadata.height), (4, 4));
+    }
+
+    /// Patches the DDS header mip count without touching the payload:
+    /// `DDSD_MIPMAPCOUNT` lives in `dwFlags` (offset 8), the count in
+    /// `dwMipMapCount` (offset 28), right after the four-byte magic.
+    fn with_declared_mip_count(mut bytes: Vec<u8>, mip_count: u32) -> Vec<u8> {
+        const DDSD_MIPMAPCOUNT: u32 = 0x2_0000;
+        let flags = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) | DDSD_MIPMAPCOUNT;
+        bytes[8..12].copy_from_slice(&flags.to_le_bytes());
+        bytes[28..32].copy_from_slice(&mip_count.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn rejects_x8r8g8b8_mip_counts_larger_than_the_texture_dimensions() {
+        let bytes = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 2, 1),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        let bytes = with_declared_mip_count(bytes, u32::MAX);
+
+        let error = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("mip levels"), "{chain}");
+    }
+
+    #[test]
+    fn rejects_l8_volume_mip_counts_larger_than_the_texture_dimensions() {
+        let mut dds = Dds::new_d3d(NewD3dParams {
+            height: 4,
+            width: 4,
+            depth: Some(4),
+            format: D3DFormat::L8,
+            mipmap_levels: Some(3),
+            caps2: None,
+        })
+        .unwrap();
+        for (index, byte) in dds.data.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        // ddsfile writes L8 as uncompressed RGB; mark the pixel format as legacy
+        // luminance (`DDS_PIXELFORMAT::dwFlags` at offset 80) so the volume
+        // falls back to the L8 decoder.
+        bytes[80..84].copy_from_slice(&0x2_0000_u32.to_le_bytes());
+        let bytes = with_declared_mip_count(bytes, u32::MAX);
+
+        let error = TextureConverter::convert(&bytes, TextureEncoding::DataLinear).unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("mip levels"), "{chain}");
     }
 
     #[test]
