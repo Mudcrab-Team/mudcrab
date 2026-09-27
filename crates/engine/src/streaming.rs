@@ -3837,6 +3837,7 @@ mod tests {
                     form_id: 0x00F9907,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
+                    base_record_type: Some("STAT".to_owned()),
                     light: None,
                     light_radius_override: None,
                     model_path: Some("meshes\\furniture\\creatureexit\\wispambush.nif".to_owned()),
