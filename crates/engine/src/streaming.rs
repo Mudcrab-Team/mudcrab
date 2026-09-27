@@ -806,34 +806,71 @@ fn track_asset_readiness(
     profiler.record_elapsed("assets/readiness_scan", started);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn track_surface_readiness(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     images: Res<Assets<Image>>,
-    terrain: Query<(Entity, &PendingTerrainProfile)>,
+    terrain: Query<(
+        Entity,
+        &PendingTerrainProfile,
+        Option<&MeshMaterial3d<TerrainMaterial>>,
+    )>,
     water: Query<(Entity, &PendingWaterProfile)>,
+    mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
     metrics.pending_surface_instances = terrain.iter().count() + water.iter().count();
     let mut completed = 0usize;
-    for (entity, pending) in &terrain {
-        let state =
-            match validate_surface_dependencies(&asset_server, &images, &pending.images, true) {
-                SurfaceDependencyState::Ready => {
-                    validate_surface_dependencies(&asset_server, &images, &pending.normals, false)
+    for (entity, pending, material) in &terrain {
+        let mut normals_dropped = false;
+        let state = match validate_surface_dependencies(
+            &asset_server,
+            &images,
+            &pending.images,
+            true,
+        ) {
+            SurfaceDependencyState::Ready => {
+                match validate_surface_dependencies(&asset_server, &images, &pending.normals, false)
+                {
+                    // A normal map is optional detail: without it the quadrant is lit by its
+                    // geometric normal, as a quadrant whose layers have none is.
+                    SurfaceDependencyState::Failed(reason) => {
+                        warn!(
+                            cell = format_args!("{:08X}", pending.cell_id),
+                            quadrant = pending.quadrant,
+                            %reason,
+                            "terrain normal map failed; drawing the quadrant without normal maps"
+                        );
+                        if let Some(mut material) =
+                            material.and_then(|material| terrain_materials.get_mut(&material.0))
+                        {
+                            material.extension.drop_normal_maps();
+                        }
+                        profiler.increment("terrain/normal_map_fallbacks", 1);
+                        normals_dropped = true;
+                        SurfaceDependencyState::Ready
+                    }
+                    other => other,
                 }
-                other => other,
-            };
+            }
+            other => other,
+        };
         match state {
             SurfaceDependencyState::Pending => {}
             SurfaceDependencyState::Ready => {
+                let normals_validated = if normals_dropped {
+                    0
+                } else {
+                    pending.normals.len()
+                };
                 metrics.terrain_patches_validated =
                     metrics.terrain_patches_validated.saturating_add(1);
                 metrics.materials_validated = metrics.materials_validated.saturating_add(1);
                 metrics.images_validated = metrics
                     .images_validated
-                    .saturating_add((pending.images.len() + pending.normals.len()) as u64);
+                    .saturating_add((pending.images.len() + normals_validated) as u64);
                 profiler.increment("terrain/patches_validated", 1);
                 commands.entity(entity).insert(Visibility::Inherited);
                 commands.entity(entity).remove::<PendingTerrainProfile>();
