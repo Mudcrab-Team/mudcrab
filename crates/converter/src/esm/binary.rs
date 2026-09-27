@@ -35,7 +35,7 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
             return Err(eyre!("truncated compressed TES4 record"));
         }
         let expected = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
-        let output = read_bounded(ZlibDecoder::new(&payload[4..]), expected)?;
+        let output = read_bounded(&payload[4..], expected)?;
         if output.len() != expected {
             return Err(eyre!("TES4 decompressed size mismatch"));
         }
@@ -63,11 +63,30 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
 /// it is read, so a corrupt declared size cannot reserve gigabytes up front.
 const MAX_RESERVATION: usize = 64 * 1024 * 1024;
 
-/// Reads at most one byte past `expected`, so a stream longer than declared
-/// shows up as a size mismatch instead of being read to its end.
-fn read_bounded(reader: impl Read, expected: usize) -> std::io::Result<Vec<u8>> {
+/// The most a zlib stream can expand: deflate's best case is about 1032:1, plus
+/// room for a tiny stream's fixed overhead.
+fn max_inflated_size(compressed_len: usize) -> usize {
+    compressed_len.saturating_mul(1032).saturating_add(4096)
+}
+
+/// Inflates `compressed`, reading at most one byte past `expected` so a stream
+/// longer than declared shows up as a size mismatch instead of being read to
+/// its end. A declared size no zlib stream of this length could reach is
+/// refused before anything is read: the size is the record's own claim, and
+/// retaining up to 4 GiB per record for a few bytes of input would let a
+/// damaged plugin exhaust memory.
+fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> {
+    if expected > max_inflated_size(compressed.len()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "declared size {expected} is more than {} compressed bytes can hold",
+                compressed.len()
+            ),
+        ));
+    }
     let mut output = Vec::with_capacity(expected.min(MAX_RESERVATION));
-    reader
+    ZlibDecoder::new(compressed)
         .take((expected as u64).saturating_add(1))
         .read_to_end(&mut output)?;
     Ok(output)
@@ -187,14 +206,13 @@ pub fn parse_group(
                     ]) as usize;
 
                     let compressed_bytes = &raw_payload[4..];
-                    let decompressed_data =
-                        read_bounded(ZlibDecoder::new(compressed_bytes), decompressed_size)
-                            .map_err(|error| {
-                                eyre!(
-                                    "failed to decompress record {:08x}: {error}",
-                                    header.form_id
-                                )
-                            })?;
+                    let decompressed_data = read_bounded(compressed_bytes, decompressed_size)
+                        .map_err(|error| {
+                            eyre!(
+                                "failed to decompress record {:08x}: {error}",
+                                header.form_id
+                            )
+                        })?;
                     if decompressed_data.len() != decompressed_size {
                         return Err(eyre!(
                             "decompressed size mismatch for {:08x}: expected {decompressed_size}, got {}",
@@ -341,6 +359,26 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_size_beyond_what_the_stream_can_hold_is_refused_before_reading() {
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, b"small").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let error = read_bounded(&compressed, u32::MAX as usize).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("compressed bytes can hold"));
+
+        assert_eq!(read_bounded(&compressed, 5).unwrap(), b"small");
+        // A highly compressible payload within deflate's ratio still inflates.
+        let zeros = vec![0u8; 1 << 20];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        std::io::Write::write_all(&mut encoder, &zeros).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(read_bounded(&compressed, zeros.len()).unwrap(), zeros);
+    }
+
+    #[test]
     fn generated_plugins_never_panic_under_truncation_or_mutation() {
         let bytes = plugin_bytes();
         for length in 0..bytes.len() {
@@ -411,7 +449,13 @@ mod tests {
         for declared in [u32::MAX, subrecord.len() as u32 - 1] {
             let corrupt = compressed_record(b"STAT", declared, &subrecord);
             let error = parse_group(&corrupt, None, None, &mut Vec::new()).unwrap_err();
-            assert!(error.to_string().contains("decompressed size mismatch"));
+            // A size no stream this short could reach is refused before inflating.
+            let message = error.to_string();
+            assert!(
+                message.contains("decompressed size mismatch")
+                    || message.contains("compressed bytes can hold"),
+                "{message}"
+            );
         }
     }
 
