@@ -457,7 +457,8 @@ fn update_water_reflection_camera(
 /// The frustum half is Bevy's own test against the plane's [`Aabb`]. Bevy's perspective projection
 /// is infinite reverse-z, so the [`Frustum`] carries no far plane at all (`from_clip_from_world`
 /// leaves its last half space at `(NaN, NaN, NaN, inf)`), and the far distance of the camera's
-/// [`Projection`] is applied here by hand through the plane's bounding sphere.
+/// [`Projection`] is applied here by hand: the plane's nearest reach along the camera's forward
+/// axis, from its bounds projected onto that axis.
 ///
 /// Missing pieces mean the test cannot run - a plane whose mesh has not produced an [`Aabb`] yet,
 /// or a main camera without a [`Frustum`] - and the plane then counts as visible, keeping the
@@ -479,7 +480,7 @@ fn water_plane_in_view(
     );
     let surface_to_world = surface.affine();
     let centre = Vec3::from(surface_to_world.transform_point3a(grown.center));
-    let radius = Vec3::from(grown.half_extents).length() * surface.scale().max_element();
+    let radius = grown.relative_radius(&main.forward().as_vec3().into(), &surface_to_world.matrix3);
     if (centre - main.translation()).dot(*main.forward()) - radius > far {
         return false;
     }
@@ -629,6 +630,15 @@ mod tests {
     fn reflection_camera_skips_water_past_the_far_plane() {
         let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
         harness.spawn_water(Vec3::new(0.0, 40.0, -4_000.0), Vec3::new(200.0, 0.0, 200.0));
+        assert!(!harness.frame().active);
+    }
+
+    #[test]
+    fn reflection_camera_skips_a_cell_sized_plane_past_the_far_plane() {
+        // The plane's bounding sphere reaches inside the far distance, but no part of the plane
+        // does: its nearest edge, grown by the margin, is still 1,940 units ahead.
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -4_500.0), CELL_WATER_HALF_EXTENTS);
         assert!(!harness.frame().active);
     }
 
