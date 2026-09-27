@@ -9,6 +9,7 @@ Riverwood interactive world → mouse-look NOCLIP/WALK, streamed terrain collisi
 - Scope: playable first guess, not claimed vanilla parity; retain measurements as future tuning input.
 - Riverwood primary manual physics test area; primitive fixture retained for automated regression only.
 - Bevy `0.19.0`; Rapier 3D `0.36.x`; use Rapier collision/controller rather than parallel hand-written solver.
+- Linux build/test → `devenv shell` supplies Bevy Wayland pkg-config libraries.
 - Former P3 moves first, merged with thin WALK/tankard fixture from former P4; phases renumbered in execution order. Every collision gate uses same player capsule & dynamic tankard, not probes alone.
 - Render terrain/collision terrain share validated 33×33 quadrant geometry, transforms, & streamed lifetime.
 - Static collision source explicit per converted asset. Prefer original NIF/Havok collision; where unavailable, use declared render-triangle proxy only for verified fixed solids. Never use broad bounds boxes or treat all visuals as solid. Record proxy/skipped coverage.
@@ -75,6 +76,7 @@ V18: Input sampled once/frame, movement integrated once/60 Hz physics tick; stre
 V20: Interactive Riverwood uses one controller camera; WALK yaw & pitch consume current `LookIntent`; mouse up/down changes view while capsule stays upright. Benchmark/screenshot/headless/auto-fly camera behavior preserved.
 V21: P2 `E` picks aimed `DebugTankard` within 240 units only; held body follows camera, collision & gravity suspended; second `E` releases dynamic body without stale velocity. Unload/rebase/mode toggle leaves no dangling hold. Overlay shows `T`/`E` controls.
 V22: Fiji Riverwood launcher with unset display vars + live `/run/user/<uid>/wayland-N` socket → set `XDG_RUNTIME_DIR` + `WAYLAND_DISPLAY` before engine; preserve explicit display vars; no socket → clear launcher error.
+V23: P3 `RockCliff` `BLEND` rock faces → render proxy; `MASK` detail & unrelated blended visuals → no proxy. Fiji warning log ! `RockCliff` skipped for no eligible triangles.
 
 ## §T TASKS
 
@@ -85,9 +87,9 @@ T3|x|P1 add mouse-look NOCLIP, `V` toggle, `NOCLIP: ON/OFF  [V]` overlay, cursor
 T4|x|P1 test controller + tankards on primitive hill/wall, toggle/focus/rebase, 30/60/120 render fps, & camera regressions; record gate evidence|V5,V6,V7,V8,V9,V10,V11,V12,V14,V15,V16,V18,V19
 T5|~|P2 attach validated terrain trimesh to quadrant lifetime; handle failures & missing-ground transition|V1,V2,V13,R4
 T6|~|P2 enable bounded `T` tankard spawn; rebase Rapier poses with world; test player + tankards on real hill, seams, stream unload/reload; record gate evidence|V1,V2,V9,V13,V15,V16,V18
-T7|.|P3 inventory NIF/Havok collision support, base record types, & representative statics; record original/proxy/skip policy|V3
-T8|.|P3 convert/load eligible fixed colliders with full transforms, streamed lifetime, & source/skip counts; exclude movable records|V3
-T9|.|P3 test player + tankards at rocks, walls, openings, excluded visuals & unload/reload; adjust CCD/contact only from measured failures|V3,V4,V15,V16,V17,R10
+T7|x|P3 inventory NIF/Havok collision support, base record types, & representative statics; record original/proxy/skip policy|V3
+T8|x|P3 convert/load eligible fixed colliders with full transforms, streamed lifetime, & source/skip counts; exclude movable records|V3
+T9|~|P3 test player + tankards at rocks, walls, openings, excluded visuals & unload/reload; adjust CCD/contact only from measured failures|V3,V4,V15,V16,V17,V23,R10
 T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regression; record evidence, controls, static proxy limits|V1,V2,V3,V4,V5,V7,V15,V16
 T11|x|P2 mount controller in Riverwood, fix WALK pitch, add `E` tankard pickup/drop; preserve noninteractive camera paths|V5,V6,V9,V20,V21
 T12|x|Package Fiji launcher with display discovery; verify from shell with display vars unset|V22
@@ -99,3 +101,6 @@ B1|2026-09-26|probe-only collision phases deferred WALK/dynamic validation until
 B2|2026-09-26|Rapier 0.35 controller panics slicing empty manifold vec when pushing dynamic bodies on slope|V19
 B3|2026-09-26|WALK follow reused prior view pitch; interactive world omitted controller plugin|V20
 B4|2026-09-27|Fiji launcher assumed graphical display variables inherited by terminal; winit panicked before startup|V22
+B5|2026-09-26|direct Cargo test lacked Wayland pkg-config path|§C build env
+B6|2026-09-27|static proxy draft used wrong Bevy iterator and Parry ray types; Clippy found non-idiomatic loops|compile + Clippy fixes
+B7|2026-09-27|opaque-only proxy skipped `RockCliff` rock faces exported as `BLEND`|V23
