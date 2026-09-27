@@ -381,11 +381,31 @@ mod tests {
         assert!(!directory.path().parent().unwrap().join("escape").exists());
     }
 
+    /// Whether the filesystem holding `directory` can hard-link. Where it cannot, `link_or_copy`
+    /// falls back to a copy, so a test can only ask for equal bytes there.
+    fn hard_links_supported(directory: &Path) -> bool {
+        let probe = directory.join(".link-probe");
+        let link = directory.join(".link-probe-link");
+        fs::write(&probe, b"probe").unwrap();
+        let supported = fs::hard_link(&probe, &link).is_ok();
+        let _ = fs::remove_file(&link);
+        fs::remove_file(&probe).unwrap();
+        supported
+    }
+
     /// Asserts every name in `names` is one file, by appending a byte through the first name and
     /// watching it appear through all the others: a hard link sees a write made through another
-    /// name, a copy does not.
+    /// name, a copy does not. On a filesystem without hard links the names are copies by design,
+    /// and only their bytes are compared.
     fn assert_one_file(names: &[&Path]) {
         let (first, rest) = names.split_first().expect("at least one name");
+        if !hard_links_supported(first.parent().expect("a file inside a directory")) {
+            let bytes = fs::read(first).unwrap();
+            for name in rest {
+                assert_eq!(fs::read(name).unwrap(), bytes, "{} differs", name.display());
+            }
+            return;
+        }
         fs::OpenOptions::new()
             .append(true)
             .open(first)
@@ -442,7 +462,7 @@ mod tests {
         let vfs = output.join("textures/test.dds");
         let blob = blob_path(&cache, &extracted.files[0].sha256).unwrap();
         assert_one_file(&[&vfs, &blob]);
-        assert_eq!(fs::read(&vfs).unwrap(), b"DDS +");
+        assert!(fs::read(&vfs).unwrap().starts_with(b"DDS "));
     }
 
     #[test]
@@ -531,7 +551,7 @@ mod tests {
         let first_vfs = first_output.join("textures/test.dds");
         let second_vfs = second_output.join("textures/test.dds");
         assert_one_file(&[&first_blob, &second_blob, &first_vfs, &second_vfs]);
-        assert_eq!(fs::read(&second_vfs).unwrap(), b"DDS +");
+        assert!(fs::read(&second_vfs).unwrap().starts_with(b"DDS "));
     }
 
     #[test]

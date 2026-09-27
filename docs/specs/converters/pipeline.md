@@ -120,3 +120,4 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
 4. **One File per Extracted Entry (`link_or_copy`):**
    - Every extracted archive entry is stored twice, as `vfs/<path>` and as the content-addressed blob in `.ingestion-cache/sha256/<xx>/<hash>`, and on a fresh install and on a cache hit alike those two names are a hard link on one file rather than two copies (a cross-volume or linkless filesystem falls back to a copy).
    - Every writer into `vfs/` or the cache replaces the path (unlink, then write or copy) instead of writing through it, so a write under one name never changes the other.
+   - The exception is a loose-asset override: `overlay_loose_assets` replaces the `vfs` entry with the loose file's own bytes, so that path is no longer a link to the archive entry's blob.

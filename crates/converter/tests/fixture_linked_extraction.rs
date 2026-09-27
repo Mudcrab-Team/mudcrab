@@ -38,6 +38,9 @@ async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
             .unwrap();
+    // On a filesystem without hard links the converter copies by design (`link_or_copy`), so only
+    // equal bytes can be asked of the two names there.
+    let links = hard_links_supported(&output);
     let mut entries = 0;
     for archive in manifest["archives"].as_object().unwrap().values() {
         for file in archive["files"].as_array().unwrap() {
@@ -48,6 +51,11 @@ async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
                 .join(".ingestion-cache/sha256")
                 .join(&hash[..2])
                 .join(hash);
+            if !links {
+                assert_eq!(fs::read(&vfs).unwrap(), fs::read(&blob).unwrap());
+                entries += 1;
+                continue;
+            }
             // A byte appended through the `vfs` name has to appear in the blob: a copy, which is
             // what the converter stored before, would not see it.
             fs::OpenOptions::new()
@@ -66,4 +74,15 @@ async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
         }
     }
     assert!(entries > 0, "no archive entry was extracted");
+}
+
+/// Whether the filesystem holding `directory` can hard-link.
+fn hard_links_supported(directory: &std::path::Path) -> bool {
+    let probe = directory.join(".link-probe");
+    let link = directory.join(".link-probe-link");
+    fs::write(&probe, b"probe").unwrap();
+    let supported = fs::hard_link(&probe, &link).is_ok();
+    let _ = fs::remove_file(&link);
+    fs::remove_file(&probe).unwrap();
+    supported
 }
