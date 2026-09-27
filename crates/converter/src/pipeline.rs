@@ -3,7 +3,7 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CacheEntry, ConversionManifest, configuration_hash, configuration_hash_for_schema,
-        hash_file,
+        hash_file, link_or_copy,
     },
     config::PipelineConfig,
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
@@ -254,6 +254,11 @@ impl AssetPipeline {
             )
             .await;
             let db_path = staging.join("skyrim_world.db");
+            // SQLite writes in place; a resumed staging db may share an
+            // inode with a previous pack via hard link, so unlink first.
+            if db_path.is_file() {
+                fs::remove_file(&db_path)?;
+            }
             EsmParser::convert_plugins(&plugins, &db_path)?;
             validate_database(&Connection::open(&db_path)?)?;
             let merged = EsmParser::merge_plugins(&plugins)?;
@@ -556,7 +561,12 @@ impl ConversionBatch<'_> {
                                 if let Some(parent) = target.parent() {
                                     let _ = fs::create_dir_all(parent);
                                 }
-                                if fs::copy(&old, &target).is_ok() {
+                                // `link_or_copy`, not `fs::copy`: on a resumed
+                                // run the staged target may already be a hard
+                                // link to the pack file, and copying a file
+                                // onto its own link truncates both. A shared
+                                // inode is already the cached bytes.
+                                if link_or_copy(&old, &target).is_ok() {
                                     let _ = outcome_tx.send((
                                         index,
                                         key,
@@ -900,8 +910,13 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::hard_link(&source, &destination)
-            .or_else(|_| fs::copy(&source, &destination).map(|_| ()))?;
+        link_or_copy(&source, &destination).wrap_err_with(|| {
+            format!(
+                "failed to publish sRGB alias {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
         published.push(alias);
     }
     Ok(published)
@@ -1089,7 +1104,17 @@ fn staging_path(output: &Path) -> PathBuf {
 /// Publishes only runtime artifacts. Staging keeps `vfs/` and
 /// `.ingestion-cache/` as build workspace; those never land in `output`.
 fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) -> Result<()> {
-    let pack_staging = staging.join(".runtime-pack");
+    // Beside staging, not inside it: a resumed staging dir keeps the
+    // previous pack's linked files, so the new pack must not share inodes
+    // with anything a resumed run will later unlink and rewrite.
+    let pack_staging = staging.with_extension(format!(
+        "pack-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     if pack_staging.exists() {
         fs::remove_dir_all(&pack_staging)?;
     }
@@ -1103,15 +1128,24 @@ fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) 
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        link_or_copy(&source, &destination)?;
+        link_or_copy(&source, &destination).wrap_err_with(|| {
+            format!(
+                "failed to publish {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
     }
     let manifest = pack_staging.join("conversion-manifest.json");
     ensure!(
         manifest.is_file(),
         "runtime pack is missing conversion-manifest.json"
     );
-    publish_directory(&pack_staging, output)?;
-    Ok(())
+    let published = publish_directory(&pack_staging, output);
+    if published.is_err() {
+        let _ = fs::remove_dir_all(&pack_staging);
+    }
+    published
 }
 
 /// Copies new ingestion blobs into the persistent cache root outside the pack.
@@ -1129,24 +1163,14 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        link_or_copy(entry.path(), &destination)?;
-    }
-    Ok(())
-}
-
-fn link_or_copy(source: &Path, destination: &Path) -> Result<()> {
-    if destination.is_file() {
-        fs::remove_file(destination)?;
-    }
-    fs::hard_link(source, destination)
-        .or_else(|_| fs::copy(source, destination).map(|_| ()))
-        .wrap_err_with(|| {
+        link_or_copy(entry.path(), &destination).wrap_err_with(|| {
             format!(
-                "failed to publish {} to {}",
-                source.display(),
+                "failed to persist cache blob {} to {}",
+                entry.path().display(),
                 destination.display()
             )
         })?;
+    }
     Ok(())
 }
 
@@ -1244,8 +1268,6 @@ mod tests {
 
     #[test]
     fn loose_asset_override_does_not_write_through_a_linked_vfs_entry() {
-        use crate::cache::link_or_copy;
-
         let directory = tempfile::tempdir().unwrap();
         let previous = directory.path().join("previous");
         let previous_vfs = previous.join("vfs/textures/rock.dds");
@@ -1497,6 +1519,39 @@ mod tests {
         assert!(output.join("conversion-manifest.json").is_file());
         assert!(!output.join("vfs").exists());
         assert!(!output.join(".ingestion-cache").exists());
-        assert!(!output.join(".runtime-pack").exists());
+    }
+
+    #[tokio::test]
+    async fn resumed_reconversion_does_not_write_through_pack_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+
+        // First conversion publishes the pack; pack files may share inodes
+        // with whatever staging survives publication.
+        let staging = temp.path().join("modern.staging-resume-links");
+        fs::create_dir_all(&staging).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging.clone());
+        let first = run_without_progress(config.clone()).await;
+        assert!(first.complete);
+        let first_bytes = fs::read(output.join("scripts/one.luau")).unwrap();
+
+        // A resumed reconversion rewrites staged artifacts in place of the
+        // same paths. If any writer truncates through a hard link instead of
+        // replacing the path, the published pack changes under it.
+        let second = run_without_progress(config.clone()).await;
+        assert!(second.complete);
+        assert_eq!(
+            fs::read(output.join("scripts/one.luau")).unwrap(),
+            first_bytes,
+            "the resumed run wrote through a pack link into the previous output"
+        );
     }
 }
