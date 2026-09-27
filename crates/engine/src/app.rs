@@ -8,6 +8,7 @@ use crate::{
         RendererMetrics, TerrainExtension, TerrainMaterial, VercidiumRendererPlugin,
         WaterExtension, WaterMaterial, WaterReflectionTexture,
     },
+    sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
         AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, build_terrain_quadrant_mesh,
         validate_standard_material,
@@ -24,7 +25,6 @@ use bevy::{
     camera::visibility::RenderLayers,
     core_pipeline::prepass::DepthPrepass,
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    pbr::{DistanceFog, FogFalloff},
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     render::occlusion_culling::OcclusionCulling,
@@ -144,6 +144,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
+        .add_plugins(SkyPlugin)
         .add_systems(Update, (fly_camera, capture_acceptance_screenshot));
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
@@ -528,6 +529,7 @@ fn setup_material_fixture(
         Camera3d::default(),
         Transform::from_xyz(0.0, 5.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -753,6 +755,7 @@ fn setup_terrain_water_fixture(
         Camera3d::default(),
         Transform::from_xyz(CELL_SIZE_HALF, 1800.0, 2600.0).looking_at(target, Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -920,6 +923,7 @@ fn setup_transform_bounds_fixture(
         Camera3d::default(),
         Transform::from_xyz(2.0, 5.5, 16.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -1125,6 +1129,7 @@ fn setup_renderer_fixture(
         Camera3d::default(),
         Transform::from_xyz(0.0, 1.5, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -1321,32 +1326,18 @@ fn setup_world(
     } else {
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
     };
-    let camera = commands
-        .spawn((
+    commands.spawn((
             Camera3d::default(),
             Projection::Perspective(PerspectiveProjection { far, ..default() }),
             camera_transform,
             StreamingCamera,
+            FogCamera,
+            SkyCamera,
             Msaa::Off,
             DepthPrepass,
             OcclusionCulling,
             RenderLayers::from_layers(&[0, 1]),
-        ))
-        .id();
-    if config.acceptance_screenshot.is_some() {
-        // Beauty path only: sky backdrop plus distance haze so streamed
-        // terrain melts into the horizon instead of ending at a void edge.
-        let sky = Color::srgb(0.6, 0.73, 0.9);
-        commands.insert_resource(ClearColor(sky));
-        commands.entity(camera).insert(DistanceFog {
-            color: sky,
-            falloff: FogFalloff::Linear {
-                start: far * 0.55,
-                end: far * 1.05,
-            },
-            ..default()
-        });
-    }
+    ));
     commands.spawn((
         DirectionalLight {
             illuminance: 12_000.0,
