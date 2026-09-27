@@ -210,10 +210,15 @@ fn persist_cache_blobs(
     cache_root: &Path,
 ) -> Result<()> {
     for file in files {
-        copy_if_missing(
-            &output_root.join(&file.path),
-            &blob_path(cache_root, &file.sha256)?,
-        )?;
+        let extracted = output_root.join(&file.path);
+        let blob = blob_path(cache_root, &file.sha256)?;
+        if blob.is_file() {
+            // Another entry with the same bytes stored this blob first: make this path a name for
+            // it too, so duplicated content is held once.
+            copy_file(&blob, &extracted)?;
+        } else {
+            copy_file(&extracted, &blob)?;
+        }
     }
     Ok(())
 }
@@ -438,6 +443,44 @@ mod tests {
         let blob = blob_path(&cache, &extracted.files[0].sha256).unwrap();
         assert_one_file(&[&vfs, &blob]);
         assert_eq!(fs::read(&vfs).unwrap(), b"DDS +");
+    }
+
+    #[test]
+    fn fresh_extractions_link_every_path_with_the_same_bytes_to_one_blob() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("assets.ba2");
+        fs::write(
+            &archive,
+            dummy_content::ba2::general(
+                &[
+                    dummy_content::Entry::new("textures/first.dds", b"DDS "),
+                    dummy_content::Entry::new("textures/second.dds", b"DDS "),
+                ],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let output = directory.path().join("vfs");
+        let cache = directory.path().join(".ingestion-cache");
+        let extracted = ArchiveExtractor::extract_cached(
+            &archive,
+            &output,
+            Path::new("unused"),
+            &cache,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(!extracted.cache_hit);
+        assert_eq!(extracted.files[0].sha256, extracted.files[1].sha256);
+
+        // Both entries hold the same bytes, so both `vfs` paths are names for their one blob.
+        let blob = blob_path(&cache, &extracted.files[0].sha256).unwrap();
+        let first = output.join("textures/first.dds");
+        let second = output.join("textures/second.dds");
+        assert_one_file(&[&blob, &first, &second]);
     }
 
     #[test]

@@ -135,8 +135,8 @@ fn link_or_copy_with(
     link: fn(&Path, &Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     if to.exists() {
-        // Removing `to` would delete `from` itself when both names already point at one file, so
-        // that state is success rather than a reason to touch anything.
+        // Removing `to` would delete `from` itself when `to` is the same path as `from`, so that
+        // state is success rather than a reason to touch anything.
         let names_one_file = match fs::canonicalize(from) {
             Ok(from) => fs::canonicalize(to).is_ok_and(|to| to == from),
             Err(_) => false,
