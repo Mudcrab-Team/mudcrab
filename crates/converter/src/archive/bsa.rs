@@ -228,24 +228,18 @@ fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
     let compressed = &payload[4..];
     let decoded = if version >= 105 {
         if compressed.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
-            let mut output = Vec::with_capacity(expected);
-            lz4_flex::frame::FrameDecoder::new(compressed)
-                .read_to_end(&mut output)
-                .wrap_err("LZ4 frame decoding failed")?;
-            output
-        } else if let Ok(output) = lz4_flex::block::decompress(compressed, expected) {
+            read_bounded(lz4_flex::frame::FrameDecoder::new(compressed), expected)
+                .wrap_err("LZ4 frame decoding failed")?
+        } else if expected <= max_lz4_block_output(compressed.len())
+            && let Ok(output) = lz4_flex::block::decompress(compressed, expected)
+        {
             output
         } else {
-            let mut output = Vec::with_capacity(expected);
-            ZlibDecoder::new(compressed)
-                .read_to_end(&mut output)
-                .wrap_err("LZ4 block and zlib decoding failed")?;
-            output
+            read_bounded(ZlibDecoder::new(compressed), expected)
+                .wrap_err("LZ4 block and zlib decoding failed")?
         }
     } else {
-        let mut output = Vec::with_capacity(expected);
-        ZlibDecoder::new(compressed).read_to_end(&mut output)?;
-        output
+        read_bounded(ZlibDecoder::new(compressed), expected)?
     };
     if decoded.len() != expected {
         bail!(
@@ -254,6 +248,28 @@ fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
         );
     }
     Ok(decoded)
+}
+
+/// Decompressed output is reserved up to this size; anything larger grows as
+/// it is read, so a corrupt declared size cannot reserve gigabytes up front.
+const MAX_RESERVATION: usize = 64 * 1024 * 1024;
+
+/// Reads at most one byte past `expected`, so a stream longer than declared
+/// shows up as a size mismatch instead of being read to its end.
+fn read_bounded(reader: impl Read, expected: usize) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(expected.min(MAX_RESERVATION));
+    reader
+        .take((expected as u64).saturating_add(1))
+        .read_to_end(&mut output)?;
+    Ok(output)
+}
+
+/// An LZ4 block writes at most 255 bytes per input byte (a match costs at
+/// least three bytes and each further length byte adds 255), so a declared
+/// size above this cannot come from `compressed_len` bytes and is not
+/// allocated: `lz4_flex::block::decompress` zero-fills the whole declared size.
+fn max_lz4_block_output(compressed_len: usize) -> usize {
+    compressed_len.saturating_mul(255)
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Result<u32> {
@@ -279,6 +295,8 @@ fn slice_at<'a>(bytes: &'a [u8], start: usize, length: usize, field: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
     use std::io::Write;
 
     fn uncompressed_fixture() -> Vec<u8> {
@@ -515,5 +533,102 @@ mod tests {
         payload.extend_from_slice(&compressed);
 
         assert_eq!(decompress(&payload, 105).unwrap(), source);
+    }
+
+    fn fixtures() -> Vec<Vec<u8>> {
+        let entries = [
+            dummy_content::Entry::new("scripts/one.pex", b"PEX"),
+            dummy_content::Entry::new("textures/two.dds", b"DDS DATA"),
+        ];
+        vec![
+            dummy_content::bsa::v104(&entries, dummy_content::bsa::Compression::Zlib).unwrap(),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::None).unwrap(),
+            dummy_content::bsa::v105(&entries, dummy_content::bsa::Compression::Lz4).unwrap(),
+        ]
+    }
+
+    fn read_all(bytes: &[u8]) {
+        if let Ok(entries) = iter_raw_entries(bytes) {
+            for entry in entries {
+                let _ = entry.decompress();
+            }
+        }
+    }
+
+    fn with_declared_size(declared: u32, compressed: &[u8]) -> Vec<u8> {
+        let mut payload = declared.to_le_bytes().to_vec();
+        payload.extend_from_slice(compressed);
+        payload
+    }
+
+    #[test]
+    fn every_codec_rejects_a_corrupt_declared_size() {
+        let source = b"Gamebryo File Format, Version 20.2.0.7\n".repeat(64);
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        zlib.write_all(&source).unwrap();
+        let zlib = zlib.finish().unwrap();
+        let mut frame = Vec::new();
+        {
+            let mut encoder = lz4_flex::frame::FrameEncoder::new(&mut frame);
+            encoder.write_all(&source).unwrap();
+            encoder.finish().unwrap();
+        }
+        let block = lz4_flex::block::compress(&source);
+        let cases = [(104, &zlib), (105, &zlib), (105, &frame), (105, &block)];
+
+        for (version, compressed) in cases {
+            let valid = with_declared_size(source.len() as u32, compressed);
+            assert_eq!(decompress(&valid, version).unwrap(), source);
+            for declared in [u32::MAX, source.len() as u32 - 1] {
+                let corrupt = with_declared_size(declared, compressed);
+                assert!(
+                    decompress(&corrupt, version).is_err(),
+                    "version {version} accepted declared size {declared}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lz4_blocks_at_the_highest_ratio_still_decompress() {
+        let source = vec![0; 1024 * 1024];
+        let block = lz4_flex::block::compress(&source);
+        assert!(source.len() <= max_lz4_block_output(block.len()));
+        let payload = with_declared_size(source.len() as u32, &block);
+        assert_eq!(decompress(&payload, 105).unwrap(), source);
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn headers_never_panic_on_arbitrary_bytes(
+            version in prop_oneof![Just(104u32), Just(105u32), any::<u32>()],
+            tail in arbitrary_bytes(512),
+        ) {
+            let mut bytes = b"BSA\0".to_vec();
+            bytes.extend_from_slice(&version.to_le_bytes());
+            bytes.extend_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+            bytes.extend_from_slice(&tail);
+            read_all(&bytes);
+        }
+
+        #[test]
+        fn corrupted_archives_never_panic(
+            bytes in prop::sample::select(fixtures()).prop_flat_map(corrupted),
+        ) {
+            read_all(&bytes);
+        }
+
+        #[test]
+        fn corrupted_payloads_never_panic(
+            version in prop_oneof![Just(104u32), Just(105u32)],
+            expected in prop_oneof![Just(0u32), 0u32..4096],
+            compressed in arbitrary_bytes(256),
+        ) {
+            let mut payload = expected.to_le_bytes().to_vec();
+            payload.extend_from_slice(&compressed);
+            let _ = decompress(&payload, version);
+        }
     }
 }
