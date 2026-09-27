@@ -148,9 +148,9 @@ pub struct Light<'a> {
     /// `EDID` of the `LIGH` base record.
     pub editor_id: &'a str,
     /// `MODL` model path of the `LIGH` base record; `None` writes no `MODL`,
-    /// the shape a light with no visible mesh has. The converter's exporter
-    /// reads no `LIGH` model at all (its `lights` table holds radius, colour,
-    /// flags, falloff and fade), so the path never reaches a converted world.
+    /// the shape a light with no visible mesh has. The exporter writes a
+    /// `statics` row for a `LIGH` with a model (the lamp's mesh) and none for
+    /// one without; either way the light itself goes into the `lights` table.
     pub model_path: Option<&'a str>,
     /// The exterior cell the reference stands in; one of [`Plugin::cells`].
     pub cell: Cell,
@@ -773,9 +773,8 @@ pub const PRESET_INTERIOR: Interior<'static> = Interior {
 /// light is on and positive (see [`Light::flags`]). The reference's `XRDS`
 /// radius of 1024 is deliberately twice the base record's, so a reader that
 /// picks up the override cannot be confused with one that picked up the base.
-/// The base record carries the fixture's generated mesh as its `MODL`; the
-/// converter reads no `LIGH` model, so the path is there for a caller that
-/// inspects the plugin itself.
+/// The base record carries the fixture's generated mesh as its `MODL`, so the
+/// exporter writes a `statics` row for it as well as its `lights` row.
 pub const PRESET_LIGHT: Light<'static> = Light {
     editor_id: "GeneratedLight01",
     model_path: Some(crate::layout::GENERATED_MODEL_PATH),

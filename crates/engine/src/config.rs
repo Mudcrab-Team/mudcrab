@@ -38,6 +38,9 @@ pub struct EngineConfig {
     pub streaming_fixture: bool,
     pub physics_fixture: bool,
     pub log_file: Option<PathBuf>,
+    /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
+    /// every run that does not ask for lights renders exactly as it did before.
+    pub lights: bool,
 }
 
 impl Default for EngineConfig {
@@ -78,6 +81,7 @@ impl Default for EngineConfig {
             streaming_fixture: false,
             physics_fixture: false,
             log_file: None,
+            lights: false,
         }
     }
 }
@@ -199,11 +203,17 @@ impl EngineConfig {
                 "--acceptance-screenshot" => {
                     config.acceptance_screenshot = args.next().map(PathBuf::from);
                 }
-                "--screenshot-camera-offset" => {
-                    if let Some(value) = args.next().and_then(|value| parse_offset(&value)) {
-                        config.screenshot_camera_offset = Some(value);
-                    }
-                }
+                "--screenshot-camera-offset" => match args.next() {
+                    Some(raw) => match parse_offset(&raw) {
+                        Some(value) => config.screenshot_camera_offset = Some(value),
+                        None => eprintln!(
+                            "warning: ignoring malformed --screenshot-camera-offset {raw:?}; expected \"x,y,z\" floats"
+                        ),
+                    },
+                    None => eprintln!(
+                        "warning: missing value for --screenshot-camera-offset; expected \"x,y,z\" floats"
+                    ),
+                },
                 "--diagnostic-asset-fallbacks" => config.diagnostic_asset_fallbacks = true,
                 "--material-fixture" => config.material_fixture = true,
                 "--terrain-water-fixture" => config.terrain_water_fixture = true,
@@ -211,9 +221,8 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--physics-fixture" => config.physics_fixture = true,
-                "--log-file" => {
-                    config.log_file = args.next().map(PathBuf::from);
-                }
+                "--log-file" => config.log_file = args.next().map(PathBuf::from),
+                "--lights" => config.lights = true,
                 _ => {}
             }
         }
@@ -226,7 +235,7 @@ fn parse_offset(value: &str) -> Option<(f32, f32, f32)> {
     let x: f32 = parts.next()?.trim().parse().ok()?;
     let y: f32 = parts.next()?.trim().parse().ok()?;
     let z: f32 = parts.next()?.trim().parse().ok()?;
-    if parts.next().is_some() {
+    if parts.next().is_some() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
         return None;
     }
     Some((x, y, z))
@@ -269,6 +278,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_finite_screenshot_camera_offset_components() {
+        for invalid in [
+            "NaN,0,0",
+            "0,NaN,0",
+            "0,0,NaN",
+            "inf,0,0",
+            "0,-inf,0",
+            "0,0,Infinity",
+        ] {
+            assert_eq!(parse_offset(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
     fn parses_runtime_options() {
         let config = EngineConfig::from_args(
             [
@@ -303,6 +326,7 @@ mod tests {
                 "--renderer-fixture",
                 "--streaming-fixture",
                 "--physics-fixture",
+                "--lights",
             ]
             .map(str::to_owned),
         );
@@ -333,12 +357,20 @@ mod tests {
         assert!(config.streaming_fixture);
         assert!(config.physics_fixture);
         assert_eq!(config.log_file, None);
+        assert!(config.lights);
     }
-}
 
-#[cfg(test)]
-mod log_file_tests {
-    use super::*;
+    /// Lights are opt-in: the flag is off unless it is given, so the default run - and every
+    /// acceptance or benchmark baseline taken from one - is unchanged.
+    #[test]
+    fn lights_are_off_until_the_flag_is_given() {
+        assert!(!EngineConfig::default().lights);
+        assert!(
+            !EngineConfig::from_args(["--headless"].map(str::to_owned)).lights,
+            "another flag does not turn lights on"
+        );
+        assert!(EngineConfig::from_args(["--lights"].map(str::to_owned)).lights);
+    }
 
     #[test]
     fn parses_log_file_flag() {
