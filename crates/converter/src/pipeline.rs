@@ -107,7 +107,14 @@ impl AssetPipeline {
             "Publishing converted assets",
         )
         .await;
-        publish_directory(&staging, &config.output_dir)?;
+        publish_runtime_pack(&staging, &config.output_dir, &report)?;
+        let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
+        if staging.join(".ingestion-cache").is_dir() {
+            persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)?;
+        }
+        if !resumed {
+            let _ = fs::remove_dir_all(&staging);
+        }
         report.elapsed_ms = started.elapsed().as_millis();
         if report.complete {
             send(
@@ -178,7 +185,7 @@ impl AssetPipeline {
             .await;
             let archive_for_worker = archive.clone();
             let vfs_for_worker = vfs_dir.clone();
-            let previous_cache_root = config.output_dir.join(".ingestion-cache");
+            let previous_cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
             let cache_root = staging.join(".ingestion-cache");
             let archive_key = archive
                 .strip_prefix(&config.data_dir)
@@ -1079,6 +1086,70 @@ fn staging_path(output: &Path) -> PathBuf {
     output.with_extension(format!("staging-{}-{stamp}", std::process::id()))
 }
 
+/// Publishes only runtime artifacts. Staging keeps `vfs/` and
+/// `.ingestion-cache/` as build workspace; those never land in `output`.
+fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) -> Result<()> {
+    let pack_staging = staging.join(".runtime-pack");
+    if pack_staging.exists() {
+        fs::remove_dir_all(&pack_staging)?;
+    }
+    fs::create_dir_all(&pack_staging)?;
+    for artifact in &report.artifacts {
+        let source = staging.join(artifact);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = pack_staging.join(artifact);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        link_or_copy(&source, &destination)?;
+    }
+    let manifest = pack_staging.join("conversion-manifest.json");
+    ensure!(
+        manifest.is_file(),
+        "runtime pack is missing conversion-manifest.json"
+    );
+    publish_directory(&pack_staging, output)?;
+    Ok(())
+}
+
+/// Copies new ingestion blobs into the persistent cache root outside the pack.
+fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
+    for entry in WalkDir::new(staging_cache).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry.path().strip_prefix(staging_cache)?;
+        let destination = cache_root.join(relative);
+        if destination.is_file() {
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        link_or_copy(entry.path(), &destination)?;
+    }
+    Ok(())
+}
+
+fn link_or_copy(source: &Path, destination: &Path) -> Result<()> {
+    if destination.is_file() {
+        fs::remove_file(destination)?;
+    }
+    fs::hard_link(source, destination)
+        .or_else(|_| fs::copy(source, destination).map(|_| ()))
+        .wrap_err_with(|| {
+            format!(
+                "failed to publish {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    Ok(())
+}
+
 fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
     let backup = output.with_extension(format!("backup-{}", std::process::id()));
     if backup.exists() {
@@ -1293,13 +1364,19 @@ mod tests {
         .unwrap();
         let config = PipelineConfig::new(&data, &output);
 
+        let cache_root = config.ingestion_cache_dir();
         let first = run_without_progress(config.clone()).await;
         assert_eq!(first.converted, 1);
         assert_eq!(first.cache_hits, 0);
-        assert_eq!(
-            fs::read(output.join("vfs/docs/readme.txt")).unwrap(),
-            b"cached asset"
-        );
+        assert!(!output.join("vfs").exists());
+        assert!(!output.join(".ingestion-cache").exists());
+        let blobs: Vec<_> = WalkDir::new(cache_root.join(".ingestion-cache"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .collect();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(fs::read(blobs[0].path()).unwrap(), b"cached asset");
 
         let second = run_without_progress(config.clone()).await;
         assert_eq!(second.converted, 0);
@@ -1399,5 +1476,27 @@ mod tests {
         let report = AssetPipeline::run_async(config, tx).await.unwrap();
         drain.await.unwrap();
         report
+    }
+
+    #[tokio::test]
+    async fn published_pack_excludes_build_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+        let config = PipelineConfig::new(&data, &output);
+        let report = run_without_progress(config.clone()).await;
+
+        assert!(report.complete);
+        assert!(output.join("scripts/one.luau").is_file());
+        assert!(output.join("conversion-manifest.json").is_file());
+        assert!(!output.join("vfs").exists());
+        assert!(!output.join(".ingestion-cache").exists());
+        assert!(!output.join(".runtime-pack").exists());
     }
 }

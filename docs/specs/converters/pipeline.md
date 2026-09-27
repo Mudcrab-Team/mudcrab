@@ -107,7 +107,24 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
 
 ---
 
-## 5. Asset Layout & Data Integrity Invariants
+## 5. Runtime Pack vs Build Workspace
+
+Staging is a build workspace; the published output is a runtime pack. They
+are not the same directory.
+
+- Extraction writes originals to `staging/vfs/`. Archive-ingestion blobs
+  persist to `<output>.assets-cache/.ingestion-cache/` outside the pack
+  (overridable with `PipelineConfig::cache_dir`). Neither ships.
+- Conversion writes runtime artifacts (`textures/`, `meshes/`, `scripts/`,
+  `skyrim_world.db`, `cell_cache.rkyv`, `integration-report.json`,
+  `conversion-manifest.json`) inside staging.
+- Publication copies only `report.artifacts` plus the manifest into the
+  output directory, then removes non-resumed staging. Hard links are
+  preferred with a copy fallback; size audits must deduplicate inodes.
+- Resume staging keeps the same layout; retained GLB invalidation still
+  excludes `vfs/`.
+
+## 6. Asset Layout & Data Integrity Invariants
 
 1. **VFS Path Normalization (`strip_leading_kind`):**
    - BSA archives and loose mod files use mixed-case conventions (`Textures/`, `Meshes/`, `Scripts/`).
