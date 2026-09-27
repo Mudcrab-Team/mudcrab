@@ -3,7 +3,7 @@ mod bsa;
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
-    cache::{IngestedFile, IngestionCacheEntry, hash_bytes, hash_file},
+    cache::{IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy},
 };
 use color_eyre::{
     Result,
@@ -232,11 +232,15 @@ fn copy_if_missing(source: &Path, destination: &Path) -> Result<()> {
     copy_file(source, destination)
 }
 
+/// Puts `source`'s bytes at `destination`, replacing any file already there.
+///
+/// An extracted entry is stored as the `vfs` file and as its cache blob, and both names point at
+/// one file (see `link_or_copy` in `cache`), so the destination is replaced, not written through.
 fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::copy(source, destination).wrap_err_with(|| {
+    link_or_copy(source, destination).wrap_err_with(|| {
         format!(
             "failed to restore cached asset {} to {}",
             source.display(),
@@ -370,6 +374,121 @@ mod tests {
         assert!(ArchiveExtractor::extract(&archive, &output).is_err());
         assert!(!directory.path().join("escape").exists());
         assert!(!directory.path().parent().unwrap().join("escape").exists());
+    }
+
+    /// Asserts every name in `names` is one file, by appending a byte through the first name and
+    /// watching it appear through all the others: a hard link sees a write made through another
+    /// name, a copy does not.
+    fn assert_one_file(names: &[&Path]) {
+        let (first, rest) = names.split_first().expect("at least one name");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(first)
+            .unwrap()
+            .write_all(b"+")
+            .unwrap();
+        let bytes = fs::read(first).unwrap();
+        assert!(
+            bytes.last() == Some(&b'+'),
+            "{} was not written",
+            first.display()
+        );
+        for name in rest {
+            assert_eq!(
+                fs::read(name).unwrap(),
+                bytes,
+                "{} does not share the file at {}",
+                name.display(),
+                first.display()
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_extractions_link_blobs_and_vfs_files_where_the_filesystem_can() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("assets.ba2");
+        fs::write(
+            &archive,
+            dummy_content::ba2::general(
+                &[dummy_content::Entry::new("textures/test.dds", b"DDS ")],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let output = directory.path().join("vfs");
+        let cache = directory.path().join(".ingestion-cache");
+        let extracted = ArchiveExtractor::extract_cached(
+            &archive,
+            &output,
+            Path::new("unused"),
+            &cache,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(!extracted.cache_hit);
+
+        // A fresh install stores each extracted file as the `vfs` entry and as its blob; the two
+        // names have to be one file, or the tree holds every asset twice. NTFS, ext4 and APFS
+        // support links, so extraction must not have fallen back to copying.
+        let vfs = output.join("textures/test.dds");
+        let blob = blob_path(&cache, &extracted.files[0].sha256).unwrap();
+        assert_one_file(&[&vfs, &blob]);
+        assert_eq!(fs::read(&vfs).unwrap(), b"DDS +");
+    }
+
+    #[test]
+    fn cache_hits_link_blobs_and_vfs_files_where_the_filesystem_can() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("assets.ba2");
+        fs::write(
+            &archive,
+            dummy_content::ba2::general(
+                &[dummy_content::Entry::new("textures/test.dds", b"DDS ")],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let first_output = directory.path().join("first/vfs");
+        let first_cache = directory.path().join("first/.ingestion-cache");
+        let first = ArchiveExtractor::extract_cached(
+            &archive,
+            &first_output,
+            Path::new("unused"),
+            &first_cache,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(!first.cache_hit);
+
+        let second_output = directory.path().join("second/vfs");
+        let second_cache = directory.path().join("second/.ingestion-cache");
+        let second = ArchiveExtractor::extract_cached(
+            &archive,
+            &second_output,
+            &first_cache,
+            &second_cache,
+            Some(&first.cache_entry),
+            true,
+        )
+        .unwrap();
+        assert!(second.cache_hit);
+
+        // The reused blob, the blob restored into the new cache and the `vfs` entries of both
+        // runs all describe the same bytes, so they are all one file.
+        let hash = &second.files[0].sha256;
+        let first_blob = blob_path(&first_cache, hash).unwrap();
+        let second_blob = blob_path(&second_cache, hash).unwrap();
+        let first_vfs = first_output.join("textures/test.dds");
+        let second_vfs = second_output.join("textures/test.dds");
+        assert_one_file(&[&first_blob, &second_blob, &first_vfs, &second_vfs]);
+        assert_eq!(fs::read(&second_vfs).unwrap(), b"DDS +");
     }
 
     #[test]

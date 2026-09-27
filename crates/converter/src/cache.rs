@@ -111,6 +111,44 @@ pub fn configuration_hash_for_schema(
     Ok(hash_bytes(&serde_json::to_vec(&relevant)?))
 }
 
+/// Puts `from`'s bytes at `to` as a hard link where the filesystem allows one, else as a copy.
+///
+/// Every extracted archive entry is stored twice: once under `vfs` and once as the
+/// content-addressed blob in `.ingestion-cache` (a cache hit repeats that split). Copying them
+/// stored each asset twice, which is tens of gigabytes of game data for a full conversion.
+/// Linking costs nothing where the filesystem supports it (NTFS, ext4 and APFS do) and is
+/// impossible otherwise, so a cross-volume or linkless filesystem falls back to a copy.
+///
+/// Linking is safe because nothing writes a shared file in place: extraction and the loose-asset
+/// overlay replace the path (unlink, then write or copy over the new, unshared file) and no cache
+/// blob is ever written in place. An existing `to` is removed rather than written through, and is
+/// left alone when it already names `from`. The destination's parent directory must exist.
+pub(crate) fn link_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    link_or_copy_with(from, to, |from, to| fs::hard_link(from, to))
+}
+
+/// `link_or_copy` with the link step injected, so a test can force the copy fallback on a
+/// filesystem that has links.
+fn link_or_copy_with(
+    from: &Path,
+    to: &Path,
+    link: fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if to.exists() {
+        // Removing `to` would delete `from` itself when both names already point at one file, so
+        // that state is success rather than a reason to touch anything.
+        let names_one_file = match fs::canonicalize(from) {
+            Ok(from) => fs::canonicalize(to).is_ok_and(|to| to == from),
+            Err(_) => false,
+        };
+        if names_one_file {
+            return Ok(());
+        }
+        fs::remove_file(to)?;
+    }
+    link(from, to).or_else(|_| fs::copy(from, to).map(|_| ()))
+}
+
 pub fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -148,6 +186,57 @@ mod tests {
             hash_bytes(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn link_or_copy_leaves_a_file_that_already_names_its_source_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("rock.dds");
+        fs::write(&path, b"archive bytes").unwrap();
+
+        // `from` and `to` are the same path: removing it first would delete the only copy.
+        link_or_copy(&path, &path).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"archive bytes");
+    }
+
+    #[test]
+    fn link_or_copy_accepts_a_destination_that_is_already_linked_to_its_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"archive bytes").unwrap();
+        let vfs = directory.path().join("rock.dds");
+        fs::hard_link(&blob, &vfs).unwrap();
+
+        link_or_copy(&blob, &vfs).unwrap();
+
+        assert_eq!(fs::read(&blob).unwrap(), b"archive bytes");
+        assert_eq!(fs::read(&vfs).unwrap(), b"archive bytes");
+    }
+
+    #[test]
+    fn link_or_copy_copies_when_the_filesystem_refuses_a_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"archive bytes").unwrap();
+        let vfs = directory.path().join("rock.dds");
+
+        link_or_copy_with(&blob, &vfs, |_, _| {
+            Err(std::io::Error::other("no hard links here"))
+        })
+        .unwrap();
+
+        assert_eq!(fs::read(&vfs).unwrap(), b"archive bytes");
+        // The fallback is a copy, not a second name for the blob: writing through one must not
+        // reach the other.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&vfs)
+            .unwrap()
+            .write_all(b"+")
+            .unwrap();
+        assert_eq!(fs::read(&blob).unwrap(), b"archive bytes");
+        assert_eq!(fs::read(&vfs).unwrap(), b"archive bytes+");
     }
 
     #[test]

@@ -352,6 +352,11 @@ impl AssetPipeline {
         if let Some(parent) = runtime_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // The output tree holds hard links (a `vfs` entry and its cache blob, a runtime texture
+        // and its sRGB alias), so every writer replaces its path instead of writing through it.
+        if runtime_path.exists() {
+            fs::remove_file(&runtime_path)?;
+        }
         fs::write(
             &runtime_path,
             include_str!("../../shared/src/papyrus_runtime.luau"),
@@ -982,6 +987,12 @@ fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
+        // A reused archive entry links its `vfs` file to the cache blob, so this override has to
+        // replace the path rather than write through it: copying over the link would truncate the
+        // file every other name shares, the blob and the previous output included.
+        if destination.exists() {
+            fs::remove_file(&destination)?;
+        }
         fs::copy(source, destination)?;
     }
     Ok(())
@@ -1158,6 +1169,44 @@ mod tests {
             vec![PathBuf::from("textures/effects/fire.opensky-srgb.ktx2")]
         );
         assert_eq!(fs::read(staging.join(&aliases[0])).unwrap(), b"texture");
+    }
+
+    #[test]
+    fn loose_asset_override_does_not_write_through_a_linked_vfs_entry() {
+        use crate::cache::link_or_copy;
+
+        let directory = tempfile::tempdir().unwrap();
+        let previous = directory.path().join("previous");
+        let previous_vfs = previous.join("vfs/textures/rock.dds");
+        fs::create_dir_all(previous_vfs.parent().unwrap()).unwrap();
+        fs::write(&previous_vfs, b"archive bytes").unwrap();
+
+        // What a first conversion publishes: the extracted `vfs` file and its content-addressed
+        // blob share one file. What a reconversion stages for the same entry is one file with
+        // that published blob again.
+        let hash = "ab".repeat(32);
+        let previous_blob = previous.join(".ingestion-cache/sha256/ab").join(&hash);
+        fs::create_dir_all(previous_blob.parent().unwrap()).unwrap();
+        link_or_copy(&previous_vfs, &previous_blob).unwrap();
+        let staging_vfs = directory.path().join("staging/vfs");
+        let staged = staging_vfs.join("textures/rock.dds");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        link_or_copy(&previous_blob, &staged).unwrap();
+
+        let data = directory.path().join("Data");
+        fs::create_dir_all(data.join("textures")).unwrap();
+        let loose = data.join("textures/rock.dds");
+        fs::write(&loose, b"loose override").unwrap();
+
+        overlay_loose_assets(&data, &staging_vfs, &[loose]).unwrap();
+
+        assert_eq!(fs::read(&staged).unwrap(), b"loose override");
+        assert_eq!(
+            fs::read(&previous_vfs).unwrap(),
+            b"archive bytes",
+            "the override wrote through the link into the previous output"
+        );
+        assert_eq!(fs::read(&previous_blob).unwrap(), b"archive bytes");
     }
 
     #[test]
