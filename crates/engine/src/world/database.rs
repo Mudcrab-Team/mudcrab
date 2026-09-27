@@ -124,13 +124,24 @@ impl AssetCatalog {
     }
 }
 
+/// Maps a texture path stored in the world database to the converted `.ktx2` under `textures/`.
+///
+/// The database is input the engine did not write, so a path that could leave `textures/` - a
+/// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
+/// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
 fn converted_texture_path(path: String) -> Option<String> {
     let normalized = path.replace('\\', "/");
     let without_prefix = normalized
         .strip_prefix("textures/")
         .or_else(|| normalized.strip_prefix("Textures/"))
         .unwrap_or(&normalized);
-    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
+    if without_prefix.is_empty()
+        || !is_safe_relative_asset_path(without_prefix)
+        || without_prefix.contains(':')
+        || without_prefix
+            .split('/')
+            .any(|segment| matches!(segment, "" | "." | ".."))
+    {
         return None;
     }
     let mut converted = std::path::PathBuf::from("textures").join(without_prefix);
@@ -434,6 +445,34 @@ mod tests {
             Some("textures/land/grass.ktx2")
         );
         assert_eq!(catalog.water_flow(9), Some("textures/water/flow.ktx2"));
+    }
+
+    #[test]
+    fn texture_paths_that_could_leave_the_textures_folder_are_refused() {
+        for path in [
+            "textures/../../secret.dds",
+            "..\\..\\secret.dds",
+            "textures/land/../../../secret.dds",
+            "/etc/secret.dds",
+            "C:/Windows/secret.dds",
+            "C:secret.dds",
+            "textures//grass.dds",
+            "textures/./grass.dds",
+            "embedded://grass.dds",
+            "textures/grass.dds:stream",
+            "",
+            "textures/",
+        ] {
+            assert_eq!(converted_texture_path(path.to_owned()), None, "{path}");
+        }
+        assert_eq!(
+            converted_texture_path("Textures\\Land\\Grass01.dds".to_owned()).as_deref(),
+            Some("textures/Land/Grass01.ktx2")
+        );
+        assert_eq!(
+            converted_texture_path("land/grass..old.dds".to_owned()).as_deref(),
+            Some("textures/land/grass..old.ktx2")
+        );
     }
 
     #[test]
