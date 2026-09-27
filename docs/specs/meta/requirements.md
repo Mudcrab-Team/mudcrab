@@ -11,6 +11,7 @@ CPU, the disk and what else is running.
 | `cargo check --workspace`, first time | about 5 min | compiles Bevy and every dependency once |
 | `cargo build --release --bin engine`, first time | longer than a check | optimised code generation plus link-time optimisation |
 | a one-file engine change, `--release` | about 4-5 min | mostly link-time optimisation |
+| a one-file engine change, `--profile quick` | about 40 s | release without link-time optimisation (`cargo build --profile quick --bin engine`); not for measuring |
 | the build folder (`target/`) | 20-30 GB | debug and release profiles together |
 
 ## Converting a Skyrim SE install
