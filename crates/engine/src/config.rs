@@ -36,6 +36,7 @@ pub struct EngineConfig {
     pub transform_bounds_fixture: bool,
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
+    pub physics_fixture: bool,
 }
 
 impl Default for EngineConfig {
@@ -74,6 +75,7 @@ impl Default for EngineConfig {
             transform_bounds_fixture: false,
             renderer_fixture: false,
             streaming_fixture: false,
+            physics_fixture: false,
         }
     }
 }
@@ -212,6 +214,7 @@ impl EngineConfig {
                 "--transform-bounds-fixture" => config.transform_bounds_fixture = true,
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
+                "--physics-fixture" => config.physics_fixture = true,
                 _ => {}
             }
         }
@@ -314,6 +317,7 @@ mod tests {
                 "--transform-bounds-fixture",
                 "--renderer-fixture",
                 "--streaming-fixture",
+                "--physics-fixture",
             ]
             .map(str::to_owned),
         );
@@ -342,5 +346,6 @@ mod tests {
         assert!(config.transform_bounds_fixture);
         assert!(config.renderer_fixture);
         assert!(config.streaming_fixture);
+        assert!(config.physics_fixture);
     }
 }
