@@ -3,8 +3,12 @@ use crate::{
     world::{cache::TerrainSnapshot, database::AssetCatalog},
 };
 use bevy::{
+    app::{HierarchyPropagatePlugin, PropagateSet},
     asset::embedded_asset,
-    camera::{RenderTarget, visibility::RenderLayers},
+    camera::{
+        RenderTarget,
+        visibility::{Layer, RenderLayers, VisibilitySystems},
+    },
     core_pipeline::{mip_generation::experimental::depth::ViewDepthPyramid, prepass::DepthPrepass},
     pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
@@ -37,6 +41,59 @@ const WAVE_STRENGTH: f32 = 0.05;
 pub const DEFAULT_WATER_FRESNEL: f32 = 0.10;
 pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
 
+/// One rendering layer per role, so no view list is a bare literal.
+///
+/// Layer 0 is Bevy's default and holds the world itself: terrain today, and - when they land - the
+/// distant LOD land, LOD objects, LOD trees and the sky. Water surfaces take their own layer so a
+/// water plane can never reflect another one. Full-detail placed objects take a third layer so the
+/// reflection pass can leave them out; see [`REFLECTION_VIEW_LAYERS`] for why.
+pub const WORLD_LAYER: Layer = 0;
+pub const WATER_LAYER: Layer = 1;
+pub const PLACED_OBJECT_LAYER: Layer = 2;
+
+/// Everything the player's own cameras draw: terrain, water and the placed objects.
+pub const MAIN_VIEW_LAYERS: &[Layer] = &[WORLD_LAYER, WATER_LAYER, PLACED_OBJECT_LAYER];
+
+/// What the water reflection camera draws.
+///
+/// Vanilla Skyrim builds its water reflection from the LOD world - LOD land, LOD objects and LOD
+/// trees - plus the sky, selected by the `[Water]` settings `bReflectLODLand`, `bReflectLODObjects`,
+/// `bReflectLODTrees` and `bReflectSky`; full-detail placed objects, actors and grass are not in it
+/// (SE adds screen-space reflections for near geometry, which this engine does not have). This
+/// engine has no LOD and no sky yet, so what vanilla reflects is the terrain: the world layer only.
+/// LOD and the sky join [`WORLD_LAYER`] when they land, and a full-detail object stays out of the
+/// reflection because it is on [`PLACED_OBJECT_LAYER`].
+pub const REFLECTION_VIEW_LAYERS: &[Layer] = &[WORLD_LAYER];
+
+/// What every scene light belongs to: the sun today, and any point light a cell adds later.
+///
+/// A light must intersect a view's layers to light it, so this has to keep [`WORLD_LAYER`] - both
+/// cameras render it. It also has to include [`PLACED_OBJECT_LAYER`], because a light only collects
+/// shadow casters that share a layer with it (`check_dir_light_mesh_visibility`,
+/// `bevy_light-0.19.0/src/lib.rs:423`). Dropping the placed-object layer would light the objects
+/// while silently removing them from the sun's shadow cascades.
+pub const LIGHT_LAYERS: &[Layer] = &[WORLD_LAYER, PLACED_OBJECT_LAYER];
+
+/// The value [`Propagate`](bevy::app::Propagate) copies onto the meshes below a placed-object
+/// reference, which is what keeps those meshes out of the reflection pass.
+pub const PLACED_OBJECT_RENDER_LAYERS: RenderLayers = RenderLayers::layer(PLACED_OBJECT_LAYER);
+
+/// Registers the propagation of [`PLACED_OBJECT_RENDER_LAYERS`] down reference hierarchies.
+///
+/// A reference entity is spawned in `streaming::spawn_cell` and the meshes it draws arrive later as
+/// descendants from the converted glb, so `RenderLayers` on the reference alone would not reach
+/// them. The propagation runs in `PostUpdate` before [`VisibilitySystems::CheckVisibility`]:
+/// visibility compares render layers after that, and the glTF scene children are spawned in
+/// `SpawnScene` between `Update` and `PostUpdate`, so the layers are in place in the first frame a
+/// mesh exists - including for descendants spawned after the reference.
+pub fn add_placed_object_layer_propagation(app: &mut App) {
+    app.add_plugins(HierarchyPropagatePlugin::<RenderLayers>::new(PostUpdate))
+        .configure_sets(
+            PostUpdate,
+            PropagateSet::<RenderLayers>::default().before(VisibilitySystems::CheckVisibility),
+        );
+}
+
 pub struct VercidiumRendererPlugin;
 
 impl Plugin for VercidiumRendererPlugin {
@@ -57,6 +114,8 @@ impl Plugin for VercidiumRendererPlugin {
                 sync_renderer_metrics,
             ),
         );
+
+        add_placed_object_layer_propagation(app);
 
         let bridge = RendererProofBridge::default();
         app.insert_resource(bridge.clone());
@@ -390,6 +449,11 @@ pub struct WaterReflectionTexture(pub Handle<Image>);
 #[derive(Component)]
 struct WaterReflectionCamera;
 
+/// Spawns the camera that fills [`WaterReflectionTexture`], and the texture it renders into.
+///
+/// It is the flipped copy of the streaming camera, drawn before the main view, and it renders
+/// [`REFLECTION_VIEW_LAYERS`]: the world layer only. What Skyrim puts in a water reflection, and
+/// why full-detail placed objects are not in it, is documented on that constant.
 fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let image = images.add(Image::new_target_texture(
         1024,
@@ -412,7 +476,7 @@ fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Imag
         Transform::default(),
         DepthPrepass,
         OcclusionCulling,
-        RenderLayers::layer(0),
+        RenderLayers::from_layers(REFLECTION_VIEW_LAYERS),
         WaterReflectionCamera,
     ));
 }
@@ -460,6 +524,8 @@ fn reflected_camera_transform(main: &GlobalTransform, water_y: f32) -> Transform
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::app::Propagate;
+    use bevy::asset::AssetApp;
 
     #[test]
     fn reflects_camera_above_and_below_the_water_plane() {
@@ -476,6 +542,90 @@ mod tests {
         let reflected = reflected_camera_transform(&below, 3.0);
         assert!((reflected.translation.y - 10.0).abs() < 1.0e-5);
         assert!(reflected.forward().y < 0.0);
+    }
+
+    /// The reflection pass is what costs 1.72 ms of a 4.41 ms frame at the rural cell, because it
+    /// redraws every placed object; the camera must be spawned on the world layer alone. Asserting
+    /// on the spawned camera rather than on the constant keeps the two from drifting apart.
+    #[test]
+    fn the_reflection_camera_renders_the_world_layer_only() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .add_systems(Startup, setup_water_reflection);
+        app.update();
+
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&RenderLayers, With<WaterReflectionCamera>>();
+        let layers = cameras
+            .single(app.world())
+            .expect("the reflection camera must be spawned");
+        assert!(layers.intersects(&RenderLayers::layer(WORLD_LAYER)));
+        assert!(!layers.intersects(&RenderLayers::layer(WATER_LAYER)));
+        assert!(!layers.intersects(&PLACED_OBJECT_RENDER_LAYERS));
+    }
+
+    /// The other half of the contract: the main camera is what still draws the placed objects and
+    /// the water, so a new layer has to be added to its list and not only taken out of the
+    /// reflection camera's.
+    #[test]
+    fn the_main_view_renders_every_layer() {
+        let main_view = RenderLayers::from_layers(MAIN_VIEW_LAYERS);
+        assert!(main_view.intersects(&RenderLayers::layer(WORLD_LAYER)));
+        assert!(main_view.intersects(&RenderLayers::layer(WATER_LAYER)));
+        assert!(main_view.intersects(&PLACED_OBJECT_RENDER_LAYERS));
+        assert!(
+            !RenderLayers::from_layers(REFLECTION_VIEW_LAYERS)
+                .intersects(&PLACED_OBJECT_RENDER_LAYERS),
+            "a placed object must never be drawn into the reflection texture"
+        );
+    }
+
+    /// A light needs the world layer for both cameras and the placed-object layer for its shadow
+    /// cascades: `check_dir_light_mesh_visibility` only collects casters that share a layer with
+    /// the light.
+    #[test]
+    fn lights_cover_both_cameras_and_the_placed_objects() {
+        let light = RenderLayers::from_layers(LIGHT_LAYERS);
+        for view in [MAIN_VIEW_LAYERS, REFLECTION_VIEW_LAYERS] {
+            assert!(
+                light.intersects(&RenderLayers::from_layers(view)),
+                "a light must reach {view:?}"
+            );
+        }
+        assert!(light.intersects(&PLACED_OBJECT_RENDER_LAYERS));
+    }
+
+    /// The propagation has to be in place before visibility compares layers, and the meshes it
+    /// carries arrive from the glb spawner in `SpawnScene` - between `Update` and `PostUpdate`. A
+    /// descendant spawned after its reference must still inherit the layer in that same frame.
+    #[test]
+    fn a_descendant_spawned_after_its_reference_inherits_the_placed_object_layer() {
+        let mut app = App::new();
+        add_placed_object_layer_propagation(&mut app);
+        let reference = app
+            .world_mut()
+            .spawn(Propagate(PLACED_OBJECT_RENDER_LAYERS))
+            .id();
+        app.update();
+        // The glb is spawned frames after the reference: a scene root with the mesh primitives
+        // below it.
+        let scene_root = app.world_mut().spawn(ChildOf(reference)).id();
+        let mesh = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), ChildOf(scene_root)))
+            .id();
+
+        app.update();
+
+        for entity in [reference, scene_root, mesh] {
+            assert_eq!(
+                app.world().entity(entity).get::<RenderLayers>(),
+                Some(&PLACED_OBJECT_RENDER_LAYERS),
+                "a reference and everything below it must carry the placed-object layer"
+            );
+        }
     }
 
     #[test]
