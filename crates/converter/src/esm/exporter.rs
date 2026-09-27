@@ -448,7 +448,10 @@ mod tests {
             base(3, b"CONT", b"MODL", Some("Furniture\\Chest01.nif")),
             base(4, b"DOOR", b"MODL", Some("Architecture\\Door01.nif")),
             base(5, b"ACTI", b"MODL", None),
-            base(6, b"LIGH", b"MODL", None),
+            // A light with geometry lands in `statics` like any other modelled
+            // base object; a modelless light lives only in the `lights` table
+            // (PR40) and gets no `statics` row at all.
+            base(6, b"LIGH", b"MODL", Some("Clutter\\Lantern01.nif")),
             base(7, b"WEAP", b"MODL", Some("Weapons\\Sword01.nif")),
             base(8, b"ARMO", b"MOD2", Some("Armor\\Helmet01.nif")),
             base(9, b"ARMO", b"MOD3", Some("Armor\\HelmetFemale01.nif")),
@@ -478,7 +481,7 @@ mod tests {
                 (3, Some("Furniture\\Chest01.nif".to_owned())),
                 (4, Some("Architecture\\Door01.nif".to_owned())),
                 (5, None),
-                (6, None),
+                (6, Some("Clutter\\Lantern01.nif".to_owned())),
                 (7, Some("Weapons\\Sword01.nif".to_owned())),
                 (8, Some("Armor\\Helmet01.nif".to_owned())),
                 (9, Some("Armor\\HelmetFemale01.nif".to_owned())),
