@@ -186,6 +186,22 @@ pub struct TerrainExtension {
     layer_5: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
+    // Each layer's normal map, sampled through `layer_0_sampler`: every terrain layer image is
+    // loaded with the same repeating sampler (`terrain_layer_sampler`), so the six need no sampler
+    // bindings of their own. Which layers have one is in `TerrainSettings::normal_layers_*`, since
+    // Bevy's stand-in for a missing texture is white, which decodes to a steep tilt.
+    #[texture(113)]
+    normal_0: Option<Handle<Image>>,
+    #[texture(114)]
+    normal_1: Option<Handle<Image>>,
+    #[texture(115)]
+    normal_2: Option<Handle<Image>>,
+    #[texture(116)]
+    normal_3: Option<Handle<Image>>,
+    #[texture(117)]
+    normal_4: Option<Handle<Image>>,
+    #[texture(118)]
+    normal_5: Option<Handle<Image>>,
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone)]
@@ -195,6 +211,10 @@ struct TerrainSettings {
     fallback_weights_0: Vec4,
     fallback_weights_1: Vec4,
     weight_source: Vec4,
+    /// 1.0 in component `i` when layer `i` (0-3) has a normal map bound, else 0.0.
+    normal_layers_0: Vec4,
+    /// Layers 4 and 5 in x and y.
+    normal_layers_1: Vec4,
     weights: [Vec4; WEIGHT_FIELD_WORDS],
 }
 
@@ -255,6 +275,13 @@ fn weight_field(overlay_weights: &[Vec<f32>]) -> [Vec4; WEIGHT_FIELD_WORDS] {
 }
 
 impl TerrainSettings {
+    /// Marks which layers have a normal map bound, for the shader to blend only those.
+    fn set_normal_layers(&mut self, normals: &[Option<Handle<Image>>; 6]) {
+        let present = |index: usize| if normals[index].is_some() { 1.0 } else { 0.0 };
+        self.normal_layers_0 = Vec4::new(present(0), present(1), present(2), present(3));
+        self.normal_layers_1 = Vec4::new(present(4), present(5), 0.0, 0.0);
+    }
+
     /// The settings of one quadrant of `terrain`: the tiling the shader repeats every layer by, the
     /// quadrant's origin inside the cell, and its overlay weight field. The shader interpolates the
     /// field itself, so a weight reaches the fragment stage exactly as LAND records it instead of
@@ -267,6 +294,8 @@ impl TerrainSettings {
             fallback_weights_1: Vec4::ZERO,
             // A quadrant with no overlay has nothing in the field to read, so the shader is told to
             // skip it: the packed attributes carry the same (empty) overlays.
+            normal_layers_0: Vec4::ZERO,
+            normal_layers_1: Vec4::ZERO,
             weight_source: if overlay_weights.is_empty() {
                 Vec4::ZERO
             } else {
@@ -285,10 +314,21 @@ impl TerrainSettings {
             quadrant_origin: Vec4::ZERO,
             fallback_weights_0: Vec4::X,
             fallback_weights_1: Vec4::ZERO,
+            normal_layers_0: Vec4::ZERO,
+            normal_layers_1: Vec4::ZERO,
             weight_source: Vec4::ZERO,
             weights: [Vec4::ZERO; WEIGHT_FIELD_WORDS],
         }
     }
+}
+
+/// The images a terrain quadrant's material waits on, by the colour space each
+/// must decode to.
+pub struct TerrainImages {
+    /// The layers' diffuse images, sRGB.
+    pub color: Vec<Handle<Image>>,
+    /// The layers' normal maps, linear.
+    pub normal: Vec<Handle<Image>>,
 }
 
 impl TerrainExtension {
@@ -297,13 +337,27 @@ impl TerrainExtension {
         quadrant: u8,
         catalog: &AssetCatalog,
         asset_server: &AssetServer,
-    ) -> Result<(Self, Vec<Handle<Image>>), String> {
+    ) -> Result<(Self, TerrainImages), String> {
         let mut textures: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
+        let mut normals: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
         let layers = crate::streaming::quadrant_layers(terrain, quadrant)?;
         let mut handles = Vec::with_capacity(layers.len());
-        for (target, layer) in textures.iter_mut().zip(&layers) {
+        let mut normal_handles = Vec::new();
+        for ((target, normal), layer) in textures.iter_mut().zip(normals.iter_mut()).zip(&layers) {
             if layer.is_base && layer.texture_form_id == 0 {
                 continue;
+            }
+            if let Some(path) = catalog.landscape_normal(layer.texture_form_id) {
+                // A normal map holds directions, not colours: it must not be decoded as sRGB.
+                let handle = asset_server
+                    .load_builder()
+                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                        settings.sampler = ImageSampler::Descriptor(terrain_layer_sampler());
+                        settings.is_srgb = false;
+                    })
+                    .load(path.to_owned());
+                *normal = Some(handle.clone());
+                normal_handles.push(handle);
             }
             let path = catalog
                 .landscape_diffuse(layer.texture_form_id)
@@ -323,6 +377,8 @@ impl TerrainExtension {
             handles.push(handle);
         }
         let overlay_weights = crate::streaming::quadrant_overlay_weights(terrain, quadrant)?;
+        let mut settings = TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights);
+        settings.set_normal_layers(&normals);
         Ok((
             Self {
                 layer_0: textures[0].clone(),
@@ -331,9 +387,18 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
-                settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
+                settings,
+                normal_0: normals[0].clone(),
+                normal_1: normals[1].clone(),
+                normal_2: normals[2].clone(),
+                normal_3: normals[3].clone(),
+                normal_4: normals[4].clone(),
+                normal_5: normals[5].clone(),
             },
-            handles,
+            TerrainImages {
+                color: handles,
+                normal: normal_handles,
+            },
         ))
     }
 
@@ -356,6 +421,12 @@ impl TerrainExtension {
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
+            normal_0: None,
+            normal_1: None,
+            normal_2: None,
+            normal_3: None,
+            normal_4: None,
+            normal_5: None,
         })
     }
 
@@ -377,6 +448,12 @@ impl Default for TerrainExtension {
             layer_4: None,
             layer_5: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
+            normal_0: None,
+            normal_1: None,
+            normal_2: None,
+            normal_3: None,
+            normal_4: None,
+            normal_5: None,
         }
     }
 }

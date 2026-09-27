@@ -82,6 +82,7 @@ pub struct WorldDatabase {
 #[derive(Resource, Default)]
 pub struct AssetCatalog {
     landscape_diffuse: std::collections::HashMap<u32, String>,
+    landscape_normal: std::collections::HashMap<u32, String>,
     water_flow: std::collections::HashMap<u32, String>,
 }
 
@@ -99,6 +100,24 @@ impl AssetCatalog {
             .filter_map(|(id, path)| converted_texture_path(path).map(|path| (id, path)))
             .collect();
         drop(statement);
+        // Each landscape texture's normal map, where its texture set has one. A database written
+        // before `texture_sets` carried `normal_path` (the in-memory fixtures) has none, and the
+        // terrain then draws with the geometric normal alone.
+        let landscape_normal = connection
+            .prepare(
+                "SELECT l.id,t.normal_path FROM landscape_textures l JOIN texture_sets t ON t.id=l.texture_set_id WHERE t.normal_path IS NOT NULL AND t.normal_path <> ''",
+            )
+            .map(|mut statement| {
+                statement
+                    .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?)))
+                    .map(|rows| {
+                        rows.filter_map(std::result::Result::ok)
+                            .filter_map(|(id, path)| converted_texture_path(path).map(|path| (id, path)))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
         let mut statement = connection.prepare(
             "SELECT id,flow_normal_path FROM waters WHERE flow_normal_path IS NOT NULL AND flow_normal_path <> ''",
         )?;
@@ -111,12 +130,18 @@ impl AssetCatalog {
             .collect();
         Ok(Self {
             landscape_diffuse,
+            landscape_normal,
             water_flow,
         })
     }
 
     pub fn landscape_diffuse(&self, form_id: u32) -> Option<&str> {
         self.landscape_diffuse.get(&form_id).map(String::as_str)
+    }
+
+    /// The converted normal map of landscape texture `form_id`, if its texture set has one.
+    pub fn landscape_normal(&self, form_id: u32) -> Option<&str> {
+        self.landscape_normal.get(&form_id).map(String::as_str)
     }
 
     pub fn water_flow(&self, form_id: u32) -> Option<&str> {
@@ -392,6 +417,46 @@ mod tests {
             Some("textures/land/grass.ktx2")
         );
         assert_eq!(catalog.water_flow(9), Some("textures/water/flow.ktx2"));
+    }
+
+    #[test]
+    fn catalog_finds_landscape_normal_maps_and_tolerates_their_absence() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT); CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT); INSERT INTO texture_sets VALUES(2,'textures/land/snow.dds','textures/land/snow_n.dds'); INSERT INTO texture_sets VALUES(3,'textures/land/dirt.dds',''); INSERT INTO landscape_textures VALUES(1,2); INSERT INTO landscape_textures VALUES(4,3);",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        assert_eq!(
+            catalog.landscape_normal(1),
+            Some("textures/land/snow_n.ktx2")
+        );
+        assert_eq!(
+            catalog.landscape_normal(4),
+            None,
+            "an empty normal path is no normal map"
+        );
+
+        // A database whose texture sets have no normal_path column at all still opens; the
+        // terrain then draws with its geometric normal.
+        let older = directory.path().join("older.db");
+        let connection = Connection::open(&older).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT); INSERT INTO texture_sets VALUES(2,'textures/land/grass.dds'); INSERT INTO landscape_textures VALUES(1,2);",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&older).unwrap();
+        assert_eq!(
+            catalog.landscape_diffuse(1),
+            Some("textures/land/grass.ktx2")
+        );
+        assert_eq!(catalog.landscape_normal(1), None);
     }
 
     #[test]

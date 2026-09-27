@@ -473,7 +473,8 @@ fn spawn_cell(
                     PendingTerrainProfile {
                         cell_id: terrain.cell_id,
                         quadrant,
-                        images,
+                        images: images.color,
+                        normals: images.normal,
                     },
                 ));
             }
@@ -598,7 +599,10 @@ struct PendingAssetProfile {
 struct PendingTerrainProfile {
     cell_id: u32,
     quadrant: u8,
+    /// The layers' diffuse images, which must decode as sRGB.
     images: Vec<Handle<Image>>,
+    /// The layers' normal maps, which must decode as linear.
+    normals: Vec<Handle<Image>>,
 }
 
 #[derive(Component)]
@@ -814,7 +818,14 @@ fn track_surface_readiness(
     metrics.pending_surface_instances = terrain.iter().count() + water.iter().count();
     let mut completed = 0usize;
     for (entity, pending) in &terrain {
-        match validate_surface_dependencies(&asset_server, &images, &pending.images, true) {
+        let state =
+            match validate_surface_dependencies(&asset_server, &images, &pending.images, true) {
+                SurfaceDependencyState::Ready => {
+                    validate_surface_dependencies(&asset_server, &images, &pending.normals, false)
+                }
+                other => other,
+            };
+        match state {
             SurfaceDependencyState::Pending => {}
             SurfaceDependencyState::Ready => {
                 metrics.terrain_patches_validated =
@@ -822,7 +833,7 @@ fn track_surface_readiness(
                 metrics.materials_validated = metrics.materials_validated.saturating_add(1);
                 metrics.images_validated = metrics
                     .images_validated
-                    .saturating_add(pending.images.len() as u64);
+                    .saturating_add((pending.images.len() + pending.normals.len()) as u64);
                 profiler.increment("terrain/patches_validated", 1);
                 commands.entity(entity).insert(Visibility::Inherited);
                 commands.entity(entity).remove::<PendingTerrainProfile>();
