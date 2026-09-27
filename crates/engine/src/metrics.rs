@@ -1,7 +1,8 @@
 use crate::{
     config::EngineConfig,
-    profiling::{ProfilingState, SystemMetadata},
+    profiling::{MetricSummary, ProfilingState, SystemMetadata, summarize},
     render::RendererMetrics,
+    render_timing::{RenderTimingPlugin, RenderTimings},
     streaming::StreamingMetrics,
 };
 use bevy::{
@@ -13,6 +14,7 @@ use bevy::{
 };
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     fs,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +27,7 @@ impl Plugin for AcceptanceMetricsPlugin {
             .add_plugins((
                 EntityCountDiagnosticsPlugin::default(),
                 SystemInformationDiagnosticsPlugin,
+                RenderTimingPlugin,
             ))
             .add_systems(Last, collect_and_finish);
     }
@@ -64,6 +67,10 @@ struct BenchmarkReport {
     system: Option<SystemSnapshot>,
     streaming: Option<StreamingMetrics>,
     renderer: RendererMetrics,
+    /// CPU time of the parts of a frame the frame-time and GPU numbers do not split out, in
+    /// milliseconds: the main world, the wait for the render thread, extract, and the render
+    /// thread with its phases (see `render_timing`). Empty when the renderer did not run.
+    render_world: BTreeMap<String, MetricSummary>,
     thresholds: Thresholds,
     passed: bool,
 }
@@ -97,6 +104,7 @@ fn collect_and_finish(
     system: Option<Res<SystemInfo>>,
     streaming: Option<Res<StreamingMetrics>>,
     renderer: Res<RendererMetrics>,
+    render_timings: Res<RenderTimings>,
     mut samples: ResMut<BenchmarkSamples>,
     mut profiler: ResMut<ProfilingState>,
     mut exit: MessageWriter<AppExit>,
@@ -114,6 +122,7 @@ fn collect_and_finish(
         );
         profiler.sample_frame(&diagnostics, process_memory);
         if samples.frames_seen > config.benchmark_warmup_frames {
+            render_timings.set_recording(true);
             let milliseconds = time.delta_secs_f64() * 1000.0;
             if milliseconds.is_finite() && milliseconds > 0.0 {
                 samples.frame_ms.push(milliseconds);
@@ -139,6 +148,7 @@ fn collect_and_finish(
             return;
         }
         samples.measurement_complete = true;
+        render_timings.set_recording(false);
     }
     let screenshot_captured = config
         .acceptance_screenshot
@@ -152,6 +162,16 @@ fn collect_and_finish(
             return;
         }
     }
+    let render_world: BTreeMap<String, MetricSummary> = render_timings
+        .take_samples()
+        .into_iter()
+        .map(|(name, values)| {
+            for &value in &values {
+                profiler.record_ms(format!("render_world/{name}"), value);
+            }
+            (name.to_owned(), summarize(&values))
+        })
+        .collect();
     let mut ordered = samples.frame_ms.clone();
     ordered.sort_by(f64::total_cmp);
     let total_ms = ordered.iter().sum::<f64>();
@@ -203,7 +223,7 @@ fn collect_and_finish(
         memory: value.memory.clone(),
     });
     let report = BenchmarkReport {
-        format_version: 6,
+        format_version: 7,
         generated_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_millis()),
@@ -248,6 +268,7 @@ fn collect_and_finish(
         system: system_snapshot.clone(),
         streaming: streaming.as_ref().map(|value| (*value).clone()),
         renderer: renderer.clone(),
+        render_world,
         thresholds: Thresholds {
             minimum_average_fps: config.accept_min_fps,
             maximum_p95_frame_ms: config.accept_p95_ms,
