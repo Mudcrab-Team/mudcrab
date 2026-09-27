@@ -3,7 +3,8 @@ use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
     render::{
-        TerrainExtension, TerrainMaterial, WaterExtension, WaterMaterial, WaterReflectionTexture,
+        PLACED_OBJECT_RENDER_LAYERS, TerrainExtension, TerrainMaterial, WATER_LAYER,
+        WaterExtension, WaterMaterial, WaterReflectionTexture,
     },
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
@@ -16,8 +17,9 @@ use crate::{
     },
 };
 use bevy::{
+    app::Propagate,
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
-    camera::primitives::MeshAabb,
+    camera::{primitives::MeshAabb, visibility::RenderLayers},
     gltf::GltfExtras,
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
@@ -636,6 +638,9 @@ fn spawn_cell(
                 .filter(|height| height.is_finite() && height.abs() < 1.0e7)
             {
                 let water_mesh = meshes.add(Plane3d::default().mesh().size(CELL_SIZE, CELL_SIZE));
+                let water_colors = terrain
+                    .water_type_form_id
+                    .and_then(|form_id| catalog.water_colors(form_id));
                 let flow_normal = terrain
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_flow(form_id))
@@ -647,18 +652,35 @@ fn spawn_cell(
                             })
                             .load(path.to_owned())
                     });
+                // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
+                // decoded colours yet (a database converted before the WATR colour export). Skyrim
+                // thins water to show the bed where it is shallow; without depth fog a 60% cover
+                // keeps river beds visible.
+                let base_color = water_colors.map_or(Color::srgba_u8(5, 14, 18, 153), |colors| {
+                    let [r, g, b] = colors.deep;
+                    Color::srgba_u8(r, g, b, 153)
+                });
+                let (fresnel, reflectivity) = water_colors.map_or(
+                    (
+                        crate::render::DEFAULT_WATER_FRESNEL,
+                        crate::render::DEFAULT_WATER_REFLECTIVITY,
+                    ),
+                    |colors| (colors.fresnel, colors.reflectivity),
+                );
                 let water_material = water_materials.add(WaterMaterial {
                     base: StandardMaterial {
-                        base_color: Color::srgba(0.05, 0.2, 0.32, 0.68),
+                        base_color,
                         metallic: 0.15,
                         perceptual_roughness: 0.06,
                         reflectance: 0.9,
                         alpha_mode: AlphaMode::Blend,
                         ..default()
                     },
-                    extension: WaterExtension::with_reflection(
+                    extension: WaterExtension::with_reflection_and_factors(
                         reflection.0.clone(),
                         flow_normal.clone(),
+                        fresnel,
+                        reflectivity,
                     ),
                 });
                 parent.spawn((
@@ -676,7 +698,7 @@ fn spawn_cell(
                         cell_id: terrain.cell_id,
                         flow_normal,
                     },
-                    bevy::camera::visibility::RenderLayers::layer(1),
+                    RenderLayers::layer(WATER_LAYER),
                 ));
             }
         }
@@ -711,6 +733,11 @@ fn spawn_cell(
                 world_position,
                 WorldTransform(transform.to_matrix()),
                 transform,
+                // Every mesh this reference draws belongs to the placed-object layer, so the water
+                // reflection pass - which renders the world layer only - leaves it out. The meshes
+                // arrive later as descendants from the converted glb, so the layer is propagated
+                // instead of inserted here; see `render::add_placed_object_layer_propagation`.
+                Propagate(PLACED_OBJECT_RENDER_LAYERS),
             ));
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
@@ -2925,6 +2952,8 @@ mod tests {
         );
     }
 
+    use crate::render::add_placed_object_layer_propagation;
+    use crate::world::database::ReferenceRow;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
 
@@ -2989,10 +3018,10 @@ mod tests {
         world
     }
 
-    /// A reference as [`spawn_cell`] spawns one for a model: the root components, the asset root
-    /// pointing at the loaded scene, and the pending profile the readiness scan waits on. No
-    /// `ExpectedModelBounds` is inserted, which is what `statics.bounds_valid = 0` produces - the
-    /// component's absence is the whole signal.
+    /// A reference as [`spawn_cell`] spawns one for a model: the root components, the placed-object
+    /// layer it propagates to its meshes, the asset root pointing at the loaded scene, and the
+    /// pending profile the readiness scan waits on. No `ExpectedModelBounds` is inserted, which is
+    /// what `statics.bounds_valid = 0` produces - the component's absence is the whole signal.
     fn spawn_model_reference(
         app: &mut App,
         handle: Handle<WorldAsset>,
@@ -3006,6 +3035,7 @@ mod tests {
             transform,
             GlobalTransform::from(transform),
             WorldTransform(transform.to_matrix()),
+            Propagate(PLACED_OBJECT_RENDER_LAYERS),
             WorldAssetRoot(handle),
             PendingAssetProfile {
                 started: Instant::now(),
@@ -3039,6 +3069,146 @@ mod tests {
             "the reference never left the pending set"
         );
         metrics
+    }
+
+    /// The layer a reference draws on is what keeps it out of the water reflection pass
+    /// (`render::REFLECTION_VIEW_LAYERS` renders the world layer only). Only `spawn_cell` spawns
+    /// references, so the propagation has to be registered there and nowhere else - in particular
+    /// not on the cell root, whose other children are terrain and water.
+    #[test]
+    fn spawn_cell_leaves_terrain_and_water_on_their_own_layers() {
+        let mut app = model_app();
+        add_placed_object_layer_propagation(&mut app);
+        app.init_resource::<AssetCatalog>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .add_systems(Update, spawn_test_cell);
+        app.update();
+        app.update();
+
+        let mut references = app
+            .world_mut()
+            .query_filtered::<(&RenderLayers, &Propagate<RenderLayers>), With<MeshHandle>>();
+        let propagated: Vec<_> = references
+            .iter(app.world())
+            .map(|(layers, propagate)| (layers.clone(), propagate.0.clone()))
+            .collect();
+        assert_eq!(propagated.len(), 1, "the cell has one model reference");
+        for layers in [&propagated[0].0, &propagated[0].1] {
+            assert_eq!(
+                layers,
+                &RenderLayers::layer(crate::render::PLACED_OBJECT_LAYER),
+                "a reference and everything below it draws the placed-object layer"
+            );
+        }
+
+        let mut terrain = app
+            .world_mut()
+            .query_filtered::<Option<&RenderLayers>, With<TerrainPatch>>();
+        let quadrants: Vec<_> = terrain
+            .iter(app.world())
+            .map(|layers| layers.cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(quadrants.len(), 4, "the cell has four terrain quadrants");
+        for layers in quadrants {
+            assert!(
+                layers.intersects(&RenderLayers::layer(crate::render::WORLD_LAYER)),
+                "terrain is what the reflection pass draws"
+            );
+            assert!(
+                !layers.intersects(&PLACED_OBJECT_RENDER_LAYERS),
+                "propagating the placed-object layer from the cell root would drop the terrain \
+                 out of the reflection pass"
+            );
+        }
+
+        let mut water = app
+            .world_mut()
+            .query_filtered::<&RenderLayers, With<WaterSurface>>();
+        let layers = water
+            .single(app.world())
+            .expect("the cell has one water surface");
+        assert_eq!(layers, &RenderLayers::layer(WATER_LAYER));
+    }
+
+    /// A model reference's meshes arrive from the converted glb, frames after the reference itself,
+    /// and they are what the reflection pass must not draw.
+    #[test]
+    fn a_reference_glb_lands_on_the_placed_object_layer() {
+        let mut app = model_app();
+        add_placed_object_layer_propagation(&mut app);
+        let handle = add_converted_model(&mut app, converted_scene_with_mesh(Handle::default()));
+        let reference = spawn_model_reference(&mut app, handle, None);
+        settle_readiness(&mut app);
+
+        let mut primitives = app.world_mut().query_filtered::<Entity, With<Mesh3d>>();
+        let meshes: Vec<_> = primitives.iter(app.world()).collect();
+        assert_eq!(meshes.len(), 1, "the converted model has one primitive");
+        for entity in [reference, meshes[0]] {
+            assert_eq!(
+                app.world().entity(entity).get::<RenderLayers>(),
+                Some(&PLACED_OBJECT_RENDER_LAYERS),
+                "the mesh below a reference must carry the placed-object layer"
+            );
+        }
+    }
+
+    /// Spawns the cell the two layer tests above read: a textureless LAND with water, and one
+    /// reference with a model path, through the same [`spawn_cell`] a streamed cell goes through.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_test_cell(
+        mut commands: Commands,
+        mut spawned: Local<bool>,
+        asset_server: Res<AssetServer>,
+        catalog: Res<AssetCatalog>,
+        reflection: Res<WaterReflectionTexture>,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+        mut water_materials: ResMut<Assets<WaterMaterial>>,
+        mut profiler: ResMut<ProfilingState>,
+    ) {
+        if *spawned {
+            return;
+        }
+        *spawned = true;
+        let mut terrain = terrain_fixture(0x02D4E0, 0.0);
+        terrain.layers.clear();
+        terrain.water_height = Some(12.0);
+        spawn_cell(
+            &mut commands,
+            &asset_server,
+            &catalog,
+            &reflection,
+            &mut meshes,
+            &mut terrain_materials,
+            &mut water_materials,
+            IVec2::ZERO,
+            CellPayload {
+                generation: 1,
+                key: CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                cell_id: 0x02D4E0,
+                references: vec![ReferenceRow {
+                    form_id: 0x00F9907,
+                    cell_id: 0x02D4E0,
+                    base_form_id: 0x00EF957,
+                    model_path: Some("meshes\\furniture\\creatureexit\\wispambush.nif".to_owned()),
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0; 3],
+                    scale: 1.0,
+                    bounds_min: [0.0; 3],
+                    bounds_max: [0.0; 3],
+                    bounds_valid: false,
+                }],
+            },
+            Some(terrain),
+            &mut profiler,
+        );
     }
 
     /// What the emptiness rule reads: the converted model's own node and mesh count, taken from

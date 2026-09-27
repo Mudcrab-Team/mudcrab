@@ -5,8 +5,9 @@ use crate::{
     physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
-        RendererMetrics, TerrainExtension, TerrainMaterial, VercidiumRendererPlugin,
-        WaterExtension, WaterMaterial, WaterReflectionTexture,
+        LIGHT_LAYERS, MAIN_VIEW_LAYERS, RendererMetrics, TerrainExtension, TerrainMaterial,
+        VercidiumRendererPlugin, WATER_LAYER, WaterExtension, WaterMaterial,
+        WaterReflectionTexture,
     },
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
@@ -541,6 +542,7 @@ fn setup_material_fixture(
             shadow_maps_enabled: true,
             ..default()
         },
+        RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, -0.5, 0.0)),
     ));
     commands.insert_resource(GlobalAmbientLight {
@@ -749,7 +751,7 @@ fn setup_terrain_water_fixture(
         Transform::from_xyz(CELL_SIZE_HALF, 12.0, -CELL_SIZE_HALF),
         crate::world::components::WaterSurface,
         TerrainWaterFixtureWater,
-        RenderLayers::layer(1),
+        RenderLayers::layer(WATER_LAYER),
     ));
     let target = Vec3::new(CELL_SIZE_HALF, 0.0, -CELL_SIZE_HALF);
     commands.spawn((
@@ -760,7 +762,7 @@ fn setup_terrain_water_fixture(
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
-        RenderLayers::from_layers(&[0, 1]),
+        RenderLayers::from_layers(MAIN_VIEW_LAYERS),
     ));
     commands.spawn((
         DirectionalLight {
@@ -768,6 +770,7 @@ fn setup_terrain_water_fixture(
             shadow_maps_enabled: true,
             ..default()
         },
+        RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)),
     ));
     commands.insert_resource(GlobalAmbientLight {
@@ -935,6 +938,7 @@ fn setup_transform_bounds_fixture(
             shadow_maps_enabled: true,
             ..default()
         },
+        RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, -0.55, 0.0)),
     ));
     commands.insert_resource(GlobalAmbientLight {
@@ -1141,6 +1145,7 @@ fn setup_renderer_fixture(
             shadow_maps_enabled: true,
             ..default()
         },
+        RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.65, -0.45, 0.0)),
     ));
     commands.insert_resource(GlobalAmbientLight {
@@ -1433,16 +1438,16 @@ fn setup_world(
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
     };
     commands.spawn((
-            Camera3d::default(),
-            Projection::Perspective(PerspectiveProjection { far, ..default() }),
-            camera_transform,
-            StreamingCamera,
-            FogCamera,
-            SkyCamera,
-            Msaa::Off,
-            DepthPrepass,
-            OcclusionCulling,
-            RenderLayers::from_layers(&[0, 1]),
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection { far, ..default() }),
+        camera_transform,
+        StreamingCamera,
+        FogCamera,
+        SkyCamera,
+        Msaa::Off,
+        DepthPrepass,
+        OcclusionCulling,
+        RenderLayers::from_layers(MAIN_VIEW_LAYERS),
     ));
     // The sun's shadows. `shadow_maps_enabled` was never the missing piece - the cascades were:
     // without a configuration of its own the sun gets Bevy's, which reaches 150 metres of a world
@@ -1458,6 +1463,7 @@ fn setup_world(
             ..default()
         },
         sun_shadow_cascades(&config),
+        RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)),
     ));
     commands.insert_resource(GlobalAmbientLight {
@@ -1960,6 +1966,33 @@ mod tests {
         // two ways this test can fail.
         let shadow_map = world.resource::<DirectionalLightShadowMap>();
         assert_eq!(shadow_map.size, SUN_SHADOW_MAP_SIZE);
+    }
+
+    /// A placed object is kept out of the reflection pass by its layer, so the streaming camera has
+    /// to keep drawing that layer or the objects would vanish from the player's own view.
+    #[test]
+    fn the_streaming_camera_renders_every_layer_the_world_uses() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .add_systems(Startup, setup_world);
+        app.update();
+
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&RenderLayers, With<StreamingCamera>>();
+        let layers = cameras
+            .single(app.world())
+            .expect("the streaming camera must be spawned");
+        for layer in [
+            crate::render::WORLD_LAYER,
+            WATER_LAYER,
+            crate::render::PLACED_OBJECT_LAYER,
+        ] {
+            assert!(
+                layers.intersects(&RenderLayers::layer(layer)),
+                "the streaming camera must render layer {layer}"
+            );
+        }
     }
 
     #[test]
