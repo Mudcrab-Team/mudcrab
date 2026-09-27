@@ -6,6 +6,7 @@ use crate::{
         RendererMetrics, TerrainExtension, TerrainMaterial, VercidiumRendererPlugin,
         WaterExtension, WaterMaterial, WaterReflectionTexture,
     },
+    sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
         AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, build_terrain_quadrant_mesh,
         validate_standard_material,
@@ -124,7 +125,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ProfilingPlugin,
             RenderDiagnosticsPlugin,
         ))
-        .add_plugins(VercidiumRendererPlugin)
+        .add_plugins((VercidiumRendererPlugin, SkyPlugin))
         .add_systems(Update, (fly_camera, capture_acceptance_screenshot));
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
@@ -487,6 +488,7 @@ fn setup_material_fixture(
         Camera3d::default(),
         Transform::from_xyz(0.0, 5.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -712,6 +714,7 @@ fn setup_terrain_water_fixture(
         Camera3d::default(),
         Transform::from_xyz(CELL_SIZE_HALF, 1800.0, 2600.0).looking_at(target, Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -879,6 +882,7 @@ fn setup_transform_bounds_fixture(
         Camera3d::default(),
         Transform::from_xyz(2.0, 5.5, 16.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -1084,6 +1088,7 @@ fn setup_renderer_fixture(
         Camera3d::default(),
         Transform::from_xyz(0.0, 1.5, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
+        FogCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
@@ -1272,6 +1277,10 @@ fn setup_world(
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y),
         StreamingCamera,
+        // This camera draws the streamed world, so the weather's distance fog covers it.
+        FogCamera,
+        // The sky draws a dome around this camera and clears it to the weather's fog colour.
+        SkyCamera,
         Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
