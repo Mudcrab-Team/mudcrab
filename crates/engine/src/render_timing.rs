@@ -231,7 +231,9 @@ fn start_main_world(timings: Res<RenderTimings>) {
     timings.start_main();
 }
 
-fn end_main_world(timings: Res<RenderTimings>) {
+/// Ends the main world's sample. A benchmark that stops recording in `Last` runs after this, so
+/// the frame that completes the measurement keeps its `main_world` sample.
+pub(crate) fn end_main_world(timings: Res<RenderTimings>) {
     timings.end_main();
 }
 

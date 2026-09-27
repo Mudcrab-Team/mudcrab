@@ -29,7 +29,10 @@ impl Plugin for AcceptanceMetricsPlugin {
                 SystemInformationDiagnosticsPlugin,
                 RenderTimingPlugin,
             ))
-            .add_systems(Last, collect_and_finish);
+            .add_systems(
+                Last,
+                collect_and_finish.after(crate::render_timing::end_main_world),
+            );
     }
 }
 
@@ -324,6 +327,9 @@ fn collect_and_finish(
         && let Err(error) = write_frame_times(path, &samples.frame_ms)
     {
         error!(%error, path = %path.display(), "failed to write benchmark frame times");
+        exit.write(AppExit::error());
+        samples.finished = true;
+        return;
     }
     match serde_json::to_vec_pretty(&report)
         .map_err(std::io::Error::other)
