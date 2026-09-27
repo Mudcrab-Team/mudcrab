@@ -143,7 +143,14 @@ impl Plugin for PhysicsFixturePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(PhysicsCorePlugin)
             .init_resource::<PhysicsFixtureState>()
+            .init_resource::<MoveMode>()
+            .init_resource::<WalkIntent>()
+            .init_resource::<WalkEntryStatus>()
             .add_systems(Startup, setup_physics_fixture)
+            .add_systems(
+                FixedUpdate,
+                (walk_movement_system, walk_camera_follow_system).chain(),
+            )
             .add_systems(FixedUpdate, validate_physics_fixture);
     }
 }
@@ -243,6 +250,8 @@ fn setup_physics_fixture(
                 DebugTankard,
                 RigidBody::Dynamic,
                 debug_tankard_collider(),
+                ActiveEvents::COLLISION_EVENTS,
+                CollidingEntities::default(),
                 tankard_collision_groups(),
                 ColliderMassProperties::Density(0.001),
                 Transform::from_translation(position),
@@ -372,5 +381,456 @@ mod tests {
             }
         );
         assert!((PHYSICS_TIMESTEP - 1.0 / 60.0).abs() < f32::EPSILON);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T2: WALK capsule, movement integration, collision-safe NOCLIP<->WALK toggle.
+// ---------------------------------------------------------------------------
+
+/// Player movement mode (V8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Resource)]
+pub enum MoveMode {
+    /// Flying camera, no collision.
+    #[default]
+    Noclip,
+    /// Grounded kinematic capsule.
+    Walk,
+}
+
+/// Reason the last NOCLIP->WALK entry failed (V8), surfaced in the overlay.
+#[derive(Debug, Clone, Default, Resource)]
+pub struct WalkEntryStatus {
+    pub blocked_reason: Option<String>,
+}
+
+/// Marker for the player body entity (V9).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PlayerBody;
+
+/// Per-frame sampled movement intent; integrated once per physics tick (V18).
+#[derive(Debug, Clone, Copy, Default, Resource)]
+pub struct WalkIntent {
+    /// Camera-yaw-relative wish direction, normalized, horizontal plane.
+    pub wish_dir: Vec3,
+    /// Desired top speed for current gait (walk/run/sprint).
+    pub target_speed: f32,
+    /// Fresh jump press this frame.
+    pub jump_pressed: bool,
+}
+
+/// Live walk state: horizontal velocity + vertical velocity (V10, V11).
+#[derive(Debug, Clone, Copy, Default, Component)]
+pub struct WalkState {
+    pub horizontal_velocity: Vec3,
+    pub vertical_velocity: f32,
+    pub grounded: bool,
+    pub jump_apex: f32,
+    pub jump_time: f32,
+    pub jump_active: bool,
+}
+
+/// Upward search budget when entering WALK inside geometry (V8).
+pub const WALK_ENTRY_SEARCH_STEPS: u32 = 12;
+pub const WALK_ENTRY_STEP_HEIGHT: f32 = 28.0;
+/// Ground must exist within this distance below the capsule for WALK entry (V13).
+pub const WALK_ENTRY_GROUND_SEARCH: f32 = 400.0;
+
+/// Build the upright player capsule + controller from tuning (V9, V12).
+pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
+    (
+        PlayerBody,
+        WalkState::default(),
+        RigidBody::KinematicPositionBased,
+        Collider::capsule_y(tuning.capsule_half_height(), tuning.capsule_radius),
+        player_collision_groups(),
+        KinematicCharacterController {
+            up: Vect::Y,
+            offset: CharacterLength::Absolute(2.0),
+            slide: true,
+            autostep: Some(CharacterAutostep {
+                max_height: CharacterLength::Absolute(tuning.autostep_height),
+                min_width: CharacterLength::Absolute(tuning.capsule_radius),
+                include_dynamic_bodies: false,
+            }),
+            max_slope_climb_angle: tuning.slope_climb_degrees.to_radians(),
+            min_slope_slide_angle: tuning.slope_slide_degrees.to_radians(),
+            apply_impulse_to_dynamic_bodies: true,
+            snap_to_ground: Some(CharacterLength::Absolute(tuning.ground_snap)),
+            ..default()
+        },
+    )
+}
+
+/// Pure movement integration: accelerate horizontal velocity toward wish dir,
+/// apply gravity, handle jump from grounded + fresh press (V10, V11).
+pub fn integrate_walk(
+    state: &mut WalkState,
+    intent: &WalkIntent,
+    tuning: &MovementTuning,
+    dt: f32,
+    grounded: bool,
+) {
+    state.grounded = grounded;
+    let wish = intent.wish_dir * intent.target_speed;
+    let current = state.horizontal_velocity;
+    let max_delta = tuning.horizontal_acceleration * dt;
+    let delta = wish - current;
+    state.horizontal_velocity = if delta.length() <= max_delta {
+        wish
+    } else {
+        current + delta.normalize_or_zero() * max_delta
+    };
+    if grounded {
+        state.vertical_velocity = 0.0;
+        if state.jump_active {
+            state.jump_active = false;
+        }
+        if intent.jump_pressed {
+            state.vertical_velocity = tuning.jump_launch;
+            state.jump_active = true;
+            state.jump_apex = 0.0;
+            state.jump_time = 0.0;
+        }
+    } else {
+        state.vertical_velocity -= tuning.gravity * dt;
+        if state.jump_active {
+            state.jump_time += dt;
+            state.jump_apex = state
+                .jump_apex
+                .max(state.vertical_velocity * state.jump_time);
+        }
+    }
+}
+
+/// Fixed-step walk integration + controller feed (V10, V11, V18).
+pub fn walk_movement_system(
+    mode: Res<MoveMode>,
+    intent: Res<WalkIntent>,
+    tuning: Res<MovementTuning>,
+    mut player: Query<(
+        &mut KinematicCharacterController,
+        &mut WalkState,
+        Option<&KinematicCharacterControllerOutput>,
+    )>,
+) {
+    if *mode != MoveMode::Walk {
+        return;
+    }
+    let Ok((mut controller, mut state, output)) = player.single_mut() else {
+        return;
+    };
+    let grounded = output.map(|o| o.grounded).unwrap_or(false);
+    integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
+    let displacement =
+        (state.horizontal_velocity + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
+    controller.translation = Some(displacement);
+}
+
+/// Camera follows the capsule at eye height; yaw on body, pitch on view (V9).
+pub fn walk_camera_follow_system(
+    mode: Res<MoveMode>,
+    tuning: Res<MovementTuning>,
+    player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
+    mut camera: Query<&mut Transform, With<StreamingCamera>>,
+) {
+    if *mode != MoveMode::Walk {
+        return;
+    }
+    let (Ok(body), Ok(mut view)) = (player.single(), camera.single_mut()) else {
+        return;
+    };
+    let (_, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
+    let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
+    view.translation = body.translation + Vec3::Y * tuning.eye_height;
+    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+}
+
+/// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward,
+/// missing ground keeps NOCLIP with a visible reason (V8, V13).
+pub fn try_enter_walk(
+    context: &RapierContext,
+    tuning: &MovementTuning,
+    camera_position: Vec3,
+    capsule: &Collider,
+) -> Result<Vec3, String> {
+    let shape = &*capsule.raw;
+    let mut candidate = camera_position - Vec3::Y * tuning.eye_height;
+    for _ in 0..=WALK_ENTRY_SEARCH_STEPS {
+        let mut overlapping = false;
+        context.intersect_shape(
+            candidate,
+            Quat::IDENTITY,
+            shape,
+            QueryFilter::default(),
+            |_| {
+                overlapping = true;
+                false
+            },
+        );
+        if !overlapping {
+            let ground_hit = context.cast_shape(
+                candidate,
+                Quat::IDENTITY,
+                Vec3::NEG_Y * WALK_ENTRY_GROUND_SEARCH,
+                shape,
+                ShapeCastOptions::with_max_time_of_impact(WALK_ENTRY_GROUND_SEARCH),
+                QueryFilter::default(),
+            );
+            if ground_hit.is_some() {
+                return Ok(candidate);
+            }
+            return Err("no walkable ground below".to_owned());
+        }
+        candidate.y += WALK_ENTRY_STEP_HEIGHT;
+    }
+    Err("no free capsule placement nearby".to_owned())
+}
+
+/// Clear stale velocities + jump state on every toggle (V14).
+pub fn clear_motion_state(
+    intent: &mut WalkIntent,
+    states: &mut Query<&mut WalkState>,
+    controllers: &mut Query<&mut KinematicCharacterController>,
+) {
+    *intent = WalkIntent::default();
+    for mut state in states {
+        *state = WalkState::default();
+    }
+    for mut controller in controllers {
+        controller.translation = None;
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+
+    #[test]
+    fn walk_integrates_toward_wish_speed_with_bounded_acceleration() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        let intent = WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: tuning.run_speed,
+            jump_pressed: false,
+        };
+        integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, true);
+        let expected = tuning.horizontal_acceleration * PHYSICS_TIMESTEP;
+        assert!((state.horizontal_velocity.x - expected).abs() < 0.01);
+        for _ in 0..600 {
+            integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, true);
+        }
+        assert!((state.horizontal_velocity.length() - tuning.run_speed).abs() < 0.5);
+    }
+
+    #[test]
+    fn jump_requires_grounded_fresh_press_and_applies_gravity() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        let air_jump = WalkIntent {
+            jump_pressed: true,
+            ..default()
+        };
+        integrate_walk(&mut state, &air_jump, &tuning, PHYSICS_TIMESTEP, false);
+        assert!(state.vertical_velocity < 0.0);
+        let grounded_jump = WalkIntent {
+            jump_pressed: true,
+            ..default()
+        };
+        integrate_walk(&mut state, &grounded_jump, &tuning, PHYSICS_TIMESTEP, true);
+        assert!((state.vertical_velocity - tuning.jump_launch).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn capsule_bundle_matches_provisional_spec_dimensions() {
+        let tuning = MovementTuning::default();
+        let app_bundle = player_controller_bundle(&tuning);
+        let mut world = World::new();
+        let entity = world.spawn(app_bundle).id();
+        let collider = world.get::<Collider>(entity).expect("capsule collider");
+        let capsule = collider.as_capsule().expect("capsule shape");
+        assert!((capsule.radius() - tuning.capsule_radius).abs() < f32::EPSILON);
+        let controller = world
+            .get::<KinematicCharacterController>(entity)
+            .expect("controller");
+        assert!(
+            (controller.max_slope_climb_angle - tuning.slope_climb_degrees.to_radians()).abs()
+                < 1.0e-6
+        );
+        assert_eq!(
+            controller.snap_to_ground,
+            Some(CharacterLength::Absolute(tuning.ground_snap))
+        );
+    }
+}
+
+#[cfg(test)]
+mod simulation_tests {
+    use super::*;
+    use bevy::mesh::MeshPlugin;
+    use bevy::time::TimeUpdateStrategy;
+
+    fn headless_fixture_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            MeshPlugin,
+            MaterialPlugin::<StandardMaterial>::default(),
+        ));
+        app.init_resource::<ProfilingState>()
+            .init_resource::<StreamingMetrics>();
+        app.add_plugins(PhysicsFixturePlugin);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
+        ));
+        app.finish();
+        app.update();
+        app
+    }
+
+    #[test]
+    fn tankards_fall_and_settle_on_fixture_ground() {
+        let mut app = headless_fixture_app();
+        let start: Vec<f32> = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&Transform, With<DebugTankard>>();
+            query.iter(app.world()).map(|t| t.translation.y).collect()
+        };
+        assert_eq!(start.len(), 3);
+        assert!(start.iter().all(|y| *y > 200.0));
+        for _ in 0..600 {
+            app.update();
+        }
+        let settled: Vec<Vec3> = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&Transform, With<DebugTankard>>();
+            query.iter(app.world()).map(|t| t.translation).collect()
+        };
+        assert_eq!(settled.len(), 3);
+        for position in &settled {
+            assert!(position.is_finite());
+            // Ground top is y=0; cup half-height 18 + handle radius margin.
+            assert!(
+                position.y > -40.0 && position.y < 400.0,
+                "tankard height {position:?}"
+            );
+        }
+        assert!(
+            app.world()
+                .resource::<PhysicsFixtureState>()
+                .tankards_settled
+                || app
+                    .world()
+                    .resource::<PhysicsFixtureMetrics>()
+                    .tankards_in_contact
+                    > 0,
+            "tankards never touched the arena"
+        );
+    }
+
+    #[test]
+    fn walk_capsule_spawns_grounds_and_steps_forward() {
+        let mut app = headless_fixture_app();
+        let tuning = app.world().resource::<MovementTuning>().clone();
+        let spawn = Vec3::new(120.0, 300.0, 120.0);
+        app.world_mut().spawn((
+            player_controller_bundle(&tuning),
+            Transform::from_translation(spawn),
+        ));
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::ZERO,
+            target_speed: 0.0,
+            jump_pressed: false,
+        });
+        for _ in 0..240 {
+            app.update();
+        }
+        let (grounded, rest) = {
+            let mut query = app.world_mut().query::<(
+                &Transform,
+                &WalkState,
+                Option<&KinematicCharacterControllerOutput>,
+            )>();
+            let (transform, state, output) = query.single(app.world()).expect("player capsule");
+            (
+                state.grounded || output.map(|o| o.grounded).unwrap_or(false),
+                transform.translation,
+            )
+        };
+        assert!(grounded, "capsule never grounded at {rest:?}");
+        // Capsule center rests at half-height + radius above the ground pad.
+        let expected_rest = tuning.capsule_half_height() + tuning.capsule_radius;
+        assert!(
+            (rest.y - expected_rest).abs() < 12.0,
+            "rest height {} vs {expected_rest}",
+            rest.y
+        );
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: tuning.run_speed,
+            jump_pressed: false,
+        });
+        for _ in 0..120 {
+            app.update();
+        }
+        let moved = {
+            let mut query = app.world_mut().query::<&Transform>();
+            query
+                .iter(app.world())
+                .any(|t| (t.translation.x - spawn.x) > 100.0)
+        };
+        assert!(moved, "walk capsule did not advance under run intent");
+    }
+
+    #[test]
+    fn jump_launches_and_returns_to_ground() {
+        let mut app = headless_fixture_app();
+        let tuning = app.world().resource::<MovementTuning>().clone();
+        app.world_mut().spawn((
+            player_controller_bundle(&tuning),
+            Transform::from_xyz(120.0, 200.0, 120.0),
+        ));
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(WalkIntent::default());
+        for _ in 0..240 {
+            app.update();
+        }
+        let rest_y = {
+            let mut query = app.world_mut().query::<&Transform>();
+            query
+                .iter(app.world())
+                .map(|t| t.translation.y)
+                .find(|y| *y < 200.0)
+                .unwrap_or(0.0)
+        };
+        app.insert_resource(WalkIntent {
+            jump_pressed: true,
+            ..default()
+        });
+        for _ in 0..6 {
+            app.update();
+        }
+        app.insert_resource(WalkIntent::default());
+        let mut apex = rest_y;
+        for _ in 0..240 {
+            app.update();
+            let mut query = app.world_mut().query::<&Transform>();
+            for transform in query.iter(app.world()) {
+                if transform.translation.y < 1200.0 {
+                    apex = apex.max(transform.translation.y);
+                }
+            }
+        }
+        // v^2/2g = 340^2/1800 ~ 64 units of apex above rest.
+        assert!(
+            apex - rest_y > 30.0,
+            "jump apex {apex} too low above rest {rest_y}"
+        );
     }
 }
