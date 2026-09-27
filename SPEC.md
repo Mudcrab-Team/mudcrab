@@ -2,18 +2,19 @@
 
 ## §G GOAL
 
-Deliver in order: mouse-look NOCLIP + fixture-tested WALK/tankards → streamed terrain collision → fixed static collision; `V` switches NOCLIP/WALK, default NOCLIP.
+Riverwood interactive world → mouse-look NOCLIP/WALK, streamed terrain collision, spawned/grabbable tankards; fixed static collision follows. `V` switches modes; default NOCLIP.
 
 ## §C CONSTRAINTS
 
 - Scope: playable first guess, not claimed vanilla parity; retain measurements as future tuning input.
+- Riverwood primary manual physics test area; primitive fixture retained for automated regression only.
 - Bevy `0.19.0`; Rapier 3D `0.36.x`; use Rapier collision/controller rather than parallel hand-written solver.
 - Former P3 moves first, merged with thin WALK/tankard fixture from former P4; phases renumbered in execution order. Every collision gate uses same player capsule & dynamic tankard, not probes alone.
 - Render terrain/collision terrain share validated 33×33 quadrant geometry, transforms, & streamed lifetime.
 - Static collision source explicit per converted asset. Prefer original NIF/Havok collision; where unavailable, use declared render-triangle proxy only for verified fixed solids. Never use broad bounds boxes or treat all visuals as solid. Record proxy/skipped coverage.
 - Database `statics` table also holds `MISC`/other movable model records; fixed collider eligibility requires base record type or equivalent authoritative metadata. Movable clutter cannot receive both fixed & dynamic colliders.
 - Debug tankard uses visible cup/handle geometry & compound convex collider; converted tankard model absent in inspected asset set. Label it as physics fixture, not Skyrim asset parity. P1 auto-spawns in fixture; P2+ `T` spawns bounded debug tankards in loaded interactive world.
-- Existing benchmark, visual fixtures, screenshot, headless, & `--auto-fly-speed` paths retain current camera behavior; new interactive physics fixture owns its own camera/controller.
+- Existing benchmark, visual fixtures, screenshot, headless, & `--auto-fly-speed` paths retain current camera behavior; interactive Riverwood owns controller.
 - Physics uses Creation units throughout; WALK & dynamic tankards share gravity constant. Origin rebase moves Rapier body poses with Bevy transforms, preserving velocity; shifting visual transforms alone insufficient.
 - Movement constants internal, provisional, centralized; no CLI tuning surface. NPCs, mounts, swimming, sneak, combat, animation, & general movable clutter outside scope.
 - Phases remain planned until gate evidence passes. Later phase work waits for predecessor acceptance.
@@ -33,6 +34,7 @@ P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passe
 - key: `V` → toggle NOCLIP ↔ WALK once per press; NOCLIP default ON on interactive start.
 - key: WALK `W/A/S/D` move relative to yaw; mouse look; `Space` jump; `Shift` walk slowly; `Alt` sprint.
 - key: P2+ `T` → spawn one debug tankard ahead of camera only when local terrain collider ready; bounded live count; fixture auto-spawns several in P1.
+- key: P2+ `E` → pick aimed nearby debug tankard; next `E` drops it. Held item follows view with collision/gravity suspended; release restores dynamic physics.
 - mode: NOCLIP→WALK in free space keeps position; overlap → bounded upward search for free capsule placement; missing collision/no safe placement → remain NOCLIP & show reason.
 
 ## §R RESEARCH
@@ -70,6 +72,8 @@ V16: ∀ collision phase gate P1–P3 → exercise actual WALK capsule & dynamic
 V17: Player WALK, terrain, fixed statics, & tankards share one Rapier physics context with matching collision groups; player & tankards contact surfaces, tankards contact player, NOCLIP camera contacts none.
 V19: P1 character controller keeps `apply_impulse_to_dynamic_bodies=false` until upstream Rapier manifold-transfer panic fixed; hill gate walks slope with tankards nearby & asserts zero Rapier panics.
 V18: Input sampled once/frame, movement integrated once/60 Hz physics tick; streamed collider commits & origin rebase reach Rapier before next physics tick. Same fixture inputs at 30/60/120 render fps → positions/contact outcomes within declared tolerance.
+V20: Interactive Riverwood uses one controller camera; WALK yaw & pitch consume current `LookIntent`; mouse up/down changes view while capsule stays upright. Benchmark/screenshot/headless/auto-fly camera behavior preserved.
+V21: P2 `E` picks aimed `DebugTankard` within 240 units only; held body follows camera, collision & gravity suspended; second `E` releases dynamic body without stale velocity. Unload/rebase/mode toggle leaves no dangling hold. Overlay shows `T`/`E` controls.
 
 ## §T TASKS
 
@@ -78,15 +82,17 @@ T1|x|P1 add Rapier fixed-step setup, `--physics-fixture` primitive slope/wall ar
 T2|x|P1 add upright WALK capsule, camera follow, movement/jump/slope settings, & collision-safe toggle against fixture geometry|V8,V9,V10,V11,V12,V13,V14,V18
 T3|x|P1 add mouse-look NOCLIP, `V` toggle, `NOCLIP: ON/OFF  [V]` overlay, cursor lifecycle; preserve noninteractive camera paths|V5,V6,V7,V8
 T4|x|P1 test controller + tankards on primitive hill/wall, toggle/focus/rebase, 30/60/120 render fps, & camera regressions; record gate evidence|V5,V6,V7,V8,V9,V10,V11,V12,V14,V15,V16,V18,V19
-T5|.|P2 attach validated terrain trimesh to quadrant lifetime; handle failures & missing-ground transition|V1,V2,V13,R4
-T6|.|P2 enable bounded `T` tankard spawn; rebase Rapier poses with world; test player + tankards on real hill, seams, stream unload/reload; record gate evidence|V1,V2,V9,V13,V15,V16,V18
+T5|~|P2 attach validated terrain trimesh to quadrant lifetime; handle failures & missing-ground transition|V1,V2,V13,R4
+T6|~|P2 enable bounded `T` tankard spawn; rebase Rapier poses with world; test player + tankards on real hill, seams, stream unload/reload; record gate evidence|V1,V2,V9,V13,V15,V16,V18
 T7|.|P3 inventory NIF/Havok collision support, base record types, & representative statics; record original/proxy/skip policy|V3
 T8|.|P3 convert/load eligible fixed colliders with full transforms, streamed lifetime, & source/skip counts; exclude movable records|V3
 T9|.|P3 test player + tankards at rocks, walls, openings, excluded visuals & unload/reload; adjust CCD/contact only from measured failures|V3,V4,V15,V16,V17,R10
 T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regression; record evidence, controls, static proxy limits|V1,V2,V3,V4,V5,V7,V15,V16
+T11|x|P2 mount controller in Riverwood, fix WALK pitch, add `E` tankard pickup/drop; preserve noninteractive camera paths|V5,V6,V9,V20,V21
 
 ## §B BUGS
 
 id|date|cause|fix
 B1|2026-09-26|probe-only collision phases deferred WALK/dynamic validation until too late|V16
 B2|2026-09-26|Rapier 0.35 controller panics slicing empty manifold vec when pushing dynamic bodies on slope|V19
+B3|2026-09-26|WALK follow reused prior view pitch; interactive world omitted controller plugin|V20
