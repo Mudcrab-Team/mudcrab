@@ -10,6 +10,15 @@ const DX10_RECORD_SIZE: usize = 24;
 const DX10_CHUNK_SIZE: usize = 24;
 const MAX_FILES: usize = 1_000_000;
 const MAX_ENTRY_SIZE: usize = 1024 * 1024 * 1024;
+/// Deflate cannot expand a stream by more than 1032:1.
+const MAX_ZLIB_EXPANSION: usize = 1032;
+/// LZ4 cannot expand a block by more than 255:1.
+const MAX_LZ4_EXPANSION: usize = 255;
+/// Headroom for the framing of a tiny stream, whose own block headers cost
+/// more than the data it carries.
+const DECOMPRESSION_SLACK: usize = 4096;
+/// Reserved up front for a decompressed entry; the rest grows on demand.
+const RESERVE_CHUNK: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArchiveKind {
@@ -320,7 +329,26 @@ fn extract_chunk(
         .wrap_err_with(|| format!("failed to decompress BA2 payload: {name}"))
 }
 
+/// The largest unpacked size an entry with this packed length can honestly
+/// declare: no compressed stream expands past its format's own ratio.
+fn expansion_limit(packed_len: usize, compression: Compression) -> usize {
+    let ratio = match compression {
+        Compression::Zlib => MAX_ZLIB_EXPANSION,
+        Compression::Lz4 => MAX_LZ4_EXPANSION,
+    };
+    packed_len
+        .saturating_mul(ratio)
+        .saturating_add(DECOMPRESSION_SLACK)
+        .min(MAX_ENTRY_SIZE)
+}
+
 fn decompress(payload: &[u8], expected_size: usize, compression: Compression) -> Result<Vec<u8>> {
+    let limit = expansion_limit(payload.len(), compression);
+    ensure!(
+        expected_size <= limit,
+        "BA2 {compression:?} entry declares {expected_size} unpacked bytes from a {} byte payload, over the {limit} byte safety limit",
+        payload.len()
+    );
     match compression {
         Compression::Lz4 => {
             let decoded = lz4_flex::block::decompress(payload, expected_size)
@@ -370,7 +398,7 @@ fn read_bounded(reader: &mut impl Read, expected_size: usize) -> Result<Vec<u8>>
         .map_err(|_| eyre!("BA2 decompressed size does not fit u64"))?
         .checked_add(1)
         .ok_or_else(|| eyre!("BA2 decompressed size overflow"))?;
-    let mut decoded = Vec::with_capacity(expected_size);
+    let mut decoded = Vec::with_capacity(expected_size.min(RESERVE_CHUNK));
     reader.take(limit).read_to_end(&mut decoded)?;
     ensure!(
         decoded.len() == expected_size,
@@ -395,7 +423,7 @@ fn extract_dx10(
         total_size <= MAX_ENTRY_SIZE,
         "BA2 DX10 texture exceeds expanded size safety limit: {name}"
     );
-    let mut pixels = Vec::with_capacity(total_size);
+    let mut pixels = Vec::with_capacity(total_size.min(RESERVE_CHUNK));
     for chunk in &record.chunks {
         pixels.extend(extract_chunk(
             bytes,
@@ -685,6 +713,87 @@ mod tests {
         assert_eq!(parsed.get_width(), 4);
         assert_eq!(parsed.get_height(), 4);
         assert_eq!(parsed.data, pixels);
+    }
+
+    /// A v1 GNRL archive holding one entry whose stored payload is `payload`
+    /// and whose record declares `unpacked_size` bytes.
+    fn archive_with_declared_size(payload: &[u8], unpacked_size: usize) -> Vec<u8> {
+        let name = b"meshes/test.nif";
+        let names_offset = 24 + GENERAL_RECORD_SIZE;
+        let payload_offset = names_offset + 2 + name.len();
+        let mut bytes = base_archive(1, b"GNRL", 1, names_offset);
+        bytes.resize(payload_offset, 0);
+        bytes[40..48].copy_from_slice(&(payload_offset as u64).to_le_bytes());
+        bytes[48..52].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes[52..56].copy_from_slice(&(unpacked_size as u32).to_le_bytes());
+        bytes[names_offset..names_offset + 2].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes[names_offset + 2..payload_offset].copy_from_slice(name);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// The same, as a v3 archive whose entries are LZ4 blocks.
+    fn lz4_archive_with_declared_size(payload: &[u8], unpacked_size: usize) -> Vec<u8> {
+        let name = b"textures/test.dds";
+        let records_offset = 36;
+        let names_offset = records_offset + GENERAL_RECORD_SIZE;
+        let payload_offset = names_offset + 2 + name.len();
+        let mut bytes = vec![0; records_offset];
+        bytes[..4].copy_from_slice(b"BTDX");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(b"GNRL");
+        bytes[12..16].copy_from_slice(&1u32.to_le_bytes());
+        bytes[16..24].copy_from_slice(&(names_offset as u64).to_le_bytes());
+        bytes[32..36].copy_from_slice(&3u32.to_le_bytes());
+        bytes.resize(payload_offset, 0);
+        let base = records_offset;
+        bytes[base + 16..base + 24].copy_from_slice(&(payload_offset as u64).to_le_bytes());
+        bytes[base + 24..base + 28].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes[base + 28..base + 32].copy_from_slice(&(unpacked_size as u32).to_le_bytes());
+        bytes[names_offset..names_offset + 2].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes[names_offset + 2..payload_offset].copy_from_slice(name);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn rejects_a_declared_unpacked_size_the_zlib_payload_cannot_hold() {
+        let mut encoder = ZlibEncoder::new(Vec::new(), FlateCompression::default());
+        encoder.write_all(b"tiny payload").unwrap();
+        let payload = encoder.finish().unwrap();
+
+        let archive = archive_with_declared_size(&payload, 1024 * 1024 * 1024);
+        let error = read_entries(&archive).unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("safety limit"), "{chain}");
+    }
+
+    #[test]
+    fn rejects_a_declared_unpacked_size_the_lz4_payload_cannot_hold() {
+        let payload = lz4_flex::block::compress(b"tiny block");
+
+        let archive = lz4_archive_with_declared_size(&payload, 1024 * 1024 * 1024);
+        let error = read_entries(&archive).unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("safety limit"), "{chain}");
+    }
+
+    #[test]
+    fn accepts_an_lz4_block_compressed_at_the_format_worst_case_ratio() {
+        let source = vec![0u8; 1024 * 1024];
+        let payload = lz4_flex::block::compress(&source);
+        // A run of zeros is the best LZ4 can do, so the fixture has to sit at
+        // the format's own expansion limit for the test to mean anything.
+        assert!(
+            payload.len() * 255 + 4096 >= source.len(),
+            "fixture is not at the LZ4 limit: {} bytes for {}",
+            payload.len(),
+            source.len()
+        );
+
+        let entries =
+            read_entries(&lz4_archive_with_declared_size(&payload, source.len())).unwrap();
+        assert_eq!(entries[0].1, source);
     }
 
     #[test]
