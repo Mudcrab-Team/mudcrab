@@ -37,6 +37,7 @@ pub struct EngineConfig {
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
     pub physics_fixture: bool,
+    pub log_file: Option<PathBuf>,
 }
 
 impl Default for EngineConfig {
@@ -76,6 +77,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             physics_fixture: false,
+            log_file: None,
         }
     }
 }
@@ -209,6 +211,9 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--physics-fixture" => config.physics_fixture = true,
+                "--log-file" => {
+                    config.log_file = args.next().map(PathBuf::from);
+                }
                 _ => {}
             }
         }
@@ -327,5 +332,18 @@ mod tests {
         assert!(config.renderer_fixture);
         assert!(config.streaming_fixture);
         assert!(config.physics_fixture);
+        assert_eq!(config.log_file, None);
+    }
+}
+
+#[cfg(test)]
+mod log_file_tests {
+    use super::*;
+
+    #[test]
+    fn parses_log_file_flag() {
+        let config = EngineConfig::from_args(["--log-file", "bugs/run1.log"].map(str::to_owned));
+        assert_eq!(config.log_file, Some(PathBuf::from("bugs/run1.log")));
+        assert_eq!(EngineConfig::default().log_file, None);
     }
 }

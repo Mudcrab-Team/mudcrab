@@ -1,5 +1,6 @@
 use crate::{
     config::EngineConfig,
+    file_log::custom_file_layer,
     metrics::AcceptanceMetricsPlugin,
     physics::PhysicsFixturePlugin,
     profiling::{ProfilingPlugin, ProfilingState},
@@ -117,6 +118,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 })
                 .set(WindowPlugin {
                     primary_window: window,
+                    ..default()
+                })
+                .set(bevy::log::LogPlugin {
+                    custom_layer: custom_file_layer,
                     ..default()
                 }),
         )
