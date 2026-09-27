@@ -2,7 +2,8 @@ use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
     render::{
-        TerrainExtension, TerrainMaterial, WaterExtension, WaterMaterial, WaterReflectionTexture,
+        QUADRANT_WEIGHT_SAMPLES, TerrainExtension, TerrainMaterial, WaterExtension, WaterMaterial,
+        WaterReflectionTexture,
     },
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
@@ -1542,11 +1543,31 @@ fn validate_terrain_snapshot(
     Ok(())
 }
 
+/// The dense weight field of one quadrant: one [`QUADRANT_WEIGHT_SAMPLES`]-square grid per overlay
+/// layer, indexed by the raw `VTXT` vertex value, in the same order as [`quadrant_layers`] (base
+/// first, so slot 0 is the first overlay). A grid point no `VTXT` entry names is opacity 0. Both the
+/// mesh's packed vertex weights and the material's uniform weight field are built from this, so they
+/// cannot drift apart.
+pub(crate) fn quadrant_overlay_weights(
+    terrain: &TerrainSnapshot,
+    quadrant: u8,
+) -> Result<Vec<Vec<f32>>, String> {
+    let layers = quadrant_layers(terrain, quadrant)?;
+    let samples = QUADRANT_WEIGHT_SAMPLES * QUADRANT_WEIGHT_SAMPLES;
+    let mut overlay_weights = vec![vec![0.0f32; samples]; layers.len().saturating_sub(1)];
+    for (slot, layer) in layers.iter().skip(1).enumerate() {
+        for &(vertex, opacity) in &layer.weights {
+            overlay_weights[slot][usize::from(vertex)] = opacity;
+        }
+    }
+    Ok(overlay_weights)
+}
+
 pub(crate) fn build_terrain_quadrant_mesh(
     terrain: &TerrainSnapshot,
     quadrant: u8,
 ) -> Result<Mesh, String> {
-    let layers = quadrant_layers(terrain, quadrant)?;
+    let overlay_weights = quadrant_overlay_weights(terrain, quadrant)?;
     let width = usize::from(terrain.width);
     let height = usize::from(terrain.height);
     if width != 33 || height != 33 || terrain.heights.len() != width * height {
@@ -1556,12 +1577,6 @@ pub(crate) fn build_terrain_quadrant_mesh(
     let step_z = CELL_SIZE / (height - 1) as f32;
     let origin_x = usize::from(quadrant % 2) * 16;
     let origin_y = usize::from(quadrant / 2) * 16;
-    let mut overlay_weights = vec![vec![0.0f32; 17 * 17]; layers.len().saturating_sub(1)];
-    for (slot, layer) in layers.iter().skip(1).enumerate() {
-        for &(vertex, opacity) in &layer.weights {
-            overlay_weights[slot][usize::from(vertex)] = opacity;
-        }
-    }
     let mut positions = Vec::with_capacity(17 * 17);
     let mut normals = Vec::with_capacity(17 * 17);
     let mut uvs = Vec::with_capacity(17 * 17);
@@ -1597,6 +1612,12 @@ pub(crate) fn build_terrain_quadrant_mesh(
                     .get(slot)
                     .map_or(0.0, |values| values[local])
             };
+            // The packed vertex weights are the fallback for a material with no weight field, and
+            // for a quadrant whose only layer is its base: weights 1-3 as a unit direction plus its
+            // magnitude in `w`, weights 4-5 in the second UV set. Bevy re-normalizes
+            // `world_tangent.xyz` in the vertex shader, so this carrier sharpens every transition
+            // (`0.25` where the true interpolated weight is `0.5`); every other quadrant reads the
+            // material's weight field instead.
             let first = Vec3::new(weight(0), weight(1), weight(2));
             let length = first.length();
             packed_weights.push(if length > 0.0 {
@@ -2094,6 +2115,57 @@ mod tests {
         let mut terrain = terrain_fixture(1, 0.0);
         terrain.layers.clear();
         assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn overlay_weight_grids_hold_each_layers_vtxt_list_in_layer_order() {
+        let mut terrain = terrain_fixture(1, 0.0);
+        terrain.layers.extend([
+            // Listed out of order: `quadrant_layers` sorts overlays by their ATXT layer number.
+            TerrainLayerSnapshot {
+                texture_form_id: 22,
+                quadrant: 0,
+                layer: 2,
+                is_base: false,
+                weights: vec![(3, 0.25)],
+            },
+            TerrainLayerSnapshot {
+                texture_form_id: 21,
+                quadrant: 0,
+                layer: 1,
+                is_base: false,
+                weights: vec![(0, 1.0), (17 * 16 + 16, 0.5)],
+            },
+        ]);
+        let grids = quadrant_overlay_weights(&terrain, 0).unwrap();
+        assert_eq!(grids.len(), 2, "the base layer is not an overlay");
+        assert_eq!(
+            grids[0].len(),
+            QUADRANT_WEIGHT_SAMPLES * QUADRANT_WEIGHT_SAMPLES,
+            "a grid covers the quadrant's whole sample square"
+        );
+        assert_eq!(grids[0][0], 1.0);
+        assert_eq!(grids[0][17 * 16 + 16], 0.5);
+        assert_eq!(grids[0][3], 0.0, "an unnamed sample is opacity 0");
+        assert_eq!(grids[1][3], 0.25, "layer 2 is the second overlay");
+        assert_eq!(grids[1][0], 0.0);
+        assert!(
+            quadrant_overlay_weights(&terrain, 1).unwrap().is_empty(),
+            "a quadrant with only a base layer has no overlays"
+        );
+    }
+
+    #[test]
+    fn overlay_weight_grids_reject_vtxt_outside_the_sample_square() {
+        let mut terrain = terrain_fixture(1, 0.0);
+        terrain.layers.push(TerrainLayerSnapshot {
+            texture_form_id: 21,
+            quadrant: 0,
+            layer: 1,
+            is_base: false,
+            weights: vec![(17 * 17, 1.0)],
+        });
+        assert!(quadrant_overlay_weights(&terrain, 0).is_err());
     }
 
     #[test]

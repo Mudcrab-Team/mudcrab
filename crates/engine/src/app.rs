@@ -4,7 +4,7 @@ use crate::{
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
         RendererMetrics, TerrainExtension, TerrainMaterial, VercidiumRendererPlugin,
-        WaterExtension, WaterMaterial, WaterReflectionTexture,
+        WaterExtension, WaterMaterial, WaterReflectionTexture, terrain_layer_sampler,
     },
     streaming::{
         AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, build_terrain_quadrant_mesh,
@@ -402,6 +402,16 @@ fn fixture_image(data: Vec<u8>, srgb: bool) -> Image {
     image
 }
 
+/// A terrain layer image of the synthetic fixture: one flat colour, carried by a sampler that
+/// repeats like the one a streamed layer gets, since the shader tiles every layer `8` times across a
+/// cell. Bevy's default sampler clamps to the edge, which stretches the outermost texels over the
+/// rest of the tiles.
+fn terrain_fixture_image(pixel: [u8; 4]) -> Image {
+    let mut image = fixture_image((0..16).flat_map(|_| pixel).collect(), true);
+    image.sampler = bevy::image::ImageSampler::Descriptor(terrain_layer_sampler());
+    image
+}
+
 fn setup_material_fixture(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -585,37 +595,10 @@ struct TerrainWaterFixtureState {
     finished: bool,
 }
 
-fn setup_terrain_water_fixture(
-    mut commands: Commands,
-    reflection: Res<WaterReflectionTexture>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
-    mut water_materials: ResMut<Assets<WaterMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    commands.init_resource::<TerrainWaterFixtureState>();
-    let palette = [
-        [82, 116, 58, 255],
-        [122, 101, 70, 255],
-        [83, 92, 102, 255],
-        [146, 138, 103, 255],
-        [60, 91, 54, 255],
-        [113, 82, 62, 255],
-    ];
-    let texture_handles: [Handle<Image>; 6] =
-        palette.map(|pixel| images.add(fixture_image((0..16).flat_map(|_| pixel).collect(), true)));
-    let flow_normal = images.add(fixture_image(
-        (0..16)
-            .flat_map(|index| {
-                if index % 2 == 0 {
-                    [150, 110, 255, 255]
-                } else {
-                    [110, 150, 255, 255]
-                }
-            })
-            .collect(),
-        false,
-    ));
+/// The synthetic LAND snapshot the terrain/water fixture draws: a rolling height field whose four
+/// quadrants each carry a full base-and-five-overlays stack, every overlay strongest around its own
+/// centre so the weight field is visible in the scene. Built without game data, like every fixture.
+fn terrain_water_fixture_snapshot() -> TerrainSnapshot {
     let mut layers = Vec::new();
     for quadrant in 0..4 {
         layers.push(TerrainLayerSnapshot {
@@ -644,7 +627,7 @@ fn setup_terrain_water_fixture(
             });
         }
     }
-    let terrain = TerrainSnapshot {
+    TerrainSnapshot {
         cell_id: 0xF170_0001,
         width: 33,
         height: 33,
@@ -665,7 +648,41 @@ fn setup_terrain_water_fixture(
         layers,
         water_height: Some(12.0),
         water_type_form_id: Some(1),
-    };
+    }
+}
+
+fn setup_terrain_water_fixture(
+    mut commands: Commands,
+    reflection: Res<WaterReflectionTexture>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
+    mut water_materials: ResMut<Assets<WaterMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    commands.init_resource::<TerrainWaterFixtureState>();
+    let palette = [
+        [82, 116, 58, 255],
+        [122, 101, 70, 255],
+        [83, 92, 102, 255],
+        [146, 138, 103, 255],
+        [60, 91, 54, 255],
+        [113, 82, 62, 255],
+    ];
+    let texture_handles: [Handle<Image>; 6] =
+        palette.map(|pixel| images.add(terrain_fixture_image(pixel)));
+    let flow_normal = images.add(fixture_image(
+        (0..16)
+            .flat_map(|index| {
+                if index % 2 == 0 {
+                    [150, 110, 255, 255]
+                } else {
+                    [110, 150, 255, 255]
+                }
+            })
+            .collect(),
+        false,
+    ));
+    let terrain = terrain_water_fixture_snapshot();
     for quadrant in 0..4 {
         commands.spawn((
             Name::new(format!("Terrain/water fixture quadrant {quadrant}")),
@@ -675,16 +692,23 @@ fn setup_terrain_water_fixture(
                         .expect("canonical terrain fixture must build"),
                 ),
             ),
-            MeshMaterial3d(terrain_materials.add(TerrainMaterial {
-                base: StandardMaterial {
-                    base_color: Color::WHITE,
-                    perceptual_roughness: 0.92,
-                    cull_mode: None,
-                    double_sided: true,
-                    ..default()
-                },
-                extension: TerrainExtension::fixture(texture_handles.clone()),
-            })),
+            MeshMaterial3d(
+                terrain_materials.add(TerrainMaterial {
+                    base: StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 0.92,
+                        cull_mode: None,
+                        double_sided: true,
+                        ..default()
+                    },
+                    extension: TerrainExtension::fixture(
+                        &terrain,
+                        quadrant,
+                        texture_handles.clone(),
+                    )
+                    .expect("canonical terrain fixture must build"),
+                }),
+            ),
             TerrainWaterFixtureTerrain,
         ));
     }
@@ -744,8 +768,13 @@ fn validate_terrain_water_fixture(
     if state.finished || terrain.iter().count() != 4 || water.iter().count() != 1 {
         return;
     }
-    let valid_terrain = terrain.iter().all(|(mesh, material)| {
-        meshes.get(mesh).is_some() && terrain_materials.get(material).is_some()
+    // The fixture exists to show terrain without game data, so it is only valid if its materials
+    // render the overlay weight field the streamed path uses - the point of the scene.
+    let valid_terrain = terrain.iter().all(|(mesh, handle)| {
+        let Some(material) = terrain_materials.get(handle) else {
+            return false;
+        };
+        meshes.get(mesh).is_some() && material.extension.reads_weight_field()
     });
     let valid_water = water
         .single()
@@ -1575,5 +1604,35 @@ mod tests {
                 "{truncated_file}"
             );
         }
+    }
+
+    /// The terrain/water fixture is the only scene that draws terrain without game data, so its
+    /// materials have to carry the overlay weight field the streamed path reads: on the packed
+    /// vertex attributes it would show the sharpened carrier instead, and the field would go
+    /// unexercised outside a converted asset set.
+    #[test]
+    fn terrain_water_fixture_quadrants_carry_their_weight_field() {
+        let terrain = terrain_water_fixture_snapshot();
+        for quadrant in 0..4 {
+            let extension = TerrainExtension::fixture(
+                &terrain,
+                quadrant,
+                std::array::from_fn(|_| Handle::<Image>::default()),
+            )
+            .expect("the canonical terrain fixture must build");
+            assert!(
+                extension.reads_weight_field(),
+                "quadrant {quadrant} must render its overlays through the weight field"
+            );
+        }
+    }
+
+    /// The shader tiles every terrain layer `8` times across a cell, so the fixture's layer images
+    /// need the sampler a streamed layer is loaded with. Bevy's default clamps to the edge, which
+    /// stretches the outermost texels over the rest of the tiles.
+    #[test]
+    fn terrain_water_fixture_layers_are_sampled_with_a_repeating_sampler() {
+        let expected = bevy::image::ImageSampler::Descriptor(terrain_layer_sampler());
+        assert_eq!(terrain_fixture_image([82, 116, 58, 255]).sampler, expected);
     }
 }
