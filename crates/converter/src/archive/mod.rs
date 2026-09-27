@@ -3,7 +3,10 @@ mod bsa;
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
-    cache::{IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy},
+    cache::{
+        IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy,
+        link_or_copy_spilling,
+    },
 };
 use color_eyre::{
     Result,
@@ -194,7 +197,7 @@ fn restore_cached_files(
         let new_blob = blob_path(cache_root, &file.hash)?;
         copy_if_missing(&old_blob, &new_blob)?;
         let destination = output_root.join(&relative);
-        copy_file(&new_blob, &destination)?;
+        share_blob(&new_blob, &destination)?;
         restored.push(ExtractedFile {
             path: relative,
             bytes_written: file.size,
@@ -215,12 +218,27 @@ fn persist_cache_blobs(
         if blob.is_file() {
             // Another entry with the same bytes stored this blob first: make this path a name for
             // it too, so duplicated content is held once.
-            copy_file(&blob, &extracted)?;
+            share_blob(&blob, &extracted)?;
         } else {
             copy_file(&extracted, &blob)?;
         }
     }
     Ok(())
+}
+
+/// Makes `destination` a name for `blob`, a blob in this run's cache that many paths may share
+/// (see `link_or_copy_spilling`).
+fn share_blob(blob: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    link_or_copy_spilling(blob, destination).wrap_err_with(|| {
+        format!(
+            "failed to restore cached asset {} to {}",
+            blob.display(),
+            destination.display()
+        )
+    })
 }
 
 fn blob_path(cache_root: &Path, hash: &str) -> Result<PathBuf> {
