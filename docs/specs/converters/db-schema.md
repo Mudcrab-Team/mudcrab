@@ -215,3 +215,36 @@ CREATE TABLE IF NOT EXISTS conversion_cache (
     last_converted INTEGER NOT NULL
 );
 ```
+
+---
+
+### 12. Water Definitions (`waters`)
+
+Stores one row per `WATR` record: Skyrim's per-water colours and reflectivity, decoded from the
+record's `DNAM` subrecord (offsets in `docs/research/water.md` section 1.2), plus the raw
+subrecords for anything not broken out into a column.
+
+```sql
+CREATE TABLE IF NOT EXISTS waters (
+    id INTEGER PRIMARY KEY,             -- WATR FormID
+    editor_id TEXT,
+    opacity INTEGER,                    -- ANAM, 0-100
+    flags INTEGER NOT NULL,             -- record header flags
+    shallow_color INTEGER,              -- DNAM+40: packed 0x00BBGGRR
+    deep_color INTEGER,                 -- DNAM+44: packed 0x00BBGGRR
+    reflection_color INTEGER,           -- DNAM+48: packed 0x00BBGGRR
+    fresnel REAL,                       -- DNAM+24: Fresnel Amount (Schlick F0)
+    reflectivity REAL,                  -- DNAM+20: Reflectivity Amount
+    flow_normal_path TEXT,              -- NAM5, canonicalised (SSE flowmap waters only)
+    data BLOB NOT NULL                  -- Serialized subrecords payload
+);
+```
+
+`shallow_color`/`deep_color`/`reflection_color`/`fresnel`/`reflectivity` are additive columns: a
+`skyrim_world.db` built before they existed has a `waters` table without them, and
+`AssetCatalog::water_colors` (`crates/engine/src/world/database.rs`) returns `None` for every
+water against such a database rather than failing to open it. The engine falls back to Skyrim's
+DefaultWater values (`render::DEFAULT_WATER_FRESNEL` / `render::DEFAULT_WATER_REFLECTIVITY`, and
+`streaming.rs`'s deep-colour constant) until a reconversion populates them. Adding them did **not**
+bump `shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
+presence, and the fallback exists specifically so a reconversion is not required.

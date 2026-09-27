@@ -481,6 +481,9 @@ fn spawn_cell(
                 .filter(|height| height.is_finite() && height.abs() < 1.0e7)
             {
                 let water_mesh = meshes.add(Plane3d::default().mesh().size(CELL_SIZE, CELL_SIZE));
+                let water_colors = terrain
+                    .water_type_form_id
+                    .and_then(|form_id| catalog.water_colors(form_id));
                 let flow_normal = terrain
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_flow(form_id))
@@ -492,21 +495,35 @@ fn spawn_cell(
                             })
                             .load(path.to_owned())
                     });
+                // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
+                // decoded colours yet (a database converted before the WATR colour export). Skyrim
+                // thins water to show the bed where it is shallow; without depth fog a 60% cover
+                // keeps river beds visible.
+                let base_color = water_colors.map_or(Color::srgba_u8(5, 14, 18, 153), |colors| {
+                    let [r, g, b] = colors.deep;
+                    Color::srgba_u8(r, g, b, 153)
+                });
+                let (fresnel, reflectivity) = water_colors.map_or(
+                    (
+                        crate::render::DEFAULT_WATER_FRESNEL,
+                        crate::render::DEFAULT_WATER_REFLECTIVITY,
+                    ),
+                    |colors| (colors.fresnel, colors.reflectivity),
+                );
                 let water_material = water_materials.add(WaterMaterial {
                     base: StandardMaterial {
-                        // Skyrim's DefaultWater deep colour after Update.esm; per-water colours
-                        // come with the WATR export. Skyrim thins water to show the bed where it
-                        // is shallow; without depth fog a 60% cover keeps river beds visible.
-                        base_color: Color::srgba_u8(5, 14, 18, 153),
+                        base_color,
                         metallic: 0.15,
                         perceptual_roughness: 0.06,
                         reflectance: 0.9,
                         alpha_mode: AlphaMode::Blend,
                         ..default()
                     },
-                    extension: WaterExtension::with_reflection(
+                    extension: WaterExtension::with_reflection_and_factors(
                         reflection.0.clone(),
                         flow_normal.clone(),
+                        fresnel,
+                        reflectivity,
                     ),
                 });
                 parent.spawn((

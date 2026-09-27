@@ -79,10 +79,31 @@ pub struct WorldDatabase {
     worker_stopped: Arc<AtomicBool>,
 }
 
+/// A water's Skyrim colours and reflectivity factors, decoded by the converter from its WATR
+/// record's `DNAM` (`crates/converter/src/esm/exporter.rs`). `fresnel`/`reflectivity` are
+/// additive `waters` columns: a database converted before they existed lacks them, so
+/// [`AssetCatalog::water_colors`] returns `None` for every water rather than erroring, and
+/// callers fall back to Skyrim's DefaultWater values (see `render::DEFAULT_WATER_FRESNEL` /
+/// `render::DEFAULT_WATER_REFLECTIVITY`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterColors {
+    pub shallow: [u8; 3],
+    pub deep: [u8; 3],
+    pub reflection: [u8; 3],
+    pub fresnel: f32,
+    pub reflectivity: f32,
+}
+
+fn unpack_color(value: u32) -> [u8; 3] {
+    let bytes = value.to_le_bytes();
+    [bytes[0], bytes[1], bytes[2]]
+}
+
 #[derive(Resource, Default)]
 pub struct AssetCatalog {
     landscape_diffuse: std::collections::HashMap<u32, String>,
     water_flow: std::collections::HashMap<u32, String>,
+    water_colors: std::collections::HashMap<u32, WaterColors>,
 }
 
 impl AssetCatalog {
@@ -109,9 +130,39 @@ impl AssetCatalog {
             .filter_map(std::result::Result::ok)
             .filter_map(|(id, path)| converted_texture_path(path).map(|path| (id, path)))
             .collect();
+        drop(statement);
+        // A database converted before `fresnel`/`reflectivity` existed has no such columns, and
+        // `prepare` fails with a "no such column" error rather than an empty result. Treat that
+        // the same as no water colours at all instead of refusing to open the catalog.
+        let water_colors = connection
+            .prepare(
+                "SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity FROM waters \
+                 WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL \
+                 AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL",
+            )
+            .ok()
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, u32>(0)?,
+                            WaterColors {
+                                shallow: unpack_color(row.get::<_, u32>(1)?),
+                                deep: unpack_color(row.get::<_, u32>(2)?),
+                                reflection: unpack_color(row.get::<_, u32>(3)?),
+                                fresnel: row.get::<_, f32>(4)?,
+                                reflectivity: row.get::<_, f32>(5)?,
+                            },
+                        ))
+                    })
+                    .ok()
+                    .map(|rows| rows.filter_map(std::result::Result::ok).collect())
+            })
+            .unwrap_or_default();
         Ok(Self {
             landscape_diffuse,
             water_flow,
+            water_colors,
         })
     }
 
@@ -121,6 +172,10 @@ impl AssetCatalog {
 
     pub fn water_flow(&self, form_id: u32) -> Option<&str> {
         self.water_flow.get(&form_id).map(String::as_str)
+    }
+
+    pub fn water_colors(&self, form_id: u32) -> Option<WaterColors> {
+        self.water_colors.get(&form_id).copied()
     }
 }
 
@@ -392,6 +447,45 @@ mod tests {
             Some("textures/land/grass.ktx2")
         );
         assert_eq!(catalog.water_flow(9), Some("textures/water/flow.ktx2"));
+        // This fixture's `waters` table predates the fresnel/reflectivity columns entirely, the
+        // same shape a database converted before this change has; the catalog must tolerate it
+        // rather than fail to open.
+        assert_eq!(catalog.water_colors(9), None);
+    }
+
+    #[test]
+    fn catalog_returns_water_colors_and_factors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT);",
+            )
+            .unwrap();
+        let shallow = u32::from_le_bytes([38, 39, 24, 0]);
+        let deep = u32::from_le_bytes([5, 14, 18, 0]);
+        let reflection = u32::from_le_bytes([119, 140, 157, 0]);
+        connection
+            .execute(
+                "INSERT INTO waters(id,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,?2,?3,?4,?5,?6,NULL)",
+                params![18u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        assert_eq!(
+            catalog.water_colors(18),
+            Some(WaterColors {
+                shallow: [38, 39, 24],
+                deep: [5, 14, 18],
+                reflection: [119, 140, 157],
+                fresnel: 0.10,
+                reflectivity: 0.8,
+            })
+        );
     }
 
     #[test]
