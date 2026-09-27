@@ -87,10 +87,10 @@ The converted `atmosphere.glb` keeps no vertex colours, so the engine builds the
   every `FogCamera`, as it hides the dome.
 - **Range.** Vanilla is at 0.47 by the far edge of the streamed ring (three cells of 4,096 units)
   and the fit follows it to within 0.02 there (0.45), so the haze that lands on the ring's outer
-  terrain is the haze vanilla draws at that distance rather than a thinner stand-in. The fog still never
-  saturates inside the ring - 0.74 at the default camera's far plane, against vanilla's 0.70 - so
-  the outermost terrain is hazed rather than swallowed, and the dome's transparent band keeps the
-  horizon line itself soft.
+  terrain is the haze vanilla draws at that distance rather than a thinner stand-in. The fog still
+  never saturates inside the ring - 0.74 at the default camera's far plane, against vanilla's
+  0.70 - so the outermost terrain is hazed rather than swallowed, and the dome's transparent band
+  keeps the horizon line itself soft.
 
 ## Not yet
 
