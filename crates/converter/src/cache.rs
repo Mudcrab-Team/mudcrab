@@ -104,7 +104,7 @@ pub fn configuration_hash_for_schema(
 ) -> Result<String> {
     let relevant = serde_json::json!({
         "schema": schema,
-        "texture_etc1s_quality": config.texture_etc1s_quality,
+        "texture_etc1s_quality": config.texture_fallback_quality,
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });

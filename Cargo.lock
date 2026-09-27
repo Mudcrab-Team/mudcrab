@@ -2787,7 +2787,9 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "color-eyre",
+ "converter",
  "crossbeam-channel",
+ "ddsfile",
  "memmap2",
  "mlua",
  "rkyv",
