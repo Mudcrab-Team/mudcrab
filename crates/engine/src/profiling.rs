@@ -318,7 +318,7 @@ struct MemoryProfile {
     slope_gib_per_minute: Option<f64>,
 }
 
-fn summarize(samples: &[f64]) -> MetricSummary {
+pub fn summarize(samples: &[f64]) -> MetricSummary {
     let mut sorted = samples.to_vec();
     sorted.sort_by(f64::total_cmp);
     let total = sorted.iter().sum::<f64>();
