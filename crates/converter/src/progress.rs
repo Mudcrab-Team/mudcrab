@@ -209,23 +209,35 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// A smoothed rate of a run, in whole-run fraction, items and bytes per second.
+/// A smoothed rate of a run: how much of the whole conversion is done per second, how many items
+/// and bytes it is working through, and how long the rest should take.
+///
+/// The status line and a GUI show the same numbers, so the estimate is one thing here that both
+/// read rather than a calculation each of them repeats. The caller owns the clock:
+/// [`ProgressEstimate::observe`] is handed the elapsed time of the event it is given, which is what
+/// lets the estimate be tested against a fake clock and keeps a run that is not moving from reading
+/// as a fast one.
 ///
 /// Samples arrive per event, which for a conversion is thousands of times a second, so a sample
-/// closer than [`SampleWindow::MIN_GAP`] to the last accepted one is folded into the next instead
-/// of reading as an infinite rate. Accepted samples are folded in with a weight that decays over
-/// [`SampleWindow::TIME_CONSTANT`], so the estimate reacts to a slowdown over tens of seconds
-/// rather than in one sample.
-#[derive(Default)]
-struct SampleWindow {
+/// closer than 250 ms to the last accepted one is folded into the next instead of reading as an
+/// infinite rate. Accepted samples are folded in with a weight that decays over 20 s, so the
+/// estimate reacts to a slowdown over tens of seconds rather than in one sample.
+#[derive(Debug, Clone, Default)]
+pub struct ProgressEstimate {
+    /// The stage the samples belong to. A stage change starts the rate again, because one stage's
+    /// pace says nothing about the next stage's.
+    stage: Option<ProgressStage>,
     last: Option<Sample>,
     fraction_per_second: Option<f64>,
     items_per_second: Option<f64>,
     bytes_per_second: Option<f64>,
     samples: u32,
+    /// The highest whole-run fraction seen so far. A stage can finish short of its total (a skipped
+    /// archive, a failed asset), so the estimate holds its position rather than run backwards.
+    overall: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Sample {
     elapsed: Duration,
     overall: f32,
@@ -233,20 +245,39 @@ struct Sample {
     bytes: u64,
 }
 
-impl SampleWindow {
+impl ProgressEstimate {
+    /// The gap below which a sample is folded into the next one.
     const MIN_GAP: Duration = Duration::from_millis(250);
+    /// How long a sample stays influential: the weight of a new one decays over this.
     const TIME_CONSTANT: f64 = 20.0;
     /// Samples before the estimate is worth showing; an early conversion's rate is all ramp-up.
     const MIN_SAMPLES: u32 = 3;
     /// The longest guess worth putting on screen; beyond this the run is not being measured yet.
     const MAX_TIME_LEFT: Duration = Duration::from_secs(100 * 3600);
 
-    fn observe(&mut self, elapsed: Duration, overall: f32, items: u64, bytes: u64) {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Folds one progress event, `elapsed` after the run started, into the estimate.
+    ///
+    /// A notice is the run talking about one asset rather than moving forward, so it is ignored: it
+    /// neither moves the overall fraction nor restarts the rate of the stage it came from.
+    pub fn observe(&mut self, event: &ProgressEvent, elapsed: Duration) {
+        if event.notice {
+            return;
+        }
+        self.overall = self.overall.max(event.overall.clamp(0.0, 1.0));
+        if self.stage != Some(event.stage) {
+            self.stage = Some(event.stage);
+            self.forget_samples();
+        }
+        let bytes = event.bytes_completed.unwrap_or(0);
         let Some(last) = self.last else {
             self.last = Some(Sample {
                 elapsed,
-                overall,
-                items,
+                overall: self.overall,
+                items: event.completed,
                 bytes,
             });
             return;
@@ -256,8 +287,8 @@ impl SampleWindow {
             return;
         }
         let weight = 1.0 - (-seconds / Self::TIME_CONSTANT).exp();
-        let fraction_rate = (overall - last.overall).max(0.0) as f64 / seconds;
-        let item_rate = items.saturating_sub(last.items) as f64 / seconds;
+        let fraction_rate = (self.overall - last.overall).max(0.0) as f64 / seconds;
+        let item_rate = event.completed.saturating_sub(last.items) as f64 / seconds;
         let byte_rate = bytes.saturating_sub(last.bytes) as f64 / seconds;
         self.fraction_per_second = Some(smooth(self.fraction_per_second, fraction_rate, weight));
         self.items_per_second = Some(smooth(self.items_per_second, item_rate, weight));
@@ -265,35 +296,55 @@ impl SampleWindow {
         self.samples += 1;
         self.last = Some(Sample {
             elapsed,
-            overall,
-            items,
+            overall: self.overall,
+            items: event.completed,
             bytes,
         });
     }
 
-    fn items_per_second(&self) -> Option<f64> {
+    /// Whole-run completion in `0.0..=1.0`. It never moves backwards, however the stages report
+    /// themselves.
+    pub fn overall(&self) -> f32 {
+        self.overall
+    }
+
+    /// Items per second, once the run is moving fast enough for a rate to mean something.
+    pub fn items_per_second(&self) -> Option<f64> {
         self.items_per_second.filter(|rate| *rate > 0.5)
     }
 
-    fn bytes_per_second(&self) -> Option<f64> {
+    /// Bytes of input per second, once the run is moving fast enough for a rate to mean something.
+    pub fn bytes_per_second(&self) -> Option<f64> {
         self.bytes_per_second.filter(|rate| *rate > 1.0)
     }
 
-    /// How much of the run is left, once enough of it has been measured to say.
-    fn time_left(&self, overall: f32, elapsed: Duration) -> Option<Duration> {
+    /// How much of the run is left, once enough of it has been measured to say: `None` before three
+    /// samples have been accepted and five seconds have passed, once the run is complete, and
+    /// whenever the run has not moved through the window, where no estimate is better than a guess.
+    pub fn time_left(&self, elapsed: Duration) -> Option<Duration> {
         if self.samples < Self::MIN_SAMPLES || elapsed < Duration::from_secs(5) {
             return None;
         }
-        if !(0.0..1.0).contains(&overall) || overall <= 0.0 {
+        if !(0.0..1.0).contains(&self.overall) || self.overall <= 0.0 {
             return None;
         }
         let rate = self.fraction_per_second?;
         if !rate.is_finite() || rate <= 0.0 {
             return None;
         }
-        let seconds = (f64::from(1.0 - overall) / rate).round();
+        let seconds = (f64::from(1.0 - self.overall) / rate).round();
         (seconds.is_finite() && seconds <= Self::MAX_TIME_LEFT.as_secs_f64())
             .then(|| Duration::from_secs_f64(seconds))
+    }
+
+    /// Starts the rate again for a new stage, keeping the overall fraction where it is: the new
+    /// stage picks up where the old one left off.
+    fn forget_samples(&mut self) {
+        self.last = None;
+        self.fraction_per_second = None;
+        self.items_per_second = None;
+        self.bytes_per_second = None;
+        self.samples = 0;
     }
 }
 
@@ -319,10 +370,9 @@ pub struct ProgressRenderer {
     verbose: bool,
     stage: Option<ProgressStage>,
     last_emit: Option<Duration>,
-    /// The highest whole-run fraction shown so far. A stage can finish short of its total (a
-    /// skipped archive, a failed asset), so the bar is held rather than run backwards.
-    high_water: f32,
-    window: SampleWindow,
+    /// The rates and the time-left estimate the line is drawn from, held by the renderer so the
+    /// command line shows exactly the numbers a GUI reading its own [`ProgressEstimate`] sees.
+    estimate: ProgressEstimate,
     /// Whether a redrawn status line is on screen without a newline after it.
     open_line: bool,
     /// How wide the line on screen is, so the next redraw can cover it. Legacy Windows consoles
@@ -345,8 +395,7 @@ impl ProgressRenderer {
             verbose,
             stage: None,
             last_emit: None,
-            high_water: 0.0,
-            window: SampleWindow::default(),
+            estimate: ProgressEstimate::default(),
             open_line: false,
             line_width: 0,
             last_event: None,
@@ -360,18 +409,8 @@ impl ProgressRenderer {
             return Some(self.notice(event, elapsed));
         }
 
-        let overall = self.high_water.max(event.overall.clamp(0.0, 1.0));
-        self.high_water = overall;
         let stage_changed = self.stage != Some(event.stage);
-        if stage_changed {
-            self.window = SampleWindow::default();
-        }
-        self.window.observe(
-            elapsed,
-            overall,
-            event.completed,
-            event.bytes_completed.unwrap_or(0),
-        );
+        self.estimate.observe(event, elapsed);
 
         let refresh = if self.terminal {
             Self::TERMINAL_REFRESH
@@ -385,7 +424,7 @@ impl ProgressRenderer {
             return None;
         }
 
-        let line = self.line(event, elapsed, overall);
+        let line = self.line(event, elapsed);
         self.stage = Some(event.stage);
         self.last_emit = Some(elapsed);
         self.last_event = Some(event.clone());
@@ -416,7 +455,7 @@ impl ProgressRenderer {
             return None;
         }
         self.last_emit = Some(elapsed);
-        let line = self.line(&event, elapsed, self.high_water);
+        let line = self.line(&event, elapsed);
         Some(self.draw(&line, false))
     }
 
@@ -460,21 +499,21 @@ impl ProgressRenderer {
         format!("{prefix}{line}\n")
     }
 
-    fn line(&self, event: &ProgressEvent, elapsed: Duration, overall: f32) -> String {
+    fn line(&self, event: &ProgressEvent, elapsed: Duration) -> String {
         let mut line = format!(
             "{:<11} {:>3.0}%  [overall {:>3.0}%]",
             format!("{:?}", event.stage),
             event.progress_fraction() * 100.0,
-            overall * 100.0,
+            self.estimate.overall() * 100.0,
         );
-        if let Some(rate) = self.window.items_per_second() {
+        if let Some(rate) = self.estimate.items_per_second() {
             let _ = write!(line, "  {rate:.0} items/s");
         }
-        if let Some(rate) = self.window.bytes_per_second() {
+        if let Some(rate) = self.estimate.bytes_per_second() {
             let _ = write!(line, "  {:.1} MB/s", rate / 1_000_000.0);
         }
         let _ = write!(line, "  {} elapsed", format_clock(elapsed.as_secs_f64()));
-        if let Some(left) = self.window.time_left(overall, elapsed) {
+        if let Some(left) = self.estimate.time_left(elapsed) {
             let _ = write!(line, "  ~{} left", format_clock(left.as_secs_f64()));
         }
         line
@@ -792,44 +831,183 @@ mod tests {
         assert!(printed.contains("items/s"), "{printed:?}");
     }
 
+    /// An event the estimator can read: its whole-run fraction is `overall` whatever the stage
+    /// counts say (that fraction is the estimator's input), with `completed` items and `bytes` of
+    /// input worked through.
+    fn progress(overall: f32, completed: u64, bytes: u64) -> ProgressEvent {
+        let mut event =
+            event(ProgressStage::Textures, completed, 1_000).with_bytes(bytes, 1_000_000_000);
+        event.overall = overall;
+        event
+    }
+
     #[test]
-    fn the_rate_and_time_left_are_numeric_and_smoothed() {
-        let mut window = SampleWindow::default();
-        // Two percent of the run a second, sampled once a second.
-        for step in 0..=20u64 {
-            window.observe(
+    fn the_estimate_reports_the_rates_of_a_steady_run() {
+        let mut estimate = ProgressEstimate::default();
+        // Two percent of the run a second, ten items and a megabyte with it.
+        for step in 0..=25u64 {
+            estimate.observe(
+                &progress(step as f32 / 50.0, step * 10, step * 1_000_000),
                 Duration::from_secs(step),
-                0.02 * step as f32,
-                step * 10,
-                step * 1000,
             );
         }
-        assert_eq!(window.items_per_second(), Some(10.0));
-        assert_eq!(window.bytes_per_second(), Some(1000.0));
-        // Half the run done at 2% a second leaves 25 seconds.
+        assert_eq!(estimate.items_per_second(), Some(10.0));
+        assert_eq!(estimate.bytes_per_second(), Some(1_000_000.0));
+        assert_eq!(estimate.overall(), 0.5);
+        // Half the run done at two percent a second leaves 25 seconds.
         assert_eq!(
-            window.time_left(0.5, Duration::from_secs(20)),
+            estimate.time_left(Duration::from_secs(25)),
             Some(Duration::from_secs(25))
         );
+    }
+
+    #[test]
+    fn the_estimate_waits_for_enough_samples_and_enough_time() {
+        // Enough time on the clock, but too few samples to have a rate: one every ten seconds.
+        let mut sparse = ProgressEstimate::default();
+        for (step, overall) in [(0u64, 0.0f32), (1, 0.05), (2, 0.10), (3, 0.15)] {
+            let elapsed = Duration::from_secs(step * 10);
+            sparse.observe(&progress(overall, step, 0), elapsed);
+            if step < 3 {
+                assert_eq!(
+                    sparse.time_left(elapsed),
+                    None,
+                    "guessed a time left from {step} samples"
+                );
+            }
+        }
         assert_eq!(
-            window.time_left(0.9, Duration::from_secs(20)),
-            Some(Duration::from_secs(5))
+            sparse.time_left(Duration::from_secs(30)),
+            Some(Duration::from_secs(170)),
+            "three samples of half a percent a second"
         );
 
-        // The estimate is smoothed: a step change moves it part of the way, not all of it.
-        let before = window.fraction_per_second.unwrap();
-        for step in 21..=22u64 {
-            let overall = 0.4 + 0.01 * (step - 20) as f32;
-            window.observe(Duration::from_secs(step), overall, step * 10, step * 1000);
+        // Enough samples, but the run is younger than five seconds: still no number.
+        let mut young = ProgressEstimate::default();
+        for step in 0..=5u64 {
+            let elapsed = Duration::from_millis(step * 1_000);
+            young.observe(&progress(step as f32 / 50.0, step * 10, 0), elapsed);
+            if step < 5 {
+                assert_eq!(young.time_left(elapsed), None, "guessed under five seconds");
+            }
         }
-        let after = window.fraction_per_second.unwrap();
+        assert_eq!(
+            young.time_left(Duration::from_secs(5)),
+            Some(Duration::from_secs(45))
+        );
+    }
+
+    #[test]
+    fn the_estimate_never_moves_the_overall_fraction_backwards() {
+        let mut estimate = ProgressEstimate::default();
+        let mut seen = 0.0f32;
+        for (step, overall) in [
+            (0u64, 0.0f32),
+            (1, 0.24),
+            (2, 0.48),
+            // A stage that finishes short of its total, then the next stage starting over.
+            (3, 0.44),
+            (4, 0.52),
+            (5, 0.52),
+        ] {
+            estimate.observe(&progress(overall, step * 10, 0), Duration::from_secs(step));
+            assert!(
+                estimate.overall() >= seen,
+                "the estimate moved back from {seen} to {}",
+                estimate.overall()
+            );
+            seen = estimate.overall();
+        }
+        assert_eq!(seen, 0.52);
+    }
+
+    #[test]
+    fn the_estimate_eases_into_a_slowdown_rather_than_stepping_to_it() {
+        let mut estimate = ProgressEstimate::default();
+        // Two percent of the run a second, sampled once a second.
+        for step in 0..=25u64 {
+            estimate.observe(
+                &progress(step as f32 / 50.0, step * 10, step * 1_000_000),
+                Duration::from_secs(step),
+            );
+        }
+        let before = estimate
+            .time_left(Duration::from_secs(25))
+            .expect("25 seconds left at two percent a second");
+        // Two seconds in which the run does not move at all: the rate drops towards zero.
+        for step in 26..=27u64 {
+            estimate.observe(
+                &progress(0.5, step * 10, step * 1_000_000),
+                Duration::from_secs(step),
+            );
+        }
+        let after = estimate
+            .time_left(Duration::from_secs(27))
+            .expect("two seconds of stall must not read as an infinite rate");
+        assert!(after > before, "a slowdown must raise the time left");
         assert!(
-            after < before,
-            "a slowdown must lower the estimate: {after}"
+            after < Duration::from_secs(35),
+            "one sample must not jump to the stalled rate: {after:?}"
+        );
+    }
+
+    #[test]
+    fn a_notice_is_not_progress_and_leaves_the_estimate_alone() {
+        let mut estimate = ProgressEstimate::default();
+        for step in 0..=10u64 {
+            estimate.observe(
+                &progress(step as f32 / 50.0, step * 10, step * 1_000_000),
+                Duration::from_secs(step),
+            );
+        }
+        let rate = estimate.items_per_second().expect("the run was moving");
+        // A warning about one asset arrives from a stage the run has not reached.
+        estimate.observe(
+            &ProgressEvent::notice(
+                ProgressStage::Validating,
+                None,
+                "warning: pruned a reference",
+            ),
+            Duration::from_secs(11),
+        );
+        assert_eq!(estimate.overall(), 0.2, "a notice moved the bar");
+        assert_eq!(
+            estimate.items_per_second(),
+            Some(rate),
+            "a notice restarted the rate"
+        );
+    }
+
+    #[test]
+    fn the_status_line_shows_the_numbers_the_estimate_holds() {
+        let mut estimate = ProgressEstimate::default();
+        let mut renderer = ProgressRenderer::new(true, false);
+        let mut line = String::new();
+        for step in 0..=25u64 {
+            let elapsed = Duration::from_secs(step);
+            let event = progress(step as f32 / 50.0, step * 10, step * 1_000_000);
+            estimate.observe(&event, elapsed);
+            if let Some(text) = renderer.update(&event, elapsed) {
+                line = text;
+            }
+        }
+        let items = estimate.items_per_second().expect("a steady rate");
+        let bytes = estimate.bytes_per_second().expect("a steady rate");
+        let left = estimate
+            .time_left(Duration::from_secs(25))
+            .expect("half the run done at two percent a second");
+        assert!(line.contains(&format!("{items:.0} items/s")), "{line:?}");
+        assert!(
+            line.contains(&format!("{:.1} MB/s", bytes / 1_000_000.0)),
+            "{line:?}"
         );
         assert!(
-            after > 0.01,
-            "one sample must not jump to the new rate: {after}"
+            line.contains(&format!("~{} left", format_clock(left.as_secs_f64()))),
+            "{line:?}"
+        );
+        assert!(
+            line.contains(&format!("[overall {:>3.0}%]", estimate.overall() * 100.0)),
+            "{line:?}"
         );
     }
 

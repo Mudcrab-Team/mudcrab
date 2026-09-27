@@ -17,5 +17,5 @@ pub mod texture;
 pub use config::PipelineConfig;
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;
-pub use pipeline::{AssetPipeline, PipelineReport};
-pub use progress::{ProgressEvent, ProgressStage};
+pub use pipeline::{AssetPipeline, Cancellation, PipelineFailure, PipelineReport};
+pub use progress::{ProgressEstimate, ProgressEvent, ProgressStage};
