@@ -77,6 +77,15 @@ cargo run -p engine --bin engine -- --assets modern_assets --worldspace 1
 How long a first build and a real conversion take, and how much disk they need, is in
 [`docs/specs/meta/requirements.md`](docs/specs/meta/requirements.md).
 
+### 5. Fast Optimised Builds
+The engine is slow in a debug build and `--release` spends most of a rebuild on link-time
+optimisation. For trying a change, use the `quick` profile (release without LTO, incremental):
+```bash
+cargo build --profile quick --bin engine
+```
+The binary lands in `target/quick/`. Use `--release` for anything you measure (benchmarks,
+acceptance runs), since `quick` frame times are not comparable.
+
 ## 🛠️ Development Workflow
 
 1. **Find or Create an Issue:**
