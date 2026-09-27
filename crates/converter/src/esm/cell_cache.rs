@@ -594,8 +594,17 @@ mod tests {
 
         #[test]
         fn land_decoders_never_panic_on_arbitrary_bytes(
-            heights in arbitrary_bytes(2 * 4 + 33 * 33),
-            normals in arbitrary_bytes(3 * 33 * 33),
+            // Arbitrary lengths reach only the decoders' length checks, so half the cases are
+            // arbitrary bytes at the lengths the decoders accept: a VHGT record (with up to its
+            // three padding bytes) and a raw VNML grid.
+            heights in prop_oneof![
+                arbitrary_bytes(2 * 4 + 33 * 33),
+                proptest::collection::vec(any::<u8>(), 4 + 33 * 33..=4 + 33 * 33 + 3),
+            ],
+            normals in prop_oneof![
+                arbitrary_bytes(3 * 33 * 33),
+                proptest::collection::vec(any::<u8>(), 3 * 33 * 33),
+            ],
             subrecords in arbitrary_bytes(512),
         ) {
             let decoded = decode_vhgt(&heights);
