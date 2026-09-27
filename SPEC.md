@@ -74,6 +74,7 @@ V19: P1 character controller keeps `apply_impulse_to_dynamic_bodies=false` until
 V18: Input sampled once/frame, movement integrated once/60 Hz physics tick; streamed collider commits & origin rebase reach Rapier before next physics tick. Same fixture inputs at 30/60/120 render fps → positions/contact outcomes within declared tolerance.
 V20: Interactive Riverwood uses one controller camera; WALK yaw & pitch consume current `LookIntent`; mouse up/down changes view while capsule stays upright. Benchmark/screenshot/headless/auto-fly camera behavior preserved.
 V21: P2 `E` picks aimed `DebugTankard` within 240 units only; held body follows camera, collision & gravity suspended; second `E` releases dynamic body without stale velocity. Unload/rebase/mode toggle leaves no dangling hold. Overlay shows `T`/`E` controls.
+V22: Fiji Riverwood launcher with unset display vars + live `/run/user/<uid>/wayland-N` socket → set `XDG_RUNTIME_DIR` + `WAYLAND_DISPLAY` before engine; preserve explicit display vars; no socket → clear launcher error.
 
 ## §T TASKS
 
@@ -89,6 +90,7 @@ T8|.|P3 convert/load eligible fixed colliders with full transforms, streamed lif
 T9|.|P3 test player + tankards at rocks, walls, openings, excluded visuals & unload/reload; adjust CCD/contact only from measured failures|V3,V4,V15,V16,V17,R10
 T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regression; record evidence, controls, static proxy limits|V1,V2,V3,V4,V5,V7,V15,V16
 T11|x|P2 mount controller in Riverwood, fix WALK pitch, add `E` tankard pickup/drop; preserve noninteractive camera paths|V5,V6,V9,V20,V21
+T12|x|Package Fiji launcher with display discovery; verify from shell with display vars unset|V22
 
 ## §B BUGS
 
@@ -96,3 +98,4 @@ id|date|cause|fix
 B1|2026-09-26|probe-only collision phases deferred WALK/dynamic validation until too late|V16
 B2|2026-09-26|Rapier 0.35 controller panics slicing empty manifold vec when pushing dynamic bodies on slope|V19
 B3|2026-09-26|WALK follow reused prior view pitch; interactive world omitted controller plugin|V20
+B4|2026-09-27|Fiji launcher assumed graphical display variables inherited by terminal; winit panicked before startup|V22
