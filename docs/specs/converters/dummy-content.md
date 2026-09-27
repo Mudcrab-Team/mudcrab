@@ -25,6 +25,13 @@ The second command produces the same layout the launcher/engine expect from a fu
 cargo run -p engine --bin world-inspect -- modern_assets 1 0 0 --radius 1
 ```
 
+or open it in the engine. The fixture's worldspace has form id `1`, and the engine's default is
+Skyrim's Tamriel, so name it:
+
+```bash
+cargo run -p engine --bin engine -- --assets modern_assets --worldspace 1
+```
+
 ## CLI
 
 ```text

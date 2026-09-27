@@ -40,7 +40,16 @@ struct FailureReport {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     suppress_caught_nif_parser_panics();
-    let cli = parse_cli(std::env::args_os().skip(1).collect())?;
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // Asking for help is not an error: print the usage and exit successfully.
+    if args
+        .iter()
+        .any(|argument| argument == "--help" || argument == "-h")
+    {
+        println!("{}", usage());
+        return Ok(());
+    }
+    let cli = parse_cli(args)?;
     let mut config = PipelineConfig::new(cli.data, cli.output);
     config.resume_staging = cli.resume_staging;
     config.fail_fast = cli.fail_fast;
