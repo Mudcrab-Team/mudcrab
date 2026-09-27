@@ -89,7 +89,12 @@ impl AssetPipeline {
             .unwrap_or_else(|| staging_path(&config.output_dir));
         fs::create_dir_all(staging.join("vfs"))?;
         if resumed {
-            invalidate_staged_mesh_outputs(&staging)?;
+            // No provenance source exists on this branch yet: every staged
+            // mesh is unverified and goes. The PR31 merge passes the set of
+            // journal-current mesh outputs here instead of an empty set, so a
+            // mesh the journal vouches for survives invalidation and reaches
+            // the journal reuse gate.
+            invalidate_staged_mesh_outputs(&staging, &BTreeSet::new())?;
         }
         let run_result = Self::run_into(&config, &staging, &previous_manifest, &progress_tx).await;
         let mut report = match run_result {
@@ -1057,21 +1062,37 @@ fn extension(path: &Path, expected: &[&str]) -> bool {
         })
 }
 
-fn invalidate_staged_mesh_outputs(staging: &Path) -> Result<()> {
+/// Deletes staged meshes no provenance source vouches for.
+///
+/// `verified` holds staged-relative mesh paths (forward slashes) whose bytes
+/// a provenance record describes: the PR31 staging journal once merged. A
+/// mesh in that set survives so the journal reuse gate below can certify it;
+/// every other staged mesh is unverified and goes, so a resume can never
+/// publish bytes this converter did not verify.
+fn invalidate_staged_mesh_outputs(staging: &Path, verified: &BTreeSet<String>) -> Result<()> {
     let vfs = staging.join("vfs");
     for entry in WalkDir::new(staging)
         .into_iter()
         .filter_entry(|entry| entry.path() != vfs.as_path())
     {
         let entry = entry?;
-        if entry.file_type().is_file() && extension(entry.path(), &["glb"]) {
-            fs::remove_file(entry.path()).wrap_err_with(|| {
-                format!(
-                    "failed to invalidate staged mesh {}",
-                    entry.path().display()
-                )
-            })?;
+        if !entry.file_type().is_file() || !extension(entry.path(), &["glb"]) {
+            continue;
         }
+        let relative = entry
+            .path()
+            .strip_prefix(staging)
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if verified.contains(&relative) {
+            continue;
+        }
+        fs::remove_file(entry.path()).wrap_err_with(|| {
+            format!(
+                "failed to invalidate staged mesh {}",
+                entry.path().display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -1155,10 +1176,28 @@ mod tests {
         fs::write(staging.join("meshes/resumable.glb"), b"mesh").unwrap();
         fs::write(staging.join("vfs/meshes/source.glb"), b"source").unwrap();
 
-        invalidate_staged_mesh_outputs(staging).unwrap();
+        invalidate_staged_mesh_outputs(staging, &BTreeSet::new()).unwrap();
 
         assert!(!staging.join("meshes/resumable.glb").exists());
         assert!(staging.join("vfs/meshes/source.glb").is_file());
+    }
+
+    #[test]
+    fn keeps_a_provenance_verified_staged_mesh() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        fs::create_dir_all(staging.join("meshes")).unwrap();
+        fs::write(staging.join("meshes/verified.glb"), b"mesh").unwrap();
+        fs::write(staging.join("meshes/stale.glb"), b"mesh").unwrap();
+
+        invalidate_staged_mesh_outputs(
+            staging,
+            &BTreeSet::from(["meshes/verified.glb".to_owned()]),
+        )
+        .unwrap();
+
+        assert!(staging.join("meshes/verified.glb").is_file());
+        assert!(!staging.join("meshes/stale.glb").exists());
     }
 
     #[test]
