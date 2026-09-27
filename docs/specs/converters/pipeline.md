@@ -102,8 +102,8 @@ This document outlines the conversion pipeline to ingest legacy Skyrim formats (
 The converter pipeline is orchestrated asynchronously using **`tokio`** task concurrency and channels (`tokio::sync::mpsc`):
 
 - **Non-blocking Concurrency:** Heavy I/O decompression and file transformations execute concurrently using `tokio::spawn` and `tokio::task::spawn_blocking` for CPU-bound transcode tasks (`dds` ➔ `ktx2` and `nif` ➔ `glb`).
-- **Async Progress Reporting:** Sends `ProgressPhase` updates across `tokio::sync::mpsc::UnboundedSender` to the launcher UI or CLI without thread blocking.
-- **Unified Interface:** Exposes `AssetPipeline::run_async(config, progress_tx).await` as the single high-leverage entry point for modernizing game assets.
+- **Async Progress Reporting:** Sends `ProgressEvent` updates across a `tokio::sync::mpsc::Sender` to the launcher UI or CLI without thread blocking.
+- **Unified Interface:** Exposes `AssetPipeline::run_async(config, progress_tx).await` as the single high-leverage entry point for modernizing game assets, and `run_async_with_cancel(config, progress_tx, cancellation)` for a caller that can stop it (the command-line converter's Ctrl+C handler).
 
 ---
 
@@ -117,3 +117,90 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
    - Prevents unintended integer remapping on text strings (`TES4` `CNAM`/`SNAM`), physics parameters (`TREE` `CNAM`), and RGBA color structs (`CLFM`/`AACT`).
 3. **Strict Little-Endian ESM Binary Parsing:**
    - All Bethesda ESM multi-byte numeric primitives (integers, floats, FormIDs, and subrecord payloads such as `ACHR` `PDTO`) are parsed as little-endian bytes (`from_le_bytes`).
+
+---
+
+## 6. Command-Line Progress, Interruption and Resuming
+
+`converter <Data> [output]` writes progress to **stderr** and the final summary to stdout, so a
+pipeline can keep the outcome while the status goes to the terminal.
+
+### Progress events
+
+`ProgressEvent` (`crates/converter/src/progress.rs`) carries what a status line or a GUI needs:
+
+| Field | Meaning |
+| :--- | :--- |
+| `stage` | `Discovering`, `Extracting`, `Database`, `Meshes`, `Textures`, `Scripts`, `Validating`, `Publishing`, `Complete` |
+| `completed`, `total` | Items done and expected for the stage; `fraction()` is `completed / total` |
+| `current_file` | The asset or archive in flight |
+| `bytes_completed`, `bytes_total` | Bytes done and expected, where the stage knows them cheaply: an archive's file table, or the source sizes a conversion batch sums before it starts |
+| `stage_fraction` | The stage's completion when the counts understate it (extraction counts archives but works file by file) |
+| `overall` | Whole-run completion in `0.0..=1.0`, from the per-stage weights in `STAGE_WEIGHTS` |
+
+The weights are the measured shares of a fresh Skyrim SE conversion (242,969 assets in 5 h 7 m:
+textures about 4 h 30 m of it, extraction 24.2 GB written, meshes about 3 minutes, validation
+re-reading every artifact), which is what makes `overall` a time-based bar rather than a
+stage-count one. A reconversion that reuses most outputs moves through the early stages faster
+than the weights assume, so the bar runs ahead of the wall clock; that is expected.
+
+Extraction reports every 512 files (its file table gives both the count and the bytes), each
+conversion batch reports every asset with its source size, and validation reports per artifact.
+
+### The status line
+
+On a terminal, the converter keeps one line on screen and redraws it at most four times a second —
+on every batch of progress events and on a 250 ms timer, so the elapsed time and the estimate keep
+moving while one large asset is being converted — printing a finished line when the stage changes:
+
+```
+Textures     61%  [overall  72%]  412 items/s  61.2 MB/s  00:12:31 elapsed  ~00:04:50 left
+```
+
+`~… left` is an EWMA estimate over `overall` and appears only once the rate has settled (three
+samples and five seconds). The shown `overall` never moves backwards, even when a stage finishes
+short of its total. A redraw puts the cursor back at the start of the row and pads the line with
+spaces over the one it replaces: no escape sequences, which legacy Windows consoles print
+literally.
+
+When stderr is not a terminal (a log file, CI), one plain line per stage is printed every few
+seconds, and on every stage change, each stamped with the run's elapsed time. `--verbose` restores
+the old behaviour: one line per converted asset.
+
+A warning about one asset (`ProgressEvent::notice`, sent when a dangling texture reference is
+pruned) is printed as its own line: on a terminal the renderer ends the open status line first, so
+a warning never splices into a redrawn line.
+
+### The summary
+
+A finished run prints the converted, reused and failed counts, the total time, the size of the
+converted artifacts, the manifest and `--report-json` paths, and when each stage ran (first event
+to last, so overlapping stages are still readable). An incomplete run names the first few skipped
+inputs and exits non-zero.
+
+### Interruption and failure
+
+The command-line converter installs a Ctrl+C handler (`tokio::signal::ctrl_c`). The first Ctrl+C
+sets the pipeline's cancellation flag: the asset in flight finishes, no new asset is started, and
+the run stops with the staging folder kept. The flag is checked between archives, between stages,
+in front of every asset and once more after the last stage, so an interrupt that lands while the
+run is packing up still stops it before the publish rename. A second Ctrl+C exits immediately.
+
+**A failed run keeps its staging folder too.** The folder is everything the run has done, and
+either way the converter prints what went wrong, the first few assets that failed, where the folder
+is, and the exact command that resumes from it:
+
+```
+Conversion failed after 0:12:31 during Textures: failed to convert textures\rock.dds: ...
+  assets that failed (first 1):
+    - textures\rock.dds
+  The staging folder was kept: <output>.staging-<pid>-<stamp>
+  Resume where it stopped with:
+    converter "<Data>" "<output>" --resume-staging "<output>.staging-<pid>-<stamp>"
+  Delete that folder to free the space if you would rather start over: <output>.staging-<pid>-<stamp>
+```
+
+`--resume-staging` accepts the folder and re-verifies the work already in it, so a stop costs the
+asset in flight rather than the run. The manifest is written once, at the end of a run, so a
+stopped run has recorded nothing as converted: the resume re-checks each staged file instead, and
+deleting the folder only costs the work the next run has to redo.
