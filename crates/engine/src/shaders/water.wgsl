@@ -11,6 +11,10 @@ struct WaterSettings {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
+
+// Skyrim's DefaultWater after Update.esm: Fresnel Amount 0.10 and a reflectivity of 0.8.
+const WATER_FRESNEL_F0: f32 = 0.10;
+const WATER_REFLECTIVITY: f32 = 0.8;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var water_reflection: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var water_reflection_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var water_flow_normal: texture_2d<f32>;
@@ -34,11 +38,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let viewport_uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
     let reflection_uv = clamp(vec2<f32>(viewport_uv.x, 1.0 - viewport_uv.y), vec2<f32>(0.0), vec2<f32>(1.0));
     let reflection_color = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
-    let fresnel = pow(1.0 - clamp(dot(normalize(pbr_input.V), pbr_input.N), 0.0, 1.0), 5.0);
-    pbr_input.material.base_color = mix(pbr_input.material.base_color, reflection_color, 0.25 + fresnel * 0.55);
+    // Schlick with F0 = Skyrim's DefaultWater "Fresnel Amount" (WATR DNAM, 0.10 after Update.esm).
+    let n_dot_v = clamp(dot(normalize(pbr_input.V), pbr_input.N), 0.0, 1.0);
+    let fresnel = WATER_FRESNEL_F0 + (1.0 - WATER_FRESNEL_F0) * pow(1.0 - n_dot_v, 5.0);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;
+    // The water's own (dark) colour is lit; the reflection is light that already left the scene, so
+    // it is blended in after lighting rather than lit a second time as albedo, which washed the
+    // water out to white.
     out.color = apply_pbr_lighting(pbr_input);
+    let reflected = fresnel * WATER_REFLECTIVITY;
+    out.color = vec4<f32>(mix(out.color.rgb, reflection_color.rgb, reflected), max(out.color.a, fresnel));
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

@@ -494,7 +494,10 @@ fn spawn_cell(
                     });
                 let water_material = water_materials.add(WaterMaterial {
                     base: StandardMaterial {
-                        base_color: Color::srgba(0.05, 0.2, 0.32, 0.68),
+                        // Skyrim's DefaultWater deep colour after Update.esm; per-water colours
+                        // come with the WATR export. Skyrim thins water to show the bed where it
+                        // is shallow; without depth fog a 60% cover keeps river beds visible.
+                        base_color: Color::srgba_u8(5, 14, 18, 153),
                         metallic: 0.15,
                         perceptual_roughness: 0.06,
                         reflectance: 0.9,
