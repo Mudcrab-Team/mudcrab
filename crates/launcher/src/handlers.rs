@@ -1,243 +1,136 @@
-use super::{
-    ConversionChannel, ConversionProgressEvent, ConversionStatus, GamePathConfig, LauncherState,
-};
+//! The launcher's own systems around the conversion panel: the Play button and the engine it
+//! starts, the mod drop zone, and the [`LauncherState`] that follows what the launcher is doing.
+
 use crate::{
-    components::{PlayButton, ProgressBarFill, StatusText},
-    game_detection::find_skyrim_data_dir,
+    LauncherState,
+    components::{PlayButton, PlayHintText},
+    conversion::{
+        ConversionStatus, CurrentConversion, GamePathConfig, OutputReady,
+        panel::{BUTTON_OFF, BUTTON_ON, BUTTON_ON_HOVER},
+        state::ConversionState,
+    },
 };
 use bevy::prelude::*;
-use converter::{
-    AssetPipeline, PipelineConfig, ProgressEvent, ProgressStage, cache::ConversionManifest,
-};
-use crossbeam_channel::{Sender, unbounded};
-use std::thread;
+use std::path::Path;
 
-pub fn detect_skyrim_and_start_conversion(
-    mut commands: Commands,
-    mut next_state: ResMut<NextState<LauncherState>>,
-    mut config: ResMut<GamePathConfig>,
-    mut status: ResMut<ConversionStatus>,
-) {
-    let output_dir = config.converted_assets_path.clone();
-    let conversion_complete = ConversionManifest::load(
-        &output_dir.join("conversion-manifest.json"),
-    )
-    .is_ok_and(|manifest| {
-        manifest.complete
-            && manifest.schema_version == converter::cache::CONVERTER_SCHEMA_VERSION
-            && output_dir.join("skyrim_world.db").is_file()
-            && output_dir.join("cell_cache.rkyv").is_file()
-            && std::fs::read(output_dir.join("integration-report.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                .is_some_and(|report| {
-                    report.get("passed").and_then(serde_json::Value::as_bool) == Some(true)
-                        && report
-                            .get("schema_version")
-                            .and_then(serde_json::Value::as_u64)
-                            == Some(u64::from(shared::WORLD_DATABASE_SCHEMA_VERSION))
-                })
-    });
+/// The file extensions the mod manager takes: archives and plugins.
+const MOD_EXTENSIONS: [&str; 5] = ["zip", "7z", "esp", "esm", "esl"];
 
-    if let Some(data_dir) = find_skyrim_data_dir() {
-        config.skyrim_data_path = Some(data_dir.clone());
+/// Whether Play can start the engine: the Output folder holds a complete conversion, and no run is
+/// going (a run publishes by renaming its staging folder over the output, which fails while the
+/// engine has files in it open).
+pub fn play_available(ready: OutputReady, state: &ConversionState) -> bool {
+    ready.0 && !matches!(state, ConversionState::Running | ConversionState::Stopping)
+}
 
-        if conversion_complete {
-            status.progress = 1.0;
-            status.current_step = format!(
-                "Skyrim found at {}. Assets converted! Ready to play.",
-                data_dir.display()
-            );
-            status.is_complete = true;
-        } else {
-            status.current_step = format!(
-                "Skyrim found at {}. Starting conversion...",
-                data_dir.display()
-            );
-            let (tx, rx) = unbounded::<ConversionProgressEvent>();
-            commands.insert_resource(ConversionChannel { receiver: rx });
-
-            let output_dir = config.converted_assets_path.clone();
-            thread::spawn(move || {
-                run_background_converter(tx, data_dir, output_dir);
-            });
-        }
-        next_state.set(LauncherState::ModManager);
-    } else {
-        status.current_step =
-            "Skyrim Special Edition was not found in Steam libraries or local folders.".into();
-        next_state.set(LauncherState::FirstRunSetup);
+/// What the launcher is doing, from the conversion's state: a run going, a conversion ready to
+/// play, no Skyrim `Data` folder yet, or a conversion still to make.
+pub fn launcher_state_for(
+    state: &ConversionState,
+    ready: OutputReady,
+    has_data: bool,
+) -> LauncherState {
+    match state {
+        ConversionState::Running | ConversionState::Stopping => LauncherState::ConvertingAssets,
+        _ if ready.0 => LauncherState::ModManager,
+        _ if !has_data => LauncherState::FirstRunSetup,
+        _ => LauncherState::ConvertingAssets,
     }
 }
 
-fn run_background_converter(
-    tx: Sender<ConversionProgressEvent>,
-    data_dir: std::path::PathBuf,
-    output_dir: std::path::PathBuf,
+/// Keeps [`LauncherState`] in step with the conversion. A transition already asked for this frame
+/// (Play's `LaunchingEngine`) is left alone; the next frame brings the state back to what the
+/// conversion says.
+pub fn sync_launcher_state(
+    conversion: Res<CurrentConversion>,
+    ready: Res<OutputReady>,
+    paths: Res<GamePathConfig>,
+    current: Res<State<LauncherState>>,
+    mut next: ResMut<NextState<LauncherState>>,
 ) {
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = tx.send(ConversionProgressEvent {
-                percentage: 0.0,
-                current_file: format!("Failed to start converter: {error}"),
-                finished: false,
-                failed: true,
-            });
-            return;
-        }
-    };
-    runtime.block_on(async move {
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<ProgressEvent>(256);
-        let ui_tx = tx.clone();
-        let forwarder = tokio::spawn(async move {
-            while let Some(event) = progress_rx.recv().await {
-                let _ = ui_tx.send(to_launcher_event(event));
-            }
-        });
-        let result =
-            AssetPipeline::run_async(PipelineConfig::new(data_dir, output_dir), progress_tx).await;
-        let _ = forwarder.await;
-        match result {
-            Ok(report) => {
-                let (message, percentage) = if report.complete {
-                    (
-                        format!(
-                            "Converted {} assets ({} reused)",
-                            report.converted, report.cache_hits
-                        ),
-                        1.0,
-                    )
-                } else {
-                    (
-                        format!(
-                            "Conversion incomplete: {} input(s) skipped; see conversion-manifest.json",
-                            report.skipped
-                        ),
-                        0.99,
-                    )
-                };
-                let _ = tx.send(ConversionProgressEvent {
-                    percentage,
-                    current_file: message,
-                    finished: report.complete,
-                    failed: !report.complete,
-                });
-            }
-            Err(error) => {
-                let _ = tx.send(ConversionProgressEvent {
-                    percentage: 0.0,
-                    current_file: format!("Asset conversion failed: {error:#}"),
-                    finished: false,
-                    failed: true,
-                });
-            }
-        }
-    });
-}
-
-fn to_launcher_event(event: ProgressEvent) -> ConversionProgressEvent {
-    let stage_base = match event.stage {
-        ProgressStage::Discovering => 0.0,
-        ProgressStage::Extracting => 0.05,
-        ProgressStage::Database => 0.30,
-        ProgressStage::Textures => 0.50,
-        ProgressStage::Meshes => 0.70,
-        ProgressStage::Scripts => 0.85,
-        ProgressStage::Validating => 0.93,
-        ProgressStage::Publishing => 0.97,
-        ProgressStage::Complete => 1.0,
-    };
-    let stage_width = match event.stage {
-        ProgressStage::Extracting => 0.25,
-        ProgressStage::Database => 0.20,
-        ProgressStage::Textures => 0.20,
-        ProgressStage::Meshes => 0.15,
-        ProgressStage::Scripts => 0.08,
-        ProgressStage::Validating => 0.04,
-        ProgressStage::Publishing => 0.03,
-        _ => 0.0,
-    };
-    ConversionProgressEvent {
-        percentage: (stage_base + event.fraction() * stage_width).clamp(0.0, 1.0),
-        current_file: event.current_file.map_or(event.message.clone(), |path| {
-            format!("{}: {}", event.message, path.display())
-        }),
-        finished: event.stage == ProgressStage::Complete,
-        failed: false,
-    }
-}
-
-pub fn update_conversion_progress(
-    channel: Option<Res<ConversionChannel>>,
-    mut status: ResMut<ConversionStatus>,
-    mut fill_query: Query<&mut Node, With<ProgressBarFill>>,
-    mut text_query: Query<&mut Text, With<StatusText>>,
-) {
-    if let Some(chan) = channel {
-        while let Ok(event) = chan.receiver.try_recv() {
-            status.progress = event.percentage;
-            status.current_step = event.current_file.clone();
-            status.is_complete = event.finished;
-            status.has_failed = event.failed;
-
-            for mut node in fill_query.iter_mut() {
-                node.width = Val::Percent(event.percentage * 100.0);
-            }
-
-            for mut text in text_query.iter_mut() {
-                text.0 = format!("{} ({:.0}%)", event.current_file, event.percentage * 100.0);
-            }
-        }
-    }
-}
-
-/// Synchronizes the displayed launcher status text whenever the conversion state changes,
-/// formatting active progress percentages to avoid UI flickering during background conversion.
-pub fn sync_status_text(
-    channel: Option<Res<ConversionChannel>>,
-    status: Res<ConversionStatus>,
-    mut text_query: Query<&mut Text, With<StatusText>>,
-) {
-    if channel.is_some() || !status.is_changed() {
+    if !matches!(*next, NextState::Unchanged) {
         return;
     }
-
-    let display_text = if status.progress > 0.0 && !status.is_complete && !status.has_failed {
-        format!("{} ({:.0}%)", status.current_step, status.progress * 100.0)
-    } else {
-        status.current_step.clone()
-    };
-
-    for mut text in text_query.iter_mut() {
-        text.0 = display_text.clone();
+    let wanted = launcher_state_for(&conversion.0, *ready, paths.has_data());
+    if *current.get() != wanted {
+        next.set(wanted);
     }
 }
 
 pub fn handle_play_button_click(
     interaction_query: Query<&Interaction, (Changed<Interaction>, With<PlayButton>)>,
-    status: Res<ConversionStatus>,
+    ready: Res<OutputReady>,
+    conversion: Res<CurrentConversion>,
+    mut status: ResMut<ConversionStatus>,
     mut next_state: ResMut<NextState<LauncherState>>,
 ) {
     for interaction in interaction_query.iter() {
-        if *interaction == Interaction::Pressed {
-            if status.is_complete {
-                println!("Launching OpenSkyrim Engine binary...");
-                next_state.set(LauncherState::LaunchingEngine);
-            } else {
-                println!(
-                    "Conversion in progress ({:.0}%)... Please wait.",
-                    status.progress * 100.0
-                );
-            }
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if play_available(*ready, &conversion.0) {
+            next_state.set(LauncherState::LaunchingEngine);
+        } else if ready.0 {
+            status.push_notice("Play is off while a conversion runs.");
+        } else {
+            status.push_notice(
+                "Play needs a complete conversion in the Output folder: press Start first.",
+            );
         }
     }
 }
 
+/// Draws the Play button as available or not, and the line beside it.
+pub fn draw_play(
+    ready: Res<OutputReady>,
+    conversion: Res<CurrentConversion>,
+    paths: Res<GamePathConfig>,
+    mut buttons: Query<(&Interaction, &mut BackgroundColor), With<PlayButton>>,
+    mut hints: Query<&mut Text, With<PlayHintText>>,
+) {
+    let available = play_available(*ready, &conversion.0);
+    for (interaction, mut background) in &mut buttons {
+        background.0 = match (available, *interaction) {
+            (false, _) => BUTTON_OFF,
+            (true, Interaction::Hovered) => BUTTON_ON_HOVER,
+            (true, _) => BUTTON_ON,
+        };
+    }
+    let hint = if available {
+        format!("Ready to play: {}", paths.converted_assets_path.display())
+    } else if ready.0 {
+        "Play is off while a conversion runs.".to_owned()
+    } else {
+        "Play needs a complete conversion in the Output folder.".to_owned()
+    };
+    for mut text in &mut hints {
+        if text.0 != hint {
+            text.0 = hint.clone();
+        }
+    }
+}
+
+/// Whether a dropped file is one the mod manager takes (by its extension, in any case).
+pub fn is_mod_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            MOD_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
+/// The mod manager's drop zone: mod archives and plugins dropped onto the launcher. Installing
+/// them is not built yet, so this only logs what arrived. Dropped folders are the conversion
+/// panel's ([`crate::conversion::panel::accept_dropped_folder`]).
 pub fn handle_mod_drag_and_drop(mut dnd_events: MessageReader<FileDragAndDrop>) {
     for event in dnd_events.read() {
-        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event {
-            println!("Mod dropped into launcher: {:?}", path_buf);
+        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event
+            && !path_buf.is_dir()
+            && is_mod_file(path_buf)
+        {
+            println!("Mod dropped into launcher: {path_buf:?}");
         }
     }
 }
@@ -262,14 +155,84 @@ pub fn launch_engine(config: Res<GamePathConfig>, mut status: ResMut<ConversionS
         .spawn()
     {
         Ok(child) => {
-            status.current_step = format!("OpenSkyrim engine started (process {})", child.id());
+            status.push_notice(&format!(
+                "OpenSkyrim engine started (process {}).",
+                child.id()
+            ));
         }
         Err(error) => {
-            status.has_failed = true;
-            status.current_step = format!(
-                "Failed to start engine at {}: {error}",
+            status.push_notice(&format!(
+                "Failed to start the engine at {}: {error}",
                 executable.display()
-            );
+            ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversion::state::RunReport;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[test]
+    fn mod_files_are_known_by_their_extension() {
+        for name in ["a.zip", "b.7z", "Some Mod.esp", "Update.ESM", "light.Esl"] {
+            assert!(is_mod_file(&PathBuf::from(name)), "{name}");
+        }
+        for name in [
+            "readme.txt",
+            "Skyrim - Textures0.bsa",
+            "Data",
+            "archive.rar",
+        ] {
+            assert!(!is_mod_file(&PathBuf::from(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn play_needs_a_complete_output_and_no_run_going() {
+        let finished = ConversionState::Finished(RunReport {
+            complete: true,
+            converted: 1,
+            cache_hits: 0,
+            skipped: 0,
+            warnings: Vec::new(),
+            artifacts: 1,
+            elapsed: Duration::from_secs(1),
+        });
+        assert!(play_available(OutputReady(true), &ConversionState::Idle));
+        assert!(play_available(OutputReady(true), &finished));
+        assert!(!play_available(OutputReady(false), &finished));
+        assert!(!play_available(
+            OutputReady(true),
+            &ConversionState::Running
+        ));
+        assert!(!play_available(
+            OutputReady(true),
+            &ConversionState::Stopping
+        ));
+    }
+
+    #[test]
+    fn the_launcher_state_follows_the_conversion() {
+        use ConversionState::{Idle, Running};
+        assert_eq!(
+            launcher_state_for(&Running, OutputReady(true), true),
+            LauncherState::ConvertingAssets
+        );
+        assert_eq!(
+            launcher_state_for(&Idle, OutputReady(true), false),
+            LauncherState::ModManager
+        );
+        assert_eq!(
+            launcher_state_for(&Idle, OutputReady(false), false),
+            LauncherState::FirstRunSetup
+        );
+        assert_eq!(
+            launcher_state_for(&Idle, OutputReady(false), true),
+            LauncherState::ConvertingAssets
+        );
     }
 }

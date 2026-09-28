@@ -90,7 +90,7 @@ It checks if the target `modern_assets/` output directory already contains valid
 
 ### Step 3: Transformation Progress Bar (Library Call)
 
-The launcher imports `converter` directly as a Rust crate dependency. It invokes the conversion functions in a background Rust thread while updating the GUI progress bar:
+The launcher imports `converter` directly as a Rust crate dependency. It invokes the conversion functions in a background Rust thread while updating the GUI progress bar (what is built today is described in [section 3, Conversion screen](#3-conversion-screen)):
 
 ```rust
 // Inside launcher
@@ -130,3 +130,132 @@ When conversion finishes (or on subsequent launches):
        std::process::exit(0);
    }
    ```
+
+---
+
+## 3. Conversion screen
+
+What `crates/launcher` builds today. The launcher is one window (900x600, not resizable): the
+header, the conversion panel, the mod manager's drop zone (a stub that only logs what is dropped),
+and the Play row. `cargo run -p launcher` starts it.
+
+**Nothing converts on its own.** At start-up the launcher detects Skyrim (Steam libraries, the
+registry, `skyrim_game/` and `game_data/`) into the Data row and looks at the Output folder
+(`modern_assets` by default). If the output already holds a complete conversion, Play is enabled
+at once and Start reads "Convert again". Otherwise the player presses **Start**: a full conversion writes tens of gigabytes and
+takes a while, so it only ever starts on purpose. An output that is not complete but has a staging
+folder beside it, left by a run whose process ended before it could publish, opens with that folder
+offered for **Resume** (see below).
+
+### What the panel shows
+
+| | |
+| :--- | :--- |
+| **Skyrim Data** | Where the game's assets are. Filled at start-up by game detection, or set by dropping a folder. A folder with a `Skyrim.esm` in it, case-insensitively, is a `Data` folder; dropping an installation root uses its `Data` subfolder. **Detect** looks again. |
+| **Output** | Where the converted tree is written, and what the engine is started on. Defaults to `modern_assets`, which is what the engine's `--assets` expects. Drop any other folder to change it. |
+| **Bar** | Whole-run completion, from the same `converter::ProgressEstimate` the command line's status line prints, so it never moves backwards even when a stage finishes short of its total. |
+| **Stage line** | The stage, its own completion, and the item and byte rates once the run is moving fast enough to measure them. |
+| **Clock line** | Elapsed time, and the estimated time left once three samples and five seconds have passed. |
+| **Asset line** | The asset in flight. |
+| **Notice pane** | Warnings the run emits about single assets, the summary or the error when a run ends, a check's result, and what the launcher itself has to say (the output is ready, the engine started). It keeps the last five lines, except that a check's result is shown whole. It scrolls with the mouse wheel; new notices scroll it to the end, a check's result to its first line. |
+| **Play row** | Why Play is or is not available, and the Play button. |
+
+Clicking a disabled button does nothing: the missing `Skyrim.esm` or the empty output is reported in
+the notice pane instead.
+
+### What the buttons do
+
+| State | Start | Stop | Resume | Delete staging | Check, Full check | Path rows |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Idle | on | off | off | off | on | on |
+| Running | off | on | off | off | off | off |
+| Stopping | off | on ("Quit now") | off | off | off | off |
+| Finished | on ("Convert again") | off | off | off | on | on |
+| Stopped with a staging folder | on ("Start over") | off | on | on | on | off |
+| Stopped without one | on ("Start over") | off | off | off | on | on |
+| Checking | off | on (stops the check) | off | off | off | off |
+
+Check and Full check are drawn as available only when the Output folder also holds a
+`conversion-manifest.json`; without one there is nothing to check against.
+
+- **Start** always converts from scratch into a fresh staging folder. In `Finished` or `Stopped` it
+  means "convert again", and any staging folder from the last run stays until it is deleted.
+- **Stop** asks the run to stop. The pipeline finishes the asset in flight, keeps its staging folder
+  and reports it, which is what makes Resume work. The launcher is never killed.
+- **Stop** pressed a second time, while the run is stopping, ends the launcher (exit code 130), as
+  the command line's second Ctrl+C does.
+- **Resume** continues from the stopped run's staging folder, with the same `Data` and output
+  folders: it continues where it stopped; finished files are checked again, not redone. That is why the path rows are fixed while a staging folder is waiting: a resume must
+  reuse the folders the stopped run used. Changing them means **Delete staging** first.
+- **A staging folder left by an earlier session** (the window was closed, the process crashed, the
+  power went) is looked for at start-up and whenever the Output folder changes, when the output is
+  not already complete: the converter's `find_resumable_staging` picks the newest folder beside the
+  output named `<output name>.staging-...`, by the stamp in its name, and counts the older ones. It
+  puts the panel in "Stopped with a staging folder", exactly as a Stop in this session would, and
+  the pane says `An unfinished conversion was found in <name>. Resume continues where it stopped;
+  finished files are checked again, not redone. Delete staging removes it.`, with how many older
+  ones were found. Older ones are
+  never deleted automatically. Resume then runs with that folder as the pipeline's
+  `resume_staging`.
+- **Delete staging** removes the kept folder, which frees the disk space at the cost of starting
+  over. The output folder is never touched.
+- **Check** reads the output folder's `conversion-manifest.json` and looks at every artifact it
+  lists: there, and at its recorded size. **Full check** also re-hashes every artifact, which reads
+  the whole output. Both need only an Output folder with a manifest; they convert nothing and write
+  nothing. The check
+  runs on its own thread, the bar shows how many manifest entries it has looked at, and the panel
+  returns to the state it was in before (`Checking` remembers it), so a staging folder waiting for
+  Resume is still waiting afterwards. The result replaces the notice pane: `All good: N files, X,
+  <mode>, T s`, or the problem count, the first eight problems, `and N more`, and one line of advice,
+  in `converter check`'s wording. A manifest that cannot be read reports `Check failed: ...`.
+  **Stop** during a check stops it (`converter::check_output_with_cancel`): the check finishes the
+  artifacts already being read, the panel returns to the state it was in, the bar empties and the
+  pane says `Check stopped.`; nothing of the part checked is shown as a result.
+- **Play** is enabled when the Output folder holds a complete conversion and no run is going (a run
+  publishes by renaming its staging folder over the output, which fails while the engine has files
+  in it open). It starts `engine` from the launcher's own folder with `--assets <output>`.
+
+"A complete conversion" is the check the launcher makes at start-up, when the Output folder changes
+and when a run ends: `conversion-manifest.json` says `complete` at this converter's schema,
+`skyrim_world.db` and `cell_cache.rkyv` are there, and `integration-report.json` passed for this
+world-database schema. It does not look at every artifact; Check and Full check do.
+
+### Dropping things onto the launcher
+
+- A **folder** goes to the conversion panel: a Skyrim `Data` folder or installation root fills the
+  Data row, any other folder the Output row. Folders are taken only while the path rows are on (see
+  the table): not while a conversion or a check runs, and not while a staging folder is waiting.
+- A **file** with a mod's extension (`.zip`, `.7z`, `.esp`, `.esm`, `.esl`) goes to the mod
+  manager, which only logs it for now. Any other file is refused with a notice.
+
+### Trying it without the game
+
+```sh
+cargo run -p dummy-content -- gen Data
+cargo run -p launcher
+```
+
+Drop the generated `Data` folder onto the window (it holds a `Skyrim.esm`, so it fills the Data
+row), then press Start; the default output folder is already set. The stages finish in seconds and
+Play is enabled at the end. Start and Stop mid-run to see a staging folder kept: it must exist on
+disk while the panel offers Resume, and be gone after Delete staging. After a finished run, Check and
+Full check read `All good`; delete one converted file and Check lists it as missing.
+
+### How it is built
+
+| File | What it holds |
+| :--- | :--- |
+| `src/conversion/state.rs` | The state machine: `ConversionState`, `Input`, `Effect`, `apply`, and the `controls` table above, plus `CheckSummary`, the lines a check's result shows. No Bevy types, so every transition is a unit test. |
+| `src/conversion/runner.rs` | Runs a conversion on its own thread with its own tokio runtime and reports `RunMessage::{Progress, Finished, Failed}` on a crossbeam channel. Returns the `Cancellation` the Stop button holds. `spawn_check` runs `converter::check_output_with_cancel` on its own thread with a shared stop flag and reports `RunMessage::{CheckProgress, CheckFinished, CheckFailed, CheckCancelled}`, its per-entry progress thinned to 200 steps. |
+| `src/conversion/status.rs` | `ConversionStatus`: the bar, the three lines and the notices, from the converter's `ProgressEstimate` and formatters. |
+| `src/conversion/panel.rs` | The panel's Bevy UI scene, the button and drag-and-drop systems, and the systems that draw the state. |
+| `src/conversion/mod.rs` | `GamePathConfig` (the two folders), `ConversionLogicPlugin` (state machine, message drain, effects queue; no UI), `ConversionPanelPlugin` (the panel on top), the output check behind Play and the manifest flag behind Check, the offer of a leftover staging folder, and the systems that carry effects out. |
+| `src/handlers.rs` | Play and the engine launch, the mod drop zone, and `LauncherState`, which follows the conversion. |
+| `src/ui.rs` | The window's scene: header, conversion panel, mod manager, Play row. |
+| `src/game_detection.rs` | Steam library and registry detection, and what a dropped folder means. |
+
+Work happens in one order each frame (`LauncherSet`): presses and dropped items become inputs, the
+logic folds them and the run's messages into the state and the status, the effects are carried out
+(start a run, cancel it, delete a staging folder, start or stop a check), and the widgets are drawn
+from the result. After the UI layout, the notice pane's scroll position is clamped to its content,
+so every mouse-wheel step moves it even after a new notice scrolled it to the end.
