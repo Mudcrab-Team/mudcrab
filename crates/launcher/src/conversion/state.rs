@@ -497,11 +497,15 @@ pub fn controls(state: &ConversionState) -> Controls {
     }
 }
 
-/// What the Start button says in this state: the run is a fresh conversion either way.
+/// What the Start button says in this state: the run is a fresh conversion either way. "Start
+/// over" is for when a staging folder is waiting, which Start would leave behind.
 pub fn start_label(state: &ConversionState) -> &'static str {
     match state {
         ConversionState::Finished(_) => "Convert again",
-        ConversionState::Stopped { .. } | ConversionState::Deleting { .. } => "Start over",
+        ConversionState::Stopped {
+            staging: Some(_), ..
+        }
+        | ConversionState::Deleting { .. } => "Start over",
         // Start is off while checking; it keeps the label the check returns to.
         ConversionState::Checking { previous, .. } => start_label(previous),
         _ => "Start",
@@ -962,6 +966,17 @@ mod tests {
         );
     }
 
+    /// Once the staging folder is deleted there is nothing to start over from: Start says Start
+    /// again, as it does after a failure that kept no staging folder.
+    #[test]
+    fn start_says_start_again_once_no_staging_folder_is_waiting() {
+        let (during, _) = apply(stopped(Some(staging()), true), Input::DeleteStaging);
+        let (after, _) = apply(during, Input::StagingDeleted);
+        assert_eq!(start_label(&after), "Start");
+        assert_eq!(start_label(&stopped(None, false)), "Start");
+        assert_eq!(start_label(&checking(stopped(None, true))), "Start");
+    }
+
     #[test]
     fn the_start_and_stop_buttons_say_what_they_do() {
         assert_eq!(start_label(&ConversionState::Idle), "Start");
@@ -969,7 +984,7 @@ mod tests {
             start_label(&ConversionState::Finished(report(true))),
             "Convert again"
         );
-        assert_eq!(start_label(&stopped(None, true)), "Start over");
+        assert_eq!(start_label(&stopped(Some(staging()), true)), "Start over");
         assert_eq!(start_label(&deleting(true)), "Start over");
         assert_eq!(stop_label(&ConversionState::Running), "Stop");
         assert_eq!(stop_label(&ConversionState::Stopping), "Quit now");

@@ -779,13 +779,27 @@ mod tests {
             ControlButton::Start.label(&Idle, OutputReady(true)),
             "Convert again"
         );
-        let stopped = state::ConversionState::Stopped {
+        // With a staging folder waiting, Start leaves it behind: it starts over.
+        let waiting = state::ConversionState::Stopped {
+            staging: Some(PathBuf::from("modern_assets.staging-1")),
+            cancelled: true,
+        };
+        for ready in [OutputReady(false), OutputReady(true)] {
+            assert_eq!(ControlButton::Start.label(&waiting, ready), "Start over");
+        }
+        // Once the staging folder is deleted (or none was kept) there is nothing to start over
+        // from: Start, or Convert again over a complete output.
+        let nothing_waiting = state::ConversionState::Stopped {
             staging: None,
             cancelled: true,
         };
         assert_eq!(
-            ControlButton::Start.label(&stopped, OutputReady(true)),
-            "Start over"
+            ControlButton::Start.label(&nothing_waiting, OutputReady(false)),
+            "Start"
+        );
+        assert_eq!(
+            ControlButton::Start.label(&nothing_waiting, OutputReady(true)),
+            "Convert again"
         );
         assert_eq!(
             ControlButton::Stop.label(&Running, OutputReady(true)),

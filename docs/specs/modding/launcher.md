@@ -172,7 +172,7 @@ the notice pane instead.
 | Stopping | off | on ("Quit now") | off | off | off | off |
 | Finished | on ("Convert again") | off | off | off | on | on |
 | Stopped with a staging folder | on ("Start over") | off | on | on | on | off |
-| Stopped without one | on ("Start over") | off | off | off | on | on |
+| Stopped without one | on | off | off | off | on | on |
 | Checking | off | on (stops the check) | off | off | off | off |
 | Deleting | off | off | off | off | off | off |
 
@@ -204,7 +204,8 @@ Check and Full check are drawn as available only when the Output folder also hol
   over. The output folder is never touched. A full install's staging folder is tens of gigabytes, so
   the delete runs on its own thread: the panel is `Deleting`, the stage line reads `Deleting
   <folder>...`, and every button is off until it reports. When the folder is gone (or was already
-  gone) the panel is "Stopped without one". A delete that fails offers what is left of the folder for Resume and Delete
+  gone) the panel is "Stopped without one" and Start reads "Start" again ("Convert again" over a
+  complete output). A delete that fails offers what is left of the folder for Resume and Delete
   staging again, and the pane says why.
 - **Check** reads the output folder's `conversion-manifest.json` and looks at every artifact it
   lists: there, and at its recorded size. **Full check** also re-hashes every artifact, which reads
