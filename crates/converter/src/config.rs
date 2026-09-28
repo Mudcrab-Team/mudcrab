@@ -18,7 +18,11 @@ pub struct PipelineConfig {
     pub fail_fast: bool,
     pub invalidate_cache: bool,
     pub verify_cache: bool,
-    pub texture_etc1s_quality: u8,
+    /// Quality for the UASTC fallback path (uncompressed/legacy sources).
+    /// Named `texture_etc1s_quality` in serialized configs for compatibility;
+    /// it never selected ETC1S encoding, which the Bevy runtime rejects.
+    #[serde(rename = "texture_etc1s_quality", alias = "texture_fallback_quality")]
+    pub texture_fallback_quality: u8,
     pub texture_uastc_level: u8,
     pub script_abi_version: u32,
 }
@@ -37,7 +41,7 @@ impl PipelineConfig {
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
-            texture_etc1s_quality: 192,
+            texture_fallback_quality: 192,
             texture_uastc_level: 2,
             script_abi_version: 1,
         }
@@ -66,8 +70,8 @@ impl PipelineConfig {
         color_eyre::eyre::ensure!(self.cpu_jobs > 0, "cpu_jobs must be greater than zero");
         color_eyre::eyre::ensure!(self.io_jobs > 0, "io_jobs must be greater than zero");
         color_eyre::eyre::ensure!(
-            (1..=255).contains(&self.texture_etc1s_quality),
-            "texture_etc1s_quality must be between 1 and 255"
+            (1..=255).contains(&self.texture_fallback_quality),
+            "texture_fallback_quality must be between 1 and 255"
         );
         color_eyre::eyre::ensure!(
             self.texture_uastc_level <= 4,

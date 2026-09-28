@@ -1,7 +1,15 @@
 # DDS to KTX2 Texture Conversion
 
-OpenSkyrim converts extracted Skyrim DDS assets ahead of time to Basis Universal UASTC in KTX2
-containers. The runtime can transcode that payload to the best GPU format available through Bevy.
+OpenSkyrim converts extracted Skyrim DDS assets ahead of time to KTX2 containers. Two output
+profiles exist:
+
+| Output profile | Texture policy |
+| --- | --- |
+| **Desktop/native** (default) | Preserve compatible DDS block formats inside KTX2; transcode only when required. |
+| **Portable fallback** | UASTC for sources with no native mapping, with matching supercompression. |
+
+The desktop profile keeps BC1-BC7, R8, and RGBA8 payloads byte-for-byte: no re-encoding loss,
+no 2x BC1/BC4 growth, and the runtime samples the original GPU format directly.
 
 ## Semantic encoding contract
 
@@ -23,14 +31,26 @@ being guessed from their names.
 - BC1, BC2, BC3, BC4, BC5, BC6H and BC7 2D textures are covered by conversion fixtures.
 - Six-face cubemaps and reachable 3D volume textures preserve their topology.
 - Ordinary texture arrays are rejected explicitly.
-- All authored DDS mip levels are decoded and encoded independently; the converter does not replace
+- All authored DDS mip levels are preserved independently; the converter does not replace
   them with a generated chain. A representation that would lose source levels is a hard failure.
 - RGBA alpha is retained for opaque, cutout and blended material consumers.
 
+## Native-block preservation
+
+Preservable sources (FourCC DXT1-DXT5 plus DXGI BC1-BC7, R8, RGBA8, 2D/cubemap/volume) map to
+their native `VkFormat` with sRGB vs linear taken from slot semantics, never the filename. Each
+mip level's bytes copy verbatim; cubemap levels gather one slice per face, volume levels keep
+their depth slices. The DFD is generated from the target format. Uncompressed legacy packed
+pixels (X8R8G8B8, L8) and unmapped DXGI formats fall back to the UASTC path.
+
+Byte preservation is asserted per mip level in fixtures, and a Bevy engine test loads native
+output through `ktx2_buffer_to_image` verifying GPU format, dimensions, and mip count.
+
 ## Publication and validation
 
-Each mip/face/slice is decoded to RGBA and encoded as UASTC. UASTC is used for every semantic class
-because the Bevy runtime path supports its KTX2 supercompression contract consistently. Before an
+Preservable sources keep their blocks; fallback sources decode each mip/face/slice to RGBA and
+encode as UASTC. UASTC remains the fallback for every semantic class because the Bevy runtime
+path supports its KTX2 supercompression contract consistently. Before an
 output is atomically renamed into place, the converter verifies:
 
 - KTX2 signature, transfer function and image-level table;
