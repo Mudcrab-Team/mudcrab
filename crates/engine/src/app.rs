@@ -41,7 +41,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Deserialize;
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -1268,10 +1268,33 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
             .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?,
     )
     .wrap_err("invalid conversion manifest")?;
+    let expected_schema = converter_schema_version();
+    if manifest.schema_version != expected_schema {
+        let rejection = if manifest.schema_version < expected_schema {
+            AssetSetRejection::ConverterSchemaOlder {
+                found: manifest.schema_version,
+                expected: expected_schema,
+            }
+        } else {
+            AssetSetRejection::ConverterSchemaNewer {
+                found: manifest.schema_version,
+                expected: expected_schema,
+            }
+        };
+        color_eyre::eyre::bail!(
+            "{}",
+            asset_set_rejection_message(&config.assets_dir, rejection)
+        );
+    }
     color_eyre::eyre::ensure!(
-        manifest.schema_version == converter_schema_version() && manifest.complete,
-        "asset conversion is incomplete or stale; reconvert assets with converter schema {}",
-        converter_schema_version()
+        manifest.complete,
+        "{}",
+        asset_set_rejection_message(
+            &config.assets_dir,
+            AssetSetRejection::IncompleteConversion {
+                schema: expected_schema
+            }
+        )
     );
     let report_path = config.assets_dir.join("integration-report.json");
     let report: RuntimeIntegrationReport = serde_json::from_slice(
@@ -1279,12 +1302,92 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
             .wrap_err_with(|| format!("failed to read {}", report_path.display()))?,
     )
     .wrap_err("invalid integration report")?;
+    if report.schema_version != shared::WORLD_DATABASE_SCHEMA_VERSION {
+        color_eyre::eyre::bail!(
+            "{}",
+            asset_set_rejection_message(
+                &config.assets_dir,
+                AssetSetRejection::WorldDatabaseSchema {
+                    found: report.schema_version,
+                    expected: shared::WORLD_DATABASE_SCHEMA_VERSION,
+                }
+            )
+        );
+    }
     color_eyre::eyre::ensure!(
-        report.schema_version == shared::WORLD_DATABASE_SCHEMA_VERSION && report.passed,
-        "asset integration report did not pass; inspect {}",
-        report_path.display()
+        report.passed,
+        "{}",
+        asset_set_rejection_message(
+            &config.assets_dir,
+            AssetSetRejection::IntegrationReportFailed
+        )
     );
     Ok(())
+}
+
+/// Why the runtime refused a converted asset set.
+///
+/// Each situation needs a different fix, so each gets its own message instead
+/// of one "incomplete or stale" error covering all of them.
+#[derive(Clone, Copy, Debug)]
+enum AssetSetRejection {
+    /// The converter that wrote the set is older than this engine.
+    ConverterSchemaOlder { found: u32, expected: u32 },
+    /// The converter that wrote the set is newer than this engine.
+    ConverterSchemaNewer { found: u32, expected: u32 },
+    /// The converter stopped early or skipped inputs (`complete: false`).
+    IncompleteConversion { schema: u32 },
+    /// The integration report names a different world database schema.
+    WorldDatabaseSchema { found: u32, expected: u32 },
+    /// The integration report ran and reported failures.
+    IntegrationReportFailed,
+}
+
+/// Names the failed check, what it found, what it expected, and the command
+/// that fixes it.
+fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) -> String {
+    let manifest = assets_dir.join("conversion-manifest.json");
+    let report = assets_dir.join("integration-report.json");
+    // The converter's usage string takes the Skyrim Data folder first and the
+    // output directory second. The engine knows only the directory it was
+    // given, so the Data folder stays a placeholder.
+    let reconvert = format!(
+        "cargo run --release -p converter -- <Skyrim Data folder> \"{}\"",
+        assets_dir.display()
+    );
+    match rejection {
+        AssetSetRejection::ConverterSchemaOlder { found, expected } => format!(
+            "converted assets are stale: {} was written by converter schema {found}, but this \
+             engine requires converter schema {expected}; reconvert with `{reconvert}` (the \
+             converter reuses what it can from the previous conversion)",
+            manifest.display()
+        ),
+        AssetSetRejection::ConverterSchemaNewer { found, expected } => format!(
+            "converted assets are newer than this engine: {} was written by converter schema \
+             {found}, but this engine understands only converter schema {expected}; update the \
+             engine and rebuild it (`cargo build --release -p engine`), or reconvert with a \
+             converter at schema {expected}",
+            manifest.display()
+        ),
+        AssetSetRejection::IncompleteConversion { schema } => format!(
+            "the asset conversion did not finish: {} reports complete=false at converter schema \
+             {schema}, so the converter stopped early or skipped inputs; rerun `{reconvert}` (it \
+             reuses unchanged work), or start the engine with --allow-incomplete-assets to use \
+             what is there",
+            manifest.display()
+        ),
+        AssetSetRejection::WorldDatabaseSchema { found, expected } => format!(
+            "the converted assets use a different world database schema: {} reports world \
+             database schema {found}, but this engine requires {expected}; reconvert with a \
+             converter built from the same revision as this engine: `{reconvert}`",
+            report.display()
+        ),
+        AssetSetRejection::IntegrationReportFailed => format!(
+            "the asset integration report did not pass: {} reports passed=false; read that report \
+             for the failing check, then reconvert with `{reconvert}`",
+            report.display()
+        ),
+    }
 }
 
 const fn converter_schema_version() -> u32 {
@@ -2015,26 +2118,185 @@ mod tests {
         assert!(state.offset.abs() <= AUTO_FLIGHT_HALF_SPAN);
     }
 
-    #[test]
-    fn rejects_stale_or_incomplete_runtime_assets() {
+    /// An assets directory the engine was given.
+    const EXAMPLE_ASSETS: &str = "converted-assets";
+
+    fn asset_set_message(rejection: AssetSetRejection) -> String {
+        asset_set_rejection_message(Path::new(EXAMPLE_ASSETS), rejection)
+    }
+
+    /// Runs the real gate against a temporary asset set and returns its error.
+    fn runtime_asset_error(manifest: &str, report: &str) -> String {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
         std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
         std::fs::write(
             directory.path().join("conversion-manifest.json"),
-            br#"{"schema_version":3,"complete":true}"#,
+            manifest.as_bytes(),
         )
         .unwrap();
         std::fs::write(
             directory.path().join("integration-report.json"),
-            br#"{"schema_version":3,"passed":true}"#,
+            report.as_bytes(),
         )
         .unwrap();
         let config = EngineConfig {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        assert!(validate_runtime_assets(&config).is_err());
+        format!("{:#}", validate_runtime_assets(&config).unwrap_err())
+    }
+
+    #[test]
+    fn older_converter_schema_names_both_versions_and_the_reconvert_command() {
+        let engine = converter_schema_version();
+        let message = asset_set_message(AssetSetRejection::ConverterSchemaOlder {
+            found: engine - 1,
+            expected: engine,
+        });
+        assert!(message.contains("are stale"), "{message}");
+        assert!(
+            message.contains(&format!("was written by converter schema {}", engine - 1)),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("requires converter schema {engine}")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "cargo run --release -p converter -- <Skyrim Data folder> \"{EXAMPLE_ASSETS}\""
+            )),
+            "{message}"
+        );
+        assert!(message.contains("reuses what it can"), "{message}");
+    }
+
+    #[test]
+    fn newer_converter_schema_names_both_versions_and_the_engine_rebuild() {
+        let engine = converter_schema_version();
+        let message = asset_set_message(AssetSetRejection::ConverterSchemaNewer {
+            found: engine + 1,
+            expected: engine,
+        });
+        assert!(message.contains("newer than this engine"), "{message}");
+        assert!(
+            message.contains(&format!("was written by converter schema {}", engine + 1)),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("understands only converter schema {engine}")),
+            "{message}"
+        );
+        assert!(
+            message.contains("cargo build --release -p engine"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn incomplete_conversion_names_the_rerun_and_the_incomplete_assets_option() {
+        let engine = converter_schema_version();
+        let message = asset_set_message(AssetSetRejection::IncompleteConversion { schema: engine });
+        assert!(message.contains("did not finish"), "{message}");
+        assert!(message.contains("complete=false"), "{message}");
+        assert!(
+            message.contains(&format!("at converter schema {engine}")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "cargo run --release -p converter -- <Skyrim Data folder> \"{EXAMPLE_ASSETS}\""
+            )),
+            "{message}"
+        );
+        assert!(message.contains("--allow-incomplete-assets"), "{message}");
+    }
+
+    #[test]
+    fn world_database_schema_mismatch_names_both_versions_and_the_reconvert_command() {
+        let engine = shared::WORLD_DATABASE_SCHEMA_VERSION;
+        let message = asset_set_message(AssetSetRejection::WorldDatabaseSchema {
+            found: engine - 1,
+            expected: engine,
+        });
+        assert!(message.contains("world database schema"), "{message}");
+        assert!(
+            message.contains(&format!("world database schema {}", engine - 1)),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("this engine requires {engine}")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "cargo run --release -p converter -- <Skyrim Data folder> \"{EXAMPLE_ASSETS}\""
+            )),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn failed_integration_report_points_at_the_report_file() {
+        let message = asset_set_message(AssetSetRejection::IntegrationReportFailed);
+        assert!(
+            message.contains("integration report did not pass"),
+            "{message}"
+        );
+        assert!(message.contains("passed=false"), "{message}");
+        assert!(message.contains("integration-report.json"), "{message}");
+        assert!(message.contains(EXAMPLE_ASSETS), "{message}");
+        assert!(
+            message.contains(&format!(
+                "cargo run --release -p converter -- <Skyrim Data folder> \"{EXAMPLE_ASSETS}\""
+            )),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn stale_incomplete_and_failed_runtime_assets_report_distinct_reasons() {
+        let engine = converter_schema_version();
+        let world = shared::WORLD_DATABASE_SCHEMA_VERSION;
+        let passing_report = format!(r#"{{"schema_version":{world},"passed":true}}"#);
+        let stale = runtime_asset_error(
+            &format!(r#"{{"schema_version":{},"complete":true}}"#, engine - 1),
+            &passing_report,
+        );
+        let incomplete = runtime_asset_error(
+            &format!(r#"{{"schema_version":{engine},"complete":false}}"#),
+            &passing_report,
+        );
+        let failed_report = runtime_asset_error(
+            &format!(r#"{{"schema_version":{engine},"complete":true}}"#),
+            &format!(r#"{{"schema_version":{world},"passed":false}}"#),
+        );
+        let schema_report = runtime_asset_error(
+            &format!(r#"{{"schema_version":{engine},"complete":true}}"#),
+            &format!(r#"{{"schema_version":{},"passed":true}}"#, world - 1),
+        );
+
+        assert!(stale.contains("converted assets are stale"), "{stale}");
+        assert!(
+            incomplete.contains("--allow-incomplete-assets"),
+            "{incomplete}"
+        );
+        assert!(failed_report.contains("passed=false"), "{failed_report}");
+        assert!(
+            schema_report.contains("world database schema"),
+            "{schema_report}"
+        );
+        for (left, right) in [
+            (&stale, &incomplete),
+            (&stale, &failed_report),
+            (&stale, &schema_report),
+            (&incomplete, &failed_report),
+            (&incomplete, &schema_report),
+            (&failed_report, &schema_report),
+        ] {
+            assert_ne!(left, right);
+        }
     }
 
     #[test]

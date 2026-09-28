@@ -1,4 +1,5 @@
 mod components;
+mod engine_process;
 mod game_detection;
 mod handlers;
 mod ui;
@@ -83,6 +84,7 @@ fn main() {
                 sync_status_text.after(update_conversion_progress),
                 handle_play_button_click,
                 handle_mod_drag_and_drop,
+                watch_engine_process,
             ),
         )
         .add_systems(OnEnter(LauncherState::LaunchingEngine), launch_engine)
