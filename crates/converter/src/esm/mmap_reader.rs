@@ -22,6 +22,13 @@ impl EsmReader {
             path.display()
         );
         let mmap = unsafe { Mmap::map(&file)? };
+        // The map takes its own length: the file may have shrunk since the metadata check.
+        ensure!(
+            mmap.len() as u64 >= MIN_PLUGIN_LENGTH,
+            "{} shrank to {} bytes while it was being opened",
+            path.display(),
+            mmap.len()
+        );
         ensure!(
             &mmap[..4] == b"TES4",
             "{} does not start with a TES4 header",
