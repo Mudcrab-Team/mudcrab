@@ -25,6 +25,7 @@ use bevy::{
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     render::occlusion_culling::OcclusionCulling,
+    render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     render::view::screenshot::{Screenshot, save_to_disk},
     tasks::{IoTaskPool, TaskPoolBuilder},
@@ -103,8 +104,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // event-loop sleep instead of renderer performance.
         app.insert_resource(WinitSettings::continuous());
     }
+    let render_asset_budget = upload_budget(&config);
     app.insert_resource(config)
         .insert_resource(origin)
+        .insert_resource(render_asset_budget)
         .init_resource::<StreamingMetrics>()
         .add_plugins(
             DefaultPlugins
@@ -163,6 +166,20 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     drop(app);
     drop(streaming_fixture_dir);
     Ok(())
+}
+
+/// Bevy's per-frame render-asset byte budget, seeded from the run's option.
+///
+/// Textures and meshes over the budget wait for a later frame instead of being
+/// prepared the moment they load, so a cell's new models arrive over a few
+/// frames rather than in one upload burst. Deferred assets are never dropped,
+/// and a single asset larger than the whole budget is still prepared. Images
+/// are prepared before meshes and share the one budget, so while new images
+/// use it up, new meshes wait for a later frame.
+fn upload_budget(config: &EngineConfig) -> RenderAssetBytesPerFrame {
+    RenderAssetBytesPerFrame {
+        max_bytes: config.max_upload_bytes_per_frame(),
+    }
 }
 
 #[cfg(windows)]
@@ -1497,6 +1514,26 @@ mod tests {
             Vec3::NEG_Z
         );
         assert!(state.offset.abs() <= AUTO_FLIGHT_HALF_SPAN);
+    }
+
+    #[test]
+    fn the_upload_budget_resource_carries_the_configured_option() {
+        let mut app = App::new();
+        app.insert_resource(upload_budget(&EngineConfig::default()));
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            Some(16 * 1024 * 1024)
+        );
+
+        let unlimited = EngineConfig {
+            max_upload_mib_per_frame: 0,
+            ..default()
+        };
+        app.insert_resource(upload_budget(&unlimited));
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            None
+        );
     }
 
     #[test]

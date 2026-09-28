@@ -15,6 +15,7 @@ use crate::{
     },
 };
 use bevy::{
+    app::SceneSpawnerSystems,
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
     camera::primitives::MeshAabb,
     gltf::GltfExtras,
@@ -22,7 +23,7 @@ use bevy::{
     math::Affine3A,
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
-    world_serialization::WorldInstanceReady,
+    world_serialization::{WorldInstance, WorldInstanceReady},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -48,18 +49,31 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingMetrics>()
             .init_resource::<DiagnosticFallbackAssets>()
             .init_resource::<TerrainContinuity>()
+            .init_resource::<SceneSpawnBatch>()
             .add_observer(mark_world_instance_ready)
             .add_systems(
                 Update,
                 (
                     plan_cells,
+                    despawn_cells,
                     collect_cells,
+                    arm_pending_models,
                     track_asset_readiness,
                     track_surface_readiness,
                     update_render_origin,
                     validate_streaming_lifecycle,
                 )
                     .chain(),
+            )
+            // Bevy instantiates every ready converted model in one unbudgeted pass inside
+            // `SceneSpawnerSystems::WorldInstanceSpawn`; these two systems bracket that pass so the
+            // profile can tell a frame that spawned a batch from one that spawned nothing.
+            .add_systems(
+                SpawnScene,
+                (
+                    begin_scene_spawn_batch.before(SceneSpawnerSystems::WorldInstanceSpawn),
+                    end_scene_spawn_batch.after(SceneSpawnerSystems::WorldInstanceSpawn),
+                ),
             );
     }
 }
@@ -67,6 +81,9 @@ impl Plugin for StreamingPlugin {
 #[derive(Resource, Default)]
 pub struct StreamingWorld {
     generation: u64,
+    /// Spawn order for the models [`arm_pending_models`] has yet to arm, so a backlog drains oldest
+    /// first whatever order the queries iterate in.
+    next_model_sequence: u64,
     cells: HashMap<CellKey, CellStatus>,
 }
 
@@ -77,6 +94,38 @@ pub struct StreamingMetrics {
     pub stale_responses: u64,
     pub failed_cells: u64,
     pub unloaded_cells: u64,
+    /// Cell roots despawned in the most recent frame, and the largest value that counter reached.
+    pub despawns_this_frame: u64,
+    pub max_despawns_per_frame: u64,
+    /// Entities removed by those despawns, counted over each root's whole subtree.
+    pub despawned_entities: u64,
+    /// Converted models Bevy instantiated in the most recent frame, and the largest value that
+    /// counter reached. An instance is counted on the frame its entities are written into the
+    /// world, which is the frame the spawn batch's cost lands on.
+    pub instances_spawned_this_frame: u64,
+    pub max_instances_spawned_per_frame: u64,
+    /// Models whose converted scene is loaded but which have not been handed to the spawner yet,
+    /// waiting for their turn in the arming budget, and the largest backlog seen.
+    pub arming_queue_depth: usize,
+    pub peak_arming_queue_depth: usize,
+    /// Models handed to Bevy's spawner in the most recent frame, and the largest value that counter
+    /// reached. While the arming pacer is unlimited this is the frame a cell commits; once models
+    /// are armed only when their asset is loaded, it is the frame the instance spawns.
+    pub instances_armed_this_frame: u64,
+    pub max_instances_armed_per_frame: u64,
+    /// Model instances the readiness scan validated to completion in its most recent run, and the
+    /// largest value that counter reached.
+    pub instances_completed_this_scan: u64,
+    pub max_instances_completed_per_scan: u64,
+    /// Cells outside the unload radius that are waiting for their turn in the unload budget, and
+    /// the largest backlog seen.
+    pub retiring_cells: usize,
+    pub peak_retiring_cells: usize,
+    /// Retiring cells that came back into range before their turn and kept the root they had.
+    pub revived_cells: u64,
+    /// Frames where the backlog passed [`retire_backlog_bound`] and every retiring cell was
+    /// unloaded at once.
+    pub retire_backlog_overflows: u64,
     pub resident_cells: usize,
     pub loading_cells: usize,
     pub peak_resident_cells: usize,
@@ -167,8 +216,20 @@ struct TerrainEdges {
 }
 
 enum CellStatus {
-    Loading { generation: u64 },
-    Resident { root: Entity },
+    Loading {
+        generation: u64,
+    },
+    Resident {
+        root: Entity,
+    },
+    /// Outside the unload radius, waiting for its turn in the unload budget. The map entry and the
+    /// root stay, so a cell that comes back into range before its turn is revived as it is instead
+    /// of being despawned and requested again. A retiring cell is still drawn until its turn; that
+    /// is harmless while the camera stays in one worldspace (retiring cells are the far ones), but a
+    /// future runtime worldspace change must unload them at once rather than pace them.
+    Retiring {
+        root: Entity,
+    },
     Failed,
 }
 
@@ -177,7 +238,6 @@ pub struct RenderOrigin(pub IVec2);
 
 #[allow(clippy::too_many_arguments)]
 fn plan_cells(
-    mut commands: Commands,
     config: Res<EngineConfig>,
     database: Res<WorldDatabase>,
     origin: Res<RenderOrigin>,
@@ -208,6 +268,8 @@ fn plan_cells(
         }
     }
     for key in &wanted {
+        // A retiring cell is still in the map, so it is never requested a second time: the retain
+        // pass below revives it with the root it kept.
         if !streaming.cells.contains_key(key) {
             streaming.generation = streaming.generation.wrapping_add(1);
             let generation = streaming.generation;
@@ -228,17 +290,30 @@ fn plan_cells(
             }
         }
     }
+    let mut revived = 0u64;
     streaming.cells.retain(|key, status| {
-        let keep = cell_within_unload_radius(*key, center, config.unload_radius);
-        if !keep {
-            metrics.unloaded_cells += 1;
-            continuity.edges.remove(key);
-            profiler.event(format!("{key:?}"), "unloaded", None);
-            if let CellStatus::Resident { root } = status {
-                commands.entity(*root).despawn();
+        if cell_within_unload_radius(*key, center, config.unload_radius) {
+            if let CellStatus::Retiring { root } = status {
+                *status = CellStatus::Resident { root: *root };
+                revived += 1;
+            }
+            return true;
+        }
+        match status {
+            CellStatus::Resident { root } => {
+                *status = CellStatus::Retiring { root: *root };
+                true
+            }
+            // Already waiting for its turn in the budget.
+            CellStatus::Retiring { .. } => true,
+            // Nothing was spawned, so there is no subtree to pace: drop the entry now and let the
+            // in-flight response turn into a stale one.
+            CellStatus::Loading { .. } | CellStatus::Failed => {
+                continuity.edges.remove(key);
+                profiler.event(format!("{key:?}"), "unload_dropped", None);
+                false
             }
         }
-        keep
     });
     metrics.resident_cells = streaming
         .cells
@@ -250,11 +325,156 @@ fn plan_cells(
         .values()
         .filter(|status| matches!(status, CellStatus::Loading { .. }))
         .count();
+    metrics.retiring_cells = streaming
+        .cells
+        .values()
+        .filter(|status| matches!(status, CellStatus::Retiring { .. }))
+        .count();
     metrics.peak_resident_cells = metrics.peak_resident_cells.max(metrics.resident_cells);
     metrics.peak_loading_cells = metrics.peak_loading_cells.max(metrics.loading_cells);
+    metrics.peak_retiring_cells = metrics.peak_retiring_cells.max(metrics.retiring_cells);
+    if revived > 0 {
+        metrics.revived_cells = metrics.revived_cells.saturating_add(revived);
+        profiler.increment("streaming/revived_cells", revived);
+    }
     profiler.set_gauge("streaming/resident_cells", metrics.resident_cells as f64);
     profiler.set_gauge("streaming/loading_cells", metrics.loading_cells as f64);
+    profiler.set_gauge("streaming/retiring_cells", metrics.retiring_cells as f64);
     profiler.record_elapsed("streaming/plan_cells", plan_started);
+}
+
+/// How many cells may wait for their turn in the unload budget before the pacer gives up on pacing
+/// and unloads every one of them in a single frame.
+///
+/// One whole window at the unload radius, `(2 * r + 1)^2` cells: the most a single crossing or
+/// teleport can retire at once. Both are paced, so the overflow path only fires when sustained
+/// flight keeps retiring cells faster than the budget unloads them, the case where holding on to
+/// the backlog costs more than one larger frame.
+fn retire_backlog_bound(unload_radius: i32) -> usize {
+    let side = 2 * unload_radius.max(0) as usize + 1;
+    side * side
+}
+
+/// Stable order for the unload budget, so a replayed crossing unloads the same cells on the same
+/// frames whatever order the status map iterates in.
+fn cell_order_key(key: CellKey) -> (u32, i32, i32, u32) {
+    match key {
+        CellKey::Exterior {
+            worldspace_id,
+            grid_x,
+            grid_y,
+        } => (0, grid_y, grid_x, worldspace_id),
+        CellKey::Interior(cell_id) => (1, 0, 0, cell_id),
+    }
+}
+
+/// Unloads retiring cells, at most `max_cell_unloads_per_frame` of them per frame.
+///
+/// This is an exclusive system on purpose: a command-buffered `despawn` only queues the removal and
+/// the real work happens later at a schedule sync point, where no span can see it — and the whole
+/// point of the budget is to keep that work off one frame.
+fn despawn_cells(world: &mut World) {
+    let (budget, backlog_bound) = {
+        let config = world.resource::<EngineConfig>();
+        (
+            config.max_cell_unloads_per_frame.max(1),
+            retire_backlog_bound(config.unload_radius),
+        )
+    };
+    let mut retiring: Vec<(CellKey, Entity)> = world
+        .resource::<StreamingWorld>()
+        .cells
+        .iter()
+        .filter_map(|(key, status)| match status {
+            CellStatus::Retiring { root } => Some((*key, *root)),
+            _ => None,
+        })
+        .collect();
+    if retiring.is_empty() {
+        world.resource_mut::<StreamingMetrics>().despawns_this_frame = 0;
+        world
+            .resource_mut::<ProfilingState>()
+            .set_gauge("streaming/despawns_this_frame", 0.0);
+        return;
+    }
+    retiring.sort_by_key(|(key, _)| cell_order_key(*key));
+    let backlog = retiring.len();
+    let overflow = backlog > backlog_bound;
+    let budget = if overflow {
+        backlog
+    } else {
+        budget.min(backlog)
+    };
+    let started = Instant::now();
+    let mut entities = 0usize;
+    for (_, root) in retiring.iter().take(budget) {
+        entities = entities.saturating_add(despawn_subtree(world, *root));
+    }
+    {
+        let mut streaming = world.resource_mut::<StreamingWorld>();
+        for (key, _) in retiring.iter().take(budget) {
+            streaming.cells.remove(key);
+        }
+    }
+    for (key, _) in retiring.iter().take(budget) {
+        world.resource_mut::<TerrainContinuity>().edges.remove(key);
+        world
+            .resource_mut::<ProfilingState>()
+            .event(format!("{key:?}"), "unloaded", None);
+    }
+    let cells = budget as u64;
+    let remaining = backlog - budget;
+    let max_despawns_per_frame = {
+        let mut metrics = world.resource_mut::<StreamingMetrics>();
+        metrics.retiring_cells = remaining;
+        metrics.peak_retiring_cells = metrics.peak_retiring_cells.max(backlog);
+        metrics.unloaded_cells = metrics.unloaded_cells.saturating_add(cells);
+        metrics.despawns_this_frame = cells;
+        metrics.despawned_entities = metrics.despawned_entities.saturating_add(entities as u64);
+        metrics.max_despawns_per_frame = metrics.max_despawns_per_frame.max(cells);
+        if overflow {
+            metrics.retire_backlog_overflows = metrics.retire_backlog_overflows.saturating_add(1);
+        }
+        metrics.max_despawns_per_frame
+    };
+    let mut profiler = world.resource_mut::<ProfilingState>();
+    profiler.record_elapsed("streaming/cell_despawn", started);
+    profiler.increment("streaming/despawned_cells", cells);
+    profiler.increment("streaming/despawned_entities", entities as u64);
+    profiler.set_gauge("streaming/despawns_this_frame", cells as f64);
+    profiler.set_gauge(
+        "streaming/max_despawns_per_frame",
+        max_despawns_per_frame as f64,
+    );
+    profiler.set_gauge("streaming/retiring_cells", remaining as f64);
+    if overflow {
+        profiler.increment("streaming/retire_backlog_overflows", 1);
+        profiler.event("streaming", "retire_backlog_overflow", Some(backlog as f64));
+        warn!(
+            backlog,
+            bound = backlog_bound,
+            "retire backlog exceeded its bound; unloading every retiring cell at once"
+        );
+    }
+}
+
+/// Despawns a cell root and everything under it, returning the number of entities that removes.
+///
+/// The count walks `Children` first, so the batch span covers the accounting as well as the
+/// recursive removal. The walk is only paid on frames that unload cells.
+fn despawn_subtree(world: &mut World, root: Entity) -> usize {
+    let mut entities = 0usize;
+    let mut stack = vec![root];
+    while let Some(entity) = stack.pop() {
+        entities += 1;
+        if let Some(children) = world.get::<Children>(entity) {
+            stack.extend(children.iter());
+        }
+    }
+    if let Ok(entity) = world.get_entity_mut(root) {
+        entity.despawn();
+    }
+    entities
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,6 +575,7 @@ fn collect_cells(
                     origin.0,
                     payload,
                     terrain,
+                    &mut streaming.next_model_sequence,
                     &mut profiler,
                 );
                 streaming
@@ -426,6 +647,7 @@ fn spawn_cell(
     origin: IVec2,
     payload: CellPayload,
     terrain: Option<TerrainSnapshot>,
+    model_sequence: &mut u64,
     profiler: &mut ProfilingState,
 ) -> Entity {
     let spawn_started = Instant::now();
@@ -561,11 +783,15 @@ fn spawn_cell(
                 entity.insert(bounds);
             }
             if let Some(path) = reference.model_path.and_then(converted_model_path) {
+                let sequence = *model_sequence;
+                *model_sequence = model_sequence.saturating_add(1);
                 entity.insert((
                     MeshHandle(path.clone()),
-                    WorldAssetRoot(
-                        asset_server.load(GltfAssetLabel::Scene(0).from_asset(path.clone())),
-                    ),
+                    PendingModel {
+                        handle: asset_server
+                            .load(GltfAssetLabel::Scene(0).from_asset(path.clone())),
+                        sequence,
+                    },
                     PendingAssetProfile {
                         started: Instant::now(),
                         scene_spawned: false,
@@ -581,6 +807,21 @@ fn spawn_cell(
     profiler.increment("streaming/references_spawned", reference_count as u64);
     profiler.record_elapsed("streaming/spawn_cell", spawn_started);
     root
+}
+
+/// A converted model [`spawn_cell`] found for a reference, waiting for its turn in the arming
+/// budget.
+///
+/// Bevy instantiates every model it is handed in one unbudgeted pass, so handing it a whole cell's
+/// models at once is what makes an arrival frame expensive. [`arm_pending_models`] replaces this
+/// component with [`WorldAssetRoot`] once the converted scene is loaded and the budget allows it.
+/// A model whose cell is unloaded before its turn needs no cleanup: this is a component on that
+/// cell's subtree, not an entry in a queue of its own, so it disappears with the subtree.
+#[derive(Component)]
+struct PendingModel {
+    handle: Handle<WorldAsset>,
+    /// Where the reference was in spawn order, so a backlog is armed oldest first.
+    sequence: u64,
 }
 
 #[derive(Component)]
@@ -630,6 +871,118 @@ type PendingAssetQuery<'world, 'state> = Query<
     ),
 >;
 
+/// Wall-clock timing for the pass Bevy spends instantiating converted models.
+#[derive(Resource, Default)]
+struct SceneSpawnBatch {
+    started: Option<Instant>,
+}
+
+fn begin_scene_spawn_batch(mut batch: ResMut<SceneSpawnBatch>) {
+    batch.started = Some(Instant::now());
+}
+
+/// Records the cost of Bevy's world-instance spawn pass and counts what the pass did.
+///
+/// The counts read the world rather than Bevy's instance bookkeeping: a reference gains a child the
+/// moment its converted scene is written below it, so `Changed<Children>` on a reference that owns
+/// an instance is exactly "this model was instantiated this frame". `WorldInstance` itself is
+/// inserted when the reference joins the spawner's queue
+/// (`bevy_world_serialization::world_asset_spawner`, `world_instance_spawner`) - which happens
+/// whether or not the asset has landed - so `Added<WorldInstance>` counts the models *handed to*
+/// the spawner this frame, the same thing as spawned only once arming waits for the asset.
+fn end_scene_spawn_batch(
+    mut batch: ResMut<SceneSpawnBatch>,
+    spawned: Query<(), (With<WorldInstance>, Changed<Children>)>,
+    armed: Query<(), Added<WorldInstance>>,
+    mut metrics: ResMut<StreamingMetrics>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    if let Some(started) = batch.started.take() {
+        profiler.record_elapsed("scene/spawn_batch", started);
+    }
+    let spawned = spawned.iter().count() as u64;
+    let armed = armed.iter().count() as u64;
+    metrics.instances_spawned_this_frame = spawned;
+    metrics.max_instances_spawned_per_frame = metrics.max_instances_spawned_per_frame.max(spawned);
+    metrics.instances_armed_this_frame = armed;
+    metrics.max_instances_armed_per_frame = metrics.max_instances_armed_per_frame.max(armed);
+    profiler.set_gauge("scene/instances_spawned_this_frame", spawned as f64);
+    profiler.set_gauge("scene/instances_armed_this_frame", armed as f64);
+}
+
+/// Hands loaded converted models to Bevy's scene spawner, at most `max_model_spawns_per_frame` of
+/// them per frame.
+///
+/// Bevy instantiates every model whose converted scene is ready in the frame it is handed over, in
+/// `SceneSpawnerSystems::WorldInstanceSpawn`, so the batch a frame pays to instantiate is the batch
+/// this system lets through. The budget is spent on the models that are ready and skipped over the
+/// ones that are still loading, so a slow load cannot hold the models behind it back; among the
+/// ready ones the oldest reference is armed first. `0` arms every ready model, the unbudgeted
+/// behaviour the engine had before this budget existed.
+fn arm_pending_models(
+    config: Res<EngineConfig>,
+    asset_server: Res<AssetServer>,
+    world_assets: Res<Assets<WorldAsset>>,
+    pending: Query<(Entity, &PendingModel)>,
+    mut commands: Commands,
+    mut metrics: ResMut<StreamingMetrics>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    let started = Instant::now();
+    let backlog = pending.iter().count();
+    let mut ready: Vec<(u64, Entity, Handle<WorldAsset>)> = pending
+        .iter()
+        .filter(|(_, model)| model_can_spawn(&world_assets, &asset_server, &model.handle))
+        .map(|(entity, model)| (model.sequence, entity, model.handle.clone()))
+        .collect();
+    ready.sort_by_key(|(sequence, _, _)| *sequence);
+    let budget = config.max_model_spawns_per_frame;
+    let armed = if budget == 0 {
+        ready.len()
+    } else {
+        budget.min(ready.len())
+    };
+    for (_, entity, handle) in ready.drain(..armed) {
+        commands
+            .entity(entity)
+            .insert(WorldAssetRoot(handle))
+            .remove::<PendingModel>();
+    }
+    // The depth is what is left waiting once the budget has been spent; the peak is the backlog the
+    // pacer was handed, which is the number that says how far behind on a burst it is.
+    let depth = backlog.saturating_sub(armed);
+    metrics.arming_queue_depth = depth;
+    metrics.peak_arming_queue_depth = metrics.peak_arming_queue_depth.max(backlog);
+    profiler.increment("streaming/models_armed", armed as u64);
+    profiler.set_gauge("streaming/arming_queue_depth", depth as f64);
+    profiler.set_gauge(
+        "streaming/peak_arming_queue_depth",
+        metrics.peak_arming_queue_depth as f64,
+    );
+    profiler.record_elapsed("streaming/arm_models", started);
+}
+
+/// Whether Bevy can instantiate this model now.
+///
+/// The converted scene being in `Assets<WorldAsset>` is exactly the condition the spawner retries
+/// on, so arming on it hands a model over on the first frame it can actually spawn. A model whose
+/// load failed will never arrive: it is armed too, so the readiness scan reports the failure
+/// exactly as it did when every model was armed at commit, instead of leaving the reference
+/// pending for as long as its cell lives.
+fn model_can_spawn(
+    world_assets: &Assets<WorldAsset>,
+    asset_server: &AssetServer,
+    handle: &Handle<WorldAsset>,
+) -> bool {
+    world_assets.contains(handle.id())
+        || matches!(
+            asset_server
+                .get_load_states(handle.id())
+                .map(|(load, _, _)| load),
+            Some(LoadState::Failed(_))
+        )
+}
+
 fn mark_world_instance_ready(
     ready: On<WorldInstanceReady>,
     mut pending: Query<&mut PendingAssetProfile>,
@@ -645,6 +998,7 @@ fn track_asset_readiness(
     config: Res<EngineConfig>,
     asset_server: Res<AssetServer>,
     pending: PendingAssetQuery,
+    unarmed: Query<(), (With<PendingAssetProfile>, With<PendingModel>)>,
     children: Query<&Children>,
     primitives: RenderPrimitiveQuery,
     transforms: Query<(&Transform, &GlobalTransform)>,
@@ -657,7 +1011,9 @@ fn track_asset_readiness(
     mut profiler: ResMut<ProfilingState>,
 ) {
     let started = Instant::now();
-    metrics.pending_asset_instances = pending.iter().count();
+    // A model still waiting in the arming queue has no scene yet, so the scan below cannot see it;
+    // count it here so the readiness gates keep waiting for every queued model.
+    metrics.pending_asset_instances = pending.iter().count() + unarmed.iter().count();
     let mut completed_this_scan = 0usize;
     for (entity, root, pending, local, global, world_transform, expected_bounds) in &pending {
         let load_failure =
@@ -794,9 +1150,17 @@ fn track_asset_readiness(
     metrics.pending_asset_instances = metrics
         .pending_asset_instances
         .saturating_sub(completed_this_scan);
+    metrics.instances_completed_this_scan = completed_this_scan as u64;
+    metrics.max_instances_completed_per_scan = metrics
+        .max_instances_completed_per_scan
+        .max(metrics.instances_completed_this_scan);
     profiler.set_gauge(
         "assets/pending_instances",
         metrics.pending_asset_instances as f64,
+    );
+    profiler.set_gauge(
+        "assets/instances_completed_this_scan",
+        metrics.instances_completed_this_scan as f64,
     );
     profiler.record_elapsed("assets/readiness_scan", started);
 }
@@ -1791,11 +2155,21 @@ fn validate_streaming_lifecycle(
         .values()
         .filter(|status| matches!(status, CellStatus::Loading { .. }))
         .count();
+    // A retiring cell still owns its root until the unload budget reaches it, so its root is
+    // accounted for here rather than reading as orphaned.
     let resident_entities: HashSet<_> = streaming
         .cells
         .values()
         .filter_map(|status| match status {
-            CellStatus::Resident { root } => Some(*root),
+            CellStatus::Resident { root } | CellStatus::Retiring { root } => Some(*root),
+            _ => None,
+        })
+        .collect();
+    let retiring_entities: HashSet<_> = streaming
+        .cells
+        .values()
+        .filter_map(|status| match status {
+            CellStatus::Retiring { root } => Some(*root),
             _ => None,
         })
         .collect();
@@ -1817,6 +2191,9 @@ fn validate_streaming_lifecycle(
         );
         root_entries
             .iter()
+            // A retiring root is outside the radius by construction: it is waiting for its turn in
+            // the unload budget, which [`despawn_cells`] bounds, so its lag is not a violation.
+            .filter(|(entity, _, _)| !retiring_entities.contains(entity))
             .filter_map(|(_, _, grid)| *grid)
             .filter(|grid| {
                 (grid.0.x - center.x).abs() > config.unload_radius
@@ -1925,6 +2302,255 @@ mod tests {
             3,
         ));
         assert!(cell_within_unload_radius(CellKey::Interior(99), center, 0));
+    }
+
+    /// An app with the cell plan, the unload pacer and the lifecycle validator chained as they run
+    /// in `StreamingPlugin`. `collect_cells` is left out, so a requested cell stays `Loading` and
+    /// the test drives the resident cells itself through [`spawn_resident_cell`].
+    fn streaming_test_app(config: EngineConfig) -> (App, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER NOT NULL);
+                 INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ))
+            .unwrap();
+        drop(connection);
+        let mut app = App::new();
+        app.insert_resource(config)
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(WorldDatabase::open(&path).unwrap())
+            .init_resource::<StreamingWorld>()
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<TerrainContinuity>()
+            .init_resource::<ProfilingState>()
+            .add_systems(
+                Update,
+                (plan_cells, despawn_cells, validate_streaming_lifecycle).chain(),
+            );
+        (app, directory)
+    }
+
+    fn spawn_camera(app: &mut App, center: IVec2) {
+        app.world_mut().spawn((
+            Transform::from_xyz(
+                center.x as f32 * CELL_SIZE,
+                0.0,
+                -(center.y as f32) * CELL_SIZE,
+            ),
+            StreamingCamera,
+        ));
+    }
+
+    fn move_camera(app: &mut App, shift: IVec2) {
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<StreamingCamera>>();
+        let world = app.world_mut();
+        let mut transforms = camera.query_mut(world);
+        let mut transform = transforms.single_mut().unwrap();
+        transform.translation.x += shift.x as f32 * CELL_SIZE;
+        transform.translation.z -= shift.y as f32 * CELL_SIZE;
+    }
+
+    fn exterior_key(grid_x: i32, grid_y: i32) -> CellKey {
+        CellKey::Exterior {
+            worldspace_id: 0x3c,
+            grid_x,
+            grid_y,
+        }
+    }
+
+    /// Spawns a cell root with a two-entity subtree under it and records the cell as resident or
+    /// retiring, the state a committed cell is in.
+    fn spawn_cell(app: &mut App, grid_x: i32, grid_y: i32, resident: bool) -> Entity {
+        let root = app
+            .world_mut()
+            .spawn((
+                CellRef(cell_id_of(grid_x, grid_y)),
+                StreamedCellRoot,
+                ExteriorCellGrid(IVec2::new(grid_x, grid_y)),
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((Transform::default(), ChildOf(root)))
+            .id();
+        app.world_mut()
+            .spawn((Transform::default(), ChildOf(child)));
+        let status = if resident {
+            CellStatus::Resident { root }
+        } else {
+            CellStatus::Retiring { root }
+        };
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(exterior_key(grid_x, grid_y), status);
+        root
+    }
+
+    /// A steady window around `center`: the 7x7 cells the camera wants plus the trailing column a
+    /// crossing drops, which is the shape the resident set settles into while flying.
+    fn spawn_steady_window(app: &mut App, center: IVec2) {
+        for grid_y in (center.y - 3)..=(center.y + 3) {
+            for grid_x in (center.x - 4)..=(center.x + 3) {
+                spawn_cell(app, grid_x, grid_y, true);
+            }
+        }
+    }
+
+    fn cell_id_of(grid_x: i32, grid_y: i32) -> u32 {
+        ((grid_x + 64) as u32) * 256 + (grid_y + 64) as u32
+    }
+
+    fn resident_root_count(app: &mut App) -> usize {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamedCellRoot>>();
+        let world = app.world();
+        query.iter(world).count()
+    }
+
+    fn streaming_metrics(app: &App) -> StreamingMetrics {
+        app.world().resource::<StreamingMetrics>().clone()
+    }
+
+    #[test]
+    fn a_crossing_unloads_cells_within_the_budget_and_finishes_within_ceil_frames() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 3,
+            unload_radius: 4,
+            max_cell_unloads_per_frame: 2,
+            ..default()
+        });
+        spawn_camera(&mut app, IVec2::ZERO);
+        spawn_steady_window(&mut app, IVec2::ZERO);
+        let roots = resident_root_count(&mut app);
+        app.update();
+        let settled = streaming_metrics(&app);
+        assert_eq!(
+            settled.unloaded_cells, 0,
+            "the window fits inside the radius"
+        );
+        assert_eq!(settled.retiring_cells, 0);
+        assert_eq!(settled.streaming_invariant_failures, 0);
+
+        // Cross into the next cell: the whole trailing column leaves the unload radius at once.
+        move_camera(&mut app, IVec2::X);
+        let mut unloads_per_frame = Vec::new();
+        let mut roots_left = Vec::new();
+        for frame in 1..=4 {
+            app.update();
+            let metrics = streaming_metrics(&app);
+            unloads_per_frame.push(metrics.despawns_this_frame);
+            assert!(
+                metrics.despawns_this_frame <= 2,
+                "frame {frame} unloaded {} cells against a budget of 2",
+                metrics.despawns_this_frame
+            );
+            assert_eq!(metrics.streaming_invariant_failures, 0, "frame {frame}");
+            roots_left.push(resident_root_count(&mut app));
+        }
+        assert_eq!(
+            unloads_per_frame,
+            vec![2, 2, 2, 1],
+            "the column's 7 cells must spread over ceil(7 / 2) frames"
+        );
+        assert_eq!(roots_left, vec![roots - 2, roots - 4, roots - 6, roots - 7]);
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.unloaded_cells, 7);
+        assert_eq!(metrics.retiring_cells, 0);
+        assert_eq!(metrics.max_despawns_per_frame, 2);
+        assert_eq!(metrics.streaming_invariant_failures, 0);
+    }
+
+    #[test]
+    fn a_reversal_revives_retiring_cells_without_another_request() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 3,
+            unload_radius: 4,
+            max_cell_unloads_per_frame: 2,
+            ..default()
+        });
+        spawn_camera(&mut app, IVec2::ZERO);
+        spawn_steady_window(&mut app, IVec2::ZERO);
+        app.update();
+        move_camera(&mut app, IVec2::X);
+        app.update();
+        let after_crossing = streaming_metrics(&app);
+        assert_eq!(
+            after_crossing.retiring_cells, 5,
+            "the crossing retires a column of 7 and the budget takes 2 in the same frame"
+        );
+        assert_eq!(after_crossing.unloaded_cells, 2);
+        let roots_after_crossing = resident_root_count(&mut app);
+
+        // Turn around before the budget has worked through the column.
+        move_camera(&mut app, IVec2::NEG_X);
+        app.update();
+        let after_reversal = streaming_metrics(&app);
+        assert_eq!(after_reversal.revived_cells, 5);
+        assert_eq!(after_reversal.retiring_cells, 0);
+        assert_eq!(after_reversal.despawns_this_frame, 0);
+        assert_eq!(after_reversal.unloaded_cells, 2);
+        assert_eq!(
+            after_reversal.requests_submitted, after_crossing.requests_submitted,
+            "a revived cell keeps its root, so it must not be requested again"
+        );
+        assert_eq!(resident_root_count(&mut app), roots_after_crossing);
+        assert_eq!(after_reversal.streaming_invariant_failures, 0);
+    }
+
+    #[test]
+    fn retire_backlog_bound_is_one_window_at_the_unload_radius() {
+        assert_eq!(retire_backlog_bound(4), 81);
+        assert_eq!(retire_backlog_bound(3), 49);
+        assert_eq!(retire_backlog_bound(1), 9);
+        assert_eq!(retire_backlog_bound(0), 1);
+    }
+
+    #[test]
+    fn a_backlog_past_the_bound_unloads_every_retiring_cell_at_once() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 1,
+            unload_radius: 1,
+            max_cell_unloads_per_frame: 2,
+            ..default()
+        });
+        spawn_camera(&mut app, IVec2::ZERO);
+        // Under the bound the pacer keeps to the budget: 8 cells wait, 2 go per frame.
+        for grid_x in 10..18 {
+            spawn_cell(&mut app, grid_x, 0, false);
+        }
+        app.update();
+        let paced = streaming_metrics(&app);
+        assert_eq!(paced.retire_backlog_overflows, 0);
+        assert_eq!(paced.despawns_this_frame, 2);
+        assert_eq!(paced.retiring_cells, 6);
+        assert_eq!(
+            resident_root_count(&mut app),
+            6,
+            "the waiters keep their roots"
+        );
+
+        // Past the bound the pacer gives up pacing and takes the whole backlog in one frame.
+        for grid_x in 20..40 {
+            spawn_cell(&mut app, grid_x, 0, false);
+        }
+        app.update();
+        let overflowed = streaming_metrics(&app);
+        assert_eq!(overflowed.retire_backlog_overflows, 1);
+        assert_eq!(overflowed.despawns_this_frame, 26);
+        assert_eq!(overflowed.retiring_cells, 0);
+        assert_eq!(overflowed.unloaded_cells, 28);
+        assert_eq!(resident_root_count(&mut app), 0);
+        assert_eq!(overflowed.streaming_invariant_failures, 0);
     }
 
     #[test]
@@ -2155,10 +2781,11 @@ mod tests {
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
 
-    /// The app the empty-model tests run in: the real readiness scan
-    /// ([`track_asset_readiness`]) over an asset server and the world serialization spawner the
-    /// engine uses, so a converted model is spawned and its reference becomes ready by the same
-    /// route a converted glb takes.
+    /// The app the model tests run in: the unload pacer, the arming pacer and the real readiness
+    /// scan ([`track_asset_readiness`]) over an asset server and the world serialization spawner
+    /// the engine uses, so a converted model is spawned and its reference becomes ready by the same
+    /// route a converted glb takes. The three run chained, in the order `StreamingPlugin` runs
+    /// them, so a test can tell which frame of that chain a model answered on.
     fn model_app() -> App {
         let mut app = App::new();
         app.add_plugins((
@@ -2171,18 +2798,32 @@ mod tests {
         .init_asset::<StandardMaterial>()
         .insert_resource(EngineConfig::default())
         .init_resource::<StreamingMetrics>()
+        .init_resource::<StreamingWorld>()
+        .init_resource::<TerrainContinuity>()
         .init_resource::<ProfilingState>()
         .init_resource::<DiagnosticFallbackAssets>()
+        .init_resource::<SceneSpawnBatch>()
         // The converted scene holds entities, and the spawner reads each of their components out
         // of the type registry.
         .register_type::<ChildOf>()
         .register_type::<Children>()
         .register_type::<GlobalTransform>()
         .register_type::<Mesh3d>()
+        .register_type::<MeshMaterial3d<StandardMaterial>>()
         .register_type::<Name>()
         .register_type::<Transform>()
         .add_observer(mark_world_instance_ready)
-        .add_systems(Update, track_asset_readiness);
+        .add_systems(
+            Update,
+            (despawn_cells, arm_pending_models, track_asset_readiness).chain(),
+        )
+        .add_systems(
+            SpawnScene,
+            (
+                begin_scene_spawn_batch.before(SceneSpawnerSystems::WorldInstanceSpawn),
+                end_scene_spawn_batch.after(SceneSpawnerSystems::WorldInstanceSpawn),
+            ),
+        );
         app
     }
 
@@ -2216,24 +2857,53 @@ mod tests {
         world
     }
 
-    /// A reference as [`spawn_cell`] spawns one for a model: the root components, the asset root
-    /// pointing at the loaded scene, and the pending profile the readiness scan waits on. No
-    /// `ExpectedModelBounds` is inserted, which is what `statics.bounds_valid = 0` produces - the
-    /// component's absence is the whole signal.
-    fn spawn_model_reference(
-        app: &mut App,
-        handle: Handle<WorldAsset>,
-        expected_bounds: Option<ExpectedModelBounds>,
-    ) -> Entity {
+    /// A converted model whose primitive passes readiness: the mesh the converter exported and the
+    /// material it points at, so the scan has something to validate rather than an empty model.
+    fn converted_scene_with_material(
+        mesh: Handle<Mesh>,
+        material: Handle<StandardMaterial>,
+    ) -> World {
+        let mut world = World::new();
+        // The loader gives every node a transform, the scene's own root included: the bounds walk
+        // reads one from every node below the reference.
+        let root = world
+            .spawn((Name::new("wispambush"), Transform::default()))
+            .id();
+        world.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::default(),
+            ChildOf(root),
+        ));
+        world
+    }
+
+    /// The aggregate bounds the converter writes for a `Cuboid::new(2.0, 4.0, 6.0)` primitive in a
+    /// reference's own frame, which is the frame the bounds check compares them in.
+    fn cuboid_bounds() -> ExpectedModelBounds {
+        ExpectedModelBounds::new(Vec3::new(-1.0, -2.0, -3.0), Vec3::new(1.0, 2.0, 3.0))
+            .expect("the fixture bounds are finite and not degenerate")
+    }
+
+    /// A config whose arming budget is `budget` models per frame.
+    fn paced_config(budget: usize) -> EngineConfig {
+        EngineConfig {
+            max_model_spawns_per_frame: budget,
+            ..default()
+        }
+    }
+
+    /// The reference root components every model path shares, as [`spawn_cell`] spawns them: the
+    /// placement, the ids, and the pending profile the readiness scan waits on.
+    fn reference_root() -> impl Bundle {
         let transform = Transform::from_translation(Vec3::new(3.0, -4.0, 5.0));
-        let mut entity = app.world_mut().spawn((
+        (
             Name::new("Reference 000F9907"),
             FormId(0x00F9907),
             CellRef(0x02D4E0),
             transform,
             GlobalTransform::from(transform),
             WorldTransform(transform.to_matrix()),
-            WorldAssetRoot(handle),
             PendingAssetProfile {
                 started: Instant::now(),
                 scene_spawned: false,
@@ -2242,21 +2912,61 @@ mod tests {
                 base_form_id: 0x00EF957,
                 cell_id: 0x02D4E0,
             },
-        ));
+        )
+    }
+
+    /// A reference as [`spawn_cell`] spawns one for a model whose asset is already loaded: the root
+    /// components, the asset root pointing at the loaded scene, and the pending profile the
+    /// readiness scan waits on. No `ExpectedModelBounds` is inserted, which is what
+    /// `statics.bounds_valid = 0` produces - the component's absence is the whole signal.
+    fn spawn_model_reference(
+        app: &mut App,
+        handle: Handle<WorldAsset>,
+        expected_bounds: Option<ExpectedModelBounds>,
+    ) -> Entity {
+        let mut entity = app
+            .world_mut()
+            .spawn((reference_root(), WorldAssetRoot(handle)));
         if let Some(bounds) = expected_bounds {
             entity.insert(bounds);
         }
         entity.id()
     }
 
+    /// A reference as `spawn_cell` leaves one for [`arm_pending_models`]: the same root components
+    /// and the model it found, but still pending, with `sequence` its place in spawn order. The
+    /// cell path assigns that sequence from [`StreamingWorld::next_model_sequence`] as it walks the
+    /// cell's references, so handing the sequence in is what a test does instead of committing a
+    /// cell.
+    fn spawn_pending_reference(app: &mut App, handle: Handle<WorldAsset>, sequence: u64) -> Entity {
+        app.world_mut()
+            .spawn((reference_root(), PendingModel { handle, sequence }))
+            .id()
+    }
+
+    /// The references the arming pacer has handed to the spawner and the ones still waiting for
+    /// their turn, which is the whole queue: arming removes the component that put a model in it.
+    fn armed_and_pending(app: &mut App) -> (usize, usize) {
+        let mut armed = app
+            .world_mut()
+            .query_filtered::<Entity, With<WorldAssetRoot>>();
+        let armed = armed.iter(app.world()).count();
+        let mut pending = app
+            .world_mut()
+            .query_filtered::<Entity, With<PendingModel>>();
+        let pending = pending.iter(app.world()).count();
+        (armed, pending)
+    }
+
     /// Runs the readiness scan until the reference leaves the pending set, and fails the test
     /// rather than reading an unsettled metric. The world instance is spawned in `SpawnScene` and
-    /// the scan runs in `Update`, so a reference settles over more than one frame.
+    /// the scan runs in `Update`, so a reference settles over more than one frame. A model still
+    /// waiting in the arming queue is not pending yet, so the queue has to drain too.
     fn settle_readiness(app: &mut App) -> StreamingMetrics {
         for _ in 0..16 {
             app.update();
             let streaming = app.world().resource::<StreamingMetrics>();
-            if streaming.pending_asset_instances == 0 {
+            if streaming.pending_asset_instances == 0 && streaming.arming_queue_depth == 0 {
                 break;
             }
         }
@@ -2265,7 +2975,296 @@ mod tests {
             metrics.pending_asset_instances, 0,
             "the reference never left the pending set"
         );
+        assert_eq!(
+            metrics.arming_queue_depth, 0,
+            "the arming queue never drained"
+        );
         metrics
+    }
+
+    /// The spawn-batch measurement reads the world rather than the spawner's bookkeeping: three
+    /// models whose assets are already loaded are reported as three instances on the frame Bevy
+    /// writes them into the world, and as none on the frame after, while the readiness scan
+    /// completes the three of them on its own, later, scan.
+    #[test]
+    fn the_spawn_batch_counts_the_instances_bevy_instantiated_this_frame() {
+        let mut app = model_app();
+        // Every model is published before any reference points at it, so all three references are
+        // handed to the spawner on the same frame.
+        let handles: Vec<_> = (0..3)
+            .map(|_| add_converted_model(&mut app, empty_converted_scene()))
+            .collect();
+        for handle in handles {
+            spawn_model_reference(&mut app, handle, None);
+        }
+
+        app.update();
+        let arrival = streaming_metrics(&app);
+        assert_eq!(
+            arrival.instances_spawned_this_frame, 3,
+            "three references were handed to the spawner with their assets loaded"
+        );
+        assert_eq!(
+            arrival.instances_armed_this_frame, 3,
+            "the references joining the spawner's queue are the models armed this frame"
+        );
+        assert_eq!(
+            arrival.instances_completed_this_scan, 0,
+            "the scan validates an instance on a later frame than the one it spawns on"
+        );
+
+        app.update();
+        let quiet = streaming_metrics(&app);
+        assert_eq!(
+            quiet.instances_spawned_this_frame, 0,
+            "an instance spawns once, so the frame after reports none"
+        );
+        assert_eq!(
+            quiet.instances_armed_this_frame, 0,
+            "a model arms once, so the frame after reports none"
+        );
+        assert_eq!(quiet.max_instances_spawned_per_frame, 3);
+        assert_eq!(
+            quiet.instances_completed_this_scan, 3,
+            "the scan completes the three instances it accepts"
+        );
+        assert_eq!(quiet.max_instances_completed_per_scan, 3);
+        assert_eq!(
+            quiet.empty_model_references, 3,
+            "the empty converted scenes are counted, not failed"
+        );
+    }
+
+    /// Pacing is what a frame instantiates: a cell's models wait in the arming queue and are handed
+    /// over a budget at a time, so the spawn batch is the armed batch and a drained queue stays
+    /// drained.
+    #[test]
+    fn the_arming_budget_spreads_a_cells_models_over_frames() {
+        let mut app = model_app();
+        app.insert_resource(paced_config(2));
+        let handles: Vec<_> = (0..5)
+            .map(|_| add_converted_model(&mut app, empty_converted_scene()))
+            .collect();
+        for (sequence, handle) in handles.into_iter().enumerate() {
+            spawn_pending_reference(&mut app, handle, sequence as u64);
+        }
+
+        app.update();
+        let first = streaming_metrics(&app);
+        assert_eq!(
+            armed_and_pending(&mut app),
+            (2, 3),
+            "a budget of two hands two models over and leaves the rest queued"
+        );
+        assert_eq!(first.arming_queue_depth, 3);
+        assert_eq!(
+            first.peak_arming_queue_depth, 5,
+            "the peak is the cell's whole backlog"
+        );
+        assert_eq!(
+            first.instances_spawned_this_frame, 2,
+            "the frame instantiates the models the budget armed, not the whole cell"
+        );
+
+        app.update();
+        assert_eq!(armed_and_pending(&mut app), (4, 1));
+        app.update();
+        assert_eq!(armed_and_pending(&mut app), (5, 0));
+        assert_eq!(streaming_metrics(&app).arming_queue_depth, 0);
+
+        app.update();
+        assert_eq!(
+            armed_and_pending(&mut app),
+            (5, 0),
+            "a model left the queue when it was armed, so none is armed twice"
+        );
+        assert_eq!(streaming_metrics(&app).instances_spawned_this_frame, 0);
+    }
+
+    /// A backlog drains oldest first, whatever order the references were spawned in: the entities
+    /// here are created newest-first, so arming in entity order would arm the wrong model.
+    #[test]
+    fn the_arming_budget_arms_the_oldest_reference_first() {
+        let mut app = model_app();
+        app.insert_resource(paced_config(1));
+        let handles: Vec<_> = (0..4)
+            .map(|_| add_converted_model(&mut app, empty_converted_scene()))
+            .collect();
+        let mut oldest_first = Vec::new();
+        for (index, handle) in handles.into_iter().enumerate() {
+            // The reference spawned first is the newest model: the sequences run the other way.
+            oldest_first.push(spawn_pending_reference(&mut app, handle, 3 - index as u64));
+        }
+        oldest_first.reverse();
+
+        for (frame, reference) in oldest_first.iter().enumerate() {
+            app.update();
+            assert!(
+                app.world().entity(*reference).contains::<WorldAssetRoot>(),
+                "frame {frame} armed a newer model while the oldest one was still waiting"
+            );
+            assert_eq!(armed_and_pending(&mut app), (frame + 1, 3 - frame));
+        }
+    }
+
+    /// A budget is spent on the models that can spawn now: a model whose converted scene has not
+    /// arrived keeps its place in the queue without holding up the models behind it, and takes its
+    /// turn as soon as it can.
+    #[test]
+    fn a_model_still_loading_does_not_use_a_budget_slot() {
+        let mut app = model_app();
+        app.insert_resource(paced_config(2));
+        // A handle `Assets<WorldAsset>` has no entry for is the state a loading model is in: the
+        // loader has not published the scene yet. The default handle is exactly that - identity
+        // without storage - and this one gets its scene before the test ends.
+        let loading = Handle::<WorldAsset>::default();
+        let oldest = spawn_pending_reference(&mut app, loading.clone(), 0);
+        let handles: Vec<_> = (0..4)
+            .map(|_| add_converted_model(&mut app, empty_converted_scene()))
+            .collect();
+        for (sequence, handle) in handles.into_iter().enumerate() {
+            spawn_pending_reference(&mut app, handle, sequence as u64 + 1);
+        }
+
+        app.update();
+        assert!(
+            !app.world().entity(oldest).contains::<WorldAssetRoot>(),
+            "a model whose scene has not arrived is not armed"
+        );
+        assert_eq!(
+            armed_and_pending(&mut app),
+            (2, 3),
+            "the budget went to the two models that are ready, not to the loading one"
+        );
+        assert_eq!(streaming_metrics(&app).arming_queue_depth, 3);
+
+        app.world_mut()
+            .resource_mut::<Assets<WorldAsset>>()
+            .insert(&loading, WorldAsset::new(empty_converted_scene()))
+            .expect("publishing the model's scene cannot fail");
+        app.update();
+        assert!(
+            app.world().entity(oldest).contains::<WorldAssetRoot>(),
+            "the loading model is armed once its scene arrives"
+        );
+        assert_eq!(armed_and_pending(&mut app), (4, 1));
+    }
+
+    /// A model whose cell is unloaded before its turn needs no cleanup, and the pacer cannot trip
+    /// over it: the queue is the component set, and the despawn takes it with the subtree.
+    #[test]
+    fn a_pending_model_whose_cell_is_despawned_leaves_nothing_queued() {
+        let mut app = model_app();
+        app.insert_resource(paced_config(1));
+        let handle = add_converted_model(&mut app, empty_converted_scene());
+        let cell = app
+            .world_mut()
+            .spawn((
+                Name::new("Cell"),
+                StreamedCellRoot,
+                ExteriorCellGrid(IVec2::ZERO),
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
+        for sequence in 0..2 {
+            let reference = spawn_pending_reference(&mut app, handle.clone(), sequence);
+            app.world_mut().entity_mut(reference).insert(ChildOf(cell));
+        }
+        // The cell is outside the unload radius and its turn in the unload budget has come.
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(exterior_key(4, 4), CellStatus::Retiring { root: cell });
+
+        app.update();
+
+        assert_eq!(
+            armed_and_pending(&mut app),
+            (0, 0),
+            "the cell took its pending models with it; none was armed and none is queued"
+        );
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.arming_queue_depth, 0);
+        assert_eq!(metrics.unloaded_cells, 1, "the cell itself was unloaded");
+        assert_eq!(metrics.instances_spawned_this_frame, 0);
+    }
+
+    /// `0` is the unbudgeted behaviour: every model whose scene is ready is handed over at once.
+    #[test]
+    fn an_arming_budget_of_zero_arms_every_ready_model() {
+        let mut app = model_app();
+        app.insert_resource(paced_config(0));
+        let handles: Vec<_> = (0..5)
+            .map(|_| add_converted_model(&mut app, empty_converted_scene()))
+            .collect();
+        for (sequence, handle) in handles.into_iter().enumerate() {
+            spawn_pending_reference(&mut app, handle, sequence as u64);
+        }
+
+        app.update();
+        assert_eq!(armed_and_pending(&mut app), (5, 0));
+        assert_eq!(
+            streaming_metrics(&app).instances_spawned_this_frame,
+            5,
+            "without a budget the whole batch lands on one frame, as it did before the pacer"
+        );
+    }
+
+    /// Pacing moves the frame a model is spawned on, not the totals: every queued model is armed
+    /// once, spawned once, and validated exactly once, and no frame instantiates more than the
+    /// budget.
+    #[test]
+    fn every_paced_model_is_spawned_and_validated_exactly_once() {
+        let mut app = model_app();
+        app.insert_resource(paced_config(2));
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let mesh = app
+                .world_mut()
+                .resource_mut::<Assets<Mesh>>()
+                .add(Cuboid::new(2.0, 4.0, 6.0));
+            let material = app
+                .world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial::default());
+            handles.push(add_converted_model(
+                &mut app,
+                converted_scene_with_material(mesh, material),
+            ));
+        }
+        for (sequence, handle) in handles.into_iter().enumerate() {
+            let reference = spawn_pending_reference(&mut app, handle, sequence as u64);
+            app.world_mut()
+                .entity_mut(reference)
+                .insert(cuboid_bounds());
+        }
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.assets_ready, 5,
+            "every instance is validated once: {:?}",
+            metrics.asset_failures
+        );
+        assert_eq!(metrics.meshes_validated, 5);
+        assert_eq!(metrics.materials_validated, 5);
+        assert_eq!(metrics.transform_instances_validated, 5);
+        assert_eq!(metrics.empty_model_references, 0);
+        assert_eq!(metrics.peak_arming_queue_depth, 5);
+        assert_eq!(
+            metrics.max_instances_spawned_per_frame, 2,
+            "no frame instantiated more than the budget allowed"
+        );
+        assert_eq!(armed_and_pending(&mut app), (5, 0));
+        let mut instances = app
+            .world_mut()
+            .query_filtered::<Entity, With<WorldInstance>>();
+        assert_eq!(
+            instances.iter(app.world()).count(),
+            5,
+            "one instance per reference, paced or not"
+        );
     }
 
     /// What the emptiness rule reads: the converted model's own node and mesh count, taken from

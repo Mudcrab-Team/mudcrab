@@ -10,6 +10,13 @@ pub struct EngineConfig {
     pub unload_radius: i32,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
+    pub max_cell_unloads_per_frame: usize,
+    /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
+    /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
+    pub max_model_spawns_per_frame: usize,
+    /// MiB of newly loaded render assets (meshes, textures) the renderer may
+    /// prepare per frame. `0` prepares every asset the frame extracted.
+    pub max_upload_mib_per_frame: usize,
     pub headless: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
@@ -47,6 +54,19 @@ impl Default for EngineConfig {
             unload_radius: 3,
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
+            max_cell_unloads_per_frame: 2,
+            // A cell holds on the order of 15 references with a model and cells commit one per
+            // frame, so 15 models is the largest batch a frame can be handed at once. Bevy
+            // instantiates a batch like that in an estimated 5-8 ms on the stress scenario, which is
+            // most of a 60 fps frame; arming 4 per frame keeps a batch near 1.5 ms and a whole
+            // cell's models armed within four frames (~67 ms at 60 fps). `0` arms the batch whole,
+            // as the engine did before this budget existed.
+            max_model_spawns_per_frame: 4,
+            // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
+            // a cell's new textures spread over a few frames instead of landing
+            // in one 13 ms upload burst, and at 60 fps the budget still admits
+            // far more new assets than the streaming radius can produce.
+            max_upload_mib_per_frame: 16,
             headless: false,
             benchmark_only: false,
             benchmark_frames: None,
@@ -77,6 +97,13 @@ impl Default for EngineConfig {
 }
 
 impl EngineConfig {
+    /// The per-frame render-asset upload budget in bytes, or `None` when
+    /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
+    pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
+        (self.max_upload_mib_per_frame != 0)
+            .then(|| self.max_upload_mib_per_frame.saturating_mul(1024 * 1024))
+    }
+
     pub fn from_env() -> Self {
         Self::from_args(std::env::args().skip(1))
     }
@@ -113,6 +140,21 @@ impl EngineConfig {
                     }
                 }
                 "--headless" => config.headless = true,
+                "--max-unloads-per-frame" => {
+                    if let Some(value) = args.next().and_then(|value| value.parse().ok()) {
+                        config.max_cell_unloads_per_frame = value;
+                    }
+                }
+                "--max-model-spawns-per-frame" => {
+                    if let Some(value) = args.next().and_then(|value| value.parse().ok()) {
+                        config.max_model_spawns_per_frame = value;
+                    }
+                }
+                "--max-upload-mib-per-frame" => {
+                    if let Some(value) = args.next().and_then(|value| value.parse().ok()) {
+                        config.max_upload_mib_per_frame = value;
+                    }
+                }
                 "--max-commit-ms" => {
                     if let Some(value) = args.next().and_then(|value| value.parse::<f64>().ok())
                         && value.is_finite()
@@ -225,6 +267,40 @@ mod tests {
         let config = EngineConfig::default();
         assert_eq!(config.max_cell_commits_per_frame, 1);
         assert_eq!(config.max_commit_micros_per_frame, 16_670);
+        assert_eq!(config.max_cell_unloads_per_frame, 2);
+        assert_eq!(config.max_model_spawns_per_frame, 4);
+    }
+
+    #[test]
+    fn parses_the_model_spawn_budget_and_lets_zero_mean_unlimited() {
+        let config =
+            EngineConfig::from_args(["--max-model-spawns-per-frame", "12"].map(str::to_owned));
+        assert_eq!(config.max_model_spawns_per_frame, 12);
+
+        let unlimited =
+            EngineConfig::from_args(["--max-model-spawns-per-frame", "0"].map(str::to_owned));
+        assert_eq!(unlimited.max_model_spawns_per_frame, 0);
+    }
+
+    #[test]
+    fn defaults_to_a_sixteen_mib_upload_budget_per_frame() {
+        assert_eq!(
+            EngineConfig::default().max_upload_bytes_per_frame(),
+            Some(16 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn parses_the_upload_budget_and_lets_zero_mean_unlimited() {
+        let config =
+            EngineConfig::from_args(["--max-upload-mib-per-frame", "4"].map(str::to_owned));
+        assert_eq!(config.max_upload_mib_per_frame, 4);
+        assert_eq!(config.max_upload_bytes_per_frame(), Some(4 * 1024 * 1024));
+
+        let unlimited =
+            EngineConfig::from_args(["--max-upload-mib-per-frame", "0"].map(str::to_owned));
+        assert_eq!(unlimited.max_upload_mib_per_frame, 0);
+        assert_eq!(unlimited.max_upload_bytes_per_frame(), None);
     }
 
     #[test]
@@ -242,6 +318,10 @@ mod tests {
                 "--headless",
                 "--max-commit-ms",
                 "8.5",
+                "--max-unloads-per-frame",
+                "3",
+                "--max-model-spawns-per-frame",
+                "6",
                 "--profile-output",
                 "profiles/run-1",
                 "--profile-scenario",
@@ -270,6 +350,8 @@ mod tests {
         assert_eq!((config.stream_radius, config.unload_radius), (5, 6));
         assert!(config.headless);
         assert_eq!(config.max_commit_micros_per_frame, 8_500);
+        assert_eq!(config.max_cell_unloads_per_frame, 3);
+        assert_eq!(config.max_model_spawns_per_frame, 6);
         assert_eq!(
             config.profile_output_dir,
             Some(PathBuf::from("profiles/run-1"))
