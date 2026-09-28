@@ -3,6 +3,7 @@ use super::{
 };
 use crate::{
     components::{PlayButton, ProgressBarFill, StatusText},
+    engine_process::{EngineProcess, stderr_log_path},
     game_detection::find_skyrim_data_dir,
 };
 use bevy::prelude::*;
@@ -216,12 +217,23 @@ pub fn sync_status_text(
 
 pub fn handle_play_button_click(
     interaction_query: Query<&Interaction, (Changed<Interaction>, With<PlayButton>)>,
-    status: Res<ConversionStatus>,
+    engine: Option<Res<EngineProcess>>,
+    mut status: ResMut<ConversionStatus>,
+    mut text_query: Query<&mut Text, With<StatusText>>,
     mut next_state: ResMut<NextState<LauncherState>>,
 ) {
     for interaction in interaction_query.iter() {
         if *interaction == Interaction::Pressed {
-            if status.is_complete {
+            if let Some(engine) = &engine {
+                show_status(
+                    &mut status,
+                    &mut text_query,
+                    format!(
+                        "The OpenSkyrim engine is already running (process {}). Close it before starting another.",
+                        engine.id()
+                    ),
+                );
+            } else if status.is_complete {
                 println!("Launching OpenSkyrim Engine binary...");
                 next_state.set(LauncherState::LaunchingEngine);
             } else {
@@ -242,7 +254,16 @@ pub fn handle_mod_drag_and_drop(mut dnd_events: MessageReader<FileDragAndDrop>) 
     }
 }
 
-pub fn launch_engine(config: Res<GamePathConfig>, mut status: ResMut<ConversionStatus>) {
+pub fn launch_engine(
+    mut commands: Commands,
+    config: Res<GamePathConfig>,
+    engine: Option<Res<EngineProcess>>,
+    mut status: ResMut<ConversionStatus>,
+    mut text_query: Query<&mut Text, With<StatusText>>,
+) {
+    if engine.is_some() {
+        return;
+    }
     let executable_name = if cfg!(windows) {
         "engine.exe"
     } else {
@@ -256,20 +277,51 @@ pub fn launch_engine(config: Res<GamePathConfig>, mut status: ResMut<ConversionS
         .converted_assets_path
         .canonicalize()
         .unwrap_or_else(|_| config.converted_assets_path.clone());
-    match std::process::Command::new(&executable)
-        .arg("--assets")
-        .arg(&assets)
-        .spawn()
-    {
-        Ok(child) => {
-            status.current_step = format!("OpenSkyrim engine started (process {})", child.id());
+    let mut command = std::process::Command::new(&executable);
+    command.arg("--assets").arg(&assets);
+    let message = match EngineProcess::spawn(command, &stderr_log_path()) {
+        Ok(engine) => {
+            let message = format!("OpenSkyrim engine running (process {})", engine.id());
+            commands.insert_resource(engine);
+            message
         }
         Err(error) => {
             status.has_failed = true;
-            status.current_step = format!(
+            format!(
                 "Failed to start engine at {}: {error}",
                 executable.display()
-            );
+            )
         }
+    };
+    show_status(&mut status, &mut text_query, message);
+}
+
+/// Watches the engine started by Play and, once it exits, says how: closed normally, or stopped
+/// early with the tail of its stderr log.
+pub fn watch_engine_process(
+    mut commands: Commands,
+    engine: Option<ResMut<EngineProcess>>,
+    mut status: ResMut<ConversionStatus>,
+    mut text_query: Query<&mut Text, With<StatusText>>,
+) {
+    let Some(mut engine) = engine else {
+        return;
+    };
+    if let Some(message) = engine.poll() {
+        commands.remove_resource::<EngineProcess>();
+        show_status(&mut status, &mut text_query, message);
     }
+}
+
+/// Sets the status text directly: `sync_status_text` leaves it alone once a conversion has run
+/// in this launcher session.
+fn show_status(
+    status: &mut ConversionStatus,
+    text_query: &mut Query<&mut Text, With<StatusText>>,
+    message: String,
+) {
+    for mut text in text_query.iter_mut() {
+        text.0 = message.clone();
+    }
+    status.current_step = message;
 }
