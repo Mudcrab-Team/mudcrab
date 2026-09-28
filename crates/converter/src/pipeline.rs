@@ -334,7 +334,13 @@ impl AssetPipeline {
             // A stop is checked before every entry, so it does not wait for a multi-gigabyte
             // archive to finish.
             let stop_for_worker = cancellation.clone();
-            let stop = move || stop_for_worker.is_cancelled();
+            #[cfg(test)]
+            let output_for_hook = config.output_dir.clone();
+            let stop = move || {
+                #[cfg(test)]
+                stop_hook::tick(&output_for_hook, &stop_for_worker);
+                stop_for_worker.is_cancelled()
+            };
 
             let result = spawn_blocking(move || {
                 ArchiveExtractor::extract_cached(
@@ -1336,6 +1342,38 @@ fn interrupt(cancellation: &Cancellation) -> Result<()> {
     Ok(())
 }
 
+/// Test-only: presses Stop from inside the extractor after a given number of per-entry stop
+/// checks of one output's run, so a test stops part way through an archive without racing it.
+#[cfg(test)]
+mod stop_hook {
+    use super::Cancellation;
+    use std::{
+        path::{Path, PathBuf},
+        sync::Mutex,
+    };
+
+    static CANCEL_AFTER: Mutex<Vec<(PathBuf, usize)>> = Mutex::new(Vec::new());
+
+    pub(super) fn cancel_after(output: &Path, checks: usize) {
+        CANCEL_AFTER
+            .lock()
+            .unwrap()
+            .push((output.to_path_buf(), checks));
+    }
+
+    pub(super) fn tick(output: &Path, cancellation: &Cancellation) {
+        let mut hooks = CANCEL_AFTER.lock().unwrap();
+        if let Some(index) = hooks.iter().position(|(path, _)| path == output) {
+            if hooks[index].1 == 0 {
+                hooks.remove(index);
+                cancellation.cancel();
+            } else {
+                hooks[index].1 -= 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1716,19 +1754,12 @@ mod tests {
         )
         .unwrap();
 
-        // Stop as soon as the archive reports its first finished files.
+        // Stop from inside the extractor after its first entries: only the entries already in
+        // flight on other threads can still finish, far fewer than the archive holds.
+        stop_hook::cancel_after(&output, 16);
         let cancellation = Cancellation::new();
-        let interrupt = cancellation.clone();
         let (tx, mut rx) = mpsc::channel::<ProgressEvent>(64);
-        let watcher = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if event.stage == ProgressStage::Extracting
-                    && event.bytes_completed.is_some_and(|bytes| bytes > 0)
-                {
-                    interrupt.cancel();
-                }
-            }
-        });
+        let watcher = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let failure = AssetPipeline::run_async_with_cancel(
             PipelineConfig::new(&data, &output),
             tx,
