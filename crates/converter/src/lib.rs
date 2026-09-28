@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod asset_path;
 pub mod cache;
+pub mod check;
 pub mod config;
 pub mod esm;
 pub mod integration;
@@ -17,6 +18,9 @@ pub mod texture;
 #[cfg(test)]
 mod test_strategies;
 
+pub use check::{
+    CheckCancelled, CheckMode, CheckProblem, CheckReport, check_output, check_output_with_cancel,
+};
 pub use config::PipelineConfig;
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;

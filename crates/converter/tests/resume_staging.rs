@@ -169,7 +169,7 @@ async fn reconverts_a_staged_output_written_under_a_different_configuration() {
     fixture.write_source("One");
     fixture.stage_marker();
     let mut other = fixture.config.clone();
-    other.texture_etc1s_quality = fixture.config.texture_etc1s_quality / 2;
+    other.texture_fallback_quality = fixture.config.texture_fallback_quality / 2;
     let stale = StagedOutput {
         configuration_hash: configuration_hash(&other).unwrap(),
         ..fixture.marker_record()

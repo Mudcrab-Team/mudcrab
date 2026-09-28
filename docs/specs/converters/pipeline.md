@@ -105,6 +105,30 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
 - **Async Progress Reporting:** Sends `ProgressPhase` updates across `tokio::sync::mpsc::UnboundedSender` to the launcher UI or CLI without thread blocking.
 - **Unified Interface:** Exposes `AssetPipeline::run_async(config, progress_tx).await` as the single high-leverage entry point for modernizing game assets.
 
+### Checking a converted output
+
+`converter check <output directory> [--full]` answers "is this converted folder still good?" without
+converting anything. It reads `conversion-manifest.json` in the folder and compares every artifact
+it lists with what is on disk:
+
+- **Quick** (the default, seconds): each artifact exists and has the recorded size. Only file
+  metadata is read.
+- **`--full`**: also re-hashes each artifact (SHA-256, in parallel) against the recorded hash.
+
+It also reports a manifest written by another converter schema, a conversion not marked complete,
+recorded input failures, and a missing `skyrim_world.db`. It prints `All good` or the problems (up to
+20 lines, then a count), and exits `0` when all is good, `1` when problems were found and `2` when the
+manifest is missing or unreadable. The check never writes to the folder, and a manifest path that is
+absolute or leaves the folder (`..`) is reported instead of read.
+
+A damaged artifact does not need a full reconversion: running the converter again on the same `Data`
+folder and output re-hashes each published artifact before reusing it, so only the missing or
+changed files are converted again. The library entry point is `converter::check_output`, with a
+progress callback for front ends. `converter::check_output_with_cancel` takes the same arguments and
+an `&AtomicBool` stop flag: once the flag is set no new artifact is started, the call returns after
+the reads already in flight, and the result is an `Err` holding `converter::CheckCancelled` (test it
+with `error.is::<CheckCancelled>()`), never a partial report.
+
 ---
 
 ## 5. Runtime Pack vs Build Workspace

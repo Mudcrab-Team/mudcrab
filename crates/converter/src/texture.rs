@@ -122,6 +122,7 @@ unsafe extern "C" {
         size: *mut usize,
     ) -> *mut c_void;
     fn opensky_basis_free(data: *mut c_void);
+    fn opensky_basis_quiet_stdout();
 }
 
 pub struct TextureConverter;
@@ -1269,7 +1270,16 @@ fn encode_basis_ktx2(
         rgba.len() == width as usize * height as usize * 4,
         "RGBA payload size mismatch"
     );
-    BASIS_INIT.call_once(basis_universal::encoder_init);
+    BASIS_INIT.call_once(|| {
+        basis_universal::encoder_init();
+        // Held so no Rust output is written while the bridge swaps the handles underneath it.
+        use std::io::Write as _;
+        let mut rust_stdout = std::io::stdout().lock();
+        let _ = rust_stdout.flush();
+        // SAFETY: points only the C library's stdout at the null device, once, before the encoder
+        // first runs; the process's standard output, which Rust writes to, is kept.
+        unsafe { opensky_basis_quiet_stdout() };
+    });
     ensure!(etc1s_quality > 0, "ETC1S quality must be greater than zero");
     ensure!(uastc_level <= 4, "UASTC level must be between 0 and 4");
     let mut flags = FLAG_KTX2;
@@ -1337,7 +1347,7 @@ mod tests {
         DecodeFlags, LowLevelUastcTranscoder, SliceParametersUastc, TranscoderBlockFormat,
     };
     use ddsfile::{AlphaMode, D3D10ResourceDimension, DxgiFormat, NewD3dParams, NewDxgiParams};
-    use std::io::Read;
+    use std::io::{Read, Write};
 
     #[test]
     fn derives_encoding_from_slot_semantics_and_resolves_shared_textures() {
@@ -1390,6 +1400,51 @@ mod tests {
             reader.header().supercompression_scheme,
             Some(ktx2::SupercompressionScheme::BasisLZ)
         );
+    }
+
+    #[test]
+    fn basis_notices_stay_off_standard_output() {
+        // The encoder's notices go to the C library's stdout, which only a fresh process shows.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "texture::tests::encode_and_print_for_the_standard_output_test",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("printed by Rust after encoding"),
+            "{stdout}\n{stderr}"
+        );
+        assert!(!stdout.contains("KTX2 validator bug"), "{stdout}\n{stderr}");
+    }
+
+    #[test]
+    #[ignore = "run in a child process by basis_notices_stay_off_standard_output"]
+    fn encode_and_print_for_the_standard_output_test() {
+        for size in [4, 8, 16, 32] {
+            let pixels = [90, 120, 60, 255].repeat(size * size);
+            let size = size as u32;
+            encode_basis_ktx2(
+                size,
+                size,
+                &pixels,
+                TextureEncoding::ColorSrgb,
+                true,
+                192,
+                0,
+            )
+            .unwrap();
+        }
+        std::io::stdout()
+            .write_all(b"printed by Rust after encoding\n")
+            .unwrap();
     }
 
     #[test]

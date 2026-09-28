@@ -78,7 +78,7 @@ Wah Krah Jol is being built systematically across 5 core phases. Explore the ful
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/your-username/wah-krah-jol.git
+   git clone https://github.com/realfakenerd/wah-krah-jol.git
    cd wah-krah-jol
    ```
 
