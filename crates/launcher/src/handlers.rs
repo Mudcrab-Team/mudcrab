@@ -155,10 +155,7 @@ pub fn launch_engine(config: Res<GamePathConfig>, mut status: ResMut<ConversionS
         .spawn()
     {
         Ok(child) => {
-            status.push_notice(&format!(
-                "OpenSkyrim engine started (process {}).",
-                child.id()
-            ));
+            status.push_notice(&format!("Mudcrab engine started (process {}).", child.id()));
         }
         Err(error) => {
             status.push_notice(&format!(

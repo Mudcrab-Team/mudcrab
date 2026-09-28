@@ -1,4 +1,4 @@
-//! The OpenSkyrim launcher: find Skyrim, convert its assets, and start the engine on them.
+//! The Mudcrab launcher: find Skyrim, convert its assets, and start the engine on them.
 //!
 //! One window: the conversion panel (folders, Start / Stop / Resume, progress, Check), the mod
 //! manager's drop zone, and Play, which is enabled once the Output folder holds a complete
@@ -81,7 +81,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "OpenSkyrim Launcher & Mod Manager".into(),
+                title: "Mudcrab Launcher & Mod Manager".into(),
                 resolution: WindowResolution::new(900, 600),
                 resizable: false,
                 ..default()
