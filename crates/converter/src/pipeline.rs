@@ -105,12 +105,16 @@ impl AssetPipeline {
             .unwrap_or_else(|| staging_path(&config.output_dir));
         fs::create_dir_all(staging.join("vfs"))?;
         if resumed {
-            // No provenance source exists on this branch yet: every staged
-            // mesh is unverified and goes. The PR31 merge passes the set of
-            // journal-current mesh outputs here instead of an empty set, so a
-            // mesh the journal vouches for survives invalidation and reaches
-            // the journal reuse gate.
-            invalidate_staged_mesh_outputs(&staging, &BTreeSet::new())?;
+            // A staged mesh survives the invalidation only while the journal certifies it for
+            // the current source, schema and configuration; every other staged mesh is
+            // unverified and is deleted, so a resume can never publish bytes this converter did
+            // not verify. `--invalidate-cache` ignores the journal and drops them all.
+            let verified = if config.invalidate_cache {
+                BTreeSet::new()
+            } else {
+                verified_staged_meshes(&staging, &expected_configuration)?
+            };
+            invalidate_staged_mesh_outputs(&staging, &verified)?;
         }
         let run_result = Self::run_into(&config, &staging, &previous_manifest, &progress_tx).await;
         let mut report = match run_result {
@@ -374,7 +378,20 @@ impl AssetPipeline {
                 .await?;
             let aliases = publish_srgb_texture_aliases(staging)?;
             batch.report.artifacts.extend(aliases);
-            let pruned = MeshConverter::prune_dangling_texture_uris(staging)?;
+            // A missing artifact whose DDS source exists under `staging/vfs` is a failed
+            // publication, not absent game data: the prune leaves those references alone.
+            let source_textures = texture_source_keys(staging, &vfs_files);
+            // A reused mesh that still holds its published bytes keeps the prune record of the
+            // run that wrote it: a prune only removes references, so an older record stays
+            // true. Captured before the prune pass rewrites any staged GLB.
+            let mut carried_prunes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (glb, references) in &previous.pruned_texture_references {
+                if files_are_identical(&staging.join(glb), &config.output_dir.join(glb)) {
+                    carried_prunes.insert(glb.clone(), references.iter().cloned().collect());
+                }
+            }
+            let pruned =
+                MeshConverter::prune_dangling_texture_uris_with_sources(staging, &source_textures)?;
             let pruned_uris: u64 = pruned
                 .iter()
                 .map(|file| file.removed_uris.len() as u64)
@@ -410,25 +427,32 @@ impl AssetPipeline {
                     }
                 }
             }
-            // A mesh this run left alone keeps the prune record of the run that
-            // wrote it: those references are no longer in the file, so the pass
-            // above cannot report them again. The published copy decides whether
-            // that record still describes the mesh about to be published.
-            for (glb, references) in &previous.pruned_texture_references {
-                if batch
-                    .manifest
-                    .pruned_texture_references
-                    .contains_key(glb.as_str())
-                {
-                    continue;
-                }
-                let published = config.output_dir.join(glb);
-                if !files_are_identical(&staging.join(glb), &published) {
-                    continue;
-                }
+            // Merge the carried records with this run's prunes: a reused mesh that already
+            // omitted A and has just had B pruned must report both. A mesh whose source changed
+            // was reconverted before this pass, so its staged bytes no longer matched the
+            // published copy and its stale records were not carried.
+            for (glb, references) in &carried_prunes {
                 for reference in references {
                     batch.record_pruned_texture_reference(glb, reference);
                 }
+            }
+            // The prune rewrote the GLB after its cache entry was recorded, so refresh the
+            // entry and the journal record from the published bytes. Otherwise the next run
+            // fails the entry's size and hash check and converts the mesh again.
+            let pruned_outputs: BTreeSet<String> = pruned
+                .iter()
+                .filter(|file| !file.removed_uris.is_empty())
+                .map(|file| file.glb.clone())
+                .collect();
+            for (key, entry) in batch.manifest.entries.iter_mut() {
+                if !pruned_outputs.contains(&entry.output) {
+                    continue;
+                }
+                let path = staging.join(&entry.output);
+                entry.output_size = fs::metadata(&path)?.len();
+                entry.output_hash = hash_file(&path)?;
+                let record = staged_output(entry, batch.expected_configuration);
+                batch.journal.record(key, &record)?;
             }
             // The run summary reports what the manifest records, whether this run
             // pruned it or carried the record forward for a reused mesh.
@@ -1004,6 +1028,21 @@ fn insert_texture_semantic(
     Ok(())
 }
 
+/// Canonical source texture keys of every discovered texture under `staging/vfs`, as
+/// [`canonical_asset_path`] produces them (`textures/rock01.dds`). Used to tell "the game data
+/// never contained this texture" from "the game data contains it and its publication failed".
+fn texture_source_keys(staging: &Path, files: &[PathBuf]) -> BTreeSet<String> {
+    let vfs = staging.join("vfs");
+    files
+        .iter()
+        .filter_map(|path| {
+            let relative = path.strip_prefix(&vfs).ok()?;
+            let extension = relative.extension()?.to_str()?;
+            canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, extension).ok()
+        })
+        .collect()
+}
+
 fn source_texture_key(runtime_key: &str) -> Result<String> {
     if let Some(stem) = runtime_key.strip_suffix(".opensky-srgb.ktx2") {
         return Ok(format!("{stem}.ktx2"));
@@ -1223,6 +1262,30 @@ fn extension(path: &Path, expected: &[&str]) -> bool {
                 .iter()
                 .any(|expected| value.eq_ignore_ascii_case(expected))
         })
+}
+
+/// Staged mesh outputs (staging-relative, `/` separators) that a journal record certifies.
+///
+/// The record must describe the current source under `staging/vfs`, the current schema, the
+/// given configuration and the bytes on disk. Anything else stays unverified, so the caller
+/// deletes it and converts it again.
+fn verified_staged_meshes(staging: &Path, configuration_hash: &str) -> Result<BTreeSet<String>> {
+    let records = load_staged_outputs(staging)?;
+    let mut verified = BTreeSet::new();
+    for (key, record) in records {
+        if !key.ends_with(".nif") {
+            continue;
+        }
+        let Ok(source_hash) = hash_file(&staging.join("vfs").join(&key)) else {
+            continue;
+        };
+        let output = PathBuf::from(&key).with_extension("glb");
+        let output = output.to_string_lossy().replace('\\', "/");
+        if record.is_current(&staging.join(&output), &source_hash, configuration_hash) {
+            verified.insert(output);
+        }
+    }
+    Ok(verified)
 }
 
 /// Deletes staged meshes no provenance source vouches for.
@@ -1625,6 +1688,7 @@ mod tests {
         }));
     }
 
+    /// Every staging directory this test's run left behind, for asserting cleanup.
     fn staging_entries(parent: &Path) -> Vec<PathBuf> {
         fs::read_dir(parent)
             .unwrap()
@@ -1753,6 +1817,7 @@ mod tests {
         );
     }
 
+    /// Pruned references never make a run incomplete; skips and warnings still do.
     #[test]
     fn pruned_texture_references_do_not_make_a_run_incomplete() {
         let pruned_only = PipelineReport {
@@ -1777,6 +1842,8 @@ mod tests {
         assert!(!conversion_is_complete(&warned));
     }
 
+    /// A mesh whose base color or normal map is absent converts, publishes without those
+    /// references, and still reports `complete`.
     #[tokio::test]
     async fn publishes_meshes_with_missing_textures_and_stays_complete() {
         let temp = tempfile::tempdir().unwrap();
@@ -1888,6 +1955,7 @@ mod tests {
         }
     }
 
+    /// A failed archive still skips, warns and makes the run incomplete.
     #[tokio::test]
     async fn failed_archives_still_skip_and_warn() {
         let temp = tempfile::tempdir().unwrap();
@@ -1952,6 +2020,25 @@ mod tests {
         .unwrap();
     }
 
+    /// Writes the journal record a completed run leaves for `glb`, so a resumed run finds the
+    /// staged copy certified and reuses it instead of converting its source again.
+    fn certify_staged_mesh(staging: &Path, nif: &str, glb: &str, config: &PipelineConfig) {
+        let staged = staging.join(glb);
+        let record = StagedOutput {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash: configuration_hash(config).unwrap(),
+            source_hash: hash_file(&staging.join("vfs").join(nif)).unwrap(),
+            output_size: fs::metadata(&staged).unwrap().len(),
+            output_hash: hash_file(&staged).unwrap(),
+        };
+        StagingJournal::open(staging)
+            .unwrap()
+            .record(nif, &record)
+            .unwrap();
+    }
+
+    /// A resumed run reuses a journal-certified mesh and carries its prune record forward
+    /// instead of converting the mesh and pruning it again.
     #[tokio::test]
     async fn resumed_runs_carry_reused_mesh_prunes_forward() {
         let temp = tempfile::tempdir().unwrap();
@@ -1969,12 +2056,13 @@ mod tests {
             Some(&BTreeSet::from([PRUNED_REFERENCE.to_owned()]))
         );
 
-        // Resume from a staging directory holding exactly what the first run
-        // published: the mesh is reused instead of converted again, so the prune
-        // pass has nothing left to remove from it.
+        // Resume from a staging directory holding exactly what the first run published, with the
+        // journal certifying the staged mesh: it is reused instead of converted again, so the
+        // prune pass has nothing left to remove from it.
         let staging = temp.path().join("modern.staging-resume");
         copy_tree(&output, &staging);
         let mut config = PipelineConfig::new(&data, &output);
+        certify_staged_mesh(&staging, "meshes/dangling_normal.nif", PRUNED_MESH, &config);
         config.resume_staging = Some(staging);
 
         let (resumed, events) = run_collecting_progress(config).await;
@@ -2005,6 +2093,8 @@ mod tests {
         );
     }
 
+    /// A resumed run drops the previous prune record when the published mesh no longer matches
+    /// the certified staged copy.
     #[tokio::test]
     async fn changed_meshes_do_not_keep_stale_prune_records() {
         let temp = tempfile::tempdir().unwrap();
@@ -2015,12 +2105,13 @@ mod tests {
 
         let staging = temp.path().join("modern.staging-resume");
         copy_tree(&output, &staging);
-        // Another build republished the mesh: the stored record no longer
-        // describes the bytes that would be published again.
+        let mut config = PipelineConfig::new(&data, &output);
+        certify_staged_mesh(&staging, "meshes/dangling_normal.nif", PRUNED_MESH, &config);
+        // Another build republished the mesh: the stored record no longer describes the bytes
+        // that would be published again, so the resume drops it.
         let mut rebuilt = fs::read(output.join(PRUNED_MESH)).unwrap();
         rebuilt.push(0);
         fs::write(output.join(PRUNED_MESH), rebuilt).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
         config.resume_staging = Some(staging);
 
         let resumed = run_without_progress(config).await;
@@ -2031,6 +2122,117 @@ mod tests {
             published_manifest(&output)
                 .pruned_texture_references
                 .is_empty()
+        );
+    }
+
+    /// Pruning rewrites a mesh after its cache entry is written; the refreshed entry keeps the
+    /// mesh a cache hit on the next run instead of converting it again.
+    #[tokio::test]
+    async fn pruned_meshes_remain_cache_hits() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete);
+        assert_eq!(first.pruned_texture_references, 1);
+
+        let second = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(second.complete);
+        assert_eq!(
+            second.converted, 0,
+            "the pruned mesh was converted again instead of reusing its refreshed entry"
+        );
+        assert_eq!(second.pruned_texture_references, 1);
+    }
+
+    /// A reused mesh that already omitted one texture and has a second pruned now reports both.
+    #[tokio::test]
+    async fn a_second_prune_keeps_the_first_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete);
+        assert_eq!(first.pruned_texture_references, 1);
+
+        // The base-color source disappears: its reference becomes dangling on the next run while
+        // the mesh's own source is unchanged, so the mesh is reused.
+        fs::remove_file(data.join("textures/present.dds")).unwrap();
+        let second = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(second.complete);
+        assert_eq!(second.pruned_texture_references, 2);
+        assert_eq!(
+            published_manifest(&output)
+                .pruned_texture_references
+                .get(PRUNED_MESH),
+            Some(&BTreeSet::from([
+                "textures/absent_n.ktx2".to_owned(),
+                "textures/present.opensky-srgb.ktx2".to_owned(),
+            ]))
+        );
+    }
+
+    /// A source texture that exists but failed to publish is not pruned: the reference stays as
+    /// the record of a failed publication, not of absent game data.
+    #[tokio::test]
+    async fn a_missing_artifact_with_a_present_source_is_not_pruned() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("meshes")).unwrap();
+        fs::create_dir_all(data.join("textures")).unwrap();
+        let positions = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+        let indices = [[0, 1, 2], [0, 2, 3]];
+        let normals = [[0.0, 0.0, 1.0]; 4];
+        let shape = dummy_content::nif::StaticShape {
+            name: "FailedTextureQuad",
+            positions: &positions,
+            normals: &normals,
+            uvs: &uvs,
+            indices: &indices,
+            diffuse: "textures/present.dds",
+            normal_texture: "textures/present_n.dds",
+        };
+        fs::write(
+            data.join("meshes/failed_texture.nif"),
+            dummy_content::nif::static_shape(&shape).unwrap(),
+        )
+        .unwrap();
+        // The base color exists under `vfs` but cannot be converted; the normal map publishes.
+        fs::write(data.join("textures/present.dds"), b"not a DDS").unwrap();
+        fs::write(
+            data.join("textures/present_n.dds"),
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 8, 8),
+                &mut dummy_content::rng::Rng::new(7),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+
+        assert!(!report.complete, "the failed texture still skips");
+        assert_eq!(report.skipped, 1);
+        assert_eq!(
+            report.pruned_texture_references, 0,
+            "a present source must not be recorded as absent game data"
+        );
+        let uris =
+            MeshConverter::glb_texture_uris(&output.join("meshes/failed_texture.glb")).unwrap();
+        assert!(
+            uris.iter().any(|uri| uri.contains("present")),
+            "the failed texture's reference was pruned: {uris:?}"
         );
     }
 

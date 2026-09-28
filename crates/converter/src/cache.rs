@@ -303,6 +303,7 @@ mod tests {
         );
     }
 
+    /// Manifests written before pruned-reference tracking load with an empty record map.
     #[test]
     fn manifests_written_before_pruned_reference_tracking_still_load() {
         let directory = tempfile::tempdir().unwrap();
