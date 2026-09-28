@@ -164,7 +164,18 @@ impl ScriptConverter {
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(output, buf.as_bytes())
+            // Through a temporary file and a rename, so a run killed mid-write never leaves a torn
+            // script under its final name for a resumed run to accept.
+            let temporary = output.with_file_name(format!(
+                ".{}.{}.partial",
+                output.file_name().unwrap_or_default().to_string_lossy(),
+                std::process::id()
+            ));
+            fs::write(&temporary, buf.as_bytes())
+                .and_then(|()| fs::rename(&temporary, output))
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&temporary);
+                })
                 .wrap_err_with(|| format!("failed to write {}", output.display()))?;
             Ok(())
         })

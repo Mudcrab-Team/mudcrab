@@ -435,8 +435,18 @@ impl ProgressRenderer {
                 format_elapsed(elapsed.as_secs_f64())
             ))
         } else {
+            // A stage change ends the open row first, so the finished stage's last line stays in
+            // the scrollback, and the new stage starts an open row of its own.
+            let end_previous = if stage_changed && self.open_line {
+                "\n"
+            } else {
+                ""
+            };
+            if stage_changed {
+                self.line_width = 0;
+            }
             self.open_line = true;
-            Some(self.draw(&line, stage_changed))
+            Some(format!("{end_previous}{}", self.draw(&line)))
         }
     }
 
@@ -456,7 +466,7 @@ impl ProgressRenderer {
         }
         self.last_emit = Some(elapsed);
         let line = self.line(&event, elapsed);
-        Some(self.draw(&line, false))
+        Some(self.draw(&line))
     }
 
     /// Ends the status line, so the caller can print a summary without printing over it.
@@ -469,17 +479,11 @@ impl ProgressRenderer {
         }
     }
 
-    /// Puts `line` on the current terminal row, covering the line it replaces. A stage change also
-    /// ends the row, so a finished stage stays in the scrollback.
-    fn draw(&mut self, line: &str, stage_changed: bool) -> String {
+    /// Puts `line` on the current terminal row, covering the line it replaces.
+    fn draw(&mut self, line: &str) -> String {
         let text = redraw_text(line, self.line_width);
-        if stage_changed {
-            self.line_width = 0;
-            format!("{text}\n")
-        } else {
-            self.line_width = self.line_width.max(line.chars().count());
-            text
-        }
+        self.line_width = self.line_width.max(line.chars().count());
+        text
     }
 
     /// A line the run wants the person to see as it stands. On a terminal it ends whatever status
@@ -627,8 +631,8 @@ mod tests {
         let first = renderer.update(&event(ProgressStage::Textures, 0, 100), Duration::ZERO);
         let first = first.expect("the first event draws the line");
         assert!(first.starts_with('\r'), "{first:?}");
-        // The first event is a stage change, so the line it draws stays on screen.
-        assert!(first.ends_with('\n'), "{first:?}");
+        // The first stage's line stays open, so its redraws land on the same row.
+        assert!(!first.ends_with('\n'), "{first:?}");
         assert!(first.contains("Textures"), "{first:?}");
 
         assert!(
@@ -666,7 +670,10 @@ mod tests {
                 Duration::from_millis(320),
             )
             .expect("a stage change prints immediately");
-        assert!(changed.ends_with('\n'), "{changed:?}");
+        // It ends the finished stage's row first, so that line stays in the scrollback, then opens
+        // a row for the new stage.
+        assert!(changed.starts_with("\n\r"), "{changed:?}");
+        assert!(!changed.ends_with('\n'), "{changed:?}");
         assert!(changed.contains("Validating"), "{changed:?}");
     }
 

@@ -1261,7 +1261,10 @@ fn staging_path(output: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    output.with_extension(format!("staging-{}-{stamp}", std::process::id()))
+    // The whole file name, not `with_extension`: a dotted output name (`Skyrim.Converted`) must
+    // give `Skyrim.Converted.staging-...`, the prefix resuming and `find_resumable_staging` expect.
+    let name = output.file_name().unwrap_or_default().to_string_lossy();
+    output.with_file_name(format!("{name}.staging-{}-{stamp}", std::process::id()))
 }
 
 fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
@@ -1377,6 +1380,20 @@ mod stop_hook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dotted_output_name_keeps_its_whole_name_in_the_staging_folder() {
+        let staging = staging_path(Path::new("converted/Skyrim.Converted"));
+        let name = staging.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("Skyrim.Converted.staging-"), "{name}");
+        assert_eq!(staging.parent(), Some(Path::new("converted")));
+        // And the folder it names is the one a resume finds.
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Skyrim.Converted");
+        let staging = staging_path(&output);
+        fs::create_dir_all(&staging).unwrap();
+        assert_eq!(crate::find_resumable_staging(&output), Some((staging, 0)));
+    }
     use tokio::sync::mpsc;
 
     #[test]
