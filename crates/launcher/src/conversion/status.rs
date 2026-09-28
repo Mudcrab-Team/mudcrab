@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use converter::{CheckMode, ProgressEstimate, ProgressEvent, ProgressStage};
 use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How far a check of the output folder has got.
@@ -40,6 +40,8 @@ pub struct ConversionStatus {
     pub notices: VecDeque<String>,
     /// Set while the bar and the lines show a check of the output folder rather than a run.
     pub check: Option<CheckProgress>,
+    /// The staging folder Delete staging is removing, while it does.
+    pub deleting: Option<PathBuf>,
     started: Option<Instant>,
     pub elapsed: Duration,
 }
@@ -54,6 +56,7 @@ impl Default for ConversionStatus {
             message: String::new(),
             notices: VecDeque::new(),
             check: None,
+            deleting: None,
             started: None,
             elapsed: Duration::ZERO,
         }
@@ -129,6 +132,27 @@ impl ConversionStatus {
         self.push_notice("Check stopped.");
     }
 
+    /// Shows that `staging` is being deleted. The rest of the status (the stopped run's bar and
+    /// lines) stays as it was.
+    pub fn begin_delete(&mut self, staging: &Path) {
+        self.deleting = Some(staging.to_path_buf());
+    }
+
+    /// Ends a delete and says in the pane how it went.
+    pub fn finish_delete(&mut self, staging: &Path, result: &Result<(), String>) {
+        self.deleting = None;
+        match result {
+            Ok(()) => self.push_notice(&format!(
+                "Deleted the staging folder {}.",
+                staging.display()
+            )),
+            Err(error) => self.push_notice(&format!(
+                "Could not delete {}: {error} - it is still offered for Resume and Delete staging.",
+                staging.display()
+            )),
+        }
+    }
+
     /// Stops the clock at the moment a run or a check ended, so the elapsed time stays what it was.
     pub fn stop_clock(&mut self) {
         self.tick();
@@ -182,8 +206,12 @@ impl ConversionStatus {
         }
     }
 
-    /// The stage line: which stage, how far through it, and how fast it is going.
+    /// The stage line: which stage, how far through it, and how fast it is going; or the staging
+    /// folder being deleted.
     pub fn stage_line(&self) -> String {
+        if let Some(staging) = &self.deleting {
+            return format!("Deleting {}...", staging.display());
+        }
         if let Some(check) = self.check {
             let mode = match check.mode {
                 CheckMode::Quick => "Quick check",
@@ -266,7 +294,6 @@ impl ConversionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     /// The status shows the numbers the estimate holds, through the converter's own formatters.
     #[test]
@@ -306,6 +333,32 @@ mod tests {
             status.clock_line().starts_with("00:00:00 elapsed"),
             "{:?}",
             status.clock_line()
+        );
+    }
+
+    #[test]
+    fn a_delete_shows_in_the_stage_line_and_its_result_in_the_pane() {
+        let staging = PathBuf::from("C:/out.staging-1");
+        let mut status = ConversionStatus::default();
+        status.begin_delete(&staging);
+        assert_eq!(status.stage_line(), "Deleting C:/out.staging-1...");
+
+        status.finish_delete(&staging, &Ok(()));
+        assert_eq!(status.stage_line(), "waiting for the first asset");
+        assert_eq!(
+            status.notice_text(),
+            "Deleted the staging folder C:/out.staging-1."
+        );
+
+        status.begin_delete(&staging);
+        status.finish_delete(&staging, &Err("Access is denied. (os error 5)".to_owned()));
+        assert!(status.deleting.is_none());
+        assert!(
+            status
+                .notice_text()
+                .ends_with("Could not delete C:/out.staging-1: Access is denied. (os error 5) - it is still offered for Resume and Delete staging."),
+            "{:?}",
+            status.notice_text()
         );
     }
 }

@@ -37,6 +37,10 @@ pub enum ConversionState {
         mode: CheckMode,
         previous: Box<ConversionState>,
     },
+    /// Delete staging is removing `staging` on its own thread: a full install's staging folder is
+    /// tens of gigabytes and takes a while to delete. Nothing may start, resume or check while it
+    /// goes. `cancelled` is the stopped run's, kept for the state the delete returns to.
+    Deleting { staging: PathBuf, cancelled: bool },
 }
 
 /// What a finished run did, in the shape the window shows it. The pipeline's own report is much
@@ -237,6 +241,10 @@ pub enum Input {
     Resume { data: PathBuf, output: PathBuf },
     /// Delete staging removes the folder the last stopped run kept.
     DeleteStaging,
+    /// The staging folder is gone.
+    StagingDeleted,
+    /// The staging folder could not be deleted, for the reason given; it is offered again.
+    DeleteFailed(String),
     /// A staging folder an earlier session left beside the output was found, when the launcher
     /// started or the Output folder changed. It is offered for Resume like one kept in this session.
     FoundStaging { staging: PathBuf },
@@ -268,7 +276,7 @@ pub enum Effect {
     Cancel,
     /// End the process now, as the command line's second Ctrl+C does.
     Quit,
-    /// Remove the staging folder a stopped run kept.
+    /// Remove the staging folder a stopped run kept, on its own thread.
     DeleteStaging { staging: PathBuf },
     /// Check this output folder on its own thread.
     BeginCheck { output: PathBuf, mode: CheckMode },
@@ -282,7 +290,7 @@ pub enum Effect {
 /// machine can never disagree about what is legal: the buttons read [`controls`], and an input that
 /// gets through anyway still changes nothing.
 pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) {
-    use ConversionState::{Checking, Finished, Idle, Running, Stopped, Stopping};
+    use ConversionState::{Checking, Deleting, Finished, Idle, Running, Stopped, Stopping};
     match input {
         // Start always converts from scratch, whichever state it is pressed in: a run that kept a
         // staging folder is only picked up again by Resume.
@@ -290,7 +298,7 @@ pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) 
             Idle | Finished(_) | Stopped { .. } => {
                 (Running, Effect::Begin(PipelineConfig::new(data, output)))
             }
-            Running | Stopping | Checking { .. } => (state, Effect::None),
+            Running | Stopping | Checking { .. } | Deleting { .. } => (state, Effect::None),
         },
         Input::Stop => match state {
             Running => (Stopping, Effect::Cancel),
@@ -315,15 +323,39 @@ pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) 
             other => (other, Effect::None),
         },
         Input::DeleteStaging => match state {
+            // The folder is offered again if the delete fails, so the state keeps it until the
+            // deleting thread reports.
             Stopped {
                 staging: Some(staging),
                 cancelled,
             } => (
+                Deleting {
+                    staging: staging.clone(),
+                    cancelled,
+                },
+                Effect::DeleteStaging { staging },
+            ),
+            other => (other, Effect::None),
+        },
+        Input::StagingDeleted => match state {
+            Deleting { cancelled, .. } => (
                 Stopped {
                     staging: None,
                     cancelled,
                 },
-                Effect::DeleteStaging { staging },
+                Effect::None,
+            ),
+            other => (other, Effect::None),
+        },
+        // What is left of the folder is still there, so it is offered for Resume and Delete staging
+        // again; the notice pane says why the delete failed.
+        Input::DeleteFailed(_) => match state {
+            Deleting { staging, cancelled } => (
+                Stopped {
+                    staging: Some(staging),
+                    cancelled,
+                },
+                Effect::None,
             ),
             other => (other, Effect::None),
         },
@@ -343,8 +375,9 @@ pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) 
             Running => (Running, Effect::None),
             other => (other, Effect::None),
         },
+        // A run can publish just before a Stop reaches it; it finished all the same.
         Input::Finished(report) => match state {
-            Running => (Finished(report), Effect::None),
+            Running | Stopping => (Finished(report), Effect::None),
             other => (other, Effect::None),
         },
         Input::Failed(failure) => match state {
@@ -369,7 +402,7 @@ pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) 
                 },
                 Effect::BeginCheck { output, mode },
             ),
-            Running | Stopping | Checking { .. } => (state, Effect::None),
+            Running | Stopping | Checking { .. } | Deleting { .. } => (state, Effect::None),
         },
         // However the check ends, the window goes back to what it was doing before; the result is
         // shown in the notice pane, not kept in the state.
@@ -451,6 +484,16 @@ pub fn controls(state: &ConversionState) -> Controls {
             check: false,
             paths: false,
         },
+        // A delete cannot be stopped part way to any use, and nothing may touch the folder it is
+        // removing: every control is off until it reports.
+        ConversionState::Deleting { .. } => Controls {
+            start: false,
+            stop: false,
+            resume: false,
+            delete_staging: false,
+            check: false,
+            paths: false,
+        },
     }
 }
 
@@ -458,7 +501,7 @@ pub fn controls(state: &ConversionState) -> Controls {
 pub fn start_label(state: &ConversionState) -> &'static str {
     match state {
         ConversionState::Finished(_) => "Convert again",
-        ConversionState::Stopped { .. } => "Start over",
+        ConversionState::Stopped { .. } | ConversionState::Deleting { .. } => "Start over",
         // Start is off while checking; it keeps the label the check returns to.
         ConversionState::Checking { previous, .. } => start_label(previous),
         _ => "Start",
@@ -605,6 +648,45 @@ mod tests {
         );
     }
 
+    /// A run that publishes just before a Stop reaches it has finished, not stopped: the window
+    /// must not stay in `Stopping` with Play off.
+    #[test]
+    fn a_run_that_finishes_while_stopping_ends_the_stop() {
+        for complete in [true, false] {
+            let (state, effect) =
+                apply(ConversionState::Stopping, Input::Finished(report(complete)));
+            assert_eq!(state, ConversionState::Finished(report(complete)));
+            assert!(matches!(effect, Effect::None), "{effect:?}");
+            assert_eq!(
+                controls(&state),
+                controls(&ConversionState::Finished(report(complete)))
+            );
+            assert_eq!(
+                stop_label(&state),
+                "Stop",
+                "the Stop button no longer says Quit now"
+            );
+        }
+    }
+
+    /// A failure that arrives while stopping ends the stop too, keeping what the failure says
+    /// about the staging folder and why the run ended.
+    #[test]
+    fn a_run_that_fails_while_stopping_keeps_its_staging_folder_and_reason() {
+        let (state, effect) = apply(
+            ConversionState::Stopping,
+            Input::Failed(FailureReport {
+                message: "no space left".into(),
+                staging: Some(staging()),
+                cancelled: false,
+            }),
+        );
+        assert_eq!(state, stopped(Some(staging()), false));
+        assert!(matches!(effect, Effect::None), "{effect:?}");
+        let controls = controls(&state);
+        assert!(controls.resume && controls.delete_staging && !controls.stop);
+    }
+
     #[test]
     fn a_failure_shows_a_failure_and_offers_to_resume_when_a_staging_folder_was_kept() {
         let (state, effect) = apply(
@@ -696,18 +778,91 @@ mod tests {
         }
     }
 
+    fn deleting(cancelled: bool) -> ConversionState {
+        ConversionState::Deleting {
+            staging: staging(),
+            cancelled,
+        }
+    }
+
+    /// Delete staging asks for the delete and waits in `Deleting` for the thread to report; the
+    /// folder is only dropped from the state once it is gone.
     #[test]
     fn deleting_the_staging_folder_removes_the_offer_to_resume_and_delete() {
         let (state, effect) = apply(stopped(Some(staging()), true), Input::DeleteStaging);
-        assert_eq!(state, stopped(None, true), "the reason it stopped is kept");
+        assert_eq!(state, deleting(true));
         let Effect::DeleteStaging { staging: deleted } = effect else {
             panic!("Delete staging did not ask for a delete: {effect:?}");
         };
         assert_eq!(deleted, staging());
+
+        let (state, effect) = apply(state, Input::StagingDeleted);
+        assert_eq!(state, stopped(None, true), "the reason it stopped is kept");
+        assert!(matches!(effect, Effect::None), "{effect:?}");
         let controls = controls(&state);
         assert!(!controls.resume, "the folder is gone");
         assert!(!controls.delete_staging, "there is nothing left to delete");
         assert!(controls.paths, "the folders can be chosen again");
+        assert!(controls.start && controls.check);
+    }
+
+    /// A delete that fails offers what is left of the folder again, exactly as before the press.
+    #[test]
+    fn a_failed_delete_offers_the_staging_folder_again() {
+        for cancelled in [true, false] {
+            let before = stopped(Some(staging()), cancelled);
+            let (during, _) = apply(before.clone(), Input::DeleteStaging);
+            let (after, effect) = apply(during, Input::DeleteFailed("access is denied".into()));
+            assert_eq!(after, before);
+            assert!(matches!(effect, Effect::None), "{effect:?}");
+            assert_eq!(controls(&after), controls(&before));
+        }
+    }
+
+    /// Nothing may start, resume, check or delete again while a folder is being deleted, and a
+    /// stray message from a run or a check does not end the delete.
+    #[test]
+    fn every_other_input_is_a_no_op_while_deleting() {
+        let state = deleting(true);
+        for input in [
+            start(),
+            resume(),
+            Input::Stop,
+            Input::DeleteStaging,
+            Input::FoundStaging {
+                staging: PathBuf::from(r"C:\out.staging-older"),
+            },
+            Input::Progress,
+            Input::Finished(report(true)),
+            Input::Failed(FailureReport::before_start("late")),
+            check(CheckMode::Quick),
+            Input::CheckFinished(summary(0)),
+            Input::CheckFailed("late".into()),
+            Input::CheckCancelled,
+        ] {
+            let (next, effect) = apply(state.clone(), input.clone());
+            assert_eq!(next, state, "{input:?}");
+            assert!(matches!(effect, Effect::None), "{input:?} gave {effect:?}");
+        }
+    }
+
+    #[test]
+    fn a_delete_result_outside_a_delete_changes_nothing() {
+        for state in [
+            ConversionState::Idle,
+            ConversionState::Running,
+            ConversionState::Stopping,
+            ConversionState::Finished(report(true)),
+            stopped(Some(staging()), true),
+            stopped(None, false),
+            checking(stopped(Some(staging()), true)),
+        ] {
+            for input in [Input::StagingDeleted, Input::DeleteFailed("late".into())] {
+                let (next, effect) = apply(state.clone(), input);
+                assert_eq!(next, state);
+                assert!(matches!(effect, Effect::None), "{effect:?}");
+            }
+        }
     }
 
     #[test]
@@ -717,6 +872,7 @@ mod tests {
             ConversionState::Running,
             ConversionState::Finished(report(true)),
             stopped(None, false),
+            deleting(false),
         ] {
             let (next, effect) = apply(state.clone(), Input::DeleteStaging);
             assert_eq!(next, state);
@@ -793,6 +949,17 @@ mod tests {
                 paths: true,
             }
         );
+        assert_eq!(
+            controls(&deleting(true)),
+            Controls {
+                start: false,
+                stop: false,
+                resume: false,
+                delete_staging: false,
+                check: false,
+                paths: false,
+            }
+        );
     }
 
     #[test]
@@ -803,6 +970,7 @@ mod tests {
             "Convert again"
         );
         assert_eq!(start_label(&stopped(None, true)), "Start over");
+        assert_eq!(start_label(&deleting(true)), "Start over");
         assert_eq!(stop_label(&ConversionState::Running), "Stop");
         assert_eq!(stop_label(&ConversionState::Stopping), "Quit now");
     }
@@ -958,6 +1126,8 @@ mod tests {
             Input::Progress,
             Input::Finished(report(true)),
             Input::Failed(FailureReport::before_start("late")),
+            Input::StagingDeleted,
+            Input::DeleteFailed("late".into()),
         ] {
             let (next, effect) = apply(state.clone(), input.clone());
             assert_eq!(next, state, "{input:?}");

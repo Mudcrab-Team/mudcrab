@@ -750,6 +750,13 @@ mod tests {
             ]
         );
 
+        // While the staging folder is deleted, nothing at all can be pressed.
+        app.world_mut().resource_mut::<CurrentConversion>().0 = state::ConversionState::Deleting {
+            staging: PathBuf::from("modern_assets.staging-1"),
+            cancelled: true,
+        };
+        assert_eq!(drawn_available(&mut app), Vec::<ControlButton>::new());
+
         // No manifest in the output folder: nothing to check against.
         app.world_mut().resource_mut::<CurrentConversion>().0 = state::ConversionState::Idle;
         app.world_mut().insert_resource(OutputHasManifest(false));

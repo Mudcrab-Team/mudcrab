@@ -174,6 +174,7 @@ the notice pane instead.
 | Stopped with a staging folder | on ("Start over") | off | on | on | on | off |
 | Stopped without one | on ("Start over") | off | off | off | on | on |
 | Checking | off | on (stops the check) | off | off | off | off |
+| Deleting | off | off | off | off | off | off |
 
 Check and Full check are drawn as available only when the Output folder also holds a
 `conversion-manifest.json`; without one there is nothing to check against.
@@ -183,7 +184,9 @@ Check and Full check are drawn as available only when the Output folder also hol
 - **Stop** asks the run to stop. The pipeline finishes the asset in flight, keeps its staging folder
   and reports it, which is what makes Resume work. The launcher is never killed.
 - **Stop** pressed a second time, while the run is stopping, ends the launcher (exit code 130), as
-  the command line's second Ctrl+C does.
+  the command line's second Ctrl+C does. A run that publishes, or fails, before the stop reaches it
+  ends the stop all the same: the panel shows `Finished` (or `Stopped`, with whatever staging folder
+  the failure kept) rather than staying in `Stopping`.
 - **Resume** continues from the stopped run's staging folder, with the same `Data` and output
   folders: it continues where it stopped; finished files are checked again, not redone. That is why the path rows are fixed while a staging folder is waiting: a resume must
   reuse the folders the stopped run used. Changing them means **Delete staging** first.
@@ -198,7 +201,11 @@ Check and Full check are drawn as available only when the Output folder also hol
   never deleted automatically. Resume then runs with that folder as the pipeline's
   `resume_staging`.
 - **Delete staging** removes the kept folder, which frees the disk space at the cost of starting
-  over. The output folder is never touched.
+  over. The output folder is never touched. A full install's staging folder is tens of gigabytes, so
+  the delete runs on its own thread: the panel is `Deleting`, the stage line reads `Deleting
+  <folder>...`, and every button is off until it reports. When the folder is gone (or was already
+  gone) the panel is "Stopped without one". A delete that fails offers what is left of the folder for Resume and Delete
+  staging again, and the pane says why.
 - **Check** reads the output folder's `conversion-manifest.json` and looks at every artifact it
   lists: there, and at its recorded size. **Full check** also re-hashes every artifact, which reads
   the whole output. Both need only an Output folder with a manifest; they convert nothing and write
@@ -246,7 +253,7 @@ Full check read `All good`; delete one converted file and Check lists it as miss
 | File | What it holds |
 | :--- | :--- |
 | `src/conversion/state.rs` | The state machine: `ConversionState`, `Input`, `Effect`, `apply`, and the `controls` table above, plus `CheckSummary`, the lines a check's result shows. No Bevy types, so every transition is a unit test. |
-| `src/conversion/runner.rs` | Runs a conversion on its own thread with its own tokio runtime and reports `RunMessage::{Progress, Finished, Failed}` on a crossbeam channel. Returns the `Cancellation` the Stop button holds. `spawn_check` runs `converter::check_output_with_cancel` on its own thread with a shared stop flag and reports `RunMessage::{CheckProgress, CheckFinished, CheckFailed, CheckCancelled}`, its per-entry progress thinned to 200 steps. |
+| `src/conversion/runner.rs` | Runs a conversion on its own thread with its own tokio runtime and reports `RunMessage::{Progress, Finished, Failed}` on a crossbeam channel. Returns the `Cancellation` the Stop button holds. `spawn_check` runs `converter::check_output_with_cancel` on its own thread with a shared stop flag and reports `RunMessage::{CheckProgress, CheckFinished, CheckFailed, CheckCancelled}`, its per-entry progress thinned to 200 steps. `spawn_delete` removes a staging folder on its own thread and reports `RunMessage::StagingDeleted`. |
 | `src/conversion/status.rs` | `ConversionStatus`: the bar, the three lines and the notices, from the converter's `ProgressEstimate` and formatters. |
 | `src/conversion/panel.rs` | The panel's Bevy UI scene, the button and drag-and-drop systems, and the systems that draw the state. |
 | `src/conversion/mod.rs` | `GamePathConfig` (the two folders), `ConversionLogicPlugin` (state machine, message drain, effects queue; no UI), `ConversionPanelPlugin` (the panel on top), the output check behind Play and the manifest flag behind Check, the offer of a leftover staging folder, and the systems that carry effects out. |

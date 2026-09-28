@@ -3,14 +3,15 @@
 //! The pipeline is async and the launcher is a Bevy app, so a run gets its own thread with its own
 //! tokio runtime, and everything the run has to say comes back as a [`RunMessage`] on a crossbeam
 //! channel the launcher drains each frame. A check is plain blocking work on its own thread and
-//! reports on the same kind of channel; its stop button is a shared flag.
+//! reports on the same kind of channel; its stop button is a shared flag. Deleting a staging folder
+//! is the same: tens of gigabytes of small files take long enough to freeze the window.
 
 use super::state::{CheckSummary, FailureReport, RunReport};
 use converter::{
     AssetPipeline, Cancellation, CheckCancelled, CheckMode, PipelineConfig, ProgressEvent,
 };
 use crossbeam_channel::Sender;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -32,6 +33,12 @@ pub enum RunMessage {
     CheckFailed(String),
     /// The check was stopped before it finished; there is no result to show.
     CheckCancelled,
+    /// Delete staging has finished with `staging`: `Ok` when the folder is gone, or the reason it
+    /// could not be deleted.
+    StagingDeleted {
+        staging: PathBuf,
+        result: Result<(), String>,
+    },
 }
 
 /// How many steps a check's progress is reported in. `check_output` reports every entry, from
@@ -131,6 +138,34 @@ fn check(output: &std::path::Path, mode: CheckMode, cancel: &AtomicBool, tx: &Se
         Err(error) => RunMessage::CheckFailed(format!("{error:#}")),
     };
     let _ = tx.send(message);
+}
+
+/// Deletes `staging` on its own thread and reports how it went on `tx`.
+pub fn spawn_delete(staging: PathBuf, tx: Sender<RunMessage>) {
+    let failure_tx = tx.clone();
+    let failed = staging.clone();
+    let spawned = thread::Builder::new()
+        .name("delete-staging".to_owned())
+        .spawn(move || {
+            let result = delete_staging(&staging);
+            let _ = tx.send(RunMessage::StagingDeleted { staging, result });
+        });
+    if let Err(error) = spawned {
+        let _ = failure_tx.send(RunMessage::StagingDeleted {
+            staging: failed,
+            result: Err(format!("could not start the delete thread: {error}")),
+        });
+    }
+}
+
+/// Removes a staging folder and everything in it. A folder that is already gone (deleted by hand
+/// while the window offered it) counts as deleted: there is nothing left to resume either way.
+fn delete_staging(staging: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(staging) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +274,62 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&output).unwrap();
+    }
+
+    fn delete_result(staging: PathBuf) -> Result<(), String> {
+        let (tx, rx) = unbounded();
+        spawn_delete(staging.clone(), tx);
+        let message = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the delete reported nothing");
+        let RunMessage::StagingDeleted {
+            staging: reported,
+            result,
+        } = message
+        else {
+            panic!("a delete reported {message:?}");
+        };
+        assert_eq!(reported, staging);
+        result
+    }
+
+    /// A staging folder, files and subfolders and all, is removed on the delete thread.
+    #[test]
+    fn a_delete_removes_the_staging_folder_on_its_own_thread() {
+        let staging = crate::conversion::tests::temp_dir("delete-staging");
+        std::fs::create_dir_all(staging.join("textures").join("clutter")).unwrap();
+        std::fs::write(
+            staging.join("textures").join("clutter").join("a.ktx2"),
+            b"ktx",
+        )
+        .unwrap();
+        std::fs::write(staging.join("conversion-manifest.json"), b"{}").unwrap();
+        assert_eq!(delete_result(staging.clone()), Ok(()));
+        assert!(!staging.exists(), "{staging:?} is still there");
+    }
+
+    /// A folder that is already gone counts as deleted.
+    #[test]
+    fn a_delete_of_a_folder_that_is_already_gone_succeeds() {
+        let staging = crate::conversion::tests::temp_dir("delete-gone");
+        assert!(!staging.exists());
+        assert_eq!(delete_result(staging), Ok(()));
+    }
+
+    /// What cannot be deleted comes back as a failure with the reason, and is left where it was.
+    /// A plain file in place of the folder fails on every platform.
+    #[test]
+    fn a_delete_that_fails_reports_why() {
+        let root = crate::conversion::tests::temp_dir("delete-fails");
+        std::fs::create_dir_all(&root).unwrap();
+        let not_a_folder = root.join("modern_assets.staging-1");
+        std::fs::write(&not_a_folder, b"not a folder").unwrap();
+        let Err(error) = delete_result(not_a_folder.clone()) else {
+            panic!("deleting a file as a folder succeeded");
+        };
+        assert!(!error.is_empty());
+        assert!(not_a_folder.is_file(), "the file was removed");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The launcher refuses a Data folder that is not there before it ever starts a run, so the only

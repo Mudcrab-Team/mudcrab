@@ -271,6 +271,14 @@ pub fn drain_run_messages(
                 status.cancel_check();
                 transition(&mut state, &mut effects, Input::CheckCancelled);
             }
+            RunMessage::StagingDeleted { staging, result } => {
+                status.finish_delete(&staging, &result);
+                let input = match result {
+                    Ok(()) => Input::StagingDeleted,
+                    Err(error) => Input::DeleteFailed(error),
+                };
+                transition(&mut state, &mut effects, input);
+            }
         }
     }
 }
@@ -311,15 +319,14 @@ pub fn actuate_effects(
                 None => status.push_notice("There is no conversion to stop."),
             },
             Effect::Quit => std::process::exit(QUIT_CODE),
-            Effect::DeleteStaging { staging } => match std::fs::remove_dir_all(&staging) {
-                Ok(()) => status.push_notice(&format!(
-                    "Deleted the staging folder {}.",
-                    staging.display()
-                )),
-                Err(error) => {
-                    status.push_notice(&format!("Could not delete {}: {error}", staging.display()))
-                }
-            },
+            // A staging folder is tens of gigabytes: deleting it on this thread would freeze the
+            // window until it was gone.
+            Effect::DeleteStaging { staging } => {
+                let (tx, rx) = crossbeam_channel::unbounded();
+                status.begin_delete(&staging);
+                runner::spawn_delete(staging, tx);
+                commands.insert_resource(RunChannel { receiver: rx });
+            }
             Effect::BeginCheck { output, mode } => {
                 let (tx, rx) = crossbeam_channel::unbounded();
                 let cancel = Arc::new(AtomicBool::new(false));
@@ -1163,6 +1170,133 @@ pub(crate) mod tests {
             .push(Effect::CancelCheck);
         app.update();
         assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    /// Puts the window in `Stopped` with `staging` waiting, then presses Delete staging.
+    fn press_delete_staging(app: &mut App, staging: &Path) {
+        app.world_mut().resource_mut::<CurrentConversion>().0 = ConversionState::Stopped {
+            staging: Some(staging.to_path_buf()),
+            cancelled: true,
+        };
+        app.world_mut()
+            .resource_mut::<PendingInputs>()
+            .push(Input::DeleteStaging);
+    }
+
+    /// Delete staging runs on its own thread: the window shows "Deleting ..." and keeps drawing
+    /// frames while it goes, and the folder is gone when the thread reports.
+    #[test]
+    fn delete_staging_deletes_on_its_own_thread_and_reports_in_the_pane() {
+        let root = temp_dir("window-delete");
+        let staging = root.join("modern_assets.staging-1");
+        std::fs::create_dir_all(staging.join("meshes")).unwrap();
+        std::fs::write(staging.join("meshes").join("a.glb"), b"glTF!").unwrap();
+        let mut app = test_app();
+        app.add_systems(Update, actuate_effects.after(LauncherSet::Logic));
+        press_delete_staging(&mut app, &staging);
+        app.update();
+        let deleting = ConversionState::Deleting {
+            staging: staging.clone(),
+            cancelled: true,
+        };
+        let started = Instant::now();
+        loop {
+            let state = app.world().resource::<CurrentConversion>().0.clone();
+            if state != deleting {
+                break;
+            }
+            let status = app.world().resource::<ConversionStatus>();
+            assert!(
+                status.stage_line().starts_with("Deleting "),
+                "{:?}",
+                status.stage_line()
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the delete never reported"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<CurrentConversion>().0,
+            ConversionState::Stopped {
+                staging: None,
+                cancelled: true,
+            }
+        );
+        assert!(!staging.exists(), "the staging folder is still there");
+        let status = app.world().resource::<ConversionStatus>();
+        assert!(status.deleting.is_none());
+        assert!(
+            status.notice_text().contains("Deleted the staging folder"),
+            "{:?}",
+            status.notice_text()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// While the delete runs every control is off, and the status says what is being deleted.
+    #[test]
+    fn nothing_can_be_pressed_while_a_staging_folder_is_deleted() {
+        let staging = PathBuf::from("C:/out.staging-1");
+        let mut app = test_app();
+        press_delete_staging(&mut app, &staging);
+        app.update();
+        let effects = take_effects(&mut app);
+        assert!(
+            matches!(effects.as_slice(), [Effect::DeleteStaging { staging: asked }] if *asked == staging),
+            "{effects:?}"
+        );
+        // Carry the effect out by hand, with a scripted channel in place of the thread.
+        app.world_mut()
+            .resource_mut::<ConversionStatus>()
+            .begin_delete(&staging);
+        let (tx, rx) = unbounded();
+        app.world_mut().insert_resource(RunChannel { receiver: rx });
+        let state = app.world().resource::<CurrentConversion>().0.clone();
+        let controls = state::controls(&state);
+        assert!(
+            !(controls.start
+                || controls.stop
+                || controls.resume
+                || controls.delete_staging
+                || controls.check
+                || controls.paths),
+            "{controls:?}"
+        );
+        assert_eq!(
+            app.world().resource::<ConversionStatus>().stage_line(),
+            "Deleting C:/out.staging-1..."
+        );
+
+        // A failed delete offers the folder again and says why.
+        push_message(
+            &mut app,
+            &tx,
+            RunMessage::StagingDeleted {
+                staging: staging.clone(),
+                result: Err("Access is denied. (os error 5)".into()),
+            },
+        );
+        let state = app.world().resource::<CurrentConversion>().0.clone();
+        assert_eq!(
+            state,
+            ConversionState::Stopped {
+                staging: Some(staging),
+                cancelled: true,
+            }
+        );
+        assert!(state::controls(&state).resume && state::controls(&state).delete_staging);
+        let status = app.world().resource::<ConversionStatus>();
+        assert!(status.deleting.is_none());
+        assert!(
+            status
+                .notice_text()
+                .contains("Could not delete C:/out.staging-1: Access is denied."),
+            "{:?}",
+            status.notice_text()
+        );
     }
 
     /// A folder beside `output` that looks like a staging folder a run left: named after the
