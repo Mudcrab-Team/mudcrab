@@ -89,6 +89,33 @@ impl PipelineConfig {
     }
 }
 
+/// The staging folder an unfinished conversion into `output` left behind, for
+/// `--resume-staging` (`PipelineConfig::resume_staging`): the newest
+/// `<output>.staging-<pid>-<stamp>` directory beside `output`, and how many
+/// older staging folders were passed over, which a front end can offer to
+/// delete. It checks only what a resume checks before it starts (the name and
+/// the parent folder); the resume itself re-verifies the files inside. Other
+/// folders the converter keeps beside the output are never returned.
+pub fn find_resumable_staging(output: &Path) -> Option<(PathBuf, usize)> {
+    let prefix = format!("{}.staging-", output.file_name()?.to_str()?);
+    let mut candidates: Vec<(u128, PathBuf)> = std::fs::read_dir(parent_or_cwd(output))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let suffix = name.to_str()?.strip_prefix(&prefix)?;
+            // `<pid>-<stamp>`, the stamp in nanoseconds since the epoch; a
+            // folder named some other way sorts oldest.
+            let stamp = suffix.rsplit('-').next()?.parse().unwrap_or(0);
+            Some((stamp, entry.path()))
+        })
+        .collect();
+    candidates.sort();
+    let (_, newest) = candidates.pop()?;
+    Some((newest, candidates.len()))
+}
+
 // `Path::parent` returns `Some("")` for bare file names, so empty parents
 // must also fall back to the current directory.
 fn parent_or_cwd(path: &Path) -> &Path {
@@ -100,6 +127,32 @@ fn parent_or_cwd(path: &Path) -> &Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_newest_staging_folder_beside_the_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern_assets");
+        assert_eq!(find_resumable_staging(&output), None);
+
+        for name in [
+            "modern_assets.staging-7-100",
+            "modern_assets.staging-9-300",
+            "modern_assets.staging-8-200",
+            // Not staging for this output: another output's, the publish pack,
+            // the persistent cache, and a file with a staging name.
+            "other.staging-1-999",
+            "modern_assets.pack-1-999",
+            "modern_assets.assets-cache",
+        ] {
+            std::fs::create_dir(directory.path().join(name)).unwrap();
+        }
+        std::fs::write(directory.path().join("modern_assets.staging-1-999"), b"").unwrap();
+
+        assert_eq!(
+            find_resumable_staging(&output),
+            Some((directory.path().join("modern_assets.staging-9-300"), 2))
+        );
+    }
 
     #[test]
     fn bare_relative_names_resolve_to_the_current_directory() {
