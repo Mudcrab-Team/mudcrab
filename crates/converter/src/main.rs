@@ -337,7 +337,7 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
             );
         }
         None => eprintln!(
-            "  No staging folder was kept, so the next run starts from scratch. Pass --resume-staging to keep one."
+            "  The run stopped before it created a staging folder; fix the error above and run again."
         ),
     }
 }
