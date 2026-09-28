@@ -10,7 +10,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 
@@ -27,6 +27,21 @@ struct Cli {
     verify_cache: bool,
 }
 
+#[derive(Debug)]
+struct CheckCli {
+    output: PathBuf,
+    full: bool,
+}
+
+#[derive(Debug)]
+enum Command {
+    Convert(Cli),
+    Check(CheckCli),
+}
+
+/// Problem lines printed before "and N more".
+const CHECK_PROBLEM_LINES: usize = 20;
+
 #[derive(Debug, Serialize)]
 struct FailureReport {
     complete: bool,
@@ -40,7 +55,10 @@ struct FailureReport {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     suppress_caught_nif_parser_panics();
-    let cli = parse_cli(std::env::args_os().skip(1).collect())?;
+    let cli = match parse_command(std::env::args_os().skip(1).collect())? {
+        Command::Convert(cli) => cli,
+        Command::Check(check) => std::process::exit(run_check(&check)),
+    };
     let mut config = PipelineConfig::new(cli.data, cli.output);
     config.resume_staging = cli.resume_staging;
     config.fail_fast = cli.fail_fast;
@@ -153,6 +171,124 @@ fn suppress_caught_nif_parser_panics() {
     }));
 }
 
+/// Exit code: 0 all good, 1 problems found, 2 the manifest could not be read.
+fn run_check(check: &CheckCli) -> i32 {
+    let mode = if check.full {
+        converter::CheckMode::Full
+    } else {
+        converter::CheckMode::Quick
+    };
+    // A progress line only for checks slower than a moment; it is erased
+    // before the result is printed.
+    let started = Instant::now();
+    let last_print = Mutex::new(None::<Instant>);
+    let progress = |done: usize, total: usize| {
+        let Ok(mut last) = last_print.try_lock() else {
+            return;
+        };
+        let due = match *last {
+            None => started.elapsed() >= Duration::from_secs(1),
+            Some(printed) => printed.elapsed() >= Duration::from_millis(250),
+        };
+        if due {
+            *last = Some(Instant::now());
+            eprint!("\rChecking {done}/{total} files");
+            let _ = std::io::stderr().flush();
+        }
+    };
+    let result = converter::check_output(&check.output, mode, progress);
+    if last_print.lock().is_ok_and(|last| last.is_some()) {
+        eprint!("\r{:48}\r", "");
+    }
+    let code = match result {
+        Ok(report) => {
+            print!("{}", format_check_report(&report));
+            if report.is_ok() { 0 } else { 1 }
+        }
+        Err(error) => {
+            eprintln!("check failed: {error:#}");
+            2
+        }
+    };
+    let _ = std::io::stdout().flush();
+    code
+}
+
+fn format_check_report(report: &converter::CheckReport) -> String {
+    let mode = match report.mode {
+        converter::CheckMode::Quick => "quick check: existence and size",
+        converter::CheckMode::Full => "full check: size and hash",
+    };
+    let seconds = report.elapsed.as_secs_f64();
+    let bytes = format_bytes(report.bytes_checked);
+    if report.is_ok() {
+        return format!(
+            "All good: {} files, {bytes}, {mode}, {seconds:.1} s\n",
+            report.files_checked
+        );
+    }
+    let mut text = format!(
+        "{} problem(s) in {} files, {bytes}, {mode}, {seconds:.1} s:\n",
+        report.problems.len(),
+        report.files_checked
+    );
+    for problem in report.problems.iter().take(CHECK_PROBLEM_LINES) {
+        text.push_str(&format!("  {problem}\n"));
+    }
+    if report.problems.len() > CHECK_PROBLEM_LINES {
+        text.push_str(&format!(
+            "  and {} more\n",
+            report.problems.len() - CHECK_PROBLEM_LINES
+        ));
+    }
+    if let Some(advice) = report.advice() {
+        text.push_str(advice);
+        text.push('\n');
+    }
+    text
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} bytes");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+fn parse_command(args: Vec<OsString>) -> Result<Command> {
+    if args.first().and_then(|argument| argument.to_str()) == Some("check") {
+        return parse_check(args.into_iter().skip(1)).map(Command::Check);
+    }
+    parse_cli(args).map(Command::Convert)
+}
+
+fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
+    let mut positional = Vec::new();
+    let mut full = false;
+    for argument in args {
+        match argument.to_str() {
+            Some("--full") => full = true,
+            Some("--help" | "-h") => bail!(usage()),
+            Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
+            _ => positional.push(PathBuf::from(argument)),
+        }
+    }
+    if positional.len() != 1 {
+        bail!(usage());
+    }
+    Ok(CheckCli {
+        output: positional.remove(0),
+        full,
+    })
+}
+
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut positional = Vec::new();
     let mut report_json = None;
@@ -223,7 +359,11 @@ fn parse_jobs(value: OsString, option: &str) -> Result<usize> {
 }
 
 fn usage() -> &'static str {
-    "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast] [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR] [--report-json FILE]"
+    "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast] [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR] [--report-json FILE]
+       converter check <output directory> [--full]
+         checks a converted output against its conversion-manifest.json without converting:
+         existence and size of every file, and with --full their hashes too.
+         Exit code 0: all good, 1: problems found, 2: no readable manifest."
 }
 
 #[cfg(test)]
@@ -257,6 +397,89 @@ mod tests {
         assert!(cli.invalidate_cache);
         assert!(!cli.verify_cache);
         assert_eq!(cli.report_json, Some(PathBuf::from("report.json")));
+    }
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn parses_the_check_subcommand() {
+        let Command::Check(check) = parse_command(args(&["check", "converted"])).unwrap() else {
+            panic!("check was not parsed as a subcommand");
+        };
+        assert_eq!(check.output, PathBuf::from("converted"));
+        assert!(!check.full);
+
+        let Command::Check(check) = parse_command(args(&["check", "--full", "converted"])).unwrap()
+        else {
+            panic!("check was not parsed as a subcommand");
+        };
+        assert_eq!(check.output, PathBuf::from("converted"));
+        assert!(check.full);
+    }
+
+    #[test]
+    fn rejects_malformed_check_arguments() {
+        for arguments in [
+            &["check"][..],
+            &["check", "a", "b"],
+            &["check", "converted", "--cpu-jobs", "2"],
+            &["check", "converted", "--help"],
+        ] {
+            assert!(
+                parse_command(args(arguments)).is_err(),
+                "{arguments:?} was accepted"
+            );
+        }
+        let usage = parse_command(args(&["check", "--help"]))
+            .unwrap_err()
+            .to_string();
+        assert!(usage.contains("converter check <output directory> [--full]"));
+    }
+
+    #[test]
+    fn keeps_the_conversion_form_without_a_subcommand() {
+        let Command::Convert(cli) = parse_command(args(&["Data", "check"])).unwrap() else {
+            panic!("a conversion was parsed as a check");
+        };
+        assert_eq!(cli.data, PathBuf::from("Data"));
+        assert_eq!(cli.output, PathBuf::from("check"));
+    }
+
+    #[test]
+    fn formats_a_check_report() {
+        let problems = (0..23)
+            .map(|index| converter::CheckProblem::Missing {
+                output: format!("meshes/{index:02}.glb"),
+            })
+            .collect();
+        let report = converter::CheckReport {
+            mode: converter::CheckMode::Quick,
+            files_checked: 100,
+            bytes_checked: 3 * 1024 * 1024,
+            elapsed: Duration::from_millis(200),
+            problems,
+        };
+        let text = format_check_report(&report);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[0],
+            "23 problem(s) in 100 files, 3.0 MiB, quick check: existence and size, 0.2 s:"
+        );
+        assert_eq!(lines[1], "  missing: meshes/00.glb");
+        assert_eq!(lines[20], "  missing: meshes/19.glb");
+        assert_eq!(lines[21], "  and 3 more");
+        assert!(lines[22].contains("only the files listed"));
+
+        let ok = converter::CheckReport {
+            problems: Vec::new(),
+            ..report
+        };
+        assert_eq!(
+            format_check_report(&ok),
+            "All good: 100 files, 3.0 MiB, quick check: existence and size, 0.2 s\n"
+        );
     }
 
     #[test]

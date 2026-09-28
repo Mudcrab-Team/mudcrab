@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod asset_path;
 pub mod cache;
+pub mod check;
 pub mod config;
 pub mod esm;
 pub mod integration;
@@ -14,6 +15,7 @@ pub mod progress;
 pub mod script;
 pub mod texture;
 
+pub use check::{CheckMode, CheckProblem, CheckReport, check_output};
 pub use config::PipelineConfig;
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;
