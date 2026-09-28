@@ -1709,7 +1709,12 @@ mod tests {
             updates += 1;
             let metrics = app.world().resource::<StreamingMetrics>();
             let state = app.world().resource::<StreamingFixtureState>();
-            let crossed_back = state.interior.resident_frame.is_some()
+            // Settling alone can come before the validator's frame 90 on a fast database, so also
+            // wait for the validator's verdict, pass or fail.
+            let judged =
+                metrics.streaming_fixture_validated || metrics.streaming_fixture_failures > 0;
+            let crossed_back = judged
+                && state.interior.resident_frame.is_some()
                 && metrics.resident_cells >= expected_resident
                 && metrics.active_requests == 0
                 && metrics.loading_cells == 0;

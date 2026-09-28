@@ -10,6 +10,8 @@ pub struct EngineConfig {
     pub unload_radius: i32,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
+    /// Cells outside the unload radius a frame may despawn. `0` despawns every one at once, which
+    /// is the unbudgeted behaviour unloading used to have.
     pub max_cell_unloads_per_frame: usize,
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.

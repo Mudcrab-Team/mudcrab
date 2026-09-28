@@ -388,7 +388,11 @@ fn despawn_cells(world: &mut World) {
     let (budget, backlog_bound) = {
         let config = world.resource::<EngineConfig>();
         (
-            config.max_cell_unloads_per_frame.max(1),
+            // `0` is unbudgeted: every retiring cell unloads at once, as before the budget.
+            match config.max_cell_unloads_per_frame {
+                0 => usize::MAX,
+                budget => budget,
+            },
             retire_backlog_bound(config.unload_radius),
         )
     };
@@ -2440,6 +2444,32 @@ mod tests {
 
     fn streaming_metrics(app: &App) -> StreamingMetrics {
         app.world().resource::<StreamingMetrics>().clone()
+    }
+
+    #[test]
+    fn a_zero_unload_budget_unloads_the_whole_crossing_in_one_frame() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 3,
+            unload_radius: 4,
+            max_cell_unloads_per_frame: 0,
+            ..default()
+        });
+        spawn_camera(&mut app, IVec2::ZERO);
+        spawn_steady_window(&mut app, IVec2::ZERO);
+        let roots = resident_root_count(&mut app);
+        app.update();
+
+        move_camera(&mut app, IVec2::X);
+        app.update();
+        let metrics = streaming_metrics(&app);
+        assert_eq!(
+            metrics.despawns_this_frame, 7,
+            "0 means unbudgeted, as before"
+        );
+        assert_eq!(metrics.retiring_cells, 0);
+        assert_eq!(metrics.retire_backlog_overflows, 0);
+        assert_eq!(resident_root_count(&mut app), roots - 7);
+        assert_eq!(metrics.streaming_invariant_failures, 0);
     }
 
     #[test]
