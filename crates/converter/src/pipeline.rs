@@ -331,6 +331,11 @@ impl AssetPipeline {
                 );
             };
 
+            // A stop is checked before every entry, so it does not wait for a multi-gigabyte
+            // archive to finish.
+            let stop_for_worker = cancellation.clone();
+            let stop = move || stop_for_worker.is_cancelled();
+
             let result = spawn_blocking(move || {
                 ArchiveExtractor::extract_cached(
                     &archive_for_worker,
@@ -340,10 +345,17 @@ impl AssetPipeline {
                     previous_entry.as_ref(),
                     verify_cache,
                     Some(&progress),
+                    Some(&stop),
                 )
             })
             .await
             .wrap_err("archive worker panicked")?;
+            // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
+            // between archives, rather than being counted as a skipped archive. Its cache entry
+            // was never recorded, so a resume extracts it again from the start.
+            if result.is_err() {
+                interrupt(cancellation)?;
+            }
 
             send(
                 progress_tx,
@@ -1674,6 +1686,96 @@ mod tests {
             })
             .count();
         assert!(converted >= assets, "resume left assets behind");
+    }
+
+    /// A stop pressed while one large archive is being extracted takes effect inside it, not
+    /// when the whole archive is done, and ends the run as an interrupt rather than as a skipped
+    /// archive. Nothing of the archive is cached, so the resume extracts it again in full.
+    #[tokio::test]
+    async fn an_interrupt_inside_an_archive_stops_its_extraction_and_resumes() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let entries = 2048;
+        let names: Vec<String> = (0..entries)
+            .map(|index| format!("docs/file{index:04}.txt"))
+            .collect();
+        let contents: Vec<Vec<u8>> = (0..entries)
+            .map(|index| format!("entry {index}").into_bytes())
+            .collect();
+        let archive_entries: Vec<_> = names
+            .iter()
+            .zip(&contents)
+            .map(|(name, data)| dummy_content::Entry::new(name, data))
+            .collect();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(&archive_entries, dummy_content::ba2::Compression::None)
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Stop as soon as the archive reports its first finished files.
+        let cancellation = Cancellation::new();
+        let interrupt = cancellation.clone();
+        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(64);
+        let watcher = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if event.stage == ProgressStage::Extracting
+                    && event.bytes_completed.is_some_and(|bytes| bytes > 0)
+                {
+                    interrupt.cancel();
+                }
+            }
+        });
+        let failure = AssetPipeline::run_async_with_cancel(
+            PipelineConfig::new(&data, &output),
+            tx,
+            cancellation,
+        )
+        .await
+        .unwrap_err();
+        watcher.await.unwrap();
+
+        assert!(failure.cancelled, "a stop is reported as an interrupt");
+        assert!(failure.to_string().contains("interrupted"));
+        assert!(!output.exists(), "an interrupted run does not publish");
+        let staging = failure
+            .staging
+            .clone()
+            .expect("an interrupted run keeps staging");
+        let written: Vec<_> = fs::read_dir(staging.join("vfs/docs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            written.len() < entries,
+            "the whole archive was extracted despite the stop"
+        );
+        assert!(
+            written.iter().all(|name| !name.ends_with(".partial")),
+            "a stop left a half-written file behind"
+        );
+        // The archive's cache entry is only recorded once it is complete.
+        assert!(!staging.join(".ingestion-cache/sha256").exists());
+        assert!(!staging.join("conversion-manifest.json").exists());
+
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let report = run_without_progress(config).await;
+        assert!(report.complete);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            fs::read_dir(output.join("vfs/docs")).unwrap().count(),
+            entries
+        );
+        assert_eq!(
+            fs::read(output.join("vfs/docs/file2047.txt")).unwrap(),
+            b"entry 2047"
+        );
+        let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert_eq!(manifest.archives["assets.ba2"].files.len(), entries);
     }
 
     /// The window between the last stage and the publish rename cannot be hit from outside in a
