@@ -309,6 +309,10 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
             "Conversion interrupted after {}{stage}.",
             format_elapsed(elapsed.as_secs_f64())
         );
+        // A plain stop says only that; anything more is a cause worth showing.
+        if failure.error.to_string() != "conversion interrupted" {
+            eprintln!("  Cause: {:#}", failure.error);
+        }
     } else {
         eprintln!(
             "Conversion failed after {}{stage}: {:#}",
