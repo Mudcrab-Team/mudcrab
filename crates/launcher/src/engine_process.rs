@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 /// The engine's log (stdout and stderr), truncated at each launch.
-pub const STDERR_LOG_NAME: &str = "openskyrim-engine-stderr.log";
+/// The engine's log (stdout and stderr) is `<prefix><launcher pid>.log` in the temp directory,
+/// truncated at each launch. The launcher's own id keeps two launchers from sharing one log.
+pub const STDERR_LOG_PREFIX: &str = "openskyrim-engine-";
 /// Bytes read from the end of the log when the engine stops early.
 pub const TAIL_MAX_BYTES: u64 = 8 * 1024;
 /// Log lines shown when the engine stops early.
@@ -22,7 +24,7 @@ const MAX_LINE_CHARS: usize = 300;
 
 /// Where the launcher writes the engine's stdout and stderr.
 pub fn stderr_log_path() -> PathBuf {
-    std::env::temp_dir().join(STDERR_LOG_NAME)
+    std::env::temp_dir().join(format!("{STDERR_LOG_PREFIX}{}.log", std::process::id()))
 }
 
 /// Strips ANSI escape sequences (the engine's log colours), trims trailing whitespace and cuts
@@ -104,7 +106,15 @@ pub fn engine_exit_message<S: AsRef<str>>(
     };
     let shown = last_lines(stderr, SHOWN_LINES);
     if shown.is_empty() {
-        return format!("The engine stopped ({reason}) without an error message.");
+        let mut message = format!("The engine stopped ({reason}) without an error message.");
+        if let Some(log) = log {
+            message.push_str(&format!(
+                "
+Full log: {}",
+                log.display()
+            ));
+        }
+        return message;
     }
     let mut message = format!("The engine stopped ({reason}):\n{}", shown.join("\n"));
     if let Some(log) = log {
@@ -152,7 +162,11 @@ impl EngineProcess {
         let status = match self.child.try_wait() {
             Ok(Some(status)) => status,
             Ok(None) => return None,
-            Err(error) => return Some(format!("Lost track of the engine process: {error}")),
+            // A failed poll does not mean the engine exited: keep it and poll again next frame.
+            Err(error) => {
+                eprintln!("Could not poll the engine process: {error}");
+                return None;
+            }
         };
         let lines = match &self.log {
             Some(log) if !status.success() => {
@@ -230,11 +244,22 @@ mod tests {
     fn empty_stderr_says_no_message() {
         assert_eq!(
             engine_exit_message::<&str>(Some(3), &[], Some(Path::new("engine.log"))),
-            "The engine stopped (exit code 3) without an error message."
+            "The engine stopped (exit code 3) without an error message.
+Full log: engine.log"
         );
         assert_eq!(
             engine_exit_message(Some(3), &["", "   "], NO_LOG),
             "The engine stopped (exit code 3) without an error message."
+        );
+    }
+
+    #[test]
+    fn each_launcher_writes_its_own_engine_log() {
+        let path = stderr_log_path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            name,
+            format!("{STDERR_LOG_PREFIX}{}.log", std::process::id())
         );
     }
 
