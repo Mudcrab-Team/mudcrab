@@ -63,3 +63,24 @@ NIF (NetImmerse Format) files store 3D geometry, skeletons, animation channels, 
 2. **`BSFadeNode` / `NiNode`**: Scene graph nodes containing transform matrices (`translation`, `rotation`, `scale`).
 3. **`BSTriShape`**: Compact geometry buffer introduced in Skyrim SE containing vertex positions (`Vec3`), UV coordinates (`Vec2`), normals (`Vec3`), and index buffers.
 4. **`BSLightingShaderProperty`**: Materials containing texture paths (`base_color`, `normal_map`, `specular`).
+
+---
+
+## 4. `.lip` FaceFX Lip-Sync Curves
+
+Skyrim `.lip` files store FaceFX animation curves sampled at 30 frames per second. The converter decodes them in `crates/converter/src/lip.rs`; this is a read-only parser, not an encoder or a character-animation integration.
+
+The file begins with a 24-byte little-endian header. Its RLE payload expands to a window of 33 float32 curve slots per frame. The 16 FaceGen viseme curves are slots 6–21, in this order: `Aah`, `BigAah`, `BMP`, `ChJSh`, `DST`, `Eee`, `Eh`, `FV`, `I`, `K`, `N`, `Oh`, `OohQ`, `R`, `Th`, `W`. The remaining slots are other FaceFX curves and are preserved in the decoded grid.
+
+Some generated files have extra record-header bytes or a one-byte timing-field shift. The decoder checks payload offsets against the declared frame geometry and marks timing unavailable when the header cannot be repaired confidently.
+Frame time is `(frame + timing_first) / 30`; ambiguous timing does not prevent curve inspection.
+
+Use the converter diagnostics to validate or inspect files:
+
+```sh
+cargo run -p converter --bin lip-check -- path/to/lips
+cargo run -p converter --bin inspect-lip -- path/to/file.lip
+cargo run -p converter --bin inspect-lip -- path/to/file.lip 12
+```
+
+`lip-check` recursively decodes `.lip` files and validates the translated 16 viseme values. Directory scans report progress every 500 files and print failures without flooding the console; checking one file prints its details. `inspect-lip` prints header/payload details and active visemes; with a frame index it prints that frame's viseme values.

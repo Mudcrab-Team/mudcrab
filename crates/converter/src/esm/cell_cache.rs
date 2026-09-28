@@ -6,21 +6,7 @@ use shared::{CELL_CACHE_VERSION, CachedLand, CellCache, LAND_SIDE, TerrainLayer,
 use std::{collections::HashMap, fs::File, io::Write, path::Path};
 
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
-    let water_by_cell: HashMap<u32, (Option<f32>, Option<u32>)> = records
-        .values()
-        .filter(|record| &record.record_type == b"CELL")
-        .map(|record| {
-            let view = SubrecordView::new(&record.subrecords);
-            let height = view
-                .find(b"XCLW")
-                .filter(|bytes| bytes.len() >= 4)
-                .map(|bytes| {
-                    f32::from_le_bytes(bytes[..4].try_into().expect("four-byte water height"))
-                })
-                .and_then(normalize_water_height);
-            (record.form_id, (height, view.get_form_id(b"XCWT")))
-        })
-        .collect();
+    let water_by_cell = water_by_cell(records);
     let mut cells_by_id = HashMap::new();
     for record in records
         .values()
@@ -92,6 +78,63 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
     file.sync_all()?;
     validate_cell_cache(path)?;
     Ok(count)
+}
+
+/// Each cell's water height and water type, as the game resolves them.
+///
+/// A cell's `XCLW` is its water height, and `XCWT` its water type. Most exterior cells don't
+/// state a height: they carry `XCLW` = FLT_MAX (or none), meaning "the worldspace's default".
+/// That default is the second float of the worldspace's `WRLD/DNAM` (Tamriel: -14000, the sea
+/// and the marshes around Morthal), with `WRLD/NAM2` as its water type. Without it every such
+/// cell had no water: 10,630 of Tamriel's 11,187 exterior cells, including the open sea. A cell
+/// whose terrain stays above the default draws no surface anyway (the engine only spawns water
+/// below it).
+fn water_by_cell(records: &HashMap<u32, RawRecord>) -> HashMap<u32, (Option<f32>, Option<u32>)> {
+    let defaults: HashMap<u32, (Option<f32>, Option<u32>)> = records
+        .values()
+        .filter(|record| &record.record_type == b"WRLD")
+        .map(|record| {
+            let view = SubrecordView::new(&record.subrecords);
+            let height = view
+                .find(b"DNAM")
+                .filter(|bytes| bytes.len() >= 8)
+                .map(|bytes| {
+                    f32::from_le_bytes(bytes[4..8].try_into().expect("four-byte water height"))
+                })
+                .and_then(normalize_default_water_height);
+            (record.form_id, (height, view.get_form_id(b"NAM2")))
+        })
+        .collect();
+    records
+        .values()
+        .filter(|record| &record.record_type == b"CELL")
+        .map(|record| {
+            let view = SubrecordView::new(&record.subrecords);
+            let own = view
+                .find(b"XCLW")
+                .filter(|bytes| bytes.len() >= 4)
+                .map(|bytes| {
+                    f32::from_le_bytes(bytes[..4].try_into().expect("four-byte water height"))
+                })
+                .and_then(normalize_water_height);
+            let default = record
+                .worldspace_form_id
+                .and_then(|worldspace| defaults.get(&worldspace).copied())
+                .unwrap_or((None, None));
+            let height = own.or(default.0);
+            let water_type = view.get_form_id(b"XCWT").or(default.1);
+            (record.form_id, (height, water_type))
+        })
+        .collect()
+}
+
+/// A worldspace's default water height, or `None` for the markers some worldspaces use to
+/// mean "no water" (`MossMotherCavernWorld` 9,999,999, `DeepwoodRedoubtWorld` -500,000). No
+/// real Skyrim water lies further than 100,000 units from zero. The bound is tighter than
+/// `normalize_water_height`'s 1e7, which only has to reject a cell's `FLT_MAX` sentinel and would let
+/// `MossMotherCavernWorld`'s 9,999,999 through.
+fn normalize_default_water_height(height: f32) -> Option<f32> {
+    (height.is_finite() && height.abs() < 1.0e5).then_some(height)
 }
 
 fn normalize_water_height(height: f32) -> Option<f32> {
@@ -343,6 +386,90 @@ mod tests {
         let heights = vec![0.0; usize::from(LAND_SIDE).pow(2)];
         assert!(decode_vhgt(&[0; 16]).is_empty());
         assert!(decode_normals(&[0; 16], &heights).is_empty());
+    }
+
+    fn record(
+        form_id: u32,
+        record_type: &[u8; 4],
+        worldspace: Option<u32>,
+        subrecords: &[(&[u8; 4], Vec<u8>)],
+    ) -> RawRecord {
+        RawRecord {
+            form_id,
+            record_type: *record_type,
+            flags: 0,
+            subrecords: subrecords
+                .iter()
+                .map(|(tag, bytes)| (tag.to_vec(), bytes.clone()))
+                .collect(),
+            cell_form_id: None,
+            worldspace_form_id: worldspace,
+            load_order: 0,
+        }
+    }
+
+    fn floats(values: &[f32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn exterior_cells_without_their_own_water_height_take_the_worldspace_default() {
+        let tamriel = record(
+            0x3C,
+            b"WRLD",
+            None,
+            &[
+                (b"DNAM", floats(&[-27000.0, -14000.0])),
+                // An arbitrary water type id, not retail data (Tamriel's real NAM2 is 0x18).
+                (b"NAM2", 0x0001_8F2Cu32.to_le_bytes().to_vec()),
+            ],
+        );
+        let no_water_world = record(
+            0x0001_1111,
+            b"WRLD",
+            None,
+            &[(b"DNAM", floats(&[0.0, 9_999_999.0]))],
+        );
+        // Morthal's marsh: FLT_MAX ("use the default") with its own water type.
+        let marsh = record(
+            0x937C,
+            b"CELL",
+            Some(0x3C),
+            &[
+                (b"XCLW", f32::MAX.to_le_bytes().to_vec()),
+                (b"XCWT", 0x0010_5CC3u32.to_le_bytes().to_vec()),
+            ],
+        );
+        // No XCLW at all, no XCWT: the default height and the worldspace's water type.
+        let sea = record(0x9000, b"CELL", Some(0x3C), &[]);
+        // Riverwood's river states its own height.
+        let river = record(
+            0x9712,
+            b"CELL",
+            Some(0x3C),
+            &[(b"XCLW", (-250.0f32).to_le_bytes().to_vec())],
+        );
+        let cave = record(0x2222, b"CELL", Some(0x0001_1111), &[]);
+        let interior = record(0x3333, b"CELL", None, &[]);
+        let records: HashMap<u32, RawRecord> =
+            [tamriel, no_water_world, marsh, sea, river, cave, interior]
+                .into_iter()
+                .map(|record| (record.form_id, record))
+                .collect();
+
+        let water = water_by_cell(&records);
+        assert_eq!(water[&0x937C], (Some(-14000.0), Some(0x0010_5CC3)));
+        assert_eq!(water[&0x9000], (Some(-14000.0), Some(0x0001_8F2C)));
+        assert_eq!(water[&0x9712], (Some(-250.0), Some(0x0001_8F2C)));
+        assert_eq!(
+            water[&0x2222],
+            (None, None),
+            "a 'no water' marker default is not a height"
+        );
+        assert_eq!(water[&0x3333], (None, None));
     }
 
     #[test]
