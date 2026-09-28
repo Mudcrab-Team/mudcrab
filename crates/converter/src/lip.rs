@@ -228,6 +228,8 @@ fn i32_at(data: &[u8], offset: usize) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
 
     fn fixture() -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -304,5 +306,22 @@ mod tests {
         let lip = decode_bytes(&bytes).unwrap();
         assert_eq!(lip.timing_first, None);
         assert_eq!(lip.grid.len(), 2);
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn lip_never_panics_on_arbitrary_bytes(bytes in arbitrary_bytes(512)) {
+            let _ = decode_bytes(&bytes);
+        }
+
+        #[test]
+        fn corrupted_lip_never_panics(bytes in corrupted(fixture())) {
+            if let Ok(lip) = decode_bytes(&bytes) {
+                let _ = lip.visemes();
+                let _ = lip.frame_time(0);
+            }
+        }
     }
 }

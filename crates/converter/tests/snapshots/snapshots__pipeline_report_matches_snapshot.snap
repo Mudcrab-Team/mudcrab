@@ -1,0 +1,53 @@
+---
+source: crates/converter/tests/snapshots.rs
+expression: report
+---
+{
+  "artifacts": [
+    "cell_cache.rkyv",
+    "conversion-manifest.json",
+    "integration-report.json",
+    "meshes/generated.glb",
+    "scripts/generated.luau",
+    "scripts/papyrus_runtime.luau",
+    "scripts/second.luau",
+    "skyrim_world.db",
+    "textures/generated_color.ktx2",
+    "textures/generated_color.opensky-srgb.ktx2",
+    "textures/generated_color_x8.ktx2",
+    "textures/generated_cube.ktx2",
+    "textures/generated_normal.ktx2",
+    "textures/generated_volume.ktx2"
+  ],
+  "cache_hits": 0,
+  "complete": true,
+  "converted": 16,
+  "elapsed_ms": "[elapsed_ms]",
+  "inputs_by_kind": {
+    "dds": 5,
+    "nif": 1,
+    "pex": 2
+  },
+  "integration": {
+    "bounds_updated": 1,
+    "cache_cells": 9,
+    "exterior_cells": 9,
+    "invalid_model_count": 0,
+    "issues": [],
+    "missing_model_count": 0,
+    "missing_texture_count": 0,
+    "passed": true,
+    "references_total": 9,
+    "schema_version": 3,
+    "statics_total": 1,
+    "statics_with_models": 1,
+    "terrain_cells": 9,
+    "texture_sets_with_diffuse": 1,
+    "unavailable_model_source_count": 0,
+    "unavailable_texture_source_count": 0,
+    "unbounded_model_count": 0,
+    "waters_with_flow_normal": 0
+  },
+  "skipped": 0,
+  "warnings": []
+}

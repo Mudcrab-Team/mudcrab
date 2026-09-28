@@ -352,6 +352,8 @@ pub fn validate_cell_cache(path: &Path) -> Result<Mmap> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config};
+    use proptest::prelude::*;
 
     #[test]
     fn decodes_vhgt_deltas_into_absolute_heights() {
@@ -585,5 +587,30 @@ mod tests {
         assert!(layers[0].is_base);
         assert_eq!(layers[0].texture_form_id, 0);
         assert_eq!(layers[1].texture_form_id, 0x1234);
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn land_decoders_never_panic_on_arbitrary_bytes(
+            // Arbitrary lengths reach only the decoders' length checks, so half the cases are
+            // arbitrary bytes at the lengths the decoders accept: a VHGT record (with up to its
+            // three padding bytes) and a raw VNML grid.
+            heights in prop_oneof![
+                arbitrary_bytes(2 * 4 + 33 * 33),
+                proptest::collection::vec(any::<u8>(), 4 + 33 * 33..=4 + 33 * 33 + 3),
+            ],
+            normals in prop_oneof![
+                arbitrary_bytes(3 * 33 * 33),
+                proptest::collection::vec(any::<u8>(), 3 * 33 * 33),
+            ],
+            subrecords in arbitrary_bytes(512),
+        ) {
+            let decoded = decode_vhgt(&heights);
+            let _ = decode_normals(&normals, &decoded);
+            let _ = decode_normals(&[], &decoded);
+            let _ = extract_texture_layers(&crate::esm::extractors::extract_subrecords(&subrecords));
+        }
     }
 }

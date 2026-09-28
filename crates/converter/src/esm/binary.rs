@@ -35,8 +35,7 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
             return Err(eyre!("truncated compressed TES4 record"));
         }
         let expected = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
-        let mut output = Vec::with_capacity(expected);
-        ZlibDecoder::new(&payload[4..]).read_to_end(&mut output)?;
+        let output = read_bounded(&payload[4..], expected)?;
         if output.len() != expected {
             return Err(eyre!("TES4 decompressed size mismatch"));
         }
@@ -58,6 +57,43 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
         masters,
         flags: header.flags,
     })
+}
+
+/// Decompressed output is reserved up to this size; anything larger grows as
+/// it is read, so a corrupt declared size cannot reserve gigabytes up front.
+const MAX_RESERVATION: usize = 64 * 1024 * 1024;
+
+/// The most a record may inflate to: deflate's best case is about 1032:1, plus
+/// room for a tiny stream's fixed overhead, and never more than 64 MiB (the
+/// largest record in the shipped plugins inflates to under 100 KB).
+fn max_inflated_size(compressed_len: usize) -> usize {
+    compressed_len
+        .saturating_mul(1032)
+        .saturating_add(4096)
+        .min(MAX_RESERVATION)
+}
+
+/// Inflates `compressed`, reading at most one byte past `expected` so a stream
+/// longer than declared shows up as a size mismatch instead of being read to
+/// its end. A declared size no zlib stream of this length could reach is
+/// refused before anything is read: the size is the record's own claim, and
+/// every record's payload is kept, so an unbounded claim would let a damaged
+/// plugin exhaust memory.
+fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> {
+    if expected > max_inflated_size(compressed.len()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "declared size {expected} is more than {} compressed bytes can hold",
+                compressed.len()
+            ),
+        ));
+    }
+    let mut output = Vec::with_capacity(expected.min(MAX_RESERVATION));
+    ZlibDecoder::new(compressed)
+        .take((expected as u64).saturating_add(1))
+        .read_to_end(&mut output)?;
+    Ok(output)
 }
 
 /// For STAT / MSTT / FURN
@@ -174,11 +210,7 @@ pub fn parse_group(
                     ]) as usize;
 
                     let compressed_bytes = &raw_payload[4..];
-                    let mut decoder = ZlibDecoder::new(compressed_bytes);
-                    let mut decompressed_data = Vec::with_capacity(decompressed_size);
-
-                    decoder
-                        .read_to_end(&mut decompressed_data)
+                    let decompressed_data = read_bounded(compressed_bytes, decompressed_size)
                         .map_err(|error| {
                             eyre!(
                                 "failed to decompress record {:08x}: {error}",
@@ -291,6 +323,8 @@ pub fn parse_refr_record(input: &[u8], form_id: u32) -> IResult<&[u8], WorldRefe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config, corrupted};
+    use proptest::prelude::*;
 
     fn plugin_bytes() -> Vec<u8> {
         let cells = [
@@ -329,6 +363,26 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_size_beyond_what_the_stream_can_hold_is_refused_before_reading() {
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, b"small").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let error = read_bounded(&compressed, u32::MAX as usize).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("compressed bytes can hold"));
+
+        assert_eq!(read_bounded(&compressed, 5).unwrap(), b"small");
+        // A highly compressible payload within deflate's ratio still inflates.
+        let zeros = vec![0u8; 1 << 20];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        std::io::Write::write_all(&mut encoder, &zeros).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(read_bounded(&compressed, zeros.len()).unwrap(), zeros);
+    }
+
+    #[test]
     fn generated_plugins_never_panic_under_truncation_or_mutation() {
         let bytes = plugin_bytes();
         for length in 0..bytes.len() {
@@ -342,6 +396,121 @@ mod tests {
             mutated[index] ^= 0xff;
             let result = std::panic::catch_unwind(|| parse_prefix(&mutated));
             assert!(result.is_ok(), "ESM parser panicked on mutation at {index}");
+        }
+    }
+
+    #[test]
+    fn empty_and_foreign_files_are_rejected_as_plugins() {
+        let directory = tempfile::tempdir().unwrap();
+        let group_first = [b"GRUP".as_slice(), &24u32.to_le_bytes(), &[0; 16]].concat();
+        let cases: [(&str, &[u8]); 4] = [
+            ("empty.esm", b""),
+            ("text.esp", b"not a plugin"),
+            ("tag-only.esm", b"TES4"),
+            ("group-first.esm", &group_first),
+        ];
+        for (name, bytes) in cases {
+            let path = directory.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                parse_plugin_file(&path).is_err(),
+                "{name} parsed as a plugin"
+            );
+            assert!(
+                parse_plugin_metadata(&path).is_err(),
+                "{name} parsed as a plugin"
+            );
+        }
+        assert!(EsmReader::open(directory.path().join("missing.esm")).is_err());
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn compressed_record(type_tag: &[u8; 4], declared: u32, data: &[u8]) -> Vec<u8> {
+        let mut payload = declared.to_le_bytes().to_vec();
+        payload.extend_from_slice(&zlib(data));
+        let mut bytes = type_tag.to_vec();
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    #[test]
+    fn compressed_records_reject_corrupt_declared_sizes() {
+        let subrecord = [b"EDID".as_slice(), &4u16.to_le_bytes(), b"Test"].concat();
+        let mut records = Vec::new();
+        let valid = compressed_record(b"STAT", subrecord.len() as u32, &subrecord);
+        parse_group(&valid, None, None, &mut records).unwrap();
+        assert_eq!(records[0].subrecords[0].1, b"Test");
+
+        for declared in [u32::MAX, subrecord.len() as u32 - 1] {
+            let corrupt = compressed_record(b"STAT", declared, &subrecord);
+            let error = parse_group(&corrupt, None, None, &mut Vec::new()).unwrap_err();
+            // A size no stream this short could reach is refused before inflating.
+            let message = error.to_string();
+            assert!(
+                message.contains("decompressed size mismatch")
+                    || message.contains("compressed bytes can hold"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn compressed_plugin_headers_reject_corrupt_declared_sizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let master = [b"MAST".as_slice(), &9u16.to_le_bytes(), b"Base.esm\0"].concat();
+        for (declared, valid) in [
+            (master.len() as u32, true),
+            (u32::MAX, false),
+            (master.len() as u32 - 1, false),
+        ] {
+            let path = directory.path().join("compressed.esp");
+            std::fs::write(&path, compressed_record(b"TES4", declared, &master)).unwrap();
+            let metadata = parse_plugin_metadata(&path);
+            assert_eq!(metadata.is_ok(), valid, "declared size {declared}");
+            if valid {
+                assert_eq!(metadata.unwrap().masters, ["Base.esm"]);
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn record_parsers_never_panic_on_arbitrary_bytes(bytes in arbitrary_bytes(1024)) {
+            let _ = parse_record_header(&bytes);
+            let _ = parse_group_header(&bytes);
+            let _ = parse_refr_record(&bytes, 0);
+            let _ = extract_subrecords(&bytes);
+            let _ = parse_group(&bytes, None, None, &mut Vec::new());
+        }
+
+        #[test]
+        fn corrupted_plugins_never_panic(bytes in corrupted(plugin_bytes())) {
+            let _ = parse_prefix(&bytes);
+        }
+    }
+
+    proptest! {
+        // Each case writes a file, so fewer cases keep the suite quick.
+        #![proptest_config(config(64))]
+
+        #[test]
+        fn plugin_files_never_panic_on_arbitrary_contents(bytes in arbitrary_bytes(256)) {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("arbitrary.esp");
+            std::fs::write(&path, &bytes).unwrap();
+            let _ = parse_plugin_file(&path);
+            let _ = parse_plugin_metadata(&path);
         }
     }
 }

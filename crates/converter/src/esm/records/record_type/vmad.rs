@@ -185,6 +185,12 @@ pub fn parse_wstring(input: &[u8]) -> IResult<&[u8], String> {
     Ok((input, string))
 }
 
+/// Every array element takes at least one byte, so a count read from the
+/// field never needs more capacity than the bytes that remain.
+fn bounded_capacity(count: u32, remaining: &[u8]) -> usize {
+    (count as usize).min(remaining.len())
+}
+
 /// Parse Object Property (8 bytes, format varies by obj_format)
 pub fn parse_object_property(
     input: &[u8],
@@ -240,7 +246,7 @@ pub fn parse_script_property(
         }
         11 => {
             let (mut curr, count) = le_u32(input)?;
-            let mut item = Vec::with_capacity(count as usize);
+            let mut item = Vec::with_capacity(bounded_capacity(count, curr));
             for _ in 0..count {
                 let (next, obj) = parse_object_property(curr, obj_format)?;
                 item.push(obj);
@@ -250,7 +256,7 @@ pub fn parse_script_property(
         }
         12 => {
             let (mut curr, count) = le_u32(input)?;
-            let mut item = Vec::with_capacity(count as usize);
+            let mut item = Vec::with_capacity(bounded_capacity(count, curr));
             for _ in 0..count {
                 let (next, s) = parse_wstring(curr)?;
                 item.push(s);
@@ -260,7 +266,7 @@ pub fn parse_script_property(
         }
         13 => {
             let (mut curr, count) = le_u32(input)?;
-            let mut item = Vec::with_capacity(count as usize);
+            let mut item = Vec::with_capacity(bounded_capacity(count, curr));
             for _ in 0..count {
                 let (next, i32) = le_i32(curr)?;
                 item.push(i32);
@@ -270,7 +276,7 @@ pub fn parse_script_property(
         }
         14 => {
             let (mut curr, count) = le_u32(input)?;
-            let mut item = Vec::with_capacity(count as usize);
+            let mut item = Vec::with_capacity(bounded_capacity(count, curr));
             for _ in 0..count {
                 let (next, f32) = le_f32(curr)?;
                 item.push(f32);
@@ -280,7 +286,7 @@ pub fn parse_script_property(
         }
         15 => {
             let (mut curr, count) = le_u32(input)?;
-            let mut item = Vec::with_capacity(count as usize);
+            let mut item = Vec::with_capacity(bounded_capacity(count, curr));
             for _ in 0..count {
                 let (next, bool) = le_i8(curr)?;
                 item.push(bool != 0);
@@ -739,5 +745,63 @@ mod remap_tests {
                 .any(|value| value == 0x0200_056Eu32.to_le_bytes())
         );
         assert!(bytes.ends_with(b"fragment-tail"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_strategies::{arbitrary_bytes, config};
+    use proptest::prelude::*;
+
+    /// A VMAD with one script holding one array property of `property_type`
+    /// whose element count is `count`, followed by `tail`.
+    fn array_property_vmad(property_type: u8, count: u32, tail: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&5i16.to_le_bytes());
+        bytes.extend_from_slice(&2i16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(b"Test");
+        bytes.push(0);
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(b"Many");
+        bytes.extend_from_slice(&[property_type, 1]);
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(tail);
+        bytes
+    }
+
+    #[test]
+    fn huge_array_counts_are_rejected_without_reserving_them() {
+        for property_type in 11..=15 {
+            let bytes = array_property_vmad(property_type, u32::MAX, &[0; 16]);
+            assert!(parse_vmad(&bytes, b"STAT").is_err());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(config(256))]
+
+        #[test]
+        fn vmad_parsers_never_panic_on_arbitrary_bytes(
+            bytes in arbitrary_bytes(512),
+            record_tag in prop::sample::select(vec![*b"INFO", *b"PACK", *b"PERK", *b"QUST", *b"SCEN", *b"STAT"]),
+        ) {
+            let _ = parse_vmad(&bytes, &record_tag);
+            let mut remapped = bytes.clone();
+            let _ = remap_primary_form_ids(&mut remapped, Ok);
+        }
+
+        #[test]
+        fn array_counts_never_reserve_beyond_the_field(
+            property_type in 11u8..=15,
+            count in any::<u32>(),
+            tail in arbitrary_bytes(64),
+        ) {
+            let bytes = array_property_vmad(property_type, count, &tail);
+            let _ = parse_vmad(&bytes, b"STAT");
+        }
     }
 }
