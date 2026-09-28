@@ -107,7 +107,24 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
 
 ---
 
-## 5. Asset Layout & Data Integrity Invariants
+## 5. Runtime Pack vs Build Workspace
+
+Staging is a build workspace; the published output is a runtime pack. They
+are not the same directory.
+
+- Extraction writes originals to `staging/vfs/`. Archive-ingestion blobs
+  persist to `<output>.assets-cache/.ingestion-cache/` outside the pack
+  (overridable with `PipelineConfig::cache_dir`). Neither ships.
+- Conversion writes runtime artifacts (`textures/`, `meshes/`, `scripts/`,
+  `skyrim_world.db`, `cell_cache.rkyv`, `integration-report.json`,
+  `conversion-manifest.json`) inside staging.
+- Publication copies only `report.artifacts` plus the manifest into the
+  output directory, then removes non-resumed staging. Hard links are
+  preferred with a copy fallback; size audits must deduplicate inodes.
+- Resume staging keeps the same layout; retained GLB invalidation still
+  excludes `vfs/`.
+
+## 6. Asset Layout & Data Integrity Invariants
 
 1. **VFS Path Normalization (`strip_leading_kind`):**
    - BSA archives and loose mod files use mixed-case conventions (`Textures/`, `Meshes/`, `Scripts/`).
@@ -118,6 +135,7 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
 3. **Strict Little-Endian ESM Binary Parsing:**
    - All Bethesda ESM multi-byte numeric primitives (integers, floats, FormIDs, and subrecord payloads such as `ACHR` `PDTO`) are parsed as little-endian bytes (`from_le_bytes`).
 4. **One File per Extracted Entry (`link_or_copy`):**
-   - Every extracted archive entry is stored twice, as `vfs/<path>` and as the content-addressed blob in `.ingestion-cache/sha256/<xx>/<hash>`, and on a fresh install and on a cache hit alike those two names are a hard link on one file rather than two copies (a cross-volume or linkless filesystem falls back to a copy).
+   - In the staging workspace, every extracted archive entry is stored twice, as `vfs/<path>` and as the content-addressed blob in `.ingestion-cache/sha256/<xx>/<hash>`, and on a fresh install and on a cache hit alike those two names are a hard link on one file rather than two copies (a cross-volume or linkless filesystem falls back to a copy). Neither ships in the published runtime pack (§5).
    - Every writer into `vfs/` or the cache replaces the path (unlink, then write or copy) instead of writing through it, so a write under one name never changes the other.
    - The exception is a loose-asset override: `overlay_loose_assets` replaces the `vfs` entry with the loose file's own bytes, so that path is no longer a link to the archive entry's blob.
+   - Resume and re-conversion writers follow the same replace-not-write rule: pack publication links staging files into the output, so a resumed run must unlink before rewriting any staged artifact it shares with a previous pack.

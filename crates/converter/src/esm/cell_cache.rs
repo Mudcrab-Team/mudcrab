@@ -73,6 +73,11 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Staged outputs may share an inode with a previous pack via
+    // hard link; replace the path instead of writing through it.
+    if path.is_file() {
+        std::fs::remove_file(path)?;
+    }
     let mut file = File::create(path)?;
     file.write_all(&bytes)?;
     file.sync_all()?;

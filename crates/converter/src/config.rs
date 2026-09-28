@@ -7,6 +7,10 @@ pub struct PipelineConfig {
     pub output_dir: PathBuf,
     #[serde(skip)]
     pub resume_staging: Option<PathBuf>,
+    /// Persistent ingestion-cache root. Defaults to `<output>.assets-cache`
+    /// alongside the output directory; the runtime pack no longer contains it.
+    #[serde(skip)]
+    pub cache_dir: Option<PathBuf>,
     pub plugins_file: Option<PathBuf>,
     pub cpu_jobs: usize,
     pub io_jobs: usize,
@@ -25,6 +29,7 @@ impl PipelineConfig {
             data_dir: data_dir.into(),
             output_dir: output_dir.into(),
             resume_staging: None,
+            cache_dir: None,
             plugins_file: None,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
             io_jobs: 2,
@@ -36,6 +41,20 @@ impl PipelineConfig {
             texture_uastc_level: 2,
             script_abi_version: 1,
         }
+    }
+
+    /// Resolves the persistent ingestion-cache root outside the published pack.
+    pub fn ingestion_cache_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.cache_dir {
+            return dir.clone();
+        }
+        let file_name = self
+            .output_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("modern_assets");
+        self.output_dir
+            .with_file_name(format!("{file_name}.assets-cache"))
     }
 
     pub(crate) fn validate(&self) -> color_eyre::Result<()> {

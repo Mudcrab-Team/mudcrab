@@ -164,6 +164,11 @@ impl ScriptConverter {
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
+            // Staged outputs may share an inode with a previous pack via
+            // hard link; replace the path instead of writing through it.
+            if output.is_file() {
+                fs::remove_file(output)?;
+            }
             fs::write(output, buf.as_bytes())
                 .wrap_err_with(|| format!("failed to write {}", output.display()))?;
             Ok(())

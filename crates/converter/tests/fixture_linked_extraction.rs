@@ -1,11 +1,12 @@
-//! A conversion stores each extracted archive entry once: in the published tree, a `vfs` file and
-//! its content-addressed blob in `.ingestion-cache` are one file, not two copies of its bytes.
+//! A conversion stores each extracted archive entry once: in the staging workspace, a `vfs`
+//! file and its content-addressed blob in `.ingestion-cache` are one file, not two copies of its
+//! bytes. Neither ships in the published runtime pack.
 
 use converter::PipelineConfig;
 use std::{fs, io::Write};
 
 #[tokio::test]
-async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
+async fn staged_vfs_entries_are_one_file_with_their_cache_blobs() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     dummy_content::layout::prepare_directory(&data, false).unwrap();
@@ -26,7 +27,11 @@ async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
     .unwrap();
 
     let output = directory.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    // Resumed staging survives publication, so the workspace links stay inspectable.
+    let staging = directory.path().join("modern.staging-linked");
+    std::fs::create_dir_all(&staging).unwrap();
+    let mut config = PipelineConfig::new(&data, &output);
+    config.resume_staging = Some(staging.clone());
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = converter::AssetPipeline::run_async(config, tx)
@@ -46,8 +51,8 @@ async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
         for file in archive["files"].as_array().unwrap() {
             let path = file["path"].as_str().unwrap();
             let hash = file["hash"].as_str().unwrap();
-            let vfs = output.join("vfs").join(path);
-            let blob = output
+            let vfs = staging.join("vfs").join(path);
+            let blob = staging
                 .join(".ingestion-cache/sha256")
                 .join(&hash[..2])
                 .join(hash);
@@ -74,6 +79,14 @@ async fn published_vfs_entries_are_one_file_with_their_cache_blobs() {
         }
     }
     assert!(entries > 0, "no archive entry was extracted");
+    assert!(
+        !output.join("vfs").exists(),
+        "the runtime pack must not ship the staging workspace"
+    );
+    assert!(
+        !output.join(".ingestion-cache").exists(),
+        "the runtime pack must not ship the ingestion cache"
+    );
 }
 
 /// Whether the filesystem holding `directory` can hard-link.

@@ -3,7 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        configuration_hash, configuration_hash_for_schema, hash_file, load_staged_outputs,
+        configuration_hash, configuration_hash_for_schema, hash_file, link_or_copy,
+        load_staged_outputs,
     },
     config::PipelineConfig,
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
@@ -131,42 +132,13 @@ impl AssetPipeline {
             "Publishing converted assets",
         )
         .await;
-        // The journal is bookkeeping for a resume, not an asset, and a
-        // published directory can never be resumed: the published manifest
-        // records the same provenance. It is moved beside the staging
-        // directory before the rename, so the published directory never holds
-        // it, and moved back if publishing fails so staging stays resumable.
-        let journal = StagingJournal::path_in(&staging);
-        let parked = parked_journal_path(&staging);
-        let journal_parked = journal.is_file();
-        if journal_parked {
-            fs::rename(&journal, &parked).wrap_err_with(|| {
-                format!("failed to move the staging journal to {}", parked.display())
-            })?;
+        publish_runtime_pack(&staging, &config.output_dir, &report)?;
+        let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
+        if staging.join(".ingestion-cache").is_dir() {
+            persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)?;
         }
-        if let Err(error) = publish_directory(&staging, &config.output_dir) {
-            if journal_parked {
-                // Staging is gone only when the rename itself succeeded and a
-                // later cleanup failed; the journal then has nothing to resume.
-                let restored = if staging.is_dir() {
-                    fs::rename(&parked, &journal)
-                } else {
-                    fs::remove_file(&parked)
-                };
-                if let Err(restore_error) = restored {
-                    eprintln!(
-                        "warning: failed to put back the staging journal {}: {restore_error}",
-                        parked.display()
-                    );
-                }
-            }
-            return Err(error);
-        }
-        if journal_parked && let Err(error) = fs::remove_file(&parked) {
-            eprintln!(
-                "warning: failed to remove the staging journal {}: {error}",
-                parked.display()
-            );
+        if !resumed {
+            let _ = fs::remove_dir_all(&staging);
         }
         report.elapsed_ms = started.elapsed().as_millis();
         if report.complete {
@@ -255,7 +227,7 @@ impl AssetPipeline {
             .await;
             let archive_for_worker = archive.clone();
             let vfs_for_worker = vfs_dir.clone();
-            let previous_cache_root = config.output_dir.join(".ingestion-cache");
+            let previous_cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
             let cache_root = staging.join(".ingestion-cache");
             let archive_key = archive
                 .strip_prefix(&config.data_dir)
@@ -324,6 +296,11 @@ impl AssetPipeline {
             )
             .await;
             let db_path = staging.join("skyrim_world.db");
+            // SQLite writes in place; a resumed staging db may share an
+            // inode with a previous pack via hard link, so unlink first.
+            if db_path.is_file() {
+                fs::remove_file(&db_path)?;
+            }
             EsmParser::convert_plugins(&plugins, &db_path)?;
             validate_database(&Connection::open(&db_path)?)?;
             let merged = EsmParser::merge_plugins(&plugins)?;
@@ -667,7 +644,12 @@ impl ConversionBatch<'_> {
                                 if let Some(parent) = target.parent() {
                                     let _ = fs::create_dir_all(parent);
                                 }
-                                if fs::copy(&old, &target).is_ok() {
+                                // `link_or_copy`, not `fs::copy`: on a resumed
+                                // run the staged target may already be a hard
+                                // link to the pack file, and copying a file
+                                // onto its own link truncates both. A shared
+                                // inode is already the cached bytes.
+                                if link_or_copy(&old, &target).is_ok() {
                                     let _ = outcome_tx.send((
                                         index,
                                         key,
@@ -1048,8 +1030,13 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::hard_link(&source, &destination)
-            .or_else(|_| fs::copy(&source, &destination).map(|_| ()))?;
+        link_or_copy(&source, &destination).wrap_err_with(|| {
+            format!(
+                "failed to publish sRGB alias {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
         published.push(alias);
     }
     Ok(published)
@@ -1286,6 +1273,7 @@ fn staging_path(output: &Path) -> PathBuf {
 }
 
 /// Where the staging journal waits while its staging directory is published.
+#[cfg(test)]
 fn parked_journal_path(staging: &Path) -> PathBuf {
     let mut name = staging.file_name().unwrap_or_default().to_os_string();
     name.push(".journal.jsonl");
@@ -1301,6 +1289,79 @@ fn staged_output(entry: &CacheEntry, configuration_hash: &str) -> StagedOutput {
         output_size: entry.output_size,
         output_hash: entry.output_hash.clone(),
     }
+}
+
+/// Publishes only runtime artifacts. Staging keeps `vfs/` and
+/// `.ingestion-cache/` as build workspace; those never land in `output`.
+fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) -> Result<()> {
+    // Beside staging, not inside it: a resumed staging dir keeps the
+    // previous pack's linked files, so the new pack must not share inodes
+    // with anything a resumed run will later unlink and rewrite.
+    let pack_staging = staging.with_extension(format!(
+        "pack-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    if pack_staging.exists() {
+        fs::remove_dir_all(&pack_staging)?;
+    }
+    fs::create_dir_all(&pack_staging)?;
+    for artifact in &report.artifacts {
+        let source = staging.join(artifact);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = pack_staging.join(artifact);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        link_or_copy(&source, &destination).wrap_err_with(|| {
+            format!(
+                "failed to publish {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+    let manifest = pack_staging.join("conversion-manifest.json");
+    ensure!(
+        manifest.is_file(),
+        "runtime pack is missing conversion-manifest.json"
+    );
+    let published = publish_directory(&pack_staging, output);
+    if published.is_err() {
+        let _ = fs::remove_dir_all(&pack_staging);
+    }
+    published
+}
+
+/// Copies new ingestion blobs into the persistent cache root outside the pack.
+fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
+    for entry in WalkDir::new(staging_cache).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry.path().strip_prefix(staging_cache)?;
+        let destination = cache_root.join(relative);
+        if destination.is_file() {
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        link_or_copy(entry.path(), &destination).wrap_err_with(|| {
+            format!(
+                "failed to persist cache blob {} to {}",
+                entry.path().display(),
+                destination.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
@@ -1442,8 +1503,6 @@ mod tests {
 
     #[test]
     fn loose_asset_override_does_not_write_through_a_linked_vfs_entry() {
-        use crate::cache::link_or_copy;
-
         let directory = tempfile::tempdir().unwrap();
         let previous = directory.path().join("previous");
         let previous_vfs = previous.join("vfs/textures/rock.dds");
@@ -1613,13 +1672,19 @@ mod tests {
         .unwrap();
         let config = PipelineConfig::new(&data, &output);
 
+        let cache_root = config.ingestion_cache_dir();
         let first = run_without_progress(config.clone()).await;
         assert_eq!(first.converted, 1);
         assert_eq!(first.cache_hits, 0);
-        assert_eq!(
-            fs::read(output.join("vfs/docs/readme.txt")).unwrap(),
-            b"cached asset"
-        );
+        assert!(!output.join("vfs").exists());
+        assert!(!output.join(".ingestion-cache").exists());
+        let blobs: Vec<_> = WalkDir::new(cache_root.join(".ingestion-cache"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .collect();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(fs::read(blobs[0].path()).unwrap(), b"cached asset");
 
         let second = run_without_progress(config.clone()).await;
         assert_eq!(second.converted, 0);
@@ -2126,5 +2191,60 @@ mod tests {
                 fs::copy(entry.path(), &target).unwrap();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn published_pack_excludes_build_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+        let config = PipelineConfig::new(&data, &output);
+        let report = run_without_progress(config.clone()).await;
+
+        assert!(report.complete);
+        assert!(output.join("scripts/one.luau").is_file());
+        assert!(output.join("conversion-manifest.json").is_file());
+        assert!(!output.join("vfs").exists());
+        assert!(!output.join(".ingestion-cache").exists());
+    }
+
+    #[tokio::test]
+    async fn resumed_reconversion_does_not_write_through_pack_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+
+        // First conversion publishes the pack; pack files may share inodes
+        // with whatever staging survives publication.
+        let staging = temp.path().join("modern.staging-resume-links");
+        fs::create_dir_all(&staging).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging.clone());
+        let first = run_without_progress(config.clone()).await;
+        assert!(first.complete);
+        let first_bytes = fs::read(output.join("scripts/one.luau")).unwrap();
+
+        // A resumed reconversion rewrites staged artifacts in place of the
+        // same paths. If any writer truncates through a hard link instead of
+        // replacing the path, the published pack changes under it.
+        let second = run_without_progress(config.clone()).await;
+        assert!(second.complete);
+        assert_eq!(
+            fs::read(output.join("scripts/one.luau")).unwrap(),
+            first_bytes,
+            "the resumed run wrote through a pack link into the previous output"
+        );
     }
 }
