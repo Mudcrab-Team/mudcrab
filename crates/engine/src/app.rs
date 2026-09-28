@@ -126,6 +126,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             RenderDiagnosticsPlugin,
         ))
         .add_plugins(VercidiumRendererPlugin)
+        // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
+        // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
+        .add_plugins(crate::lights::LightsPlugin)
         .add_systems(Update, (fly_camera, capture_acceptance_screenshot));
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
@@ -1307,7 +1310,9 @@ fn setup_world(
     ));
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.48, 0.55, 0.7),
-        brightness: 160.0,
+        // The one definition of the ambient this world path applies: the converted lights are
+        // scaled against it (`crate::lights`).
+        brightness: crate::lights::AMBIENT_ILLUMINANCE,
         ..default()
     });
     info!(
