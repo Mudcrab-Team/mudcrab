@@ -916,6 +916,10 @@ fn encode_basis_ktx2(
     );
     BASIS_INIT.call_once(|| {
         basis_universal::encoder_init();
+        // Held so no Rust output is written while the bridge swaps the handles underneath it.
+        use std::io::Write as _;
+        let mut rust_stdout = std::io::stdout().lock();
+        let _ = rust_stdout.flush();
         // SAFETY: points only the C library's stdout at the null device, once, before the encoder
         // first runs; the process's standard output, which Rust writes to, is kept.
         unsafe { opensky_basis_quiet_stdout() };
@@ -1056,12 +1060,13 @@ mod tests {
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success(), "{stdout}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
         assert!(
             stdout.contains("printed by Rust after encoding"),
-            "{stdout}"
+            "{stdout}\n{stderr}"
         );
-        assert!(!stdout.contains("KTX2 validator bug"), "{stdout}");
+        assert!(!stdout.contains("KTX2 validator bug"), "{stdout}\n{stderr}");
     }
 
     #[test]
