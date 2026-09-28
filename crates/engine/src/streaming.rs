@@ -19,6 +19,7 @@ use bevy::{
     camera::primitives::MeshAabb,
     gltf::GltfExtras,
     image::{ImageFilterMode, ImageLoaderSettings, ImageSampler},
+    math::Affine3A,
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
     world_serialization::WorldInstanceReady,
@@ -113,6 +114,14 @@ pub struct StreamingMetrics {
     pub transform_instances_validated: u64,
     pub transform_nodes_validated: u64,
     pub bounds_validated: u64,
+    /// References whose converted model is an empty scene: a glTF scene with no node and no mesh,
+    /// which is what the converter writes for a model whose NIF has no renderable geometry (an
+    /// editor-marker-only model, for example). There is nothing to place, draw or bound, so such
+    /// a reference is counted here rather than in [`Self::transform_bounds_validation_failures`],
+    /// which is a hard gate and must count only real conversion defects. The tolerance stops
+    /// there: a scene an exporter emptied by mistake looks exactly like one with nothing to
+    /// export, so every empty scene is counted here, where the profiling reports can see it.
+    pub empty_model_references: u64,
     pub transform_bounds_validation_failures: u64,
     pub transform_bounds_fixture_validated: bool,
     pub active_requests: usize,
@@ -182,12 +191,21 @@ fn plan_cells(
     let Ok(camera) = camera.single() else {
         return;
     };
-    let global_x = camera.translation.x + origin.0.x as f32 * CELL_SIZE;
-    let global_y = -camera.translation.z + origin.0.y as f32 * CELL_SIZE;
-    let center = IVec2::new(
-        (global_x / CELL_SIZE).floor() as i32,
-        (global_y / CELL_SIZE).floor() as i32,
-    );
+    // Screenshot runs frame the configured start cell from an artistic
+    // offset, so the camera can sit cells away from its target. Streaming
+    // around the camera would then load the wrong neighborhood and leave
+    // the framed cells empty; anchor on the start cell instead. Interactive
+    // runs keep following the camera.
+    let center = if config.acceptance_screenshot.is_some() {
+        origin.0
+    } else {
+        let global_x = camera.translation.x + origin.0.x as f32 * CELL_SIZE;
+        let global_y = -camera.translation.z + origin.0.y as f32 * CELL_SIZE;
+        IVec2::new(
+            (global_x / CELL_SIZE).floor() as i32,
+            (global_y / CELL_SIZE).floor() as i32,
+        )
+    };
     let mut wanted = HashSet::new();
     for y in -config.stream_radius..=config.stream_radius {
         for x in -config.stream_radius..=config.stream_radius {
@@ -640,6 +658,7 @@ fn track_asset_readiness(
     primitives: RenderPrimitiveQuery,
     transforms: Query<(&Transform, &GlobalTransform)>,
     images: Res<Assets<Image>>,
+    world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -681,6 +700,7 @@ fn track_asset_readiness(
                 global,
                 world_transform,
                 expected_bounds,
+                world_assets.get(&root.0),
                 &children,
                 &transforms,
                 &primitives,
@@ -711,6 +731,18 @@ fn track_asset_readiness(
                     continue;
                 }
             };
+            // An empty converted model has nothing to place, draw or validate, so the reference is
+            // skipped and counted on its own instead of failing the run's bounds gate. Everything
+            // else about the reference stays: it keeps its transform, and its scene is left alone
+            // (it is empty; there is nothing in it to hide).
+            if transform_summary.empty_model {
+                metrics.empty_model_references = metrics.empty_model_references.saturating_add(1);
+                profiler.increment("assets/empty_model_references", 1);
+                profiler.event(&pending.path, "asset_empty", None);
+                commands.entity(entity).remove::<PendingAssetProfile>();
+                completed_this_scan += 1;
+                continue;
+            }
             let validation = validate_spawned_asset(
                 entity,
                 &children,
@@ -920,6 +952,10 @@ struct AssetValidationSummary {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct TransformValidationSummary {
     nodes: usize,
+    /// The reference's converted model is an empty scene, so it was counted in
+    /// [`StreamingMetrics::empty_model_references`] rather than as a validated instance: there
+    /// were no converted bounds to compare against and nothing to draw.
+    empty_model: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -929,6 +965,7 @@ fn validate_spawned_transforms_and_bounds(
     root_global: &GlobalTransform,
     world_transform: &WorldTransform,
     expected: Option<&ExpectedModelBounds>,
+    converted_model: Option<&WorldAsset>,
     children: &Query<&Children>,
     transforms: &Query<(&Transform, &GlobalTransform)>,
     primitives: &RenderPrimitiveQuery,
@@ -939,43 +976,53 @@ fn validate_spawned_transforms_and_bounds(
     if matrix_max_difference(local_matrix, world_transform.0) > 1.0e-4 {
         return Err("WorldTransform differs from the spawned reference Transform".to_owned());
     }
-    let expected = expected.ok_or_else(|| {
-        "converted model has no validated aggregate bounds; reconvert the asset".to_owned()
-    })?;
+    let Some(expected) = expected else {
+        // A model the converter wrote no aggregate bounds for is an empty scene: a model with no
+        // renderable geometry, so there is nothing to place, draw or bound. What makes it empty is
+        // read from the converted model itself - the scene the converter wrote, which declares no
+        // node and no mesh - rather than from the spawned instance, so a hierarchy that has not
+        // spawned yet cannot pass as an empty model. A scene that does declare a node or a mesh
+        // and still arrived without aggregate bounds is a conversion defect, and stays as fatal as
+        // any other.
+        let scene = converted_model.ok_or_else(|| {
+            "the converted model is not loaded while validating its bounds; reconvert the asset"
+                .to_owned()
+        })?;
+        let contents = converted_scene_contents(scene);
+        return if contents.is_empty() {
+            Ok(TransformValidationSummary {
+                nodes: 0,
+                empty_model: true,
+            })
+        } else {
+            Err(format!(
+                "converted model has no validated aggregate bounds; reconvert the asset (its converted scene is not empty: {} mesh primitives, {} nodes)",
+                contents.meshes, contents.nodes
+            ))
+        };
+    };
     ExpectedModelBounds::new(expected.min, expected.max)
         .ok_or_else(|| "converted model bounds are non-finite, empty, or inverted".to_owned())?;
 
-    let root_inverse = root_global.affine().inverse();
     let mut actual_min = Vec3::splat(f32::INFINITY);
     let mut actual_max = Vec3::splat(f32::NEG_INFINITY);
     let mut nodes = 0usize;
     let mut bounded_meshes = 0usize;
-    for descendant in children.iter_descendants(root) {
-        let (local, global) = transforms
-            .get(descendant)
-            .map_err(|_| format!("hierarchy node {descendant:?} has no local/global transform"))?;
-        validate_transform(&format!("hierarchy node {descendant:?}"), local, global)?;
-        nodes += 1;
-        let Ok((mesh_handle, _, _)) = primitives.get(descendant) else {
-            continue;
-        };
-        let mesh = meshes.get(mesh_handle).ok_or_else(|| {
-            format!(
-                "mesh {:?} is absent while validating bounds",
-                mesh_handle.id()
-            )
-        })?;
-        let aabb = mesh
-            .compute_aabb()
-            .ok_or_else(|| format!("mesh {:?} has no finite POSITION bounds", mesh_handle.id()))?;
-        let center = Vec3::from(aabb.center);
-        let half_extents = Vec3::from(aabb.half_extents);
-        let relative = Mat4::from(root_inverse * global.affine());
-        let transformed =
-            InstanceBounds::transformed(center - half_extents, center + half_extents, relative);
-        actual_min = actual_min.min(transformed.min);
-        actual_max = actual_max.max(transformed.max);
-        bounded_meshes += 1;
+    if let Ok(direct_children) = children.get(root) {
+        for child in direct_children.iter() {
+            accumulate_relative_bounds(
+                child,
+                Affine3A::IDENTITY,
+                children,
+                transforms,
+                primitives,
+                meshes,
+                &mut nodes,
+                &mut bounded_meshes,
+                &mut actual_min,
+                &mut actual_max,
+            )?;
+        }
     }
     if bounded_meshes == 0 {
         return Err("spawned hierarchy contains no bounded mesh".to_owned());
@@ -992,7 +1039,103 @@ fn validate_spawned_transforms_and_bounds(
             expected.min, expected.max, actual_min, actual_max
         ));
     }
-    Ok(TransformValidationSummary { nodes })
+    Ok(TransformValidationSummary {
+        nodes,
+        empty_model: false,
+    })
+}
+
+/// What a converted model holds: the scene the converter wrote for it, as the asset loader built
+/// it, with the model's own node and mesh count. A model with no renderable geometry converts to
+/// an empty scene, and the loader still gives that scene its own root entity, so emptiness is "no
+/// mesh and no node", not "no entity".
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ConvertedSceneContents {
+    /// One per glTF primitive the converter exported: an entity carrying a [`Mesh3d`].
+    meshes: usize,
+    /// Every entity the loader attached below another one, which in a glTF scene is every node;
+    /// the scene's own root is the only entity without a parent.
+    nodes: usize,
+}
+
+impl ConvertedSceneContents {
+    /// The converter's empty scene, which is what a model with no renderable geometry converts
+    /// to: no node and no mesh to place, draw or bound.
+    fn is_empty(&self) -> bool {
+        self.meshes == 0 && self.nodes == 0
+    }
+}
+
+/// Counts what a converted model holds. Taken from the loaded asset rather than from its spawned
+/// instance, so what is read is the whole converted file: a scene whose entities have not spawned
+/// yet, or one whose geometry an exporter dropped, cannot pass as an empty model.
+fn converted_scene_contents(scene: &WorldAsset) -> ConvertedSceneContents {
+    let mut contents = ConvertedSceneContents::default();
+    for entity in scene.world.iter_entities() {
+        contents.meshes += usize::from(entity.contains::<Mesh3d>());
+        contents.nodes += usize::from(entity.contains::<ChildOf>());
+    }
+    contents
+}
+
+/// Walks the spawned hierarchy under a root, accumulating each descendant's transform
+/// relative to the root by composing local `Transform`s along the path from the root.
+///
+/// This deliberately never forms the root's or a descendant's absolute `GlobalTransform`
+/// matrix: at real-world placements (tens of thousands of units from the origin) building
+/// that large-magnitude matrix and then multiplying by its inverse cancels lossily in f32,
+/// losing more precision than the bounds-check tolerance allows for small models. Composing
+/// only the local, mesh-scale transforms keeps every intermediate value small and exact
+/// enough for the tolerance.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_relative_bounds(
+    entity: Entity,
+    relative_to_root: Affine3A,
+    children: &Query<&Children>,
+    transforms: &Query<(&Transform, &GlobalTransform)>,
+    primitives: &RenderPrimitiveQuery,
+    meshes: &Assets<Mesh>,
+    nodes: &mut usize,
+    bounded_meshes: &mut usize,
+    actual_min: &mut Vec3,
+    actual_max: &mut Vec3,
+) -> Result<(), String> {
+    // An explicit stack, not recursion: a deeply nested model must not overflow the thread's
+    // stack. Children are pushed in reverse so they are visited in order, as before.
+    let mut stack = vec![(entity, relative_to_root)];
+    while let Some((entity, parent_to_root)) = stack.pop() {
+        let (local, global) = transforms
+            .get(entity)
+            .map_err(|_| format!("hierarchy node {entity:?} has no local/global transform"))?;
+        validate_transform(&format!("hierarchy node {entity:?}"), local, global)?;
+        *nodes += 1;
+        let relative_to_root = parent_to_root * local.compute_affine();
+        if let Ok((mesh_handle, _, _)) = primitives.get(entity) {
+            let mesh = meshes.get(mesh_handle).ok_or_else(|| {
+                format!(
+                    "mesh {:?} is absent while validating bounds",
+                    mesh_handle.id()
+                )
+            })?;
+            let aabb = mesh.compute_aabb().ok_or_else(|| {
+                format!("mesh {:?} has no finite POSITION bounds", mesh_handle.id())
+            })?;
+            let center = Vec3::from(aabb.center);
+            let half_extents = Vec3::from(aabb.half_extents);
+            let transformed = InstanceBounds::transformed(
+                center - half_extents,
+                center + half_extents,
+                Mat4::from(relative_to_root),
+            );
+            *actual_min = actual_min.min(transformed.min);
+            *actual_max = actual_max.max(transformed.max);
+            *bounded_meshes += 1;
+        }
+        if let Ok(kids) = children.get(entity) {
+            stack.extend(kids.iter().rev().map(|child| (child, relative_to_root)));
+        }
+    }
+    Ok(())
 }
 
 fn validate_transform(
@@ -1279,23 +1422,21 @@ fn creation_rotation_to_bevy(rotation: [f32; 3]) -> Quat {
 }
 
 fn converted_model_path(path: String) -> Option<String> {
-    let normalized = path.replace('\\', "/");
-    let lowercase = normalized.to_ascii_lowercase();
-    let filename = lowercase.rsplit('/').next().unwrap_or_default();
-    if lowercase.starts_with("meshes/sky/")
-        || lowercase.starts_with("sky/")
-        || lowercase.starts_with("meshes/markers/")
-        || lowercase.starts_with("markers/")
-        || lowercase.starts_with("meshes/effects/")
-        || lowercase.starts_with("effects/")
+    // Converted assets are published with lowercase canonical paths, so the
+    // lookup must lowercase too (matching world-inspect's resolver).
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let filename = normalized.rsplit('/').next().unwrap_or_default();
+    if normalized.starts_with("meshes/sky/")
+        || normalized.starts_with("sky/")
+        || normalized.starts_with("meshes/markers/")
+        || normalized.starts_with("markers/")
+        || normalized.starts_with("meshes/effects/")
+        || normalized.starts_with("effects/")
         || filename.contains("marker")
     {
         return None;
     }
-    let without_prefix = normalized
-        .strip_prefix("meshes/")
-        .or_else(|| normalized.strip_prefix("Meshes/"))
-        .unwrap_or(&normalized);
+    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
     if without_prefix.is_empty() {
         return None;
     }
@@ -1606,12 +1747,19 @@ fn validate_and_register_terrain_edges(
 }
 
 fn update_render_origin(
+    config: Res<EngineConfig>,
     mut origin: ResMut<RenderOrigin>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
     mut roots: Query<(&ExteriorCellGrid, &mut Transform), Without<StreamingCamera>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    // Screenshot runs keep the start-cell origin fixed: rebasing toward an
+    // artistically offset camera would drag the streamed window (and the
+    // screenshot target's cells) away from the framed view.
+    if config.acceptance_screenshot.is_some() {
+        return;
+    }
     let started = Instant::now();
     let Ok(mut camera) = camera.single_mut() else {
         return;
@@ -1675,12 +1823,18 @@ fn validate_streaming_lifecycle(
     let orphaned_roots = root_entities.difference(&resident_entities).count() as u64;
     let missing_roots = resident_entities.difference(&root_entities).count() as u64;
     let out_of_range_roots = camera.single().map_or(0, |camera| {
-        let global_x = camera.translation.x + origin.0.x as f32 * CELL_SIZE;
-        let global_y = -camera.translation.z + origin.0.y as f32 * CELL_SIZE;
-        let center = IVec2::new(
-            (global_x / CELL_SIZE).floor() as i32,
-            (global_y / CELL_SIZE).floor() as i32,
-        );
+        // Must match plan_cells: screenshot runs anchor streaming on the
+        // start cell, not the camera.
+        let center = if config.acceptance_screenshot.is_some() {
+            origin.0
+        } else {
+            let global_x = camera.translation.x + origin.0.x as f32 * CELL_SIZE;
+            let global_y = -camera.translation.z + origin.0.y as f32 * CELL_SIZE;
+            IVec2::new(
+                (global_x / CELL_SIZE).floor() as i32,
+                (global_y / CELL_SIZE).floor() as i32,
+            )
+        };
         root_entries
             .iter()
             .filter_map(|(_, _, grid)| *grid)
@@ -1754,6 +1908,11 @@ mod tests {
             Some("meshes/architecture/wall.glb")
         );
         assert_eq!(
+            converted_model_path("Meshes\\Landscape\\Tundra\\TundraStreamStraight01.NIF".into())
+                .as_deref(),
+            Some("meshes/landscape/tundra/tundrastreamstraight01.glb")
+        );
+        assert_eq!(
             converted_model_path("meshes/Sky/CloudShape01.nif".into()),
             None
         );
@@ -1796,7 +1955,8 @@ mod tests {
     #[test]
     fn repeated_rebasing_preserves_camera_and_cell_root_locality() {
         let mut app = App::new();
-        app.insert_resource(RenderOrigin(IVec2::ZERO))
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
             .init_resource::<StreamingMetrics>()
             .init_resource::<ProfilingState>()
             .add_systems(Update, update_render_origin);
@@ -1862,13 +2022,15 @@ mod tests {
     }
 
     #[test]
-    fn maps_creation_position_and_rotation_through_the_same_basis() {
+    fn streaming_maps_creation_transforms_through_the_shared_contract() {
         assert_eq!(creation_to_bevy(Vec3::Y), Vec3::NEG_Z);
         assert_eq!(creation_to_bevy(Vec3::Z), Vec3::Y);
 
+        // The shared contract decides the angle's sense, not the Bevy axes: this
+        // Creation yaw takes +X to runtime +Z, where a Bevy +Y turn takes it to -Z.
         let rotation = creation_rotation_to_bevy([0.0, 0.0, std::f32::consts::FRAC_PI_2]);
         let rotated = rotation * Vec3::X;
-        assert!(rotated.abs_diff_eq(Vec3::NEG_Z, 1.0e-5));
+        assert!(rotated.abs_diff_eq(Vec3::Z, 1.0e-5));
     }
 
     #[test]
@@ -2015,5 +2177,617 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    use bevy::asset::{AssetApp, AssetPlugin};
+    use bevy::world_serialization::WorldSerializationPlugin;
+
+    /// The app the empty-model tests run in: the real readiness scan
+    /// ([`track_asset_readiness`]) over an asset server and the world serialization spawner the
+    /// engine uses, so a converted model is spawned and its reference becomes ready by the same
+    /// route a converted glb takes.
+    fn model_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            WorldSerializationPlugin,
+        ))
+        .init_asset::<Mesh>()
+        .init_asset::<Image>()
+        .init_asset::<StandardMaterial>()
+        .insert_resource(EngineConfig::default())
+        .init_resource::<StreamingMetrics>()
+        .init_resource::<ProfilingState>()
+        .init_resource::<DiagnosticFallbackAssets>()
+        // The converted scene holds entities, and the spawner reads each of their components out
+        // of the type registry.
+        .register_type::<ChildOf>()
+        .register_type::<Children>()
+        .register_type::<GlobalTransform>()
+        .register_type::<Mesh3d>()
+        .register_type::<Name>()
+        .register_type::<Transform>()
+        .add_observer(mark_world_instance_ready)
+        .add_systems(Update, track_asset_readiness);
+        app
+    }
+
+    /// Adds `scene` to the asset server as the converted model a reference points at, and runs the
+    /// frame the asset system needs to publish it, so `is_loaded_with_dependencies` is true for it
+    /// exactly as it is for a loaded glb.
+    fn add_converted_model(app: &mut App, scene: World) -> Handle<WorldAsset> {
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .add(WorldAsset::new(scene));
+        // The `Loaded` event is applied in the asset schedule, before the spawner reads it.
+        app.update();
+        handle
+    }
+
+    /// A converted model as the loader builds one for the converter's empty scene: the scene's own
+    /// root entity and nothing below it, so the model has no node and no mesh.
+    fn empty_converted_scene() -> World {
+        let mut world = World::new();
+        world.spawn((Name::new("wispambush"), Transform::default()));
+        world
+    }
+
+    /// A converted model with real geometry, as the loader builds one: the scene's root and the
+    /// mesh primitive below it.
+    fn converted_scene_with_mesh(mesh: Handle<Mesh>) -> World {
+        let mut world = World::new();
+        let root = world.spawn(Name::new("wispambush")).id();
+        world.spawn((Mesh3d(mesh), Transform::default(), ChildOf(root)));
+        world
+    }
+
+    /// A reference as [`spawn_cell`] spawns one for a model: the root components, the asset root
+    /// pointing at the loaded scene, and the pending profile the readiness scan waits on. No
+    /// `ExpectedModelBounds` is inserted, which is what `statics.bounds_valid = 0` produces - the
+    /// component's absence is the whole signal.
+    fn spawn_model_reference(
+        app: &mut App,
+        handle: Handle<WorldAsset>,
+        expected_bounds: Option<ExpectedModelBounds>,
+    ) -> Entity {
+        let transform = Transform::from_translation(Vec3::new(3.0, -4.0, 5.0));
+        let mut entity = app.world_mut().spawn((
+            Name::new("Reference 000F9907"),
+            FormId(0x00F9907),
+            CellRef(0x02D4E0),
+            transform,
+            GlobalTransform::from(transform),
+            WorldTransform(transform.to_matrix()),
+            WorldAssetRoot(handle),
+            PendingAssetProfile {
+                started: Instant::now(),
+                scene_spawned: false,
+                path: "meshes/furniture/creatureexit/wispambush.glb".to_owned(),
+                form_id: 0x00F9907,
+                base_form_id: 0x00EF957,
+                cell_id: 0x02D4E0,
+            },
+        ));
+        if let Some(bounds) = expected_bounds {
+            entity.insert(bounds);
+        }
+        entity.id()
+    }
+
+    /// Runs the readiness scan until the reference leaves the pending set, and fails the test
+    /// rather than reading an unsettled metric. The world instance is spawned in `SpawnScene` and
+    /// the scan runs in `Update`, so a reference settles over more than one frame.
+    fn settle_readiness(app: &mut App) -> StreamingMetrics {
+        for _ in 0..16 {
+            app.update();
+            let streaming = app.world().resource::<StreamingMetrics>();
+            if streaming.pending_asset_instances == 0 {
+                break;
+            }
+        }
+        let metrics = app.world().resource::<StreamingMetrics>().clone();
+        assert_eq!(
+            metrics.pending_asset_instances, 0,
+            "the reference never left the pending set"
+        );
+        metrics
+    }
+
+    /// What the emptiness rule reads: the converted model's own node and mesh count, taken from
+    /// the asset rather than from anything the engine spawned.
+    #[test]
+    fn reads_a_converted_models_own_node_and_mesh_count() {
+        let empty = WorldAsset::new(empty_converted_scene());
+        assert!(
+            converted_scene_contents(&empty).is_empty(),
+            "the converter's empty scene is what an empty model looks like"
+        );
+
+        let mesh_model = WorldAsset::new(converted_scene_with_mesh(Handle::default()));
+        let contents = converted_scene_contents(&mesh_model);
+        assert_eq!(contents.meshes, 1, "one primitive: {contents:?}");
+        assert_eq!(contents.nodes, 1, "one node: {contents:?}");
+    }
+
+    /// A model with no renderable geometry converts to an **empty scene**, so it has no converted
+    /// bounds and nothing to draw. A streamed cell full of such models used to fail the bounds
+    /// gate on a model with nothing to draw. Such a reference is skipped and counted on its own,
+    /// and nothing fails.
+    #[test]
+    fn an_empty_scene_model_is_skipped_and_counted_instead_of_failing() {
+        let mut app = model_app();
+        let handle = add_converted_model(&mut app, empty_converted_scene());
+        let reference = spawn_model_reference(&mut app, handle, None);
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.transform_bounds_validation_failures, 0,
+            "an invisible marker is not a conversion failure: {:?}",
+            metrics.asset_failures
+        );
+        assert_eq!(
+            metrics.empty_model_references, 1,
+            "the empty model is counted on its own"
+        );
+        assert!(
+            metrics.asset_failures.is_empty(),
+            "nothing is recorded as a failed asset: {:?}",
+            metrics.asset_failures
+        );
+        assert_eq!(
+            metrics.bounds_validated, 0,
+            "there were no converted bounds to validate"
+        );
+        assert_eq!(
+            metrics.assets_ready, 0,
+            "an empty model is not counted as a ready asset either"
+        );
+        assert!(
+            !app.world()
+                .entity(reference)
+                .contains::<PendingAssetProfile>(),
+            "the reference is no longer pending"
+        );
+        assert!(
+            app.world().entity(reference).contains::<Transform>(),
+            "the empty reference keeps its own transform"
+        );
+        assert!(
+            app.world()
+                .entity(reference)
+                .get::<Children>()
+                .is_some_and(|children| !children.is_empty()),
+            "the converted scene is spawned below the reference"
+        );
+    }
+
+    /// The tolerated class is narrow: the model itself must be empty. A converted scene that
+    /// declares a node but no mesh - a hierarchy whose geometry an exporter dropped - is not an
+    /// empty model, so it keeps failing exactly as it did before the rule existed.
+    #[test]
+    fn a_model_whose_converted_scene_declares_only_a_node_still_fails() {
+        let mut app = model_app();
+        let mut scene = World::new();
+        let root = scene.spawn(Transform::default()).id();
+        scene.spawn((Transform::default(), ChildOf(root)));
+        let handle = add_converted_model(&mut app, scene);
+        spawn_model_reference(&mut app, handle, None);
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.empty_model_references, 0,
+            "a scene with a node in it is not an empty model"
+        );
+        assert_eq!(
+            metrics.transform_bounds_validation_failures, 1,
+            "a model that declares a node and no mesh must still fail: {:?}",
+            metrics.asset_failures
+        );
+        let failure = metrics
+            .asset_failures
+            .first()
+            .expect("the failure is recorded as an asset failure");
+        assert!(
+            failure
+                .dependency_chain
+                .iter()
+                .any(|reason| reason.contains("is not empty: 0 mesh primitives, 1 nodes")),
+            "unexpected failure reason: {:?}",
+            failure.dependency_chain
+        );
+    }
+
+    /// The other side of the same evidence: a model whose converted scene really holds a mesh
+    /// primitive, spawned from the asset by the engine's own spawner rather than hand-built, and
+    /// which still arrives without converted bounds, is a conversion defect and stays fatal.
+    #[test]
+    fn a_model_whose_converted_scene_holds_a_mesh_still_fails_without_bounds() {
+        let mut app = model_app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(2.0, 4.0, 6.0));
+        let handle = add_converted_model(&mut app, converted_scene_with_mesh(mesh));
+        let reference = spawn_model_reference(&mut app, handle, None);
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.empty_model_references, 0,
+            "a model with geometry is never counted as empty"
+        );
+        assert_eq!(
+            metrics.transform_bounds_validation_failures, 1,
+            "a model with geometry and no converted bounds must still fail: {:?}",
+            metrics.asset_failures
+        );
+        let failure = metrics
+            .asset_failures
+            .first()
+            .expect("the failure is recorded as an asset failure");
+        assert!(
+            failure
+                .dependency_chain
+                .iter()
+                .any(|reason| reason.contains("is not empty: 1 mesh primitives")),
+            "unexpected failure reason: {:?}",
+            failure.dependency_chain
+        );
+        // The model's mesh is a descendant of the reference: the engine's own spawner put it
+        // there, which is the shape every bounds check in this module reads.
+        let mut primitives = app.world_mut().query::<(Entity, &Mesh3d)>();
+        let (primitive, _) = primitives
+            .iter(app.world())
+            .next()
+            .expect("the converted model's mesh primitive is spawned");
+        let scene_root = app
+            .world()
+            .entity(reference)
+            .get::<Children>()
+            .and_then(|children| children.first().copied())
+            .expect("the converted scene is spawned below the reference");
+        assert_eq!(
+            app.world()
+                .entity(primitive)
+                .get::<ChildOf>()
+                .map(ChildOf::parent),
+            Some(scene_root),
+            "the mesh primitive hangs below the scene root the spawner attached"
+        );
+    }
+
+    /// The other direction of the same rule: a model the converter *did* bound, whose spawned
+    /// scene turns out to be empty, is not an empty model to wave through - the two disagree and
+    /// the disagreement is fatal.
+    #[test]
+    fn a_bounded_model_whose_scene_is_empty_still_fails() {
+        let mut app = model_app();
+        let handle = add_converted_model(&mut app, empty_converted_scene());
+        spawn_model_reference(
+            &mut app,
+            handle,
+            ExpectedModelBounds::new(Vec3::splat(-1.0), Vec3::splat(1.0)),
+        );
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.empty_model_references, 0,
+            "only a model without converted bounds may be an empty model"
+        );
+        assert_eq!(
+            metrics.transform_bounds_validation_failures, 1,
+            "a bound model whose hierarchy holds no mesh must still fail: {:?}",
+            metrics.asset_failures
+        );
+        let failure = metrics
+            .asset_failures
+            .first()
+            .expect("the failure is recorded as an asset failure");
+        assert!(
+            failure
+                .dependency_chain
+                .iter()
+                .any(|reason| reason.contains("no bounded mesh")),
+            "unexpected failure reason: {:?}",
+            failure.dependency_chain
+        );
+    }
+
+    /// Composes the same basis-rotation / mesh-translation chain as `HumanSkull.glb`'s node
+    /// hierarchy in f64, giving a ground-truth model-space (relative-to-root) bounding box
+    /// that never touches the root's large world-space position. This stands in for the
+    /// converter's own independent, exact recomputation of the model's bounds.
+    fn f64_relative_bounds(
+        local_min: Vec3,
+        local_max: Vec3,
+        basis_rotation: Quat,
+        mesh_translation: Vec3,
+        mesh_scale: Vec3,
+    ) -> (Vec3, Vec3) {
+        use bevy::math::{DAffine3, DQuat, DVec3};
+
+        let basis = DAffine3::from_quat(DQuat::from_xyzw(
+            basis_rotation.x as f64,
+            basis_rotation.y as f64,
+            basis_rotation.z as f64,
+            basis_rotation.w as f64,
+        ));
+        let mesh = DAffine3::from_scale_rotation_translation(
+            DVec3::new(
+                mesh_scale.x as f64,
+                mesh_scale.y as f64,
+                mesh_scale.z as f64,
+            ),
+            DQuat::IDENTITY,
+            DVec3::new(
+                mesh_translation.x as f64,
+                mesh_translation.y as f64,
+                mesh_translation.z as f64,
+            ),
+        );
+        let relative = basis * mesh;
+        let mut min = DVec3::splat(f64::INFINITY);
+        let mut max = DVec3::splat(f64::NEG_INFINITY);
+        for x in [local_min.x, local_max.x] {
+            for y in [local_min.y, local_max.y] {
+                for z in [local_min.z, local_max.z] {
+                    let point = relative.transform_point3(DVec3::new(x as f64, y as f64, z as f64));
+                    min = min.min(point);
+                    max = max.max(point);
+                }
+            }
+        }
+        (
+            Vec3::new(min.x as f32, min.y as f32, min.z as f32),
+            Vec3::new(max.x as f32, max.y as f32, max.z as f32),
+        )
+    }
+
+    // Composing each mesh's world transform and then multiplying by the root's
+    // inverse world transform (the old algorithm) loses precision at real-data world
+    // placements. This fixture mirrors the failing acceptance run: reference 000F6031's
+    // world position/rotation, and HumanSkull.glb's node hierarchy (a -90-degree X basis
+    // node with a mesh child of scale ~1.14 and translation (0, -7.7, -150.7)).
+    #[test]
+    fn spawned_bounds_validate_within_tolerance_despite_large_world_placement() {
+        use bevy::ecs::system::SystemState;
+
+        let root_translation = Vec3::new(20790.89, -69970.35, 10984.74);
+        let root_rotation = Quat::from_euler(EulerRot::XYZ, 2.0587, 0.6207, 1.3418);
+        let basis_rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let mesh_translation = Vec3::new(0.0, -7.7, -150.7);
+        let mesh_scale = Vec3::splat(1.14);
+        let local_min = Vec3::splat(-6.0);
+        let local_max = Vec3::splat(6.0);
+
+        let (expected_min, expected_max) = f64_relative_bounds(
+            local_min,
+            local_max,
+            basis_rotation,
+            mesh_translation,
+            mesh_scale,
+        );
+        let expected_bounds = ExpectedModelBounds::new(expected_min, expected_max)
+            .expect("fixture bounds must be finite and non-degenerate");
+        let extent = (expected_max - expected_min).abs().max_element().max(1.0);
+        let tolerance = (extent * 1.0e-4).max(1.0e-3);
+
+        let mut world = World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        let corners: Vec<[f32; 3]> = [local_min.x, local_max.x]
+            .into_iter()
+            .flat_map(|x| {
+                [local_min.y, local_max.y]
+                    .into_iter()
+                    .flat_map(move |y| [local_min.z, local_max.z].map(move |z| [x, y, z]))
+            })
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, corners);
+        let mesh_handle = meshes.add(mesh);
+        world.insert_resource(meshes);
+
+        let root_local = Transform {
+            translation: root_translation,
+            rotation: root_rotation,
+            ..Default::default()
+        };
+        let root_global = GlobalTransform::from(root_local);
+        let root = world.spawn((root_local, root_global)).id();
+
+        let basis_local = Transform {
+            rotation: basis_rotation,
+            ..Default::default()
+        };
+        let basis_global = root_global.mul_transform(basis_local);
+        let basis = world.spawn((basis_local, basis_global, ChildOf(root))).id();
+
+        let mesh_local = Transform {
+            translation: mesh_translation,
+            scale: mesh_scale,
+            ..Default::default()
+        };
+        let mesh_global = basis_global.mul_transform(mesh_local);
+        world.spawn((mesh_local, mesh_global, ChildOf(basis), Mesh3d(mesh_handle)));
+
+        #[allow(clippy::type_complexity)]
+        let mut system_state: SystemState<(
+            Query<&Children>,
+            Query<(&Transform, &GlobalTransform)>,
+            RenderPrimitiveQuery,
+        )> = SystemState::new(&mut world);
+        let (children, transforms, primitives) = system_state.get(&world).unwrap();
+        let meshes = world.resource::<Assets<Mesh>>();
+
+        // The old algorithm: compose each descendant's absolute GlobalTransform (which
+        // bakes in the root's huge world position), then cancel that position back out by
+        // multiplying by the root's inverted absolute GlobalTransform.
+        let root_inverse = root_global.affine().inverse();
+        let mut old_min = Vec3::splat(f32::INFINITY);
+        let mut old_max = Vec3::splat(f32::NEG_INFINITY);
+        for descendant in children.iter_descendants(root) {
+            let Ok((mesh_handle, _, _)) = primitives.get(descendant) else {
+                continue;
+            };
+            let mesh = meshes.get(mesh_handle).unwrap();
+            let aabb = mesh.compute_aabb().unwrap();
+            let center = Vec3::from(aabb.center);
+            let half_extents = Vec3::from(aabb.half_extents);
+            let (_, global) = transforms.get(descendant).unwrap();
+            let relative = Mat4::from(root_inverse * global.affine());
+            let transformed =
+                InstanceBounds::transformed(center - half_extents, center + half_extents, relative);
+            old_min = old_min.min(transformed.min);
+            old_max = old_max.max(transformed.max);
+        }
+        let old_error = (old_min - expected_min)
+            .abs()
+            .max((old_max - expected_max).abs())
+            .max_element();
+        assert!(
+            old_error > tolerance,
+            "expected the old world-transform-and-invert composition to exceed tolerance \
+             {tolerance} (it should reproduce the acceptance failure), got error \
+             {old_error}"
+        );
+
+        // The fix, exercised through the real validation function: composing local
+        // transforms along the path from the root never forms the large-magnitude matrix,
+        // so it validates within tolerance.
+        let world_transform = WorldTransform(root_local.to_matrix());
+        let summary = validate_spawned_transforms_and_bounds(
+            root,
+            &root_local,
+            &root_global,
+            &world_transform,
+            Some(&expected_bounds),
+            None,
+            &children,
+            &transforms,
+            &primitives,
+            meshes,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "expected local-transform composition to validate within tolerance {tolerance}: \
+                 {error}"
+            )
+        });
+        assert_eq!(summary.nodes, 2);
+
+        // Measure the new method's own error directly (mirroring what
+        // `validate_spawned_transforms_and_bounds` computes internally) to report it
+        // alongside the old method's.
+        let mut new_min = Vec3::splat(f32::INFINITY);
+        let mut new_max = Vec3::splat(f32::NEG_INFINITY);
+        let mut new_nodes = 0usize;
+        let mut new_bounded_meshes = 0usize;
+        if let Ok(direct_children) = children.get(root) {
+            for child in direct_children.iter() {
+                accumulate_relative_bounds(
+                    child,
+                    Affine3A::IDENTITY,
+                    &children,
+                    &transforms,
+                    &primitives,
+                    meshes,
+                    &mut new_nodes,
+                    &mut new_bounded_meshes,
+                    &mut new_min,
+                    &mut new_max,
+                )
+                .unwrap();
+            }
+        }
+        let new_error = (new_min - expected_min)
+            .abs()
+            .max((new_max - expected_max).abs())
+            .max_element();
+        assert!(
+            new_error <= tolerance,
+            "new method exceeded tolerance {tolerance}: error {new_error}"
+        );
+        eprintln!(
+            "bounds precision fixture: tolerance={tolerance}, old_error={old_error}, new_error={new_error}"
+        );
+    }
+
+    #[test]
+    fn a_deeply_nested_model_is_bounded_without_overflowing_the_stack() {
+        use bevy::ecs::system::SystemState;
+
+        // 50,000 nested nodes with one unit cube at the leaf: a recursive walk would
+        // overflow a test thread's stack long before the leaf.
+        const DEPTH: usize = 50_000;
+        let mut world = World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5], [0.5, -0.5, 0.5]],
+        );
+        let mesh_handle = meshes.add(mesh);
+        world.insert_resource(meshes);
+
+        let root = world
+            .spawn((Transform::default(), GlobalTransform::default()))
+            .id();
+        let mut parent = root;
+        for _ in 0..DEPTH {
+            parent = world
+                .spawn((
+                    Transform::default(),
+                    GlobalTransform::default(),
+                    ChildOf(parent),
+                ))
+                .id();
+        }
+        world.spawn((
+            Transform::default(),
+            GlobalTransform::default(),
+            ChildOf(parent),
+            Mesh3d(mesh_handle),
+        ));
+
+        #[allow(clippy::type_complexity)]
+        let mut system_state: SystemState<(
+            Query<&Children>,
+            Query<(&Transform, &GlobalTransform)>,
+            RenderPrimitiveQuery,
+        )> = SystemState::new(&mut world);
+        let (children, transforms, primitives) = system_state.get(&world).unwrap();
+        let meshes = world.resource::<Assets<Mesh>>();
+
+        let mut nodes = 0usize;
+        let mut bounded_meshes = 0usize;
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        accumulate_relative_bounds(
+            root,
+            Affine3A::IDENTITY,
+            &children,
+            &transforms,
+            &primitives,
+            meshes,
+            &mut nodes,
+            &mut bounded_meshes,
+            &mut min,
+            &mut max,
+        )
+        .unwrap();
+        assert_eq!(nodes, DEPTH + 2);
+        assert_eq!(bounded_meshes, 1);
+        assert_eq!((min, max), (Vec3::splat(-0.5), Vec3::splat(0.5)));
     }
 }

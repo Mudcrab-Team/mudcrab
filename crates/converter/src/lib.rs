@@ -6,6 +6,7 @@ pub mod cache;
 pub mod config;
 pub mod esm;
 pub mod integration;
+pub mod lip;
 pub mod material;
 pub mod mesh;
 pub mod pipeline;

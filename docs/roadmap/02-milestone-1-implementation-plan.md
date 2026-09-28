@@ -47,10 +47,15 @@ uma rotação usa conjugação de base:
 R_bevy = B * R_creation * inverse(B)
 ```
 
-A ordem Euler usada pelo campo `DATA` de `REFR` deve ser validada com fixtures canônicas antes de
-ser consolidada. Não serão mantidas fórmulas independentes no conversor e no runtime. O contrato e
-os vetores/matrizes de teste ficarão em um módulo pequeno de `shared`, usando arrays para não
-acoplar as versões diferentes de `glam` usadas pelo parser NIF e pelo Bevy.
+The `DATA` angles of a `REFR` turn clockwise about each axis, the Gamebryo convention of a
+transposed rotation matrix: `R_creation` is the inverse of the `Rz * Ry * Rx` composition, that is,
+`Rx(-x) * Ry(-y) * Rz(-z)`, and a yaw-only reference is a heading measured clockwise from north.
+The evidence: on `Skyrim.esm`'s load doors (2026-09-22), across 63 door models with 5 or more
+placements, 88% of the doors put their `XTEL` arrival point at the model's usual angle under this
+convention, against 42% under the counter-clockwise one used until then. Canonical fixtures pin that
+order. No independent formulas will be kept in the converter and in the runtime. The contract and
+the test vectors/matrices will live in a small `shared` module, using arrays so as not to couple the
+different `glam` versions used by the NIF parser and by Bevy.
 
 ### Preservar a cena, sem assar transforms nos vértices
 
