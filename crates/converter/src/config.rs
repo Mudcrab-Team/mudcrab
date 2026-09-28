@@ -24,7 +24,14 @@ pub struct PipelineConfig {
     #[serde(rename = "texture_etc1s_quality", alias = "texture_fallback_quality")]
     pub texture_fallback_quality: u8,
     pub texture_uastc_level: u8,
+    /// Zstandard level for per-mip KTX2 supercompression (0 = off).
+    #[serde(default = "default_texture_zstd_level")]
+    pub texture_zstd_level: i32,
     pub script_abi_version: u32,
+}
+
+fn default_texture_zstd_level() -> i32 {
+    6
 }
 
 impl PipelineConfig {
@@ -43,6 +50,7 @@ impl PipelineConfig {
             verify_cache: true,
             texture_fallback_quality: 192,
             texture_uastc_level: 2,
+            texture_zstd_level: default_texture_zstd_level(),
             script_abi_version: 1,
         }
     }
@@ -76,6 +84,10 @@ impl PipelineConfig {
         color_eyre::eyre::ensure!(
             self.texture_uastc_level <= 4,
             "texture_uastc_level must be between 0 and 4"
+        );
+        color_eyre::eyre::ensure!(
+            (0..=22).contains(&self.texture_zstd_level),
+            "texture_zstd_level must be between 0 and 22"
         );
         color_eyre::eyre::ensure!(
             self.data_dir != self.output_dir,

@@ -15,7 +15,7 @@ authors = ["OpenSkyrim Team"]
 
 [workspace.dependencies]
 # Engine & Rendering
-bevy = { version = "0.19.0", features = ["basis-universal", "pbr_specular_textures"] }
+bevy = { version = "0.19.0", features = ["basis-universal", "pbr_specular_textures", "zstd_rust"] }
 
 # Scripting & Database
 mlua = { version = "0.10", features = ["luau", "luau-jit", "vendored"] }

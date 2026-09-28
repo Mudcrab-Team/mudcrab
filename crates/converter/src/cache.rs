@@ -259,6 +259,7 @@ pub fn configuration_hash_for_schema(
         "schema": schema,
         "texture_etc1s_quality": config.texture_fallback_quality,
         "texture_uastc_level": config.texture_uastc_level,
+        "texture_zstd_level": config.texture_zstd_level,
         "script_abi_version": config.script_abi_version,
     });
     Ok(hash_bytes(&serde_json::to_vec(&relevant)?))
