@@ -9,13 +9,15 @@ use crate::{
     },
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
-        AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, build_terrain_quadrant_mesh,
-        validate_standard_material,
+        AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, StreamingWorld,
+        build_terrain_quadrant_mesh, streaming_center, validate_standard_material,
     },
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
-        components::{ExpectedModelBounds, InstanceBounds, StreamingCamera},
-        database::{AssetCatalog, WorldDatabase},
+        components::{
+            CellRef, ExpectedModelBounds, FormId, InstanceBounds, StreamedCellRoot, StreamingCamera,
+        },
+        database::{AssetCatalog, CellKey, WorldDatabase},
     },
 };
 use bevy::{
@@ -29,6 +31,7 @@ use bevy::{
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     render::occlusion_culling::OcclusionCulling,
+    render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     render::view::screenshot::{Screenshot, save_to_disk},
     tasks::{IoTaskPool, TaskPoolBuilder},
@@ -114,8 +117,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // event-loop sleep instead of renderer performance.
         app.insert_resource(WinitSettings::continuous());
     }
+    let render_asset_budget = upload_budget(&config);
     app.insert_resource(config)
         .insert_resource(origin)
+        .insert_resource(render_asset_budget)
         .init_resource::<StreamingMetrics>()
         .add_plugins(
             DefaultPlugins
@@ -157,7 +162,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         if app.world().resource::<EngineConfig>().streaming_fixture {
             app.init_resource::<StreamingFixtureState>()
                 .add_systems(Startup, setup_streaming_fixture_visual)
-                .add_systems(PreUpdate, drive_streaming_fixture)
+                .add_systems(
+                    PreUpdate,
+                    (drive_streaming_fixture, cross_streaming_fixture_interior).chain(),
+                )
                 .add_systems(PostUpdate, validate_streaming_fixture);
         }
     } else if app.world().resource::<EngineConfig>().material_fixture {
@@ -184,6 +192,20 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     drop(app);
     drop(streaming_fixture_dir);
     Ok(())
+}
+
+/// Bevy's per-frame render-asset byte budget, seeded from the run's option.
+///
+/// Textures and meshes over the budget wait for a later frame instead of being
+/// prepared the moment they load, so a cell's new models arrive over a few
+/// frames rather than in one upload burst. Deferred assets are never dropped,
+/// and a single asset larger than the whole budget is still prepared. Images
+/// are prepared before meshes and share the one budget, so while new images
+/// use it up, new meshes wait for a later frame.
+fn upload_budget(config: &EngineConfig) -> RenderAssetBytesPerFrame {
+    RenderAssetBytesPerFrame {
+        max_bytes: config.max_upload_bytes_per_frame(),
+    }
 }
 
 #[cfg(windows)]
@@ -239,6 +261,16 @@ fn configure_io_task_pool() {
     IoTaskPool::get_or_init(|| io_task_pool_builder(threads).build());
 }
 
+/// The interior cell the streaming fixture loads by id. An interior carries no grid square and
+/// belongs to no worldspace, and its id sits past the block the exterior cells are numbered in.
+const STREAMING_FIXTURE_INTERIOR_CELL_ID: u32 = 0x0001_0000;
+/// The reference placed inside that interior cell. It has no model, so the fixture still needs no
+/// converted assets; the crossing is observed through the root and this reference.
+const STREAMING_FIXTURE_INTERIOR_REFERENCE_ID: u32 = STREAMING_FIXTURE_INTERIOR_CELL_ID + 1;
+/// The frame the fixture loads the interior on, after the first teleport has moved the camera
+/// several cells away from the grid it starts on.
+const STREAMING_FIXTURE_INTERIOR_FRAME: u32 = 8;
+
 struct StreamingFixtureDirectory {
     path: PathBuf,
 }
@@ -264,7 +296,7 @@ impl StreamingFixtureDirectory {
         connection.execute_batch(
             r#"CREATE TABLE schema_info(version INTEGER NOT NULL);
             INSERT INTO schema_info VALUES(4);
-            CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
+            CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
             CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
             CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
             CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
@@ -283,6 +315,19 @@ impl StreamingFixtureDirectory {
             }
         }
         drop(insert);
+        connection.execute(
+            "INSERT INTO cells(id,worldspace_id,grid_x,grid_y,interior_name) VALUES(?1,NULL,NULL,NULL,'Fixture Hall')",
+            params![STREAMING_FIXTURE_INTERIOR_CELL_ID],
+        )?;
+        connection.execute(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
+             VALUES(?1,?2,?3,256.0,0.0,192.0,0.0,0.0,0.0,1.0)",
+            params![
+                STREAMING_FIXTURE_INTERIOR_REFERENCE_ID,
+                STREAMING_FIXTURE_INTERIOR_CELL_ID,
+                STREAMING_FIXTURE_INTERIOR_REFERENCE_ID
+            ],
+        )?;
         drop(connection);
         let cache = shared::CellCache {
             version: shared::CELL_CACHE_VERSION,
@@ -309,6 +354,56 @@ struct StreamingFixtureState {
     total_x: i32,
     total_y: i32,
     finished: bool,
+    interior: InteriorCrossing,
+    /// The exterior grid the camera stood on when the interior was loaded: the place it has to
+    /// leave for the interior to be observed from far outside the unload radius.
+    interior_center: IVec2,
+}
+
+/// What the fixture observed of the exterior/interior crossing. The interior is loaded by id the
+/// way a door crossing will load one; the camera then carries on over exteriors far outside the
+/// unload radius and comes back. The contract is that the interior never exists twice and its
+/// references match its root. Today it also stays loaded throughout (an interior has no grid
+/// square, so [`cell_within_unload_radius`](crate::streaming) keeps it, and no runtime path unloads
+/// one); that is current behaviour, not part of the contract.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+struct InteriorCrossing {
+    requested_frame: Option<u32>,
+    resident_frame: Option<u32>,
+    /// Frames on which the camera stood more than `unload_radius` cells from the grid the interior
+    /// was loaded from, and the interior root counts seen on them.
+    away_samples: u32,
+    min_away_roots: usize,
+    max_away_roots: usize,
+}
+
+impl InteriorCrossing {
+    fn observe(&mut self, away: bool, roots: usize) {
+        if !away {
+            return;
+        }
+        self.away_samples = self.away_samples.saturating_add(1);
+        if self.away_samples == 1 {
+            self.min_away_roots = roots;
+            self.max_away_roots = roots;
+        } else {
+            self.min_away_roots = self.min_away_roots.min(roots);
+            self.max_away_roots = self.max_away_roots.max(roots);
+        }
+    }
+}
+
+/// The crossing contract, as the fixture's own observations and the final root and reference
+/// counts express it: the interior was loaded, the camera was observed far away from it, it never
+/// had two roots, and its references match its root (one each, or none if it was unloaded).
+/// Orphaned and missing roots are the lifecycle validator's, which the run also requires at zero.
+fn interior_crossing_valid(crossing: &InteriorCrossing, roots: usize, references: usize) -> bool {
+    crossing.requested_frame.is_some()
+        && crossing.resident_frame.is_some()
+        && crossing.away_samples > 0
+        && crossing.max_away_roots <= 1
+        && roots <= 1
+        && references == roots
 }
 
 fn setup_streaming_fixture_visual(
@@ -366,10 +461,66 @@ fn drive_streaming_fixture(
     profiler.event("streaming-fixture", label, None);
 }
 
+/// Loads the fixture's interior by id, through the loader path the camera planner uses, and
+/// watches it while the camera keeps crossing exteriors around it.
+#[allow(clippy::too_many_arguments)]
+fn cross_streaming_fixture_interior(
+    config: Res<EngineConfig>,
+    mut state: ResMut<StreamingFixtureState>,
+    database: Res<WorldDatabase>,
+    origin: Res<RenderOrigin>,
+    mut streaming: ResMut<StreamingWorld>,
+    mut metrics: ResMut<StreamingMetrics>,
+    camera: Query<&Transform, With<StreamingCamera>>,
+    roots: Query<&CellRef, With<StreamedCellRoot>>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    if state.finished {
+        return;
+    }
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+    let center = streaming_center(camera.translation, origin.0);
+    if state.interior.requested_frame.is_none() {
+        if state.frames < STREAMING_FIXTURE_INTERIOR_FRAME {
+            return;
+        }
+        streaming.request_cell(
+            &database,
+            CellKey::Interior(STREAMING_FIXTURE_INTERIOR_CELL_ID),
+            &mut metrics,
+            &mut profiler,
+        );
+        state.interior.requested_frame = Some(state.frames);
+        state.interior_center = center;
+        profiler.event("streaming-fixture", "interior_requested", None);
+        return;
+    }
+    let roots = roots
+        .iter()
+        .filter(|cell| cell.0 == STREAMING_FIXTURE_INTERIOR_CELL_ID)
+        .count();
+    // Only a loaded interior can be unloaded against the rule: the frames between the request and
+    // the commit have no root to count yet.
+    if state.interior.resident_frame.is_none() {
+        if roots > 0 {
+            state.interior.resident_frame = Some(state.frames);
+            profiler.event("streaming-fixture", "interior_resident", None);
+        }
+        return;
+    }
+    let away = (center.x - state.interior_center.x).abs() > config.unload_radius
+        || (center.y - state.interior_center.y).abs() > config.unload_radius;
+    state.interior.observe(away, roots);
+}
+
 fn validate_streaming_fixture(
     config: Res<EngineConfig>,
     mut state: ResMut<StreamingFixtureState>,
     mut metrics: ResMut<StreamingMetrics>,
+    roots: Query<&CellRef, With<StreamedCellRoot>>,
+    references: Query<&FormId>,
     mut profiler: ResMut<ProfilingState>,
 ) {
     if state.finished || state.frames < 90 {
@@ -377,6 +528,14 @@ fn validate_streaming_fixture(
     }
     let expected_resident = ((config.stream_radius * 2 + 1).max(0) as usize).pow(2);
     let maximum_resident = ((config.unload_radius * 2 + 1).max(0) as usize).pow(2);
+    let interior_roots = roots
+        .iter()
+        .filter(|cell| cell.0 == STREAMING_FIXTURE_INTERIOR_CELL_ID)
+        .count();
+    let interior_references = references
+        .iter()
+        .filter(|form_id| form_id.0 == STREAMING_FIXTURE_INTERIOR_REFERENCE_ID)
+        .count();
     let settled = metrics.active_requests == 0 && metrics.loading_cells == 0;
     let valid = settled
         && metrics.requests_submitted > expected_resident as u64
@@ -389,7 +548,8 @@ fn validate_streaming_fixture(
         && metrics.resident_roots == metrics.resident_cells
         && metrics.out_of_range_cell_roots == 0
         && metrics.streaming_invariant_failures == 0
-        && metrics.commit_frames > 0;
+        && metrics.commit_frames > 0
+        && interior_crossing_valid(&state.interior, interior_roots, interior_references);
     if valid {
         metrics.streaming_fixture_validated = true;
         profiler.event("streaming-fixture", "validated", None);
@@ -1788,6 +1948,190 @@ struct ScreenshotCaptureState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::asset::{AssetApp, AssetPlugin};
+    use bevy::world_serialization::WorldSerializationPlugin;
+
+    /// The streaming fixture's own systems over its own fixture database, with no window, GPU or
+    /// game data: the camera crosses exteriors, the fixture loads its interior by id, and the
+    /// camera finishes on a fully streamed exterior ring around the grid it started on.
+    fn streaming_fixture_app() -> (App, StreamingFixtureDirectory) {
+        let mut config = EngineConfig {
+            streaming_fixture: true,
+            ..default()
+        };
+        let directory =
+            StreamingFixtureDirectory::create(config.worldspace_id, config.start_grid).unwrap();
+        config.assets_dir = directory.path.clone();
+        let database_path = config.assets_dir.join("skyrim_world.db");
+        let cache_path = config.assets_dir.join("cell_cache.rkyv");
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                ..default()
+            },
+            WorldSerializationPlugin,
+        ))
+        .init_asset::<Mesh>()
+        .init_asset::<Image>()
+        .init_asset::<StandardMaterial>()
+        .init_asset::<TerrainMaterial>()
+        .init_asset::<WaterMaterial>()
+        .insert_resource(config)
+        .insert_resource(WorldDatabase::open(&database_path).unwrap())
+        .insert_resource(AssetCatalog::open(&database_path).unwrap())
+        .insert_resource(CellCache::open(&cache_path).unwrap())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
+        .init_resource::<ProfilingState>()
+        .init_resource::<StreamingFixtureState>()
+        .add_plugins(StreamingPlugin)
+        .add_systems(
+            PreUpdate,
+            (drive_streaming_fixture, cross_streaming_fixture_interior).chain(),
+        )
+        .add_systems(PostUpdate, validate_streaming_fixture);
+        app.world_mut()
+            .spawn((Transform::default(), StreamingCamera));
+        (app, directory)
+    }
+
+    #[test]
+    fn streaming_fixture_loads_its_interior_by_id_and_keeps_it_while_the_camera_crosses_exteriors()
+    {
+        let (mut app, _directory) = streaming_fixture_app();
+        let expected_resident = {
+            let config = app.world().resource::<EngineConfig>();
+            ((config.stream_radius * 2 + 1).max(0) as usize).pow(2)
+        };
+        let mut settled_frames = 0;
+        let mut updates = 0;
+        while updates < 1_200 {
+            app.update();
+            // The fixture's frames are vsynced in the acceptance run, and its frame budget assumes
+            // that pacing. Pace the headless loop like a 60 Hz frame, so a loaded test machine
+            // cannot make the fixture give up before the database worker has answered its cells.
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            updates += 1;
+            let metrics = app.world().resource::<StreamingMetrics>();
+            let state = app.world().resource::<StreamingFixtureState>();
+            // Settling alone can come before the validator's frame 90 on a fast database, so also
+            // wait for the validator's verdict, pass or fail.
+            let judged =
+                metrics.streaming_fixture_validated || metrics.streaming_fixture_failures > 0;
+            let crossed_back = judged
+                && state.interior.resident_frame.is_some()
+                && metrics.resident_cells >= expected_resident
+                && metrics.active_requests == 0
+                && metrics.loading_cells == 0;
+            settled_frames = if crossed_back { settled_frames + 1 } else { 0 };
+            if settled_frames >= 5 {
+                break;
+            }
+        }
+        assert!(settled_frames >= 5, "the fixture never settled");
+
+        let interior = app.world().resource::<StreamingFixtureState>().interior;
+        assert_eq!(
+            interior.requested_frame,
+            Some(STREAMING_FIXTURE_INTERIOR_FRAME)
+        );
+        assert!(interior.resident_frame.is_some());
+        assert!(interior.away_samples > 0, "camera never left the grid");
+        assert!(
+            interior.max_away_roots <= 1,
+            "the interior must never have two roots"
+        );
+        // Current behaviour, not the contract: nothing unloads an interior on this tree, so it is
+        // still one root when the camera comes back.
+        assert_eq!(interior.min_away_roots, 1);
+
+        let world = app.world_mut();
+        let mut roots = world.query_filtered::<&CellRef, With<StreamedCellRoot>>();
+        let interior_roots = roots
+            .iter(world)
+            .filter(|cell| cell.0 == STREAMING_FIXTURE_INTERIOR_CELL_ID)
+            .count();
+        let mut form_ids = world.query::<&FormId>();
+        let interior_references = form_ids
+            .iter(world)
+            .filter(|form_id| form_id.0 == STREAMING_FIXTURE_INTERIOR_REFERENCE_ID)
+            .count();
+        assert_eq!(interior_roots, 1);
+        assert_eq!(interior_references, 1);
+
+        let metrics = app.world().resource::<StreamingMetrics>();
+        assert!(
+            metrics.streaming_fixture_validated,
+            "the fixture's own validation did not accept the run"
+        );
+        assert_eq!(metrics.duplicate_cell_roots, 0);
+        assert_eq!(metrics.orphaned_cell_roots, 0);
+        assert_eq!(metrics.missing_cell_roots, 0);
+        assert_eq!(metrics.streaming_invariant_failures, 0);
+        assert!(metrics.unloaded_cells > 0);
+        assert!(metrics.commit_frames > 0);
+    }
+
+    #[test]
+    fn interior_crossing_fails_on_a_duplicated_or_mismatched_interior() {
+        let crossed = InteriorCrossing {
+            requested_frame: Some(STREAMING_FIXTURE_INTERIOR_FRAME),
+            resident_frame: Some(40),
+            away_samples: 12,
+            min_away_roots: 1,
+            max_away_roots: 1,
+        };
+        assert!(interior_crossing_valid(&crossed, 1, 1));
+        // A second root for the same cell, or a second copy of its reference.
+        assert!(!interior_crossing_valid(&crossed, 2, 1));
+        assert!(!interior_crossing_valid(&crossed, 1, 2));
+        // Never loaded.
+        assert!(!interior_crossing_valid(&InteriorCrossing::default(), 1, 1));
+        // Unloaded again is allowed: the contract does not require an interior to stay loaded.
+        assert!(interior_crossing_valid(&crossed, 0, 0));
+        // A reference left behind without its root, or a root without its reference.
+        assert!(!interior_crossing_valid(&crossed, 0, 1));
+        assert!(!interior_crossing_valid(&crossed, 1, 0));
+        assert!(!interior_crossing_valid(
+            &InteriorCrossing {
+                requested_frame: Some(STREAMING_FIXTURE_INTERIOR_FRAME),
+                ..default()
+            },
+            1,
+            1
+        ));
+        // Gone on some frames while the camera was away is allowed too.
+        assert!(interior_crossing_valid(
+            &InteriorCrossing {
+                min_away_roots: 0,
+                ..crossed
+            },
+            1,
+            1
+        ));
+        assert!(!interior_crossing_valid(
+            &InteriorCrossing {
+                max_away_roots: 2,
+                ..crossed
+            },
+            1,
+            1
+        ));
+        // No observation from outside the unload radius at all: the final count alone would pass
+        // for an interior that was loaded and dropped again.
+        assert!(!interior_crossing_valid(
+            &InteriorCrossing {
+                away_samples: 0,
+                min_away_roots: 0,
+                max_away_roots: 0,
+                ..crossed
+            },
+            1,
+            1
+        ));
+    }
 
     /// The IO pool's stack has to hold a whole queue of loads nested inside one another, because a
     /// scope opened on a pool thread (bevy_gltf's texture scope) runs the other queued tasks on its
@@ -2118,6 +2462,26 @@ mod tests {
         assert!(state.offset.abs() <= AUTO_FLIGHT_HALF_SPAN);
     }
 
+    #[test]
+    fn the_upload_budget_resource_carries_the_configured_option() {
+        let mut app = App::new();
+        app.insert_resource(upload_budget(&EngineConfig::default()));
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            Some(16 * 1024 * 1024)
+        );
+
+        let unlimited = EngineConfig {
+            max_upload_mib_per_frame: 0,
+            ..default()
+        };
+        app.insert_resource(upload_budget(&unlimited));
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            None
+        );
+    }
+
     /// An assets directory the engine was given.
     const EXAMPLE_ASSETS: &str = "converted-assets";
 
@@ -2145,6 +2509,28 @@ mod tests {
             ..default()
         };
         format!("{:#}", validate_runtime_assets(&config).unwrap_err())
+    }
+
+    #[test]
+    fn rejects_stale_or_incomplete_runtime_assets() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"schema_version":3,"complete":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":3,"passed":true}"#,
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        assert!(validate_runtime_assets(&config).is_err());
     }
 
     #[test]
