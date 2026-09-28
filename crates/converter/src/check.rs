@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use std::{
     fmt, fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
@@ -166,16 +166,53 @@ impl CheckReport {
     }
 }
 
+/// The error a cancelled check returns. Find it with
+/// `error.downcast_ref::<CheckCancelled>()` (or `error.is::<CheckCancelled>()`)
+/// to tell a stop the user asked for from a manifest that could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckCancelled;
+
+impl fmt::Display for CheckCancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the output check was cancelled")
+    }
+}
+
+impl std::error::Error for CheckCancelled {}
+
 /// Checks `output` against its manifest. `progress(done, total)` is called as
 /// entries are checked, possibly from several threads.
 ///
 /// Returns `Err` only when the manifest is missing or cannot be read; every
-/// other finding is a [`CheckProblem`] in the report.
+/// other finding is a [`CheckProblem`] in the report. It cannot be stopped:
+/// front ends that need a stop button use [`check_output_with_cancel`].
 pub fn check_output(
     output: &Path,
     mode: CheckMode,
     progress: impl Fn(usize, usize) + Sync,
 ) -> Result<CheckReport> {
+    check_output_with_cancel(output, mode, progress, &AtomicBool::new(false))
+}
+
+/// [`check_output`] with a stop button: setting `cancel` (from any thread,
+/// including the progress callback) stops the check. No new entries are
+/// started once it is set; entries already being read on other threads
+/// finish first, so the call returns within about one artifact's hash.
+///
+/// A check that sees `cancel` set before it finishes returns an `Err` holding
+/// [`CheckCancelled`], never a partial report, so a stopped check cannot be
+/// mistaken for a passed one. A flag already set on entry returns at once,
+/// without reading the manifest.
+pub fn check_output_with_cancel(
+    output: &Path,
+    mode: CheckMode,
+    progress: impl Fn(usize, usize) + Sync,
+    cancel: &AtomicBool,
+) -> Result<CheckReport> {
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    if cancelled() {
+        return Err(CheckCancelled.into());
+    }
     let started = Instant::now();
     let manifest = read_manifest(output)?;
 
@@ -202,14 +239,23 @@ pub fn check_output(
     let total = entries.len();
     let done = AtomicUsize::new(0);
     progress(0, total);
-    let outcomes: Vec<(u64, Option<CheckProblem>)> = entries
+    // `None` for an entry skipped after a cancel; collecting into `Option`
+    // stops handing out entries at the first one.
+    let outcomes: Option<Vec<(u64, Option<CheckProblem>)>> = entries
         .par_iter()
         .map(|entry| {
+            if cancelled() {
+                return None;
+            }
             let outcome = check_entry(output, entry, mode);
             progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
-            outcome
+            Some(outcome)
         })
         .collect();
+    let outcomes = match outcomes {
+        Some(outcomes) if !cancelled() => outcomes,
+        _ => return Err(CheckCancelled.into()),
+    };
 
     let bytes_checked = outcomes.iter().map(|(bytes, _)| bytes).sum();
     let mut artifact_problems: Vec<CheckProblem> = outcomes

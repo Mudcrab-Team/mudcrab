@@ -15,7 +15,9 @@ pub mod progress;
 pub mod script;
 pub mod texture;
 
-pub use check::{CheckMode, CheckProblem, CheckReport, check_output};
+pub use check::{
+    CheckCancelled, CheckMode, CheckProblem, CheckReport, check_output, check_output_with_cancel,
+};
 pub use config::PipelineConfig;
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;

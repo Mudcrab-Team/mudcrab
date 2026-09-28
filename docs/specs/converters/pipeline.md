@@ -124,7 +124,10 @@ absolute or leaves the folder (`..`) is reported instead of read.
 A damaged artifact does not need a full reconversion: running the converter again on the same `Data`
 folder and output re-hashes each published artifact before reusing it, so only the missing or
 changed files are converted again. The library entry point is `converter::check_output`, with a
-progress callback for front ends.
+progress callback for front ends. `converter::check_output_with_cancel` takes the same arguments and
+an `&AtomicBool` stop flag: once the flag is set no new artifact is started, the call returns after
+the reads already in flight, and the result is an `Err` holding `converter::CheckCancelled` (test it
+with `error.is::<CheckCancelled>()`), never a partial report.
 
 ---
 

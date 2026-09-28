@@ -2,14 +2,15 @@
 //! `Data/` tree through the real pipeline, then damaged one way at a time.
 
 use converter::{
-    CheckMode, CheckProblem, cache::CONVERTER_SCHEMA_VERSION, cache::hash_file, check_output,
+    CheckCancelled, CheckMode, CheckProblem, cache::CONVERTER_SCHEMA_VERSION, cache::hash_file,
+    check_output, check_output_with_cancel,
 };
 use dummy_content::layout;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::SystemTime,
 };
 use walkdir::WalkDir;
@@ -304,4 +305,77 @@ fn a_missing_or_unreadable_manifest_is_an_error() {
         !absent.exists(),
         "the check created the folder it was given"
     );
+}
+
+#[test]
+fn a_check_cancelled_before_it_starts_reads_nothing() {
+    let converted = convert_fixture();
+    let calls = AtomicUsize::new(0);
+    let error = check_output_with_cancel(
+        &converted.output,
+        CheckMode::Full,
+        |_, _| {
+            calls.fetch_add(1, Ordering::Relaxed);
+        },
+        &AtomicBool::new(true),
+    )
+    .unwrap_err();
+    assert!(error.is::<CheckCancelled>(), "{error:#}");
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_check_cancelled_from_its_progress_callback_stops_early() {
+    let converted = convert_fixture();
+    let entries = converted.manifest()["entries"].as_object().unwrap().len();
+    assert!(entries > 1, "the fixture needs several entries");
+
+    // One worker thread, so nothing else is in flight when the flag is set
+    // and the count of entries checked is exact.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let checked = AtomicUsize::new(0);
+    let result = pool.install(|| {
+        check_output_with_cancel(
+            &converted.output,
+            CheckMode::Full,
+            |done, _| {
+                checked.fetch_max(done, Ordering::Relaxed);
+                if done == 1 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+            &cancel,
+        )
+    });
+    let error = result.unwrap_err();
+    assert!(error.is::<CheckCancelled>(), "{error:#}");
+    assert_eq!(checked.load(Ordering::Relaxed), 1);
+    assert!(checked.load(Ordering::Relaxed) < entries);
+}
+
+#[test]
+fn an_uncancelled_check_with_a_stop_button_matches_check_output() {
+    let converted = convert_fixture();
+    let artifact = converted.artifact(".glb");
+    fs::remove_file(converted.output.join(&artifact)).unwrap();
+
+    for mode in [CheckMode::Quick, CheckMode::Full] {
+        let plain = check(&converted.output, mode);
+        let stoppable =
+            check_output_with_cancel(&converted.output, mode, |_, _| {}, &AtomicBool::new(false))
+                .unwrap();
+        assert_eq!(stoppable.files_checked, plain.files_checked);
+        assert_eq!(stoppable.bytes_checked, plain.bytes_checked);
+        assert_eq!(stoppable.problems, plain.problems);
+        assert_eq!(
+            stoppable.problems,
+            vec![CheckProblem::Missing {
+                output: artifact.clone()
+            }]
+        );
+    }
 }
