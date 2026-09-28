@@ -411,6 +411,8 @@ impl ProgressRenderer {
 
         let stage_changed = self.stage != Some(event.stage);
         self.estimate.observe(event, elapsed);
+        // Kept even when this event isn't printed, so a timer redraw shows the latest progress.
+        self.last_event = Some(event.clone());
 
         let refresh = if self.terminal {
             Self::TERMINAL_REFRESH
@@ -427,7 +429,6 @@ impl ProgressRenderer {
         let line = self.line(event, elapsed);
         self.stage = Some(event.stage);
         self.last_emit = Some(elapsed);
-        self.last_event = Some(event.clone());
         if self.verbose || !self.terminal {
             self.open_line = false;
             Some(format!(
@@ -675,6 +676,27 @@ mod tests {
         assert!(changed.starts_with("\n\r"), "{changed:?}");
         assert!(!changed.ends_with('\n'), "{changed:?}");
         assert!(changed.contains("Validating"), "{changed:?}");
+    }
+
+    #[test]
+    fn a_timer_redraw_shows_the_latest_event_even_if_it_was_throttled() {
+        let mut renderer = ProgressRenderer::new(true, false);
+        renderer
+            .update(&event(ProgressStage::Textures, 0, 100), Duration::ZERO)
+            .expect("the first event draws");
+        // Inside the refresh interval: not printed, but it is the latest progress.
+        assert!(
+            renderer
+                .update(
+                    &event(ProgressStage::Textures, 40, 100),
+                    Duration::from_millis(100)
+                )
+                .is_none()
+        );
+        let redrawn = renderer
+            .tick(Duration::from_millis(400))
+            .expect("the timer redraws after 250ms");
+        assert!(redrawn.contains(" 40%"), "{redrawn:?}");
     }
 
     #[test]
