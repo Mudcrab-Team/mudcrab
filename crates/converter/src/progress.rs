@@ -467,7 +467,10 @@ impl ProgressRenderer {
         }
         self.last_emit = Some(elapsed);
         let line = self.line(&event, elapsed);
-        Some(self.draw(&line))
+        let text = self.draw(&line);
+        // The redraw leaves the row open again, so a notice that follows ends it first.
+        self.open_line = true;
+        Some(text)
     }
 
     /// Ends the status line, so the caller can print a summary without printing over it.
@@ -676,6 +679,26 @@ mod tests {
         assert!(changed.starts_with("\n\r"), "{changed:?}");
         assert!(!changed.ends_with('\n'), "{changed:?}");
         assert!(changed.contains("Validating"), "{changed:?}");
+    }
+
+    #[test]
+    fn a_notice_after_a_timer_redraw_starts_on_a_new_row() {
+        let mut renderer = ProgressRenderer::new(true, false);
+        renderer
+            .update(&event(ProgressStage::Meshes, 1, 10), Duration::ZERO)
+            .expect("the first event draws");
+        let mut notice = event(ProgressStage::Meshes, 1, 10);
+        notice.notice = true;
+        renderer
+            .update(&notice, Duration::from_millis(10))
+            .expect("a notice prints");
+        renderer
+            .tick(Duration::from_millis(400))
+            .expect("the timer redraws the status line");
+        let second = renderer
+            .update(&notice, Duration::from_millis(410))
+            .expect("a notice prints");
+        assert!(second.starts_with('\n'), "{second:?}");
     }
 
     #[test]

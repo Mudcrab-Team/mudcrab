@@ -359,7 +359,11 @@ impl AssetPipeline {
             // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
             // between archives, rather than being counted as a skipped archive. Its cache entry
             // was never recorded, so a resume extracts it again from the start.
-            if result.is_err() {
+            if let Err(error) = &result {
+                // A stop that races an archive error keeps the archive's error as its cause.
+                if cancellation.is_cancelled() {
+                    bail!("conversion interrupted ({error:#})");
+                }
                 interrupt(cancellation)?;
             }
 
