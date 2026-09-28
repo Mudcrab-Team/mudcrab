@@ -237,6 +237,9 @@ pub fn check_output_with_cancel(
 
     let entries: Vec<&CacheEntry> = manifest.entries.values().collect();
     let total = entries.len();
+    // The resolved output folder, so an entry reached through a symbolic link that points outside
+    // it is refused like a `..` path.
+    let root = fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
     let done = AtomicUsize::new(0);
     progress(0, total);
     // `None` for an entry skipped after a cancel; collecting into `Option`
@@ -247,7 +250,7 @@ pub fn check_output_with_cancel(
             if cancelled() {
                 return None;
             }
-            let outcome = check_entry(output, entry, mode);
+            let outcome = check_entry(output, &root, entry, mode);
             progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
             Some(outcome)
         })
@@ -295,7 +298,12 @@ fn read_manifest(output: &Path) -> Result<ConversionManifest> {
 }
 
 /// Returns the artifact bytes found and the problem, if any.
-fn check_entry(output: &Path, entry: &CacheEntry, mode: CheckMode) -> (u64, Option<CheckProblem>) {
+fn check_entry(
+    output: &Path,
+    root: &Path,
+    entry: &CacheEntry,
+    mode: CheckMode,
+) -> (u64, Option<CheckProblem>) {
     let Some(relative) = contained_relative_path(&entry.output) else {
         return (
             0,
@@ -307,7 +315,7 @@ fn check_entry(output: &Path, entry: &CacheEntry, mode: CheckMode) -> (u64, Opti
     let path = output.join(relative);
     let metadata = match fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => metadata,
-        _ => {
+        Ok(_) => {
             return (
                 0,
                 Some(CheckProblem::Missing {
@@ -315,7 +323,35 @@ fn check_entry(output: &Path, entry: &CacheEntry, mode: CheckMode) -> (u64, Opti
                 }),
             );
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                0,
+                Some(CheckProblem::Missing {
+                    output: entry.output.clone(),
+                }),
+            );
+        }
+        // The file is there but can't be read (permissions, a locked file): reconverting
+        // would not fix that, so it is not reported as missing.
+        Err(error) => {
+            return (
+                0,
+                Some(CheckProblem::Unreadable {
+                    output: entry.output.clone(),
+                    error: error.to_string(),
+                }),
+            );
+        }
     };
+    // The path text stays inside the output, but a symbolic link on the way can still lead out.
+    if fs::canonicalize(&path).is_ok_and(|resolved| !resolved.starts_with(root)) {
+        return (
+            0,
+            Some(CheckProblem::UnsafePath {
+                output: entry.output.clone(),
+            }),
+        );
+    }
     let found = metadata.len();
     if found != entry.output_size {
         return (
