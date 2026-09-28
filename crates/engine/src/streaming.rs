@@ -87,6 +87,40 @@ pub struct StreamingWorld {
     cells: HashMap<CellKey, CellStatus>,
 }
 
+impl StreamingWorld {
+    /// Submits one load for `key` unless it is already loading or resident, and records the
+    /// request on the streaming metrics. This is the loader path every cell goes through, however
+    /// the request is driven: the camera planner streams exteriors from it, and the streaming
+    /// fixture loads an interior from it by id, because this tree has no runtime path that
+    /// switches the active space to an interior on its own.
+    pub(crate) fn request_cell(
+        &mut self,
+        database: &WorldDatabase,
+        key: CellKey,
+        metrics: &mut StreamingMetrics,
+        profiler: &mut ProfilingState,
+    ) {
+        if self.cells.contains_key(&key) {
+            return;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        if database
+            .request(DatabaseRequest::Load {
+                generation,
+                key,
+                queued_at: Instant::now(),
+            })
+            .is_ok()
+        {
+            metrics.requests_submitted += 1;
+            profiler.increment("streaming/requests", 1);
+            profiler.event(format!("{key:?}"), "requested", None);
+            self.cells.insert(key, CellStatus::Loading { generation });
+        }
+    }
+}
+
 #[derive(Resource, Debug, Clone, Default, Serialize)]
 pub struct StreamingMetrics {
     pub requests_submitted: u64,
@@ -251,12 +285,7 @@ fn plan_cells(
     let Ok(camera) = camera.single() else {
         return;
     };
-    let global_x = camera.translation.x + origin.0.x as f32 * CELL_SIZE;
-    let global_y = -camera.translation.z + origin.0.y as f32 * CELL_SIZE;
-    let center = IVec2::new(
-        (global_x / CELL_SIZE).floor() as i32,
-        (global_y / CELL_SIZE).floor() as i32,
-    );
+    let center = streaming_center(camera.translation, origin.0);
     let mut wanted = HashSet::new();
     for y in -config.stream_radius..=config.stream_radius {
         for x in -config.stream_radius..=config.stream_radius {
@@ -268,27 +297,9 @@ fn plan_cells(
         }
     }
     for key in &wanted {
-        // A retiring cell is still in the map, so it is never requested a second time: the retain
-        // pass below revives it with the root it kept.
-        if !streaming.cells.contains_key(key) {
-            streaming.generation = streaming.generation.wrapping_add(1);
-            let generation = streaming.generation;
-            if database
-                .request(DatabaseRequest::Load {
-                    generation,
-                    key: *key,
-                    queued_at: Instant::now(),
-                })
-                .is_ok()
-            {
-                metrics.requests_submitted += 1;
-                profiler.increment("streaming/requests", 1);
-                profiler.event(format!("{key:?}"), "requested", None);
-                streaming
-                    .cells
-                    .insert(*key, CellStatus::Loading { generation });
-            }
-        }
+        // A retiring cell is still in the map, so `request_cell` never requests it a second time:
+        // the retain pass below revives it with the root it kept.
+        streaming.request_cell(&database, *key, &mut metrics, &mut profiler);
     }
     let mut revived = 0u64;
     streaming.cells.retain(|key, status| {
@@ -626,6 +637,21 @@ fn collect_cells(
     }
 }
 
+/// The exterior grid square the camera is over: its rebased translation, put back through the
+/// render origin. The planner streams from this square and the lifecycle checks measure against
+/// it, so both read the same one.
+pub(crate) fn streaming_center(translation: Vec3, origin: IVec2) -> IVec2 {
+    let global_x = translation.x + origin.x as f32 * CELL_SIZE;
+    let global_y = -translation.z + origin.y as f32 * CELL_SIZE;
+    IVec2::new(
+        (global_x / CELL_SIZE).floor() as i32,
+        (global_y / CELL_SIZE).floor() as i32,
+    )
+}
+
+/// Whether a loaded cell stays loaded. Exteriors fall out of the radius the camera carries; an
+/// interior has no grid square to fall out of, so it stays until something unloads it, and no
+/// runtime path unloads one yet.
 fn cell_within_unload_radius(key: CellKey, center: IVec2, radius: i32) -> bool {
     match key {
         CellKey::Exterior { grid_x, grid_y, .. } => {
@@ -2183,12 +2209,7 @@ fn validate_streaming_lifecycle(
     let orphaned_roots = root_entities.difference(&resident_entities).count() as u64;
     let missing_roots = resident_entities.difference(&root_entities).count() as u64;
     let out_of_range_roots = camera.single().map_or(0, |camera| {
-        let global_x = camera.translation.x + origin.0.x as f32 * CELL_SIZE;
-        let global_y = -camera.translation.z + origin.0.y as f32 * CELL_SIZE;
-        let center = IVec2::new(
-            (global_x / CELL_SIZE).floor() as i32,
-            (global_y / CELL_SIZE).floor() as i32,
-        );
+        let center = streaming_center(camera.translation, origin.0);
         root_entries
             .iter()
             // A retiring root is outside the radius by construction: it is waiting for its turn in
