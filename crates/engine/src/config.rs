@@ -110,7 +110,7 @@ impl EngineConfig {
 
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
         let mut config = Self::default();
-        let mut args = args.into_iter();
+        let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 "--assets" => {
@@ -167,9 +167,12 @@ impl EngineConfig {
                         config.benchmark_output = value.into();
                     }
                 }
-                "--run-label" => config.run_label = args.next(),
+                // A label or path left out must not swallow the next option.
+                "--run-label" => {
+                    config.run_label = args.next_if(|value| !value.starts_with("--"));
+                }
                 "--benchmark-frame-times" => {
-                    if let Some(value) = args.next() {
+                    if let Some(value) = args.next_if(|value| !value.starts_with("--")) {
                         config.benchmark_frame_times = Some(value.into());
                     }
                 }
@@ -272,6 +275,13 @@ mod tests {
             args(&["--benchmark-frames", "600"]).window_title(),
             "OpenSkyrim - benchmark"
         );
+        // A label left out does not swallow the next option.
+        let config = args(&["--run-label", "--benchmark-frames", "600"]);
+        assert_eq!(config.run_label, None);
+        assert_eq!(config.benchmark_frames, Some(600));
+        let config = args(&["--benchmark-frame-times", "--benchmark-frames", "600"]);
+        assert_eq!(config.benchmark_frame_times, None);
+        assert_eq!(config.benchmark_frames, Some(600));
         assert_eq!(
             args(&["--streaming-fixture"]).window_title(),
             "OpenSkyrim - streaming fixture"
