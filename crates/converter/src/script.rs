@@ -165,13 +165,24 @@ impl ScriptConverter {
                 fs::create_dir_all(parent)?;
             }
             // Through a temporary file and a rename, so a run killed mid-write never leaves a torn
-            // script under its final name for a resumed run to accept.
+            // script under its final name for a resumed run to accept. The temporary name is
+            // unique per call and created exclusively, so two calls for one output can't share it.
+            static NEXT_TEMPORARY: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
             let temporary = output.with_file_name(format!(
-                ".{}.{}.partial",
+                ".{}.{}-{}.partial",
                 output.file_name().unwrap_or_default().to_string_lossy(),
-                std::process::id()
+                std::process::id(),
+                NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
-            fs::write(&temporary, buf.as_bytes())
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .and_then(|mut file| {
+                    use std::io::Write as _;
+                    file.write_all(buf.as_bytes())
+                })
                 .and_then(|()| fs::rename(&temporary, output))
                 .inspect_err(|_| {
                     let _ = fs::remove_file(&temporary);
