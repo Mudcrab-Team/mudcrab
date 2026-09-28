@@ -339,6 +339,10 @@ impl AssetPipeline {
         }
 
         let vfs_files = discover(&staging.join("vfs"))?;
+        // Canonical source texture keys, used to tell a failed publication from absent game data
+        // and to detect a pruned texture whose source is back in the installed data.
+        let source_textures = texture_source_keys(staging, &vfs_files);
+        let restored_meshes = restored_mesh_outputs(previous, &source_textures);
         {
             let mut batch = ConversionBatch {
                 config,
@@ -352,7 +356,13 @@ impl AssetPipeline {
                 progress_tx,
             };
             batch
-                .convert_kind(&vfs_files, "nif", ProgressStage::Meshes, None)
+                .convert_kind(
+                    &vfs_files,
+                    "nif",
+                    ProgressStage::Meshes,
+                    None,
+                    &restored_meshes,
+                )
                 .await?;
         }
         let texture_semantics = collect_texture_semantics(staging)?;
@@ -374,13 +384,13 @@ impl AssetPipeline {
                     "dds",
                     ProgressStage::Textures,
                     Some(&texture_semantics),
+                    &BTreeSet::new(),
                 )
                 .await?;
             let aliases = publish_srgb_texture_aliases(staging)?;
             batch.report.artifacts.extend(aliases);
             // A missing artifact whose DDS source exists under `staging/vfs` is a failed
             // publication, not absent game data: the prune leaves those references alone.
-            let source_textures = texture_source_keys(staging, &vfs_files);
             // A reused mesh that still holds its published bytes keeps the prune record of the
             // run that wrote it: a prune only removes references, so an older record stays
             // true. Captured before the prune pass rewrites any staged GLB.
@@ -464,7 +474,13 @@ impl AssetPipeline {
                 .sum();
             batch.report.pruned_texture_references = recorded;
             batch
-                .convert_kind(&vfs_files, "pex", ProgressStage::Scripts, None)
+                .convert_kind(
+                    &vfs_files,
+                    "pex",
+                    ProgressStage::Scripts,
+                    None,
+                    &BTreeSet::new(),
+                )
                 .await?;
         }
         if let Some(integration) = finalize_world_database(staging)? {
@@ -545,6 +561,7 @@ impl ConversionBatch<'_> {
         source_ext: &str,
         stage: ProgressStage,
         texture_semantics: Option<&BTreeMap<String, BTreeSet<TextureSemantic>>>,
+        force_reconvert: &BTreeSet<String>,
     ) -> Result<()> {
         let selected_paths: Vec<_> = files
             .iter()
@@ -613,6 +630,7 @@ impl ConversionBatch<'_> {
         let previous_entries = self.previous.entries.clone();
         let staged_outputs = Arc::clone(&self.staged);
         let expected_configuration = self.expected_configuration.to_owned();
+        let force_reconvert = force_reconvert.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
 
@@ -629,6 +647,11 @@ impl ConversionBatch<'_> {
                         if worker_cancelled.load(Ordering::Relaxed) {
                             return;
                         }
+                        // A mesh whose pruned referencing source is back must be converted
+                        // again: the mesh cache does not hash texture dependencies, so a reused
+                        // GLB would never regain the reference.
+                        let forced =
+                            force_reconvert.contains(target_rel.to_string_lossy().as_ref());
                         let target = staging_root.join(&target_rel);
 
                         let mut hash = match hash_file(&source) {
@@ -675,8 +698,9 @@ impl ConversionBatch<'_> {
                         }
 
                         // Check cache
-                        if let Some(entry) =
-                            previous_entries.get(&key).filter(|e| e.source_hash == hash)
+                        if !forced
+                            && let Some(entry) =
+                                previous_entries.get(&key).filter(|e| e.source_hash == hash)
                         {
                             let old = output_dir.join(&entry.output);
                             if old.is_file()
@@ -706,9 +730,10 @@ impl ConversionBatch<'_> {
                         // from the current source under the current schema and
                         // configuration and its bytes still match the recorded
                         // size and hash. Any other output is converted again.
-                        let staged_is_current = staged_outputs.get(&key).is_some_and(|record| {
-                            record.is_current(&target, &hash, &expected_configuration)
-                        });
+                        let staged_is_current = !forced
+                            && staged_outputs.get(&key).is_some_and(|record| {
+                                record.is_current(&target, &hash, &expected_configuration)
+                            });
                         let existing_is_valid = staged_is_current
                             && fs::metadata(&target).is_ok_and(|metadata| metadata.len() > 0)
                             && match source_kind.as_str() {
@@ -1040,6 +1065,36 @@ fn texture_source_keys(staging: &Path, files: &[PathBuf]) -> BTreeSet<String> {
             let extension = relative.extension()?.to_str()?;
             canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, extension).ok()
         })
+        .collect()
+}
+
+/// The canonical `.dds` source key a pruned mesh reference came from: `textures/foo.ktx2` and
+/// its `.opensky-srgb` alias both map to `textures/foo.dds`. Returns `None` for references that
+/// are not converted texture paths.
+fn texture_reference_source_key(reference: &str) -> Option<String> {
+    let stem = reference
+        .strip_suffix(".opensky-srgb.ktx2")
+        .or_else(|| reference.strip_suffix(".ktx2"))?;
+    canonical_asset_path(&format!("{stem}.dds"), AssetKind::Texture, "dds").ok()
+}
+
+/// Target outputs of meshes that must be converted again: one of their pruned references has
+/// its source back under `staging/vfs`. The mesh cache does not hash texture dependencies, so a
+/// reused GLB would never regain the restored reference.
+fn restored_mesh_outputs(
+    previous: &ConversionManifest,
+    source_textures: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    previous
+        .pruned_texture_references
+        .iter()
+        .filter(|(_, references)| {
+            references.iter().any(|reference| {
+                texture_reference_source_key(reference)
+                    .is_some_and(|key| source_textures.contains(&key))
+            })
+        })
+        .map(|(glb, _)| glb.clone())
         .collect()
 }
 
@@ -2145,6 +2200,47 @@ mod tests {
             "the pruned mesh was converted again instead of reusing its refreshed entry"
         );
         assert_eq!(second.pruned_texture_references, 1);
+    }
+
+    /// A pruned reference whose source comes back forces the mesh to be converted again, so the
+    /// reference is restored instead of staying missing behind a cached GLB.
+    #[tokio::test]
+    async fn restored_texture_sources_reconvert_the_mesh() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete);
+        assert_eq!(first.pruned_texture_references, 1);
+
+        // The normal map's source appears: the mesh must be converted again to regain it.
+        fs::write(
+            data.join("textures/absent_n.dds"),
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 8, 8),
+                &mut dummy_content::rng::Rng::new(9),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let second = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(second.complete);
+        assert_eq!(
+            second.pruned_texture_references, 0,
+            "the restored reference must not stay recorded as absent"
+        );
+        assert!(
+            second.converted >= 1,
+            "the mesh was reused without regaining its restored reference"
+        );
+        let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
+        assert!(
+            uris.iter().any(|uri| uri.contains("absent_n")),
+            "the restored texture is not referenced: {uris:?}"
+        );
     }
 
     /// A reused mesh that already omitted one texture and has a second pruned now reports both.
