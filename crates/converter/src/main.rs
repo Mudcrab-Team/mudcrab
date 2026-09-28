@@ -2,12 +2,16 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
-use converter::{AssetPipeline, PipelineConfig, ProgressEvent};
+use converter::{
+    AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
+    pipeline::{Cancellation, PipelineFailure},
+    progress::{ProgressRenderer, format_bytes, format_elapsed},
+};
 use serde::Serialize;
 use std::{
     ffi::OsString,
     fs,
-    io::Write,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -25,6 +29,7 @@ struct Cli {
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
+    verbose: bool,
 }
 
 #[derive(Debug)]
@@ -49,6 +54,82 @@ struct FailureReport {
     file: Option<PathBuf>,
     error: String,
     elapsed_ms: u128,
+    stages: Vec<StageTime>,
+}
+
+/// The report written by `--report-json`: the pipeline's report plus when each stage ran.
+#[derive(Serialize)]
+struct RunReport<'a> {
+    #[serde(flatten)]
+    report: &'a PipelineReport,
+    stages: Vec<StageTime>,
+}
+
+/// When a stage reported progress, in seconds since the conversion started. Stages can overlap,
+/// so each keeps its first and last event rather than a duration from stage changes.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct StageTime {
+    stage: ProgressStage,
+    first_seconds: f64,
+    last_seconds: f64,
+}
+
+#[derive(Default)]
+struct StageClock {
+    stages: Vec<StageTime>,
+}
+
+impl StageClock {
+    fn record(&mut self, stage: ProgressStage, elapsed: Duration) {
+        let seconds = elapsed.as_secs_f64();
+        match self.stages.iter_mut().find(|time| time.stage == stage) {
+            Some(time) => time.last_seconds = seconds,
+            None => self.stages.push(StageTime {
+                stage,
+                first_seconds: seconds,
+                last_seconds: seconds,
+            }),
+        }
+    }
+
+    fn summary(&self) -> String {
+        let mut summary = String::from("  stage times (first event to last):");
+        for time in &self.stages {
+            summary.push_str(&format!(
+                "
+    {:<11} {} to {} ({})",
+                format!("{:?}", time.stage),
+                format_elapsed(time.first_seconds),
+                format_elapsed(time.last_seconds),
+                format_elapsed(time.last_seconds - time.first_seconds)
+            ));
+        }
+        summary
+    }
+}
+
+/// What the printer saw while the run went on: when each stage reported, and which assets failed,
+/// so a failure can name them after the pipeline has given up.
+#[derive(Default)]
+struct RunWatch {
+    clock: StageClock,
+    failed: Vec<PathBuf>,
+    failures: u64,
+}
+
+impl RunWatch {
+    /// How many failed assets to name before pointing at the manifest.
+    const NAMED_FAILURES: usize = 3;
+
+    fn observe(&mut self, event: &ProgressEvent) {
+        if event.message == "Asset skipped" || event.message == "Asset conversion failed" {
+            self.failures += 1;
+            if self.failed.len() < Self::NAMED_FAILURES {
+                self.failed
+                    .extend(event.current_file.clone().map(|file| file.to_path_buf()));
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -68,8 +149,8 @@ async fn main() -> Result<()> {
         Command::Convert(cli) => cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
     };
-    let mut config = PipelineConfig::new(cli.data, cli.output);
-    config.resume_staging = cli.resume_staging;
+    let mut config = PipelineConfig::new(cli.data.clone(), cli.output.clone());
+    config.resume_staging = cli.resume_staging.clone();
     config.fail_fast = cli.fail_fast;
     config.invalidate_cache = cli.invalidate_cache;
     config.verify_cache = cli.verify_cache;
@@ -83,54 +164,220 @@ async fn main() -> Result<()> {
     let last_progress = Arc::new(Mutex::new(None::<ProgressEvent>));
     let printer_progress = Arc::clone(&last_progress);
     let (tx, mut rx) = mpsc::channel::<ProgressEvent>(128);
+    let verbose = cli.verbose;
     let printer = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
+        let mut watch = RunWatch::default();
+        // The status line is redrawn on the terminal the user is watching; a run whose stderr is
+        // piped to a file or a CI log gets plain lines instead.
+        let mut renderer = ProgressRenderer::new(std::io::stderr().is_terminal(), verbose);
+        // One asset can take minutes (a large texture), so the line is redrawn on a timer as well
+        // as on events, or the elapsed time and the estimate would sit still while it works.
+        let mut ticker = tokio::time::interval(ProgressRenderer::TERMINAL_REFRESH);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let event = tokio::select! {
+                event = rx.recv() => event,
+                _ = ticker.tick() => {
+                    if let Some(text) = renderer.tick(started.elapsed()) {
+                        write_status(&text);
+                    }
+                    continue;
+                }
+            };
+            let Some(event) = event else { break };
             *printer_progress.lock().expect("progress mutex poisoned") = Some(event.clone());
-            println!(
-                "{:?} {:.0}% {}",
-                event.stage,
-                event.fraction() * 100.0,
-                event.message
-            );
+            let elapsed = started.elapsed();
+            watch.clock.record(event.stage, elapsed);
+            watch.observe(&event);
+            if let Some(text) = renderer.update(&event, elapsed) {
+                write_status(&text);
+            }
+        }
+        if let Some(text) = renderer.finish() {
+            write_status(&text);
+        }
+        watch
+    });
+
+    // Ctrl+C stops the run at the next safe point and keeps the staging folder; a second one ends
+    // the process where it stands.
+    let cancellation = Cancellation::new();
+    let interrupt = cancellation.clone();
+    tokio::spawn(async move {
+        let mut received = 0;
+        while tokio::signal::ctrl_c().await.is_ok() {
+            received += 1;
+            if received == 1 {
+                eprintln!(
+                    "\nInterrupted: finishing the work in flight, then stopping. The staging folder is kept, so the run can be resumed."
+                );
+                interrupt.cancel();
+            } else {
+                eprintln!("Interrupted again: exiting now.");
+                std::process::exit(130);
+            }
         }
     });
-    let pipeline_result = AssetPipeline::run_async(config, tx).await;
-    printer.await?;
+
+    let pipeline_result =
+        AssetPipeline::run_async_with_cancel(config, tx, cancellation.clone()).await;
+    let watch = printer.await?;
     let report = match pipeline_result {
         Ok(report) => report,
-        Err(error) => {
+        Err(failure) => {
             if let Some(path) = &cli.report_json {
-                let progress = last_progress
-                    .lock()
-                    .expect("progress mutex poisoned")
-                    .clone();
-                let failure = FailureReport {
-                    complete: false,
-                    stage: progress.as_ref().map(|event| event.stage),
-                    file: progress.and_then(|event| event.current_file),
-                    error: format!("{error:#}"),
-                    elapsed_ms: started.elapsed().as_millis(),
-                };
-                write_json_atomic(path, &failure)?;
+                write_failure_report(path, &failure, &last_progress, &watch, started.elapsed())?;
             }
-            return Err(error);
+            print_failure(&cli, &failure, &watch, started.elapsed());
+            std::process::exit(if failure.cancelled { 130 } else { 1 });
         }
     };
     if let Some(path) = &cli.report_json {
-        write_json_atomic(path, &report)?;
+        let run = RunReport {
+            report: &report,
+            stages: watch.clock.stages.clone(),
+        };
+        write_json_atomic(path, &run)?;
     }
-    println!(
-        "Converted {}, reused {}, skipped {} in {} ms (complete: {})",
-        report.converted, report.cache_hits, report.skipped, report.elapsed_ms, report.complete
-    );
+    print_summary(&cli, &report, &watch.clock);
     if !report.complete {
-        bail!(
-            "conversion produced {} warning(s) and {} skipped input(s); see conversion-manifest.json",
-            report.warnings.len(),
-            report.skipped
+        let skipped = report.warnings.len();
+        eprintln!(
+            "Conversion incomplete: {skipped} input(s) were skipped. The output was published anyway; the manifest lists what is missing: {}",
+            cli.output.join("conversion-manifest.json").display()
         );
+        for warning in report.warnings.iter().take(RunWatch::NAMED_FAILURES) {
+            eprintln!("    {warning}");
+        }
+        std::process::exit(1);
     }
     Ok(())
+}
+
+/// The summary a finished run prints: what it produced, how long it took, and where to look.
+fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
+    println!(
+        "Conversion complete in {}: converted {}, reused {}, failed {}",
+        format_elapsed(report.elapsed_ms as f64 / 1000.0),
+        report.converted,
+        report.cache_hits,
+        report.skipped,
+    );
+    let (bytes, files) = artifact_size(&cli.output, &report.artifacts);
+    println!(
+        "  output: {} in {} artifacts ({})",
+        format_bytes(bytes),
+        files,
+        cli.output.display()
+    );
+    println!(
+        "  manifest: {}",
+        cli.output.join("conversion-manifest.json").display()
+    );
+    if let Some(path) = &cli.report_json {
+        println!("  report: {}", path.display());
+    }
+    println!("{}", clock.summary());
+}
+
+/// The size of the converted artifacts. The published tree also holds the extracted `vfs` and the
+/// ingestion cache, whose files share their bytes with each other, so the artifacts are what the
+/// run produced and what a fresh run has to write.
+fn artifact_size(output: &Path, artifacts: &[PathBuf]) -> (u64, u64) {
+    let mut bytes = 0;
+    let mut files = 0;
+    for artifact in artifacts {
+        if let Ok(metadata) = fs::metadata(output.join(artifact)) {
+            bytes += metadata.len();
+            files += 1;
+        }
+    }
+    (bytes, files)
+}
+
+/// What to say when the run stopped early: what went wrong, which assets failed, and the exact
+/// command that picks the run up where it stopped.
+fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed: Duration) {
+    let stage = watch
+        .clock
+        .stages
+        .last()
+        .map(|time| format!(" during {:?}", time.stage))
+        .unwrap_or_default();
+    if failure.cancelled {
+        eprintln!(
+            "Conversion interrupted after {}{stage}.",
+            format_elapsed(elapsed.as_secs_f64())
+        );
+    } else {
+        eprintln!(
+            "Conversion failed after {}{stage}: {:#}",
+            format_elapsed(elapsed.as_secs_f64()),
+            failure.error
+        );
+    }
+    if !watch.failed.is_empty() {
+        eprintln!("  assets that failed (first {}):", watch.failed.len());
+        for file in &watch.failed {
+            eprintln!("    - {}", file.display());
+        }
+        let remaining = watch.failures.saturating_sub(watch.failed.len() as u64);
+        if remaining > 0 {
+            eprintln!("    ... and {remaining} more (see conversion-manifest.json)");
+        }
+    }
+    match &failure.staging {
+        Some(staging) => {
+            eprintln!("  The staging folder was kept: {}", staging.display());
+            eprintln!("  Resume where it stopped with:");
+            eprintln!("    {}", resume_command(cli, staging));
+            eprintln!(
+                "  Delete that folder to free the space if you would rather start over: {}",
+                staging.display()
+            );
+        }
+        None => eprintln!(
+            "  No staging folder was kept, so the next run starts from scratch. Pass --resume-staging to keep one."
+        ),
+    }
+}
+
+/// The exact command that resumes a run from a kept staging folder.
+fn resume_command(cli: &Cli, staging: &Path) -> String {
+    format!(
+        "converter \"{}\" \"{}\" --resume-staging \"{}\"",
+        cli.data.display(),
+        cli.output.display(),
+        staging.display()
+    )
+}
+
+fn write_status(text: &str) {
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(text.as_bytes());
+    let _ = stderr.flush();
+}
+
+fn write_failure_report(
+    path: &Path,
+    failure: &PipelineFailure,
+    last_progress: &Mutex<Option<ProgressEvent>>,
+    watch: &RunWatch,
+    elapsed: Duration,
+) -> Result<()> {
+    let progress = last_progress
+        .lock()
+        .expect("progress mutex poisoned")
+        .clone();
+    let report = FailureReport {
+        complete: false,
+        stage: progress.as_ref().map(|event| event.stage),
+        file: progress.and_then(|event| event.current_file),
+        error: format!("{:#}", failure.error),
+        elapsed_ms: elapsed.as_millis(),
+        stages: watch.clock.stages.clone(),
+    };
+    write_json_atomic(path, &report)
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -257,20 +504,6 @@ fn format_check_report(report: &converter::CheckReport) -> String {
     text
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
-    if bytes < 1024 {
-        return format!("{bytes} bytes");
-    }
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
-
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
@@ -307,6 +540,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut fail_fast = false;
     let mut invalidate_cache = false;
     let mut verify_cache = true;
+    let mut verbose = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.to_str() {
@@ -331,6 +565,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--fail-fast") => fail_fast = true,
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
+            Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
             _ => positional.push(PathBuf::from(argument)),
@@ -351,6 +586,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         fail_fast,
         invalidate_cache,
         verify_cache,
+        verbose,
     })
 }
 
@@ -368,16 +604,57 @@ fn parse_jobs(value: OsString, option: &str) -> Result<usize> {
 }
 
 fn usage() -> &'static str {
-    "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast] [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR] [--report-json FILE]
+    "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
+                 [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
+                 [--report-json FILE] [--verbose]
        converter check <output directory> [--full]
-         checks a converted output against its conversion-manifest.json without converting:
-         existence and size of every file, and with --full their hashes too.
-         Exit code 0: all good, 1: problems found, 2: no readable manifest."
+
+Converts a Skyrim Data directory into runtime assets.
+
+While it runs, one status line is redrawn on the terminal, four times a second at most:
+
+  Textures     61%  [overall  72%]  412 items/s  61.2 MB/s  00:12:31 elapsed  ~00:04:50 left
+
+With stderr piped to a file or a CI log, one plain line per stage every few seconds is printed
+instead. --verbose prints one line per converted asset, as older versions always did.
+
+Ctrl+C stops the run after the asset in flight and keeps the staging folder; the exact command that
+resumes where it stopped is printed when the run stops. A second Ctrl+C exits immediately.
+
+converter check compares a converted output with its conversion-manifest.json without converting:
+the existence and size of every file, and with --full their hashes too. Exit code 0: all good,
+1: problems found, 2: no readable manifest."
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_clock_keeps_first_and_last_event_of_overlapping_stages() {
+        let mut clock = StageClock::default();
+        clock.record(ProgressStage::Textures, Duration::from_secs(10));
+        clock.record(ProgressStage::Meshes, Duration::from_secs(12));
+        clock.record(ProgressStage::Textures, Duration::from_secs(30));
+        clock.record(ProgressStage::Meshes, Duration::from_secs(20));
+        let stage = |stage, first_seconds, last_seconds| StageTime {
+            stage,
+            first_seconds,
+            last_seconds,
+        };
+        assert_eq!(
+            clock.stages,
+            vec![
+                stage(ProgressStage::Textures, 10.0, 30.0),
+                stage(ProgressStage::Meshes, 12.0, 20.0),
+            ]
+        );
+        assert!(
+            clock
+                .summary()
+                .contains("Textures    0:00:10.0 to 0:00:30.0 (0:00:20.0)")
+        );
+    }
 
     #[test]
     fn parses_pipeline_options() {
@@ -392,6 +669,7 @@ mod tests {
                 "--fail-fast",
                 "--invalidate-cache",
                 "--no-verify-cache",
+                "--verbose",
                 "--report-json",
                 "report.json",
             ]
@@ -405,6 +683,7 @@ mod tests {
         assert!(cli.fail_fast);
         assert!(cli.invalidate_cache);
         assert!(!cli.verify_cache);
+        assert!(cli.verbose);
         assert_eq!(cli.report_json, Some(PathBuf::from("report.json")));
     }
 
@@ -474,7 +753,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "23 problem(s) in 100 files, 3.0 MiB, quick check: existence and size, 0.2 s:"
+            "23 problem(s) in 100 files, 3.1 MB, quick check: existence and size, 0.2 s:"
         );
         assert_eq!(lines[1], "  missing: meshes/00.glb");
         assert_eq!(lines[20], "  missing: meshes/19.glb");
@@ -487,8 +766,47 @@ mod tests {
         };
         assert_eq!(
             format_check_report(&ok),
-            "All good: 100 files, 3.0 MiB, quick check: existence and size, 0.2 s\n"
+            "All good: 100 files, 3.1 MB, quick check: existence and size, 0.2 s\n"
         );
+    }
+
+    #[test]
+    fn names_the_exact_command_that_resumes_a_kept_staging_folder() {
+        let cli = Cli {
+            data: PathBuf::from("C:/Games/Skyrim/Data"),
+            output: PathBuf::from("C:/Modding/SkyrimConverted"),
+            resume_staging: None,
+            report_json: None,
+            cpu_jobs: None,
+            io_jobs: None,
+            fail_fast: false,
+            invalidate_cache: false,
+            verify_cache: true,
+            verbose: false,
+        };
+        assert_eq!(
+            resume_command(&cli, Path::new("C:/Modding/SkyrimConverted.staging-1-2")),
+            "converter \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+        );
+    }
+
+    #[test]
+    fn watches_the_first_few_failed_assets() {
+        let mut watch = RunWatch::default();
+        for index in 0..5 {
+            let mut event = ProgressEvent::new(
+                ProgressStage::Textures,
+                index,
+                5,
+                Some(PathBuf::from(format!("textures/bad{index}.dds"))),
+                "Asset skipped",
+            );
+            event.message = "Asset skipped".to_owned();
+            watch.observe(&event);
+        }
+        assert_eq!(watch.failures, 5);
+        assert_eq!(watch.failed.len(), RunWatch::NAMED_FAILURES);
+        assert_eq!(watch.failed[0], PathBuf::from("textures/bad0.dds"));
     }
 
     #[test]
@@ -503,6 +821,11 @@ mod tests {
             file: Some(PathBuf::from("Skyrim - Animations.bsa")),
             error: "unsupported flags".to_owned(),
             elapsed_ms: 42,
+            stages: vec![StageTime {
+                stage: converter::ProgressStage::Extracting,
+                first_seconds: 0.5,
+                last_seconds: 1.5,
+            }],
         };
         write_json_atomic(&report, &failure).unwrap();
 
@@ -512,6 +835,8 @@ mod tests {
         assert_eq!(value["file"], "Skyrim - Animations.bsa");
         assert_eq!(value["error"], "unsupported flags");
         assert_eq!(value["elapsed_ms"], 42);
+        assert_eq!(value["stages"][0]["stage"], "extracting");
+        assert_eq!(value["stages"][0]["last_seconds"], 1.5);
         assert_eq!(
             fs::read_dir(directory.path()).unwrap().count(),
             1,

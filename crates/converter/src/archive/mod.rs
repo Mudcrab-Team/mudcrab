@@ -17,7 +17,68 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+/// How far an archive extraction has got: files and bytes done, against the archive's own totals
+/// (its file table says how many entries it holds and how many bytes each one takes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExtractionProgress {
+    pub completed_files: u64,
+    pub completed_bytes: u64,
+    pub total_files: u64,
+    pub total_bytes: u64,
+}
+
+/// Called as an archive is extracted, and reused from its ingestion cache. Extraction runs on many
+/// threads, so the callback has to be safe to call from any of them.
+pub type ExtractionProgressCallback<'a> = &'a (dyn Fn(ExtractionProgress) + Send + Sync);
+
+/// How often an extraction reports: every this many files, so a 173,000-file archive sends
+/// hundreds of progress events rather than one per file.
+const PROGRESS_FILE_STEP: u64 = 512;
+
+/// Counts an archive's finished work and reports it at [`PROGRESS_FILE_STEP`] intervals.
+struct ProgressReporter<'a> {
+    callback: ExtractionProgressCallback<'a>,
+    files: AtomicU64,
+    bytes: AtomicU64,
+    totals: ExtractionProgress,
+}
+
+impl<'a> ProgressReporter<'a> {
+    fn new(callback: ExtractionProgressCallback<'a>, total_files: u64, total_bytes: u64) -> Self {
+        Self {
+            callback,
+            files: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            totals: ExtractionProgress {
+                completed_files: 0,
+                completed_bytes: 0,
+                total_files,
+                total_bytes,
+            },
+        }
+    }
+
+    /// Records the archive's totals before any of it is written, so the caller learns the
+    /// denominator with its first event.
+    fn announce(&self) {
+        (self.callback)(self.totals);
+    }
+
+    fn advance(&self, bytes: u64) {
+        let files = self.files.fetch_add(1, Ordering::Relaxed) + 1;
+        let bytes = self.bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if files.is_multiple_of(PROGRESS_FILE_STEP) || files == self.totals.total_files {
+            (self.callback)(ExtractionProgress {
+                completed_files: files,
+                completed_bytes: bytes,
+                ..self.totals
+            });
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArchiveKind {
@@ -49,6 +110,7 @@ impl ArchiveExtractor {
         cache_root: &Path,
         previous: Option<&IngestionCacheEntry>,
         verify_integrity: bool,
+        progress: Option<ExtractionProgressCallback<'_>>,
     ) -> Result<ExtractionOutcome> {
         let source_hash = hash_file(archive_path)?;
         if let Some(entry) = previous.filter(|entry| entry.source_hash == source_hash)
@@ -58,6 +120,7 @@ impl ArchiveExtractor {
                 previous_cache_root,
                 cache_root,
                 verify_integrity,
+                progress,
             )?
         {
             return Ok(ExtractionOutcome {
@@ -67,7 +130,7 @@ impl ArchiveExtractor {
             });
         }
 
-        let files = Self::extract(archive_path, output_root)?;
+        let files = extract_reporting(archive_path, output_root, progress)?;
         let cache_entry = IngestionCacheEntry {
             source_hash,
             files: files
@@ -88,85 +151,124 @@ impl ArchiveExtractor {
     }
 
     pub fn extract(archive_path: &Path, output_root: &Path) -> Result<Vec<ExtractedFile>> {
-        let file = File::open(archive_path)
-            .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
-        // SAFETY: the file remains open and the mapping is read-only for the duration
-        // of parsing. No process-local code mutates the archive while it is mapped.
-        let bytes = unsafe { Mmap::map(&file) }
-            .wrap_err_with(|| format!("failed to map archive {}", archive_path.display()))?;
+        extract_reporting(archive_path, output_root, None)
+    }
+}
 
-        match bytes.get(..4) {
-            Some(b"BSA\0") => {
-                let entries = bsa::iter_raw_entries(&bytes).wrap_err_with(|| {
-                    format!("failed to parse BSA archive {}", archive_path.display())
-                })?;
-                let mut seen = BTreeMap::new();
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        let relative = safe_relative_path(&entry.name)?;
-                        detect_archive_collision(&mut seen, &relative, &entry.name)?;
-                        Ok((entry, relative))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                entries
-                    .into_par_iter()
-                    .map(|(entry, relative)| {
-                        let destination = output_root.join(&relative);
-                        if let Some(parent) = destination.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        let data = entry.decompress()?;
-                        let bytes_written = data.len() as u64;
-                        let sha256 = hash_bytes(&data);
+/// Extracts every entry of an archive, reporting progress as the archive's file table allows.
+fn extract_reporting(
+    archive_path: &Path,
+    output_root: &Path,
+    progress: Option<ExtractionProgressCallback<'_>>,
+) -> Result<Vec<ExtractedFile>> {
+    let file = File::open(archive_path)
+        .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
+    // SAFETY: the file remains open and the mapping is read-only for the duration
+    // of parsing. No process-local code mutates the archive while it is mapped.
+    let bytes = unsafe { Mmap::map(&file) }
+        .wrap_err_with(|| format!("failed to map archive {}", archive_path.display()))?;
 
-                        atomic_write(&destination, &data).wrap_err_with(|| {
-                            format!("failed to extract {}", destination.display())
-                        })?;
-
-                        Ok(ExtractedFile {
-                            path: relative,
-                            bytes_written,
-                            sha256,
-                        })
-                    })
-                    .collect()
+    match bytes.get(..4) {
+        Some(b"BSA\0") => {
+            let entries = bsa::iter_raw_entries(&bytes).wrap_err_with(|| {
+                format!("failed to parse BSA archive {}", archive_path.display())
+            })?;
+            let mut seen = BTreeMap::new();
+            let entries = entries
+                .into_iter()
+                .map(|entry| {
+                    let relative = safe_relative_path(&entry.name)?;
+                    detect_archive_collision(&mut seen, &relative, &entry.name)?;
+                    Ok((entry, relative))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            // A BSA's file records and payloads are both in the mapping, so the bytes it will
+            // write are known before the first entry is decompressed.
+            let reporter = progress.map(|callback| {
+                ProgressReporter::new(
+                    callback,
+                    entries.len() as u64,
+                    entries
+                        .iter()
+                        .map(|(entry, _)| entry.payload.len() as u64)
+                        .sum(),
+                )
+            });
+            if let Some(reporter) = &reporter {
+                reporter.announce();
             }
-            Some(b"BTDX") => {
-                let entries = ba2::read_entries(&bytes)?;
-                let mut seen = BTreeMap::new();
-                let entries = entries
-                    .into_iter()
-                    .map(|(name, data)| {
-                        let relative = safe_relative_path(&name)?;
-                        detect_archive_collision(&mut seen, &relative, &name)?;
-                        Ok((name, data, relative))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                entries
-                    .into_par_iter()
-                    .map(|(_name, data, relative)| {
-                        let destination = output_root.join(&relative);
-                        if let Some(parent) = destination.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        let bytes_written = data.len() as u64;
-                        let sha256 = hash_bytes(&data);
+            entries
+                .into_par_iter()
+                .map(|(entry, relative)| {
+                    let destination = output_root.join(&relative);
+                    if let Some(parent) = destination.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let stored_bytes = entry.payload.len() as u64;
+                    let data = entry.decompress()?;
+                    let bytes_written = data.len() as u64;
+                    let sha256 = hash_bytes(&data);
 
-                        atomic_write(&destination, &data).wrap_err_with(|| {
-                            format!("failed to extract {}", destination.display())
-                        })?;
+                    atomic_write(&destination, &data)
+                        .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
+                    if let Some(reporter) = &reporter {
+                        reporter.advance(stored_bytes);
+                    }
 
-                        Ok(ExtractedFile {
-                            path: relative,
-                            bytes_written,
-                            sha256,
-                        })
+                    Ok(ExtractedFile {
+                        path: relative,
+                        bytes_written,
+                        sha256,
                     })
-                    .collect()
-            }
-            _ => bail!("unsupported archive magic in {}", archive_path.display()),
+                })
+                .collect()
         }
+        Some(b"BTDX") => {
+            let entries = ba2::read_entries(&bytes)?;
+            let mut seen = BTreeMap::new();
+            let entries = entries
+                .into_iter()
+                .map(|(name, data)| {
+                    let relative = safe_relative_path(&name)?;
+                    detect_archive_collision(&mut seen, &relative, &name)?;
+                    Ok((name, data, relative))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let reporter = progress.map(|callback| {
+                ProgressReporter::new(
+                    callback,
+                    entries.len() as u64,
+                    entries.iter().map(|(_, data, _)| data.len() as u64).sum(),
+                )
+            });
+            if let Some(reporter) = &reporter {
+                reporter.announce();
+            }
+            entries
+                .into_par_iter()
+                .map(|(_name, data, relative)| {
+                    let destination = output_root.join(&relative);
+                    if let Some(parent) = destination.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let bytes_written = data.len() as u64;
+                    let sha256 = hash_bytes(&data);
+
+                    atomic_write(&destination, &data)
+                        .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
+                    if let Some(reporter) = &reporter {
+                        reporter.advance(bytes_written);
+                    }
+
+                    Ok(ExtractedFile {
+                        path: relative,
+                        bytes_written,
+                        sha256,
+                    })
+                })
+                .collect()
+        }
+        _ => bail!("unsupported archive magic in {}", archive_path.display()),
     }
 }
 
@@ -176,6 +278,7 @@ fn restore_cached_files(
     previous_cache_root: &Path,
     cache_root: &Path,
     verify_integrity: bool,
+    progress: Option<ExtractionProgressCallback<'_>>,
 ) -> Result<Option<Vec<ExtractedFile>>> {
     for file in &entry.files {
         let blob = blob_path(previous_cache_root, &file.hash)?;
@@ -187,6 +290,16 @@ fn restore_cached_files(
         }
     }
 
+    let reporter = progress.map(|callback| {
+        ProgressReporter::new(
+            callback,
+            entry.files.len() as u64,
+            entry.files.iter().map(|file| file.size).sum(),
+        )
+    });
+    if let Some(reporter) = &reporter {
+        reporter.announce();
+    }
     let mut restored = Vec::with_capacity(entry.files.len());
     for file in &entry.files {
         let relative = safe_relative_path(&file.path)?;
@@ -195,6 +308,9 @@ fn restore_cached_files(
         copy_if_missing(&old_blob, &new_blob)?;
         let destination = output_root.join(&relative);
         copy_file(&new_blob, &destination)?;
+        if let Some(reporter) = &reporter {
+            reporter.advance(file.size);
+        }
         restored.push(ExtractedFile {
             path: relative,
             bytes_written: file.size,
@@ -395,6 +511,7 @@ mod tests {
             &first_cache,
             None,
             true,
+            None,
         )
         .unwrap();
         assert!(!first.cache_hit);
@@ -412,6 +529,7 @@ mod tests {
             &second_cache,
             Some(&first.cache_entry),
             true,
+            None,
         )
         .unwrap();
         assert!(second.cache_hit);
@@ -429,6 +547,7 @@ mod tests {
             &directory.path().join("third/.ingestion-cache"),
             Some(&second.cache_entry),
             true,
+            None,
         )
         .unwrap();
         assert!(!third.cache_hit);
