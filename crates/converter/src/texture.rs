@@ -308,12 +308,14 @@ fn native_ktx2_format(dds: &Dds, encoding: TextureEncoding) -> Option<ktx2::Form
             Dx::BC2_Typeless | Dx::BC2_UNorm | Dx::BC2_UNorm_sRGB => Vk::BC2_SRGB_BLOCK,
             Dx::BC3_Typeless | Dx::BC3_UNorm | Dx::BC3_UNorm_sRGB if !srgb => Vk::BC3_UNORM_BLOCK,
             Dx::BC3_Typeless | Dx::BC3_UNorm | Dx::BC3_UNorm_sRGB => Vk::BC3_SRGB_BLOCK,
-            Dx::BC4_Typeless | Dx::BC4_UNorm => Vk::BC4_UNORM_BLOCK,
-            Dx::BC4_SNorm => Vk::BC4_SNORM_BLOCK,
-            Dx::BC5_Typeless | Dx::BC5_UNorm => Vk::BC5_UNORM_BLOCK,
-            Dx::BC5_SNorm => Vk::BC5_SNORM_BLOCK,
-            Dx::BC6H_Typeless | Dx::BC6H_UF16 => Vk::BC6H_UFLOAT_BLOCK,
-            Dx::BC6H_SF16 => Vk::BC6H_SFLOAT_BLOCK,
+            // BC4/BC5/BC6H have no sRGB VkFormat variant; an sRGB slot
+            // falls back to UASTC, which honors the slot transfer function.
+            Dx::BC4_Typeless | Dx::BC4_UNorm if !srgb => Vk::BC4_UNORM_BLOCK,
+            Dx::BC4_SNorm if !srgb => Vk::BC4_SNORM_BLOCK,
+            Dx::BC5_Typeless | Dx::BC5_UNorm if !srgb => Vk::BC5_UNORM_BLOCK,
+            Dx::BC5_SNorm if !srgb => Vk::BC5_SNORM_BLOCK,
+            Dx::BC6H_Typeless | Dx::BC6H_UF16 if !srgb => Vk::BC6H_UFLOAT_BLOCK,
+            Dx::BC6H_SF16 if !srgb => Vk::BC6H_SFLOAT_BLOCK,
             Dx::BC7_Typeless | Dx::BC7_UNorm | Dx::BC7_UNorm_sRGB if !srgb => Vk::BC7_UNORM_BLOCK,
             Dx::BC7_Typeless | Dx::BC7_UNorm | Dx::BC7_UNorm_sRGB => Vk::BC7_SRGB_BLOCK,
             Dx::R8G8B8A8_Typeless | Dx::R8G8B8A8_UNorm | Dx::R8G8B8A8_UNorm_sRGB if !srgb => {
@@ -322,7 +324,7 @@ fn native_ktx2_format(dds: &Dds, encoding: TextureEncoding) -> Option<ktx2::Form
             Dx::R8G8B8A8_Typeless | Dx::R8G8B8A8_UNorm | Dx::R8G8B8A8_UNorm_sRGB => {
                 Vk::R8G8B8A8_SRGB
             }
-            Dx::R8_UNorm => Vk::R8_UNORM,
+            Dx::R8_UNorm if !srgb => Vk::R8_UNORM,
             _ => return None,
         });
     }
@@ -351,13 +353,18 @@ fn assemble_native_ktx2(dds: &Dds, format: ktx2::Format, is_cubemap: bool) -> Re
     let block_bytes = block_byte_size(dds)?;
     let mut face_stride = 0usize;
     for mip in 0..mip_count {
-        face_stride += native_mip_byte_size(dds, mip, block_bytes)?;
+        face_stride = face_stride
+            .checked_add(native_mip_byte_size(dds, mip, block_bytes)?)
+            .ok_or_else(|| color_eyre::eyre::eyre!("DDS payload size overflow"))?;
     }
+    let required = face_stride
+        .checked_mul(faces as usize)
+        .ok_or_else(|| color_eyre::eyre::eyre!("DDS payload size overflow"))?;
     ensure!(
-        dds.data.len() >= face_stride * faces as usize,
+        dds.data.len() >= required,
         "DDS payload is truncated: {} bytes, expected at least {}",
         dds.data.len(),
-        face_stride * faces as usize
+        required
     );
 
     let (dfd, type_size) = ktx2::dfd::Basic::from_format(format)
@@ -1616,6 +1623,44 @@ mod tests {
     }
 
     #[test]
+    fn linear_only_formats_in_srgb_slots_use_uastc_fallback() {
+        // BC4/BC5/BC6H/R8 have no sRGB VkFormat; a ColorSrgb slot must fall
+        // back to UASTC (format None) rather than fail transfer validation.
+        for format in [
+            DxgiFormat::BC4_UNorm,
+            DxgiFormat::BC5_UNorm,
+            DxgiFormat::BC6H_UF16,
+            DxgiFormat::R8_UNorm,
+        ] {
+            let dds = Dds::new_dxgi(NewDxgiParams {
+                height: 4,
+                width: 4,
+                depth: None,
+                format,
+                mipmap_levels: None,
+                array_layers: None,
+                caps2: None,
+                is_cubemap: false,
+                resource_dimension: D3D10ResourceDimension::Texture2D,
+                alpha_mode: AlphaMode::Straight,
+            })
+            .unwrap();
+            let mut bytes = Vec::new();
+            dds.write(&mut bytes).unwrap();
+            let ktx = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb)
+                .unwrap_or_else(|error| panic!("failed to convert {format:?}: {error:#}"));
+            let reader = ktx2::Reader::new(&ktx).unwrap();
+            assert_eq!(reader.header().format, None, "{format:?} must use UASTC");
+            assert_eq!(
+                reader.transfer_function(),
+                Some(ktx2::TransferFunction::SRGB),
+                "{format:?}"
+            );
+            inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
+        }
+    }
+
+    #[test]
     fn native_cubemap_gathers_faces_per_mip_level() {
         let mut dds = Dds::new_dxgi(NewDxgiParams {
             height: 8,
@@ -1647,8 +1692,8 @@ mod tests {
         // level's six faces contiguously. Face 3 mip 1 lives at
         // face_stride * 3 + mip0_len in the DDS and at faces 0..3 of mip 1
         // in the KTX2.
-        let mip0_len = 8 * 8 / 16 * 16;
-        let mip1_len = 4 * 4 / 16 * 16;
+        let mip0_len = 64;
+        let mip1_len = 16;
         let face_stride = mip0_len + mip1_len;
         for face in 0..6 {
             let dds_mip0 = &dds.data[face * face_stride..face * face_stride + mip0_len];
