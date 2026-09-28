@@ -103,7 +103,8 @@ acceptance runs), since `quick` frame times are not comparable.
    cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
    ```
    CI uses [`cargo-nextest`](https://nexte.st) (`cargo install cargo-nextest --locked`); plain
-   `cargo test --workspace` runs the same tests. CI also runs `cargo audit` and a release-mode
+   `cargo test --workspace --all-targets` runs the same test targets (neither runs doctests; add
+   `cargo test --workspace --doc` for those). CI also runs `cargo audit` and a release-mode
    performance check; see `.github/workflows/run_tests.yml` for the exact commands.
 5. **Submit a Pull Request:**
    - Target the `main` branch.

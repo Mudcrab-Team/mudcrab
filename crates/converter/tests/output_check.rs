@@ -259,6 +259,63 @@ fn an_entry_outside_the_output_is_refused_without_reading_it() {
 }
 
 #[test]
+fn an_entry_through_a_link_that_leads_outside_the_output_is_refused() {
+    let converted = convert_fixture();
+    let outside = converted.directory.path().join("elsewhere");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("artifact.bin"), b"outside the output").unwrap();
+    let hash = hash_file(&outside.join("artifact.bin")).unwrap();
+    let link = converted.output.join("link");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&outside, &link);
+    // A symbolic link needs a privilege on Windows; a directory junction does not, and both lead out.
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&outside, &link).or_else(|_| {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .output()
+            .map_err(|error| error.to_string())
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).into_owned())
+                }
+            })
+            .map_err(std::io::Error::other)
+    });
+    if linked.is_err() {
+        eprintln!("skipped: this system does not allow creating a link here");
+        return;
+    }
+    let mut manifest = converted.manifest();
+    manifest["entries"].as_object_mut().unwrap().insert(
+        "escape-link".to_owned(),
+        serde_json::json!({
+            "source_hash": "",
+            "output": "link/artifact.bin",
+            "output_size": 18,
+            "output_hash": hash,
+        }),
+    );
+    converted.write_manifest(&manifest);
+
+    for mode in [CheckMode::Quick, CheckMode::Full] {
+        let report = check(&converted.output, mode);
+        assert!(
+            report.problems.iter().any(|problem| matches!(
+                problem,
+                CheckProblem::UnsafePath { output } if output == "link/artifact.bin"
+            )),
+            "{mode:?} followed a link out of the output: {:?}",
+            report.problems
+        );
+    }
+}
+
+#[test]
 fn folder_level_problems_are_reported() {
     let converted = convert_fixture();
     let mut manifest = converted.manifest();
