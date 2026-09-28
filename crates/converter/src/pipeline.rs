@@ -486,6 +486,7 @@ impl ConversionBatch<'_> {
         let source_kind = source_ext.to_owned();
         let etc1s_quality = self.config.texture_fallback_quality;
         let uastc_level = self.config.texture_uastc_level;
+        let zstd_level = self.config.texture_zstd_level;
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -605,6 +606,7 @@ impl ConversionBatch<'_> {
                                     encoding.expect("DDS conversion requires an encoding"),
                                     etc1s_quality,
                                     uastc_level,
+                                    zstd_level,
                                 )
                                 .map(|_| ()),
                                 "nif" => MeshConverter::convert_nif_to_glb(&source, &target),

@@ -107,6 +107,7 @@ const FLAG_GENERATE_MIPS_CLAMP: u32 = 1 << 14;
 const FLAG_UASTC: u32 = 1 << 17;
 const UASTC_LEVEL_DEFAULT: u8 = 2;
 const ETC1S_QUALITY_DEFAULT: u8 = 192;
+const ZSTD_LEVEL_DEFAULT: i32 = 6;
 static BASIS_INIT: Once = Once::new();
 type EncodedVolumeLevels = Vec<Vec<Vec<u8>>>;
 type EncodedVolume = (EncodedVolumeLevels, Vec<u8>);
@@ -137,6 +138,7 @@ impl TextureConverter {
             encoding,
             ETC1S_QUALITY_DEFAULT,
             UASTC_LEVEL_DEFAULT,
+            ZSTD_LEVEL_DEFAULT,
         )
     }
 
@@ -146,13 +148,15 @@ impl TextureConverter {
         encoding: TextureEncoding,
         etc1s_quality: u8,
         uastc_level: u8,
+        zstd_level: i32,
     ) -> Result<Ktx2Metadata> {
         let file =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
         let mmap = unsafe { Mmap::map(&file) }
             .wrap_err_with(|| format!("failed to memory-map {}", input.display()))?;
 
-        let ktx2 = Self::convert_with_options(&mmap, encoding, etc1s_quality, uastc_level)?;
+        let ktx2 =
+            Self::convert_with_options(&mmap, encoding, etc1s_quality, uastc_level, zstd_level)?;
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -202,6 +206,19 @@ impl TextureConverter {
             encoding,
             ETC1S_QUALITY_DEFAULT,
             UASTC_LEVEL_DEFAULT,
+            ZSTD_LEVEL_DEFAULT,
+        )
+    }
+
+    /// Converts without supercompression, for callers that assert on raw
+    /// level bytes or target runtimes without Zstandard support.
+    pub fn convert_uncompressed(dds_bytes: &[u8], encoding: TextureEncoding) -> Result<Vec<u8>> {
+        Self::convert_with_options(
+            dds_bytes,
+            encoding,
+            ETC1S_QUALITY_DEFAULT,
+            UASTC_LEVEL_DEFAULT,
+            0,
         )
     }
 
@@ -210,6 +227,7 @@ impl TextureConverter {
         encoding: TextureEncoding,
         etc1s_quality: u8,
         uastc_level: u8,
+        zstd_level: i32,
     ) -> Result<Vec<u8>> {
         let dds = Dds::read(Cursor::new(dds_bytes)).wrap_err("invalid DDS")?;
         let depth = dds.get_depth();
@@ -224,7 +242,7 @@ impl TextureConverter {
             "DDS texture arrays are not supported"
         );
         if let Some(format) = native_ktx2_format(&dds, encoding) {
-            let result = assemble_native_ktx2(&dds, format, is_cubemap)?;
+            let result = assemble_native_ktx2(&dds, format, is_cubemap, zstd_level)?;
             validate_ktx2_against_dds(&result, &dds, encoding, is_cubemap)?;
             return Ok(result);
         }
@@ -251,6 +269,7 @@ impl TextureConverter {
                 dds.get_height(),
                 depth,
             )?;
+            let result = supercompress_ktx2_levels(&result, zstd_level)?;
             validate_ktx2_against_dds(&result, &dds, encoding, false)?;
             return Ok(result);
         }
@@ -271,6 +290,7 @@ impl TextureConverter {
                 )?);
             }
             let result = combine_ktx2_cubemap_faces(&encoded_faces)?;
+            let result = supercompress_ktx2_levels(&result, zstd_level)?;
             validate_ktx2_against_dds(&result, &dds, encoding, true)?;
             return Ok(result);
         }
@@ -282,6 +302,7 @@ impl TextureConverter {
             }
             Err(error) => return Err(error).wrap_err("DDS pixel format cannot be decoded"),
         };
+        let result = supercompress_ktx2_levels(&result, zstd_level)?;
         validate_ktx2_against_dds(&result, &dds, encoding, false)?;
         Ok(result)
     }
@@ -344,7 +365,12 @@ fn native_ktx2_format(dds: &Dds, encoding: TextureEncoding) -> Option<ktx2::Form
 /// verbatim (faces concatenated per level for cubemaps, slices per level
 /// for volumes). DDS stores one face's full mip chain contiguously, so
 /// cubemap levels gather one slice from each face.
-fn assemble_native_ktx2(dds: &Dds, format: ktx2::Format, is_cubemap: bool) -> Result<Vec<u8>> {
+fn assemble_native_ktx2(
+    dds: &Dds,
+    format: ktx2::Format,
+    is_cubemap: bool,
+    zstd_level: i32,
+) -> Result<Vec<u8>> {
     let mip_count = dds.get_num_mipmap_levels().max(1) as usize;
     let depth = dds.get_depth().max(1);
     let faces = if is_cubemap { 6u32 } else { 1 };
@@ -394,26 +420,90 @@ fn assemble_native_ktx2(dds: &Dds, format: ktx2::Format, is_cubemap: bool) -> Re
     let mut mip_offset_in_face = 0usize;
     for mip in 0..mip_count {
         let mip_len = native_mip_byte_size(dds, mip, block_bytes)?;
+        let mut level_data = Vec::with_capacity(mip_len * faces as usize);
+        for face in 0..faces as usize {
+            let start = face * face_stride + mip_offset_in_face;
+            level_data.extend_from_slice(&dds.data[start..start + mip_len]);
+        }
+        let uncompressed = level_data.len() as u64;
+        // Supercompression applies to the complete assembled level (all of
+        // its faces/slices), never to faces independently: independently
+        // compressed faces would differ in length and break level assembly.
+        let stored = compress_level(&level_data, zstd_level)?;
         while !output.len().is_multiple_of(16) {
             output.push(0);
         }
         let offset = output.len() as u64;
-        for face in 0..faces as usize {
-            let start = face * face_stride + mip_offset_in_face;
-            output.extend_from_slice(&dds.data[start..start + mip_len]);
-        }
-        let total = (mip_len * faces as usize) as u64;
+        output.extend_from_slice(&stored);
         indexes.push(ktx2::LevelIndex {
             byte_offset: offset,
-            byte_length: total,
-            uncompressed_byte_length: total,
+            byte_length: stored.len() as u64,
+            uncompressed_byte_length: uncompressed,
         });
         mip_offset_in_face += mip_len;
     }
 
     let mut header = header;
+    if zstd_level > 0 {
+        header.supercompression_scheme = Some(ktx2::SupercompressionScheme::Zstandard);
+    }
     header.index.dfd_byte_offset = dfd_offset as u32;
     header.index.dfd_byte_length = dfd_bytes.len() as u32 + 4;
+    output[..ktx2::Header::LENGTH].copy_from_slice(&header.as_bytes());
+    for (level, index) in indexes.iter().enumerate() {
+        let start = ktx2::Header::LENGTH + level * ktx2::LevelIndex::LENGTH;
+        output[start..start + ktx2::LevelIndex::LENGTH].copy_from_slice(&index.as_bytes());
+    }
+    Ok(output)
+}
+
+/// Compresses one complete KTX2 mip level with Zstandard, or returns
+/// the input unchanged when `level` is 0 (supercompression off).
+fn compress_level(level: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
+    if zstd_level <= 0 {
+        return Ok(level.to_vec());
+    }
+    zstd::stream::encode_all(level, zstd_level).wrap_err("Zstandard supercompression failed")
+}
+
+/// Rewrites a finished uncompressed KTX2 so each mip level is Zstandard
+/// compressed: header scheme set, level index rewritten with compressed
+/// and uncompressed lengths. Used by the UASTC fallback path, whose levels
+/// assemble uncompressed; the native path compresses during assembly.
+/// Levels that do not shrink are still stored compressed: the scheme is
+/// per-file, and a conformant reader handles any per-level ratio.
+fn supercompress_ktx2_levels(ktx2: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
+    if zstd_level <= 0 {
+        return Ok(ktx2.to_vec());
+    }
+    let reader = ktx2::Reader::new(ktx2)
+        .map_err(|error| color_eyre::eyre::eyre!("invalid KTX2 for supercompression: {error:?}"))?;
+    let mut header = reader.header();
+    ensure!(
+        header.supercompression_scheme.is_none(),
+        "KTX2 is already supercompressed"
+    );
+    let first_data_offset = reader
+        .levels()
+        .map(|level| level.data.as_ptr() as usize - ktx2.as_ptr() as usize)
+        .min()
+        .unwrap_or(ktx2.len());
+    let mut output = ktx2[..first_data_offset].to_vec();
+    let mut indexes = Vec::with_capacity(reader.levels().len());
+    for level in reader.levels() {
+        let stored = compress_level(level.data, zstd_level)?;
+        while !output.len().is_multiple_of(16) {
+            output.push(0);
+        }
+        let offset = output.len() as u64;
+        output.extend_from_slice(&stored);
+        indexes.push(ktx2::LevelIndex {
+            byte_offset: offset,
+            byte_length: stored.len() as u64,
+            uncompressed_byte_length: level.data.len() as u64,
+        });
+    }
+    header.supercompression_scheme = Some(ktx2::SupercompressionScheme::Zstandard);
     output[..ktx2::Header::LENGTH].copy_from_slice(&header.as_bytes());
     for (level, index) in indexes.iter().enumerate() {
         let start = ktx2::Header::LENGTH + level * ktx2::LevelIndex::LENGTH;
@@ -1413,13 +1503,13 @@ mod tests {
         let metadata = inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
         assert_eq!(metadata.levels, 3);
         // RGBA8 sources preserve natively, so authored mip bytes survive
-        // verbatim instead of approximately through a UASTC round trip.
+        // verbatim through supercompression instead of approximately
+        // through a UASTC round trip.
         let reader = ktx2::Reader::new(&ktx).unwrap();
         assert_eq!(reader.header().format, Some(ktx2::Format::R8G8B8A8_SRGB));
-        let levels: Vec<_> = reader.levels().collect();
-        assert_eq!(levels[0].data, &dds.data[..64]);
-        assert_eq!(levels[1].data, &dds.data[64..80]);
-        assert_eq!(levels[2].data, &dds.data[80..84]);
+        assert_eq!(decode_zstd_level(&ktx, 0), &dds.data[..64]);
+        assert_eq!(decode_zstd_level(&ktx, 1), &dds.data[64..80]);
+        assert_eq!(decode_zstd_level(&ktx, 2), &dds.data[80..84]);
     }
 
     #[test]
@@ -1565,17 +1655,21 @@ mod tests {
                 .unwrap_or_else(|error| panic!("failed to convert {dxgi:?}: {error:#}"));
             let reader = ktx2::Reader::new(&ktx).unwrap();
             assert_eq!(reader.header().format, Some(vk), "{dxgi:?}");
-            assert_eq!(reader.header().supercompression_scheme, None, "{dxgi:?}");
-            let levels: Vec<_> = reader.levels().collect();
-            assert_eq!(levels.len(), 3, "{dxgi:?}");
+            assert_eq!(
+                reader.header().supercompression_scheme,
+                Some(ktx2::SupercompressionScheme::Zstandard),
+                "{dxgi:?}"
+            );
+            assert_eq!(reader.levels().len(), 3, "{dxgi:?}");
             let mut offset = 0;
-            for (mip, level) in levels.iter().enumerate() {
+            for mip in 0..3 {
+                let decoded = decode_zstd_level(&ktx, mip);
                 assert_eq!(
-                    level.data,
-                    &dds.data[offset..offset + level.data.len()],
+                    decoded,
+                    &dds.data[offset..offset + decoded.len()],
                     "{dxgi:?} mip {mip}"
                 );
-                offset += level.data.len();
+                offset += decoded.len();
             }
             assert_eq!(offset, dds.data.len(), "{dxgi:?} trailing bytes");
             let metadata = inspect_ktx2(&ktx, TextureEncoding::DataLinear).unwrap();
@@ -1641,8 +1735,8 @@ mod tests {
         let ktx = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap();
         let reader = ktx2::Reader::new(&ktx).unwrap();
         assert_eq!(reader.header().face_count, 6);
-        let levels: Vec<_> = reader.levels().collect();
-        assert_eq!(levels.len(), 2);
+        assert_eq!(reader.levels().len(), 2);
+        let levels = [decode_zstd_level(&ktx, 0), decode_zstd_level(&ktx, 1)];
         // DDS stores one face's full chain contiguously; KTX2 stores one
         // level's six faces contiguously. Face 3 mip 1 lives at
         // face_stride * 3 + mip0_len in the DDS and at faces 0..3 of mip 1
@@ -1652,11 +1746,11 @@ mod tests {
         let face_stride = mip0_len + mip1_len;
         for face in 0..6 {
             let dds_mip0 = &dds.data[face * face_stride..face * face_stride + mip0_len];
-            let ktx_mip0 = &levels[0].data[face * mip0_len..face * mip0_len + mip0_len];
+            let ktx_mip0 = &levels[0][face * mip0_len..face * mip0_len + mip0_len];
             assert_eq!(dds_mip0, ktx_mip0, "face {face} mip 0");
             let dds_mip1 =
                 &dds.data[face * face_stride + mip0_len..face * face_stride + face_stride];
-            let ktx_mip1 = &levels[1].data[face * mip1_len..face * mip1_len + mip1_len];
+            let ktx_mip1 = &levels[1][face * mip1_len..face * mip1_len + mip1_len];
             assert_eq!(dds_mip1, ktx_mip1, "face {face} mip 1");
         }
         let metadata = inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
@@ -1687,9 +1781,8 @@ mod tests {
         let ktx = TextureConverter::convert(&bytes, TextureEncoding::DataLinear).unwrap();
         let reader = ktx2::Reader::new(&ktx).unwrap();
         assert_eq!(reader.header().format, Some(ktx2::Format::R8G8B8A8_UNORM));
-        let levels: Vec<_> = reader.levels().collect();
-        assert_eq!(levels.len(), 1);
-        assert_eq!(levels[0].data, dds.data.as_slice());
+        assert_eq!(reader.levels().len(), 1);
+        assert_eq!(decode_zstd_level(&ktx, 0), dds.data.as_slice());
 
         let x8 = x8r8g8b8_fixture();
         let mut bytes = Vec::new();
@@ -1697,6 +1790,52 @@ mod tests {
         let ktx = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap();
         let reader = ktx2::Reader::new(&ktx).unwrap();
         assert_eq!(reader.header().format, None, "X8R8G8B8 stays UASTC");
+    }
+
+    #[test]
+    fn zstd_level_zero_disables_supercompression() {
+        let dds = Dds::new_dxgi(NewDxgiParams {
+            height: 4,
+            width: 4,
+            depth: None,
+            format: DxgiFormat::BC3_UNorm,
+            mipmap_levels: None,
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: D3D10ResourceDimension::Texture2D,
+            alpha_mode: AlphaMode::Straight,
+        })
+        .unwrap();
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        let ktx =
+            TextureConverter::convert_uncompressed(&bytes, TextureEncoding::DataLinear).unwrap();
+        let reader = ktx2::Reader::new(&ktx).unwrap();
+        assert_eq!(reader.header().supercompression_scheme, None);
+        let levels: Vec<_> = reader.levels().collect();
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].data, dds.data.as_slice());
+        inspect_ktx2(&ktx, TextureEncoding::DataLinear).unwrap();
+    }
+
+    #[test]
+    fn uastc_fallback_levels_supercompress_after_assembly() {
+        let x8 = x8r8g8b8_fixture();
+        let mut bytes = Vec::new();
+        x8.write(&mut bytes).unwrap();
+        let ktx = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap();
+        let reader = ktx2::Reader::new(&ktx).unwrap();
+        assert_eq!(reader.header().format, None, "X8R8G8B8 stays UASTC");
+        assert_eq!(
+            reader.header().supercompression_scheme,
+            Some(ktx2::SupercompressionScheme::Zstandard)
+        );
+        // The existing UASTC decode helper already decompresses Zstandard,
+        // proving the fallback path round-trips through supercompression.
+        let pixels = decode_uastc_level(&ktx, 0);
+        assert!(!pixels.is_empty());
+        inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
     }
 
     #[test]
@@ -1878,6 +2017,31 @@ mod tests {
         assert_eq!(metadata.height, dds.get_height());
         assert_eq!(metadata.levels, dds.get_num_mipmap_levels());
         assert_eq!(metadata.faces, 1);
+    }
+
+    fn decode_zstd_level(bytes: &[u8], mip: usize) -> Vec<u8> {
+        let reader = ktx2::Reader::new(bytes).unwrap();
+        let level = reader.levels().nth(mip).unwrap();
+        assert_eq!(
+            reader.header().supercompression_scheme,
+            Some(ktx2::SupercompressionScheme::Zstandard)
+        );
+        assert_eq!(
+            level.uncompressed_byte_length as usize,
+            {
+                let mut cursor = Cursor::new(level.data);
+                let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut cursor).unwrap();
+                let mut out = Vec::new();
+                decoder.read_to_end(&mut out).unwrap();
+                out.len()
+            },
+            "uncompressed length must match decoded bytes"
+        );
+        let mut cursor = Cursor::new(level.data);
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut cursor).unwrap();
+        let mut out = Vec::new();
+        decoder.read_to_end(&mut out).unwrap();
+        out
     }
 
     fn decode_uastc_level(bytes: &[u8], mip: usize) -> Vec<u8> {

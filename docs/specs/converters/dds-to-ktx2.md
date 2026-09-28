@@ -46,6 +46,20 @@ pixels (X8R8G8B8, L8) and unmapped DXGI formats fall back to the UASTC path.
 Byte preservation is asserted per mip level in fixtures, and a Bevy engine test loads native
 output through `ktx2_buffer_to_image` verifying GPU format, dimensions, and mip count.
 
+## Per-mip Zstandard supercompression
+
+Every output level (native or UASTC fallback) is Zstandard-compressed after its faces and
+slices assemble into the complete level. Compression never applies to faces independently:
+independently compressed faces differ in length and would break cubemap level assembly.
+The KTX2 header carries scheme 2 with compressed `byte_length` and true
+`uncompressed_byte_length` per level; `texture_zstd_level` (default 6, 0 disables) sets the
+level and participates in the manifest configuration hash. No rate-distortion tuning is
+applied: this stage is lossless, and any lossy tuning stays a separate quality decision.
+
+The runtime enables Bevy `zstd_rust` so `ktx2_buffer_to_image` decodes each level before
+format mapping. A Bevy engine test asserts supercompressed and plain outputs decode to
+identical image bytes.
+
 ## Publication and validation
 
 Preservable sources keep their blocks; fallback sources decode each mip/face/slice to RGBA and

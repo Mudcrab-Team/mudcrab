@@ -31,7 +31,7 @@ fn bc3_fixture() -> Vec<u8> {
 #[test]
 fn native_bc3_loads_as_bc3_without_transcoding() {
     let dds = bc3_fixture();
-    let ktx = TextureConverter::convert(&dds, TextureEncoding::ColorSrgb).unwrap();
+    let ktx = TextureConverter::convert_uncompressed(&dds, TextureEncoding::ColorSrgb).unwrap();
     let image: Image = bevy::image::ktx2_buffer_to_image(&ktx, CompressedImageFormats::all(), true)
         .expect("Bevy must load native-block KTX2");
     assert_eq!(
@@ -41,4 +41,28 @@ fn native_bc3_loads_as_bc3_without_transcoding() {
     assert_eq!(image.texture_descriptor.size.width, 8);
     assert_eq!(image.texture_descriptor.size.height, 8);
     assert_eq!(image.texture_descriptor.mip_level_count, 2);
+}
+
+#[test]
+fn zstd_supercompressed_bc3_loads_as_bc3() {
+    let dds = bc3_fixture();
+    // Default conversion supercompresses each mip level; Bevy's zstd_rust
+    // decode path must restore the native blocks behind the same format.
+    let ktx = TextureConverter::convert(&dds, TextureEncoding::ColorSrgb).unwrap();
+    let reader = ktx2::Reader::new(&ktx).unwrap();
+    assert_eq!(
+        reader.header().supercompression_scheme,
+        Some(ktx2::SupercompressionScheme::Zstandard)
+    );
+    let image: Image = bevy::image::ktx2_buffer_to_image(&ktx, CompressedImageFormats::all(), true)
+        .expect("Bevy must decode Zstandard supercompression");
+    assert_eq!(
+        image.texture_descriptor.format,
+        TextureFormat::Bc3RgbaUnormSrgb
+    );
+    assert_eq!(image.texture_descriptor.mip_level_count, 2);
+    let plain = TextureConverter::convert_uncompressed(&dds, TextureEncoding::ColorSrgb).unwrap();
+    let plain_image: Image =
+        bevy::image::ktx2_buffer_to_image(&plain, CompressedImageFormats::all(), true).unwrap();
+    assert_eq!(image.data, plain_image.data);
 }

@@ -22,3 +22,4 @@ windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 tempfile = "3.20"
 converter = { path = "../converter" }
 ddsfile = "0.5"
+ktx2.workspace = true
