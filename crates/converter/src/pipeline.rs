@@ -112,6 +112,9 @@ impl AssetPipeline {
         if staging.join(".ingestion-cache").is_dir() {
             persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)?;
         }
+        let manifest =
+            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))?;
+        prune_stale_ingestion_blobs(&cache_root, &manifest)?;
         if !resumed {
             let _ = fs::remove_dir_all(&staging);
         }
@@ -1121,29 +1124,30 @@ fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) 
         fs::remove_dir_all(&pack_staging)?;
     }
     fs::create_dir_all(&pack_staging)?;
-    for artifact in &report.artifacts {
-        let source = staging.join(artifact);
-        if !source.is_file() {
-            continue;
+    let published = (|| -> Result<()> {
+        for artifact in &report.artifacts {
+            let source = staging.join(artifact);
+            if !source.is_file() {
+                continue;
+            }
+            let destination = pack_staging.join(artifact);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            link_or_copy(&source, &destination).wrap_err_with(|| {
+                format!(
+                    "failed to publish {} to {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
         }
-        let destination = pack_staging.join(artifact);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        link_or_copy(&source, &destination).wrap_err_with(|| {
-            format!(
-                "failed to publish {} to {}",
-                source.display(),
-                destination.display()
-            )
-        })?;
-    }
-    let manifest = pack_staging.join("conversion-manifest.json");
-    ensure!(
-        manifest.is_file(),
-        "runtime pack is missing conversion-manifest.json"
-    );
-    let published = publish_directory(&pack_staging, output);
+        ensure!(
+            pack_staging.join("conversion-manifest.json").is_file(),
+            "runtime pack is missing conversion-manifest.json"
+        );
+        publish_directory(&pack_staging, output)
+    })();
     if published.is_err() {
         let _ = fs::remove_dir_all(&pack_staging);
     }
@@ -1172,6 +1176,37 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
                 destination.display()
             )
         })?;
+    }
+    Ok(())
+}
+
+/// Removes ingestion-cache blobs (and spill files) no longer referenced by
+/// the published manifest. Without this, removed or replaced archives leave
+/// orphaned blobs behind forever, since publication only adds.
+fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest) -> Result<()> {
+    use std::collections::BTreeSet;
+    if !cache_root.is_dir() {
+        return Ok(());
+    }
+    let mut live = BTreeSet::new();
+    for entry in manifest.archives.values() {
+        for file in &entry.files {
+            live.insert(file.hash.clone());
+        }
+    }
+    for entry in WalkDir::new(cache_root).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        // Blob names are 64 hex chars; spill files append `.N`. Anything
+        // else (probes, partials from crashed runs) is left alone.
+        let hash = name.split('.').next().unwrap_or("");
+        let is_blob = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+        if is_blob && !live.contains(hash) {
+            fs::remove_file(entry.path())?;
+        }
     }
     Ok(())
 }
@@ -1521,6 +1556,46 @@ mod tests {
         assert!(output.join("conversion-manifest.json").is_file());
         assert!(!output.join("vfs").exists());
         assert!(!output.join(".ingestion-cache").exists());
+    }
+
+    #[test]
+    fn prune_removes_only_unreferenced_blobs_and_spills() {
+        use crate::cache::{IngestedFile, IngestionCacheEntry};
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = directory.path().join(".ingestion-cache/sha256/ab");
+        fs::create_dir_all(&cache).unwrap();
+        let live = "ab".repeat(32);
+        let dead = "cd".repeat(32);
+        fs::write(cache.join(&live), b"live").unwrap();
+        fs::write(cache.join(format!("{live}.1")), b"live spill").unwrap();
+        fs::write(cache.join(&dead), b"dead").unwrap();
+        fs::write(cache.join(format!("{dead}.2")), b"dead spill").unwrap();
+        fs::write(cache.join("probe.tmp"), b"not a blob").unwrap();
+
+        let mut manifest = ConversionManifest::default();
+        manifest.archives.insert(
+            "assets.ba2".to_owned(),
+            IngestionCacheEntry {
+                source_hash: "00".repeat(32),
+                files: vec![IngestedFile {
+                    path: "textures/rock.dds".to_owned(),
+                    size: 4,
+                    hash: live.clone(),
+                }],
+            },
+        );
+        prune_stale_ingestion_blobs(
+            directory.path().join(".ingestion-cache").as_path(),
+            &manifest,
+        )
+        .unwrap();
+
+        assert!(cache.join(&live).is_file());
+        assert!(cache.join(format!("{live}.1")).is_file());
+        assert!(!cache.join(&dead).exists());
+        assert!(!cache.join(format!("{dead}.2")).exists());
+        assert!(cache.join("probe.tmp").is_file());
     }
 
     #[tokio::test]

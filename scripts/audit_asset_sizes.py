@@ -144,13 +144,14 @@ def scan(root: Path, inspect_headers: bool) -> dict[str, Any]:
     pairs: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"count": 0, "source_bytes": 0, "output_bytes": 0, "largest_growth": []}
     )
+    lowered = {name.lower(): size for name, size in sizes.items()}
     for name, output_size in sizes.items():
         rel = Path(name)
         source_ext = SOURCE_EXT.get(rel.suffix.lower())
         if not source_ext or rel.parts[0] in ("vfs", ".ingestion-cache"):
             continue
         source_name = "vfs/" + rel.with_suffix(source_ext).as_posix()
-        source_size = sizes.get(source_name)
+        source_size = lowered.get(source_name.lower())
         if source_size is None:
             continue
         label = f"{source_ext} -> {rel.suffix.lower()}"
