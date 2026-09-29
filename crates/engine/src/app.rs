@@ -1551,8 +1551,10 @@ mod tests {
 
     #[test]
     fn rejects_conflicting_fixture_modes() {
-        let mut config = EngineConfig::default();
-        config.physics_fixture = true;
+        let mut config = EngineConfig {
+            physics_fixture: true,
+            ..Default::default()
+        };
         assert!(validate_fixture_selection(&config).is_ok());
         config.streaming_fixture = true;
         assert!(validate_fixture_selection(&config).is_err());

@@ -96,3 +96,4 @@ B2|2026-09-26|Rapier 0.35 controller panics slicing empty manifold vec when push
 B3|2026-09-29|WALK camera reused prior pitch instead of `LookIntent.pitch`|V20
 B4|2026-09-29|Update overwrote jump press before next fixed tick at high render fps|V21
 B5|2026-09-29|fixture flags selected conflicting owners; benchmark ignored physics validation|V22
+B6|2026-09-29|fixture test reassigned field after Default; CI Clippy rejected it|struct initializer
