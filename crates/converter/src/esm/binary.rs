@@ -342,7 +342,7 @@ mod tests {
             },
         ];
         dummy_content::esm::plugin(&dummy_content::esm::Plugin {
-            author: "OpenSkyrim dummy-content",
+            author: "Mudcrab dummy-content",
             worldspace: "GeneratedWorld",
             cells: &cells,
             model_path: "meshes/generated.nif",

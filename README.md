@@ -1,19 +1,20 @@
-# Wah Krah Jol
+# Mudcrab
 
-![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/realfakenerd/wah-krah-jol?utm_source=oss&utm_medium=github&utm_campaign=realfakenerd%2Fwah-krah-jol&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/realfakenerd/mudcrab?utm_source=oss&utm_medium=github&utm_campaign=realfakenerd%2Fmudcrab&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 [![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange.svg)](https://www.rust-lang.org/)
 [![Engine](https://img.shields.io/badge/Engine-Bevy_0.19-blue.svg)](https://bevyengine.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)](#-quick-start-development-setup)
 [![Platforms](https://img.shields.io/badge/Platforms-Windows_%7C_Linux_%7C_Android-purple.svg)](docs/specs/meta/platforms.md)
+[![Discord](https://img.shields.io/badge/Discord-Join_Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZQQ2YqQrX7)
 
 An open-source, high-performance game engine reimplementation compatible with **The Elder Scrolls V: Skyrim (Special Edition)** assets, built from the ground up in **Rust** using the **Bevy Engine**.
 
-Inspired by open-source engine reimplementations like OpenMW, **Wah Krah Jol** modernizes legacy Bethesda game formats (`.esm`, `.bsa`, `.nif`, `.dds`, `.pex`) into GPU-native, stream-friendly formats (`glTF 2.0`, `KTX2 Basis`, `SQLite 3 / libSQL`, `Luau`) to deliver **60+ FPS high-performance gameplay without loading screens**.
+Inspired by open-source engine reimplementations like OpenMW, **Mudcrab** modernizes legacy Bethesda game formats (`.esm`, `.bsa`, `.nif`, `.dds`, `.pex`) into GPU-native, stream-friendly formats (`glTF 2.0`, `KTX2 Basis`, `SQLite 3 / libSQL`, `Luau`) to deliver **60+ FPS high-performance gameplay without loading screens**.
 
 > [!IMPORTANT]
-> **Legal Disclaimer:** Wah Krah Jol is an independent open-source project and is **not** affiliated with, endorsed by, or connected to Bethesda Softworks LLC, ZeniMax Media Inc., or Microsoft Corporation. "The Elder Scrolls" and "Skyrim" are registered trademarks of Bethesda Softworks / ZeniMax Media. This repository distributes **no proprietary game assets**. A legally purchased copy of the original game is required to supply game data. See [LEGAL.md](LEGAL.md) for full legal notices.
+> **Legal Disclaimer:** Mudcrab is an independent open-source project and is **not** affiliated with, endorsed by, or connected to Bethesda Softworks LLC, ZeniMax Media Inc., or Microsoft Corporation. "The Elder Scrolls" and "Skyrim" are registered trademarks of Bethesda Softworks / ZeniMax Media. This repository distributes **no proprietary game assets**. A legally purchased copy of the original game is required to supply game data. See [LEGAL.md](LEGAL.md) for full legal notices.
 
 ---
 
@@ -30,10 +31,10 @@ Inspired by open-source engine reimplementations like OpenMW, **Wah Krah Jol** m
 
 ## 🏗️ Workspace Crate Architecture
 
-Wah Krah Jol is organized into a modular Cargo workspace:
+Mudcrab is organized into a modular Cargo workspace:
 
 ```
-wah-krah-jol/
+mudcrab/
 ├── Cargo.toml                  # Workspace Root Manifest
 ├── LEGAL.md                    # Legal & Trademark Disclaimers
 ├── crates/
@@ -56,7 +57,7 @@ wah-krah-jol/
 
 ## 🗺️ Project Roadmap
 
-Wah Krah Jol is being built systematically across 5 core phases. Explore the full roadmap specs in [`docs/roadmap/`](docs/roadmap/README.md).
+Mudcrab is being built systematically across 5 core phases. Explore the full roadmap specs in [`docs/roadmap/`](docs/roadmap/README.md).
 
 - [x] **[Phase 1: Asset Modernization Pipeline (`converter`)](docs/roadmap/01-asset-pipeline.md)** — Transpile legacy `.esm`, `.nif`, `.dds`, and `.pex` into `SQLite 3`, `glTF 2.0`, `KTX2`, and `Luau`.
 - [ ] **[Phase 2: Core Engine Runtime & Vercidium Renderer (`engine`)](docs/roadmap/02-core-engine.md)** — Runtime, integration, profiling, and acceptance infrastructure implemented; complete real-asset sign-off remains pending.
@@ -78,8 +79,8 @@ Wah Krah Jol is being built systematically across 5 core phases. Explore the ful
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/realfakenerd/wah-krah-jol.git
-   cd wah-krah-jol
+   git clone https://github.com/realfakenerd/mudcrab.git
+   cd mudcrab
    ```
 
 2. **Check workspace compilation:**
@@ -128,13 +129,13 @@ We welcome community contributions! Whether you're fixing bugs in asset converte
 
 ### Licensing
 
-Wah Krah Jol is dual-licensed under either of the following licenses at your option:
+Mudcrab is dual-licensed under either of the following licenses at your option:
 
 - **MIT License** ([`LICENSE-MIT`](LICENSE-MIT))
 - **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
 
 ### Legal Notice & Trademark Disclaimer
 
-Wah Krah Jol is an independent open-source game engine reimplementation. It does **not** contain or distribute any copyrighted game assets, artwork, 3D models, audio, or game data belonging to Bethesda Softworks LLC or ZeniMax Media Inc. Users must supply their own legally owned copy of _The Elder Scrolls V: Skyrim_ to extract game data.
+Mudcrab is an independent open-source game engine reimplementation. It does **not** contain or distribute any copyrighted game assets, artwork, 3D models, audio, or game data belonging to Bethesda Softworks LLC or ZeniMax Media Inc. Users must supply their own legally owned copy of _The Elder Scrolls V: Skyrim_ to extract game data.
 
 All trademarks are the property of their respective owners and are used strictly under nominative fair use for compatibility description. Read the full statement in [LEGAL.md](LEGAL.md).

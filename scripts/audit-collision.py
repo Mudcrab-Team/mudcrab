@@ -25,8 +25,8 @@ def collision_contract(path: Path):
         if header[16:20] != b"JSON" or length > 64 * 1024 * 1024:
             raise ValueError("missing or oversized GLB JSON")
         document = json.loads(source.read(length))
-    scenes = document.get("scenes", [])
-    return scenes[0].get("extras", {}).get("openSkyrimCollision") if scenes else None
+    extras = scenes[0].get("extras", {}) if scenes else {}
+    return extras.get("mudcrabCollision", extras.get("openSkyrimCollision"))
 
 
 def main():

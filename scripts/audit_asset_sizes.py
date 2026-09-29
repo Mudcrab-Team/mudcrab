@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only storage audit for wah-krah-jol output (Python 3.10+, standard library).
+"""Read-only storage audit for mudcrab output (Python 3.10+, standard library).
 
 Reads file metadata and short DDS/KTX2 headers; never hashes or decodes assets.
 Does not follow symbolic links. Run against a completed, idle conversion.
