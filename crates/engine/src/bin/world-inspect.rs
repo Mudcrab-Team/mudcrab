@@ -249,7 +249,8 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
         .wrap_err("world database has no schema version")?;
     color_eyre::eyre::ensure!(
         supports_runtime_database_schema(database_schema),
-        "world database schema {database_schema} is unsupported; reconvert assets for a schema          from {MIN_RUNTIME_DATABASE_SCHEMA_VERSION} through {MAX_RUNTIME_DATABASE_SCHEMA_VERSION}"
+        "world database schema {database_schema} is unsupported; reconvert assets for a schema \
+         from {MIN_RUNTIME_DATABASE_SCHEMA_VERSION} through {MAX_RUNTIME_DATABASE_SCHEMA_VERSION}"
     );
     let cache = CellCache::open(&assets.join("cell_cache.rkyv"))?;
     let mut cells = Vec::new();
