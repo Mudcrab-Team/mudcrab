@@ -98,7 +98,7 @@ pub fn engine_exit_message<S: AsRef<str>>(
     log: Option<&Path>,
 ) -> String {
     let reason = match code {
-        Some(0) => return "OpenSkyrim engine closed.".into(),
+        Some(0) => return "Mudcrab engine closed.".into(),
         // Windows reports crashes as NTSTATUS values, which read better in hex.
         Some(code) if code < 0 => format!("exit code {code} (0x{:08X})", code as u32),
         Some(code) => format!("exit code {code}"),
@@ -201,7 +201,7 @@ mod tests {
     fn exit_zero_says_closed() {
         assert_eq!(
             engine_exit_message(Some(0), &["some log line"], Some(Path::new("x.log"))),
-            "OpenSkyrim engine closed."
+            "Mudcrab engine closed."
         );
     }
 

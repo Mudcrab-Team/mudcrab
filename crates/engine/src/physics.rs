@@ -1743,7 +1743,7 @@ fn move_held_tankard(
 fn cursor_lifecycle_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    windows: Query<(Entity, Option<&Window>)>,
+    windows: Query<&Window>,
     mut capture: ResMut<CursorCapture>,
     mut cursor_options: Query<&mut CursorOptions>,
     mut intent: ResMut<WalkIntent>,
@@ -1752,9 +1752,7 @@ fn cursor_lifecycle_system(
     mut controllers: Query<&mut KinematicCharacterController>,
 ) {
     // Focus loss or Escape releases; click recaptures (V6).
-    let focused = windows
-        .iter()
-        .all(|(_, window)| window.map(|window| window.focused).unwrap_or(true));
+    let focused = windows.iter().all(|window| window.focused);
     if !focused || keyboard.just_pressed(KeyCode::Escape) {
         if *capture == CursorCapture::Captured {
             *capture = CursorCapture::Released;

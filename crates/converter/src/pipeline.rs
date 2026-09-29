@@ -307,11 +307,7 @@ impl AssetPipeline {
         // must still stop it before the staging folder is renamed over the output. The folder is
         // kept, so the run resumes from where it stopped.
         if cancellation.is_cancelled() {
-            return Err(failure(
-                color_eyre::eyre::eyre!("conversion interrupted"),
-                &staging,
-                &cancellation,
-            ));
+            return Err(failure(Interrupted::new().into(), &staging, &cancellation));
         }
         publish_runtime_pack(&staging, &config.output_dir, &report)
             .map_err(|error| failure(error, &staging, &cancellation))?;
@@ -654,6 +650,22 @@ impl AssetPipeline {
                             "Texture reference pruned",
                         )
                         .await;
+                    }
+                }
+            }
+            for file in &pruned {
+                let path = staging.join(&file.glb);
+                if let (Ok(metadata), Ok(output_hash)) = (fs::metadata(&path), hash_file(&path)) {
+                    let output_size = metadata.len();
+                    for (key, entry) in &mut batch.manifest.entries {
+                        if entry.output == file.glb {
+                            entry.output_size = output_size;
+                            entry.output_hash = output_hash.clone();
+                            let _ = batch
+                                .journal
+                                .record(key, &staged_output(entry, batch.expected_configuration));
+                            break;
+                        }
                     }
                 }
             }

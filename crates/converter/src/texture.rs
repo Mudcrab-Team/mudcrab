@@ -353,12 +353,10 @@ fn native_ktx2_format(dds: &Dds, encoding: TextureEncoding) -> Option<ktx2::Form
     match dds.get_d3d_format() {
         Some(D3DFormat::DXT1) if !srgb => Some(Vk::BC1_RGBA_UNORM_BLOCK),
         Some(D3DFormat::DXT1) => Some(Vk::BC1_RGBA_SRGB_BLOCK),
-        Some(D3DFormat::DXT2 | D3DFormat::DXT3 | D3DFormat::DXT4) if !srgb => {
-            Some(Vk::BC2_UNORM_BLOCK)
-        }
-        Some(D3DFormat::DXT2 | D3DFormat::DXT3 | D3DFormat::DXT4) => Some(Vk::BC2_SRGB_BLOCK),
-        Some(D3DFormat::DXT5) if !srgb => Some(Vk::BC3_UNORM_BLOCK),
-        Some(D3DFormat::DXT5) => Some(Vk::BC3_SRGB_BLOCK),
+        Some(D3DFormat::DXT2 | D3DFormat::DXT3) if !srgb => Some(Vk::BC2_UNORM_BLOCK),
+        Some(D3DFormat::DXT2 | D3DFormat::DXT3) => Some(Vk::BC2_SRGB_BLOCK),
+        Some(D3DFormat::DXT4 | D3DFormat::DXT5) if !srgb => Some(Vk::BC3_UNORM_BLOCK),
+        Some(D3DFormat::DXT4 | D3DFormat::DXT5) => Some(Vk::BC3_SRGB_BLOCK),
         _ => None,
     }
 }
@@ -374,7 +372,8 @@ fn assemble_native_ktx2(
     is_cubemap: bool,
     zstd_level: i32,
 ) -> Result<Vec<u8>> {
-    let mip_count = dds.get_num_mipmap_levels().max(1) as usize;
+    let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), dds.get_depth()) as usize;
+    let mip_count = (dds.get_num_mipmap_levels().max(1) as usize).min(max_levels);
     let depth = dds.get_depth().max(1);
     let faces = if is_cubemap { 6u32 } else { 1 };
     let block_bytes = block_byte_size(dds)?;

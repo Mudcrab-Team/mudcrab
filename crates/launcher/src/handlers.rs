@@ -72,7 +72,7 @@ pub fn handle_play_button_click(
         }
         if let Some(engine) = &engine {
             status.push_notice(&format!(
-                "The OpenSkyrim engine is already running (process {}). Close it before starting another.",
+                "The Mudcrab engine is already running (process {}). Close it before starting another.",
                 engine.id()
             ));
         } else if play_available(*ready, &conversion.0) {

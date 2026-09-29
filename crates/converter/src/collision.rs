@@ -378,7 +378,11 @@ fn decode_compressed_mesh(bytes: &[u8], transform: Mat4) -> Result<CollisionShap
             material < layers.len(),
             "big triangle material out of range"
         );
-        if layers[material] != 15 {
+        ensure!(
+            tri.iter().all(|&index| (index as usize) < big_vertices),
+            "big triangle index out of range"
+        );
+        if layers[material] != 15 && tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
             triangles.push(tri);
         }
     }

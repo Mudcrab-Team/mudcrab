@@ -5,7 +5,7 @@ owned Skyrim Special Edition installation is required only for the final real-wo
 
 ## What is enforced
 
-- Converter schema 14, cell cache version 3, and world database schema 4 are exact-version contracts; stale outputs are
+- Converter manifest schemas 15–16, cell cache version 3, and world database schemas 3–4 are enforced contracts; stale or incompatible outputs are
   rejected by both launcher and engine.
 - Every converted `STAT`, `MSTT`, and `FURN` GLB is inspected. POSITION accessor bounds are
   transformed through the glTF node hierarchy and stored with `bounds_valid=1`.

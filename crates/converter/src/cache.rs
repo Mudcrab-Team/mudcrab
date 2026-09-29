@@ -253,13 +253,15 @@ pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
 ) -> Result<String> {
-    let relevant = serde_json::json!({
+    let mut relevant = serde_json::json!({
         "schema": schema,
         "texture_etc1s_quality": config.texture_fallback_quality,
         "texture_uastc_level": config.texture_uastc_level,
-        "texture_zstd_level": config.texture_zstd_level,
         "script_abi_version": config.script_abi_version,
     });
+    if schema >= 16 {
+        relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
+    }
     Ok(hash_bytes(&serde_json::to_vec(&relevant)?))
 }
 

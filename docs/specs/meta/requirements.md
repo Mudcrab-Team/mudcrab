@@ -19,7 +19,7 @@ CPU, the disk and what else is running.
 | Item | Size or time | Notes |
 | :--- | :--- | :--- |
 | the game's `Data` folder | about 15 GB | read only; the converter never writes into it |
-| a first (fresh) conversion | about 5 hours | measured 5.1 h; most of it is encoding textures to Basis UASTC |
+| a first (fresh) conversion | about 5 hours | measured 5.1 h on a full UASTC run; desktop default preserves native BC1–BC7 blocks |
 | a reconversion with unchanged inputs | about 30 minutes | converted assets are reused through `conversion-manifest.json` |
 | the converted output | about 70 GB | textures about 19 GB, the rest mostly the extracted archives (`vfs/`, `.ingestion-cache/`) |
 | free space during a reconversion | about the size of the output again | the new output is staged beside the old one and renamed over it at the end |
@@ -29,5 +29,5 @@ converts a small synthetic game in a couple of minutes.
 
 ## Running the engine
 
-Any desktop GPU with Vulkan, DirectX 12 or Metal support runs the engine. The converted textures are
-Basis UASTC KTX2, transcoded at load time to the GPU's compressed format.
+Any desktop GPU with Vulkan, DirectX 12 or Metal support runs the engine. Converted textures preserve
+native desktop BC blocks in KTX2 containers, with unmapped formats falling back to Basis UASTC.
