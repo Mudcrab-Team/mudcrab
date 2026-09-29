@@ -1568,11 +1568,6 @@ fn fly_camera(
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
 ) {
-    // The physics fixture owns its camera via NOCLIP/WALK; legacy fly controls
-    // stay on every other path (V5).
-    if config.physics_fixture {
-        return;
-    }
     let started = std::time::Instant::now();
     let Ok(mut transform) = camera.single_mut() else {
         return;
