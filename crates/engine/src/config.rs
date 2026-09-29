@@ -43,7 +43,6 @@ pub struct EngineConfig {
     pub transform_bounds_fixture: bool,
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
-    pub physics_fixture: bool,
     pub log_file: Option<PathBuf>,
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
@@ -88,7 +87,6 @@ impl Default for EngineConfig {
             transform_bounds_fixture: false,
             renderer_fixture: false,
             streaming_fixture: false,
-            physics_fixture: false,
             log_file: None,
             lights: false,
         }
@@ -253,7 +251,6 @@ impl EngineConfig {
                 "--transform-bounds-fixture" => config.transform_bounds_fixture = true,
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
-                "--physics-fixture" => config.physics_fixture = true,
                 "--log-file" => config.log_file = args.next().map(PathBuf::from),
                 "--lights" => config.lights = true,
                 _ => {}
@@ -377,7 +374,6 @@ mod tests {
                 "--transform-bounds-fixture",
                 "--renderer-fixture",
                 "--streaming-fixture",
-                "--physics-fixture",
                 "--lights",
             ]
             .map(str::to_owned),
@@ -407,7 +403,6 @@ mod tests {
         assert!(config.transform_bounds_fixture);
         assert!(config.renderer_fixture);
         assert!(config.streaming_fixture);
-        assert!(config.physics_fixture);
         assert_eq!(config.log_file, None);
         assert!(config.lights);
     }

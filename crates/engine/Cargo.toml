@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 shared = { path = "../shared" }
 bevy.workspace = true
-bevy_rapier3d = { version = "0.36.0", default-features = false, features = ["dim3"] }
 mlua.workspace = true
 rusqlite.workspace = true
 rkyv.workspace = true

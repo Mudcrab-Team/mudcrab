@@ -2,7 +2,6 @@ use crate::{
     config::EngineConfig,
     file_log::custom_file_layer,
     metrics::AcceptanceMetricsPlugin,
-    physics::PhysicsFixturePlugin,
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
         LIGHT_LAYERS, MAIN_VIEW_LAYERS, RendererMetrics, TerrainExtension, TerrainMaterial,
@@ -71,7 +70,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         || config.terrain_water_fixture
         || config.transform_bounds_fixture
         || config.renderer_fixture
-        || config.physics_fixture
     {
         None
     } else {
@@ -176,8 +174,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else if app.world().resource::<EngineConfig>().renderer_fixture {
         app.add_systems(Startup, setup_renderer_fixture)
             .add_systems(Update, validate_renderer_fixture);
-    } else if app.world().resource::<EngineConfig>().physics_fixture {
-        app.add_plugins(PhysicsFixturePlugin);
     } else {
         app.add_systems(Startup, setup_world);
         app.add_systems(Startup, setup_synthetic_benchmark);
@@ -1678,7 +1674,6 @@ fn screenshot_assets_ready(
         && (!config.terrain_water_fixture || metrics.terrain_water_fixture_validated)
         && (!config.transform_bounds_fixture || metrics.transform_bounds_fixture_validated)
         && (!config.streaming_fixture || metrics.streaming_fixture_validated)
-        && (!config.physics_fixture || metrics.physics_fixture_validated)
 }
 
 #[derive(Default)]
