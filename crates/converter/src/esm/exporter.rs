@@ -28,10 +28,10 @@ fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[
     let data = view
         .find(b"SPED")
         .ok_or_else(|| invalid_movement_field(form_id, "MOVT SPED"))?;
-    if data.len() != 44 {
+    if data.len() != 40 && data.len() != 44 {
         return Err(invalid_movement_field(
             form_id,
-            "MOVT SPED length (expected 44 bytes)",
+            "MOVT SPED length (expected 40 or 44 bytes)",
         ));
     }
     let mut speeds = [0.0; 8];
@@ -603,6 +603,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(height, 76.0);
+
+        let mut legacy = movement.clone();
+        legacy.subrecords[1].1.truncate(40);
+        export_to_db(&conn, &HashMap::from([(legacy.form_id, legacy)])).unwrap();
 
         let mut broken = movement;
         broken.subrecords[1].1[0..4].copy_from_slice(&f32::NAN.to_le_bytes());

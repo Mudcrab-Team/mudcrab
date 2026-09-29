@@ -767,6 +767,8 @@ pub const WALK_ENTRY_SEARCH_STEPS: u32 = 12;
 pub const WALK_ENTRY_STEP_HEIGHT: f32 = 28.0;
 /// Ground must exist within this distance below the capsule for WALK entry (V13).
 pub const WALK_ENTRY_GROUND_SEARCH: f32 = 400.0;
+/// Long falls still need to find loaded terrain below the capsule (V13).
+pub const WALK_GROUND_PRESENCE_SEARCH: f32 = 100_000.0;
 
 /// Build the upright player capsule + controller from tuning (V9, V12).
 pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
@@ -862,7 +864,7 @@ pub fn walk_movement_system(
             .cast_ray(
                 pose.translation,
                 Vec3::NEG_Y,
-                WALK_ENTRY_GROUND_SEARCH,
+                WALK_GROUND_PRESENCE_SEARCH,
                 true,
                 QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
             )
@@ -1177,6 +1179,26 @@ mod simulation_tests {
     use super::headless;
     use super::*;
 
+    #[test]
+    fn walk_falls_when_loaded_ground_is_far_below() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(120.0, 1200.0, 120.0);
+        headless::place_player(&mut app, start);
+        for _ in 0..20 {
+            app.update();
+        }
+        let (position, _) = headless::player_pose(&mut app);
+        assert!(
+            position.y < start.y - 10.0,
+            "long fall froze at {position:?}"
+        );
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .is_none()
+        );
+    }
     #[test]
     fn sprint_increases_collision_resolved_speed_and_idle_reads_zero() {
         let mut app = headless::fixture_app();

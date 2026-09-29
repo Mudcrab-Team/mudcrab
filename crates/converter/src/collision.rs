@@ -129,13 +129,13 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
         );
         let mut parent = None;
         for (candidate, block) in nif.blocks.iter().enumerate() {
-            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block {
-                if node.children.contains(&(index as u32)) {
-                    ensure!(
-                        parent.replace(candidate).is_none(),
-                        "collision node has multiple parents"
-                    );
-                }
+            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block
+                && node.children.contains(&(index as u32))
+            {
+                ensure!(
+                    parent.replace(candidate).is_none(),
+                    "collision node has multiple parents"
+                );
             }
         }
         Ok(match parent {
@@ -326,7 +326,13 @@ fn decode_compressed_mesh(bytes: &[u8], transform: Mat4) -> Result<CollisionShap
         bits == 17 && winding_bits == 18,
         "unsupported compressed mesh index format"
     );
-    cursor.skip(4 * 2 + 4 + 32 + 2)?; // masks, quantization error, AABB, welding/material mode
+    cursor.skip(4 * 2)?; // masks
+    let quantization_error = cursor.f32()?;
+    ensure!(
+        quantization_error.is_finite() && quantization_error > 0.0,
+        "invalid compressed mesh quantization error"
+    );
+    cursor.skip(32 + 2)?; // AABB, welding/material mode
     for width in [4, 2, 1] {
         let count = cursor.count(MAX_VERTICES)?;
         cursor.skip(count * width)?;
@@ -404,7 +410,7 @@ fn decode_compressed_mesh(bytes: &[u8], transform: Mat4) -> Result<CollisionShap
                 f32::from(cursor.u16()?),
                 f32::from(cursor.u16()?),
                 f32::from(cursor.u16()?),
-            ) * (HAVOK_TO_CREATION / 1000.0);
+            ) * (HAVOK_TO_CREATION * quantization_error);
             vertices.push(point(
                 transform * chunk_transform,
                 chunk_translation + quantized,
@@ -460,7 +466,7 @@ fn decode_compressed_mesh(bytes: &[u8], transform: Mat4) -> Result<CollisionShap
             "incomplete compressed triangle tail"
         );
         if layers[material] != 15 {
-            for tail in indices[used..].chunks_exact(3) {
+            for tail in indices[used..].as_chunks::<3>().0 {
                 if tail[0] != tail[1] && tail[1] != tail[2] && tail[0] != tail[2] {
                     triangles.push([tail[0], tail[1], tail[2]]);
                 }
@@ -794,7 +800,7 @@ mod tests {
         u32v(18);
         u32v(0x3ffff);
         u32v(0x1ffff);
-        data.extend_from_slice(&0.001_f32.to_le_bytes());
+        data.extend_from_slice(&0.002_f32.to_le_bytes());
         data.extend_from_slice(&[0; 32]); // AABB
         data.extend_from_slice(&[0, 1]); // welding, material mode
         for _ in 0..3 {
@@ -840,9 +846,9 @@ mod tests {
             vertices,
             vec![
                 [0.0, 0.0, 0.0],
-                [70.0, 0.0, 0.0],
-                [0.0, 0.0, -70.0],
-                [70.0, 0.0, -70.0]
+                [140.0, 0.0, 0.0],
+                [0.0, 0.0, -140.0],
+                [140.0, 0.0, -140.0]
             ]
         );
         assert_eq!(triangles, vec![[0, 1, 2], [2, 1, 3]]);

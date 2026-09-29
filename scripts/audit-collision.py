@@ -98,11 +98,13 @@ def main():
             states[model.replace("\\", "/").lower()] = state
 
     for model in args.expect_solid:
-        if states.get(model.replace("\\", "/").lower()) != "authored":
-            skipped.append({"model": model, "status": states.get(model, "missing"), "reason": "expected solid"})
+        state = states.get(model.replace("\\", "/").lower(), "missing")
+        if state != "authored":
+            skipped.append({"model": model, "status": state, "reason": "expected solid"})
     for model in args.expect_passable:
-        if states.get(model.replace("\\", "/").lower()) != "absent":
-            skipped.append({"model": model, "status": states.get(model, "missing"), "reason": "expected passable"})
+        state = states.get(model.replace("\\", "/").lower(), "missing")
+        if state != "absent":
+            skipped.append({"model": model, "status": state, "reason": "expected passable"})
 
     report = {
         "worldspace": args.worldspace,

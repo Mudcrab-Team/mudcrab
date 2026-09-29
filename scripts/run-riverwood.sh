@@ -33,14 +33,18 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${WAYLAND_SOCKET:-}" ] && [ -z "${DISP
 fi
 # Bundled libxkbcommon bakes in the build host's xkeyboard-config path; point
 # it at the target machine's xkb data.
-if [ -z "$XKB_CONFIG_ROOT" ]; then
-  for candidate in /nix/store/*-xkeyboard-config-*/share/X11/xkb; do
+if [ -z "${XKB_CONFIG_ROOT:-}" ]; then
+  for candidate in /nix/store/*-xkeyboard-config-*/share/X11/xkb /usr/share/X11/xkb /usr/local/share/X11/xkb; do
     if [ -d "$candidate" ]; then
       XKB_CONFIG_ROOT="$candidate"
       break
     fi
   done
-  export XKB_CONFIG_ROOT
 fi
+if [ ! -d "${XKB_CONFIG_ROOT:-}" ]; then
+  echo 'No keyboard layout data found; set XKB_CONFIG_ROOT to an installed X11/xkb directory.' >&2
+  exit 1
+fi
+export XKB_CONFIG_ROOT
 exec "$dir/lib/ld-linux-x86-64.so.2" --library-path "$dir/lib" "$dir/bin/engine" \
   --assets "$dir/assets" --worldspace 60 --grid-x 5 --grid-y -12 --stream-radius 2 "$@"

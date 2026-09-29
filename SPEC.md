@@ -169,6 +169,10 @@ V58: Jump fixture measures `PlayerBody` pose from grounded rest through launch a
 V59: Portable Riverwood launcher leaves host Vulkan ICD discovery intact and preserves caller `VK_ICD_FILENAMES`; bundled ALSA config hook resolves through package `lib` on target. Target smoke reaches `AdapterInfo` and runtime initialization.
 V60: WALK overlay reports `Alt` latch and actual horizontal speed from Rapier `effective_translation` per fixed step, never target speed; under 5 Creation units/s contact jitter reads 0, vertical jump excluded. Controlled perspective gains 8° FOV only during moving WALK sprint, with 0.12 s exponential half-life back to base on stop/mode change; noninteractive cameras retain base FOV.
 V61: Provisional sprint target = 1.5× selected directional run speed, including winning `MOVT` fields; packaged forward 370 → 555 Creation units/s. Collision-free fixed-step actual speed reaches targets; blocked speed remains 0 despite nonzero target.
+V62: WALK entry requires ground within 400 units; active WALK keeps falling when loaded ground lies farther below. Missing loaded ground still suspends movement.
+V63: Compressed Havok mesh vertices scale by finite positive serialized quantization error; alternate valid scales preserve geometry.
+V64: Selected `MOVT SPED` accepts 40- or 44-byte layouts; rejects other lengths and invalid speed fields.
+V65: Package launcher resolves XKB data on Nix and standard Linux paths or reports missing data before engine start; configured valid `XKB_CONFIG_ROOT` survives.
 
 ## §T TASKS
 
@@ -236,3 +240,10 @@ B22|2026-09-28|fixed 420-unit sprint gave only 13.5% gain over packaged 370-unit
 B23|2026-09-28|Rapier wall contact produced about 4 units/s lateral jitter, making a stationary speed indicator nonzero|V60
 B24|2026-09-28|FOV ECS test used ambiguous generic `Time::default()` and failed to compile|explicit `Time<()>` fixture resource
 B25|2026-09-29|legacy conversion test copied schema 4 integration report into schema 3 checkout|fixture uses `WORLD_DATABASE_SCHEMA_VERSION`
+B26|2026-09-29|400-unit WALK entry search reused for active ground presence and froze long falls|V62
+B27|2026-09-29|compressed mesh decoder ignored serialized quantization error and assumed 0.001|V63
+B28|2026-09-29|MOVT parser rejected legacy 40-byte SPED despite same eight speed fields|V64
+B29|2026-09-29|launcher searched XKB only in Nix store; standard Linux hosts could use stale build path|V65
+B30|2026-09-29|collision audit compared normalized model key but reported raw-key status|normalize report status
+B31|2026-09-29|launcher test expected `/bin/sh` to depend on libdl after glibc 2.34|readable preflight fixture
+B32|2026-09-29|new converter loops failed CI Clippy under Rust 1.98|collapse node condition and use `as_chunks`
