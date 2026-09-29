@@ -4,7 +4,7 @@ use color_eyre::{
 };
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
-    pipeline::{Cancellation, PipelineFailure},
+    pipeline::{Cancellation, Interrupted, PipelineFailure},
     progress::{ProgressRenderer, format_bytes, format_elapsed},
 };
 use serde::Serialize;
@@ -122,7 +122,7 @@ impl RunWatch {
     const NAMED_FAILURES: usize = 3;
 
     fn observe(&mut self, event: &ProgressEvent) {
-        if event.message == "Asset skipped" || event.message == "Asset conversion failed" {
+        if event.is_asset_failure() {
             self.failures += 1;
             if self.failed.len() < Self::NAMED_FAILURES {
                 self.failed
@@ -262,13 +262,7 @@ async fn main() -> Result<()> {
 
 /// The summary a finished run prints: what it produced, how long it took, and where to look.
 fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
-    println!(
-        "Conversion complete in {}: converted {}, reused {}, failed {}",
-        format_elapsed(report.elapsed_ms as f64 / 1000.0),
-        report.converted,
-        report.cache_hits,
-        report.skipped,
-    );
+    println!("{}", summary_headline(report));
     let (bytes, files) = artifact_size(&cli.output, &report.artifacts);
     println!(
         "  output: {} in {} artifacts ({})",
@@ -284,6 +278,21 @@ fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
         println!("  report: {}", path.display());
     }
     println!("{}", clock.summary());
+}
+
+/// The summary's first line. A run that skipped inputs published an output without them, so it
+/// says it finished incomplete rather than that it is complete.
+fn summary_headline(report: &PipelineReport) -> String {
+    let elapsed = format_elapsed(report.elapsed_ms as f64 / 1000.0);
+    let counts = format!(
+        "converted {}, reused {}, failed {}",
+        report.converted, report.cache_hits, report.skipped
+    );
+    if report.complete {
+        format!("Conversion complete in {elapsed}: {counts}")
+    } else {
+        format!("Conversion finished in {elapsed}, incomplete: {counts}")
+    }
 }
 
 /// The size of the converted artifacts. The published tree also holds the extracted `vfs` and the
@@ -315,9 +324,8 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
             "Conversion interrupted after {}{stage}.",
             format_elapsed(elapsed.as_secs_f64())
         );
-        // A plain stop says only that; anything more is a cause worth showing.
-        if failure.error.to_string() != "conversion interrupted" {
-            eprintln!("  Cause: {:#}", failure.error);
+        if let Some(cause) = stop_cause(failure) {
+            eprintln!("  Cause: {cause}");
         }
     } else {
         eprintln!(
@@ -340,7 +348,7 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
         Some(staging) => {
             eprintln!("  The staging folder was kept: {}", staging.display());
             eprintln!("  Resume where it stopped with:");
-            eprintln!("    {}", resume_command(cli, staging));
+            eprintln!("    {}", resume_command(&program_name(), cli, staging));
             eprintln!(
                 "  Delete that folder to free the space if you would rather start over: {}",
                 staging.display()
@@ -352,10 +360,36 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
     }
 }
 
-/// The exact command that resumes a run from a kept staging folder.
-fn resume_command(cli: &Cli, staging: &Path) -> String {
+/// What to show under "Conversion interrupted": nothing for a plain stop, otherwise the error that
+/// raced it, or the error that ended the run while the stop was pending.
+fn stop_cause(failure: &PipelineFailure) -> Option<String> {
+    match failure.error.downcast_ref::<Interrupted>() {
+        Some(stop) => stop.cause().map(|cause| format!("{cause:#}")),
+        None => Some(format!("{:#}", failure.error)),
+    }
+}
+
+/// The name the converter was started as (`converter`, `converter.exe`, or whatever a packager
+/// renamed it to), for the commands it prints. `converter` when the system cannot say.
+fn program_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "converter".to_owned())
+}
+
+/// The exact command that resumes a run from a kept staging folder, started as `program`.
+fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
+    let program = if program.contains(char::is_whitespace) {
+        format!("\"{program}\"")
+    } else {
+        program.to_owned()
+    };
     format!(
-        "converter \"{}\" \"{}\" --resume-staging \"{}\"",
+        "{program} \"{}\" \"{}\" --resume-staging \"{}\"",
         cli.data.display(),
         cli.output.display(),
         staging.display()
@@ -794,9 +828,40 @@ mod tests {
             verify_cache: true,
             verbose: false,
         };
+        let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
-            resume_command(&cli, Path::new("C:/Modding/SkyrimConverted.staging-1-2")),
-            "converter \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            resume_command("converter.exe", &cli, staging),
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+        );
+        // A renamed binary is named as it is, quoted when its name has a space.
+        assert_eq!(
+            resume_command("mudcrab converter", &cli, staging),
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+        );
+        // The test binary itself stands in for the running converter.
+        assert!(!program_name().is_empty());
+    }
+
+    #[test]
+    fn the_summary_calls_a_run_complete_only_when_it_is() {
+        let mut report = PipelineReport {
+            converted: 10,
+            cache_hits: 4,
+            skipped: 0,
+            elapsed_ms: 62_300,
+            complete: true,
+            ..PipelineReport::default()
+        };
+        assert_eq!(
+            summary_headline(&report),
+            "Conversion complete in 0:01:02.3: converted 10, reused 4, failed 0"
+        );
+
+        report.skipped = 2;
+        report.complete = false;
+        assert_eq!(
+            summary_headline(&report),
+            "Conversion finished in 0:01:02.3, incomplete: converted 10, reused 4, failed 2"
         );
     }
 
@@ -804,19 +869,65 @@ mod tests {
     fn watches_the_first_few_failed_assets() {
         let mut watch = RunWatch::default();
         for index in 0..5 {
-            let mut event = ProgressEvent::new(
+            let event = ProgressEvent::new(
                 ProgressStage::Textures,
                 index,
                 5,
                 Some(PathBuf::from(format!("textures/bad{index}.dds"))),
                 "Asset skipped",
-            );
-            event.message = "Asset skipped".to_owned();
+            )
+            .with_outcome(converter::AssetOutcome::Skipped);
             watch.observe(&event);
         }
-        assert_eq!(watch.failures, 5);
+        // A failure is recognised by its outcome, not by the wording of its message.
+        let reworded = ProgressEvent::new(
+            ProgressStage::Meshes,
+            0,
+            1,
+            Some(PathBuf::from("meshes/bad.nif")),
+            "Some other wording",
+        )
+        .with_outcome(converter::AssetOutcome::Failed);
+        watch.observe(&reworded);
+        let converted = ProgressEvent::new(
+            ProgressStage::Meshes,
+            1,
+            1,
+            Some(PathBuf::from("meshes/good.nif")),
+            "Asset skipped",
+        );
+        watch.observe(&converted);
+        assert_eq!(watch.failures, 6);
         assert_eq!(watch.failed.len(), RunWatch::NAMED_FAILURES);
         assert_eq!(watch.failed[0], PathBuf::from("textures/bad0.dds"));
+    }
+
+    #[test]
+    fn a_stop_shows_a_cause_only_when_there_is_one() {
+        let failure = |error: color_eyre::Report| PipelineFailure {
+            error,
+            staging: None,
+            cancelled: true,
+        };
+        assert_eq!(stop_cause(&failure(Interrupted::new().into())), None);
+        // The extractor noticed the stop first: its error is the same plain stop.
+        assert_eq!(
+            stop_cause(&failure(
+                Interrupted::after(Interrupted::new().into()).into()
+            )),
+            None
+        );
+        assert_eq!(
+            stop_cause(&failure(
+                Interrupted::after(color_eyre::eyre::eyre!("bad archive header")).into()
+            ))
+            .as_deref(),
+            Some("bad archive header")
+        );
+        assert_eq!(
+            stop_cause(&failure(color_eyre::eyre::eyre!("disk full"))).as_deref(),
+            Some("disk full")
+        );
     }
 
     #[test]

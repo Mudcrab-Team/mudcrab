@@ -63,6 +63,17 @@ pub fn overall_fraction(stage: ProgressStage, fraction: f32) -> f32 {
     (stage.offset() + stage.weight() * fraction.clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
+/// How one asset's conversion ended, for the events that report that end. Front ends read this
+/// rather than the event's message, which is text for people and may change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetOutcome {
+    /// The asset failed and the run carried on without it; the manifest lists it as a failure.
+    Skipped,
+    /// The asset failed and the run stops because of it (`--fail-fast`).
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub stage: ProgressStage,
@@ -88,6 +99,9 @@ pub struct ProgressEvent {
     /// update: it is printed on its own line, and a GUI can list it in a log pane.
     #[serde(default)]
     pub notice: bool,
+    /// Set on the event that ends a failed asset's conversion; `None` on every other event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AssetOutcome>,
 }
 
 impl ProgressEvent {
@@ -109,6 +123,7 @@ impl ProgressEvent {
             stage_fraction: None,
             overall: 0.0,
             notice: false,
+            outcome: None,
         };
         event.refresh_overall();
         event
@@ -128,6 +143,20 @@ impl ProgressEvent {
         self.bytes_total = Some(total);
         self.refresh_overall();
         self
+    }
+
+    /// Marks the event as the end of one asset's conversion, and how it ended.
+    pub fn with_outcome(mut self, outcome: AssetOutcome) -> Self {
+        self.outcome = Some(outcome);
+        self
+    }
+
+    /// Whether this event reports an asset that failed, whether or not the run carried on.
+    pub fn is_asset_failure(&self) -> bool {
+        matches!(
+            self.outcome,
+            Some(AssetOutcome::Skipped | AssetOutcome::Failed)
+        )
     }
 
     /// Overrides the stage fraction, for a stage whose units are not its files.
@@ -167,6 +196,20 @@ impl ProgressEvent {
     fn refresh_overall(&mut self) {
         self.overall = overall_fraction(self.stage, self.progress_fraction());
     }
+}
+
+/// The line `--verbose` prints for one event: the stage, how far through it the run is, what
+/// happened, and the file it happened to.
+fn verbose_line(event: &ProgressEvent) -> String {
+    let mut line = format!("{:<11}", format!("{:?}", event.stage));
+    if event.total > 0 {
+        let _ = write!(line, " {}/{}", event.completed, event.total);
+    }
+    let _ = write!(line, "  {}", event.message);
+    if let Some(file) = &event.current_file {
+        let _ = write!(line, ": {}", file.display());
+    }
+    line
 }
 
 /// `line` put back on the terminal row at the start of `previous_width`, padded with spaces so
@@ -426,10 +469,19 @@ impl ProgressRenderer {
             return None;
         }
 
-        let line = self.line(event, elapsed);
         self.stage = Some(event.stage);
         self.last_emit = Some(elapsed);
-        if self.verbose || !self.terminal {
+        if self.verbose {
+            self.open_line = false;
+            return Some(format!(
+                "[{}] {}
+",
+                format_elapsed(elapsed.as_secs_f64()),
+                verbose_line(event)
+            ));
+        }
+        let line = self.line(event, elapsed);
+        if !self.terminal {
             self.open_line = false;
             Some(format!(
                 "[{}] {line}\n",
@@ -531,6 +583,7 @@ impl ProgressRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn event(stage: ProgressStage, completed: u64, total: u64) -> ProgressEvent {
         ProgressEvent::new(stage, completed, total, None, "test")
@@ -862,6 +915,40 @@ mod tests {
             lines += 1;
         }
         assert_eq!(lines, 20);
+    }
+
+    #[test]
+    fn verbose_lines_name_the_asset_and_what_happened() {
+        let mut renderer = ProgressRenderer::new(true, true);
+        let converted = ProgressEvent::new(
+            ProgressStage::Textures,
+            3,
+            20,
+            Some(PathBuf::from("textures/rock.dds")),
+            "Converted asset",
+        );
+        let line = renderer
+            .update(&converted, Duration::from_millis(1_500))
+            .expect("verbose prints every event");
+        assert_eq!(
+            line,
+            format!(
+                "[0:00:01.5] Textures    3/20  Converted asset: {}
+",
+                Path::new("textures/rock.dds").display()
+            )
+        );
+
+        // An event about the stage rather than one file says what happened and nothing more.
+        let started = ProgressEvent::new(ProgressStage::Database, 0, 0, None, "Building world");
+        let line = renderer
+            .update(&started, Duration::from_secs(2))
+            .expect("verbose prints every event");
+        assert_eq!(
+            line,
+            "[0:00:02.0] Database     Building world
+"
+        );
     }
 
     #[test]

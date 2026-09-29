@@ -132,6 +132,13 @@ fn a_failed_run_prints_what_went_wrong_and_the_command_that_resumes_it() {
     assert!(stderr.contains("The staging folder was kept"), "{stderr}");
     assert!(stderr.contains("Resume where it stopped with:"), "{stderr}");
     assert!(stderr.contains("--resume-staging"), "{stderr}");
+    // The command names the binary that ran, as it is called on this system.
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_converter"))
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(stderr.contains(&format!("    {binary} \"")), "{stderr}");
     assert!(
         stderr.contains("Delete that folder to free the space"),
         "{stderr}"
@@ -143,4 +150,31 @@ fn a_failed_run_prints_what_went_wrong_and_the_command_that_resumes_it() {
 
     // The sample in the task's report: what a failed run tells the person who ran it.
     println!("{stderr}");
+}
+
+/// A run that skipped an input still publishes, but its summary must not call it complete before
+/// stderr says it is not.
+#[test]
+fn an_incomplete_run_does_not_call_itself_complete() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    fs::create_dir_all(data.join("textures")).unwrap();
+    fs::write(data.join("textures/bad.dds"), b"not a DDS").unwrap();
+    let output = directory.path().join("modern");
+
+    let run = Command::new(env!("CARGO_BIN_EXE_converter"))
+        .arg(&data)
+        .arg(&output)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!run.status.success(), "{stderr}");
+    assert!(
+        stdout.contains("Conversion finished in") && stdout.contains(", incomplete: "),
+        "{stdout}"
+    );
+    assert!(stdout.contains("failed 1"), "{stdout}");
+    assert!(!stdout.contains("Conversion complete"), "{stdout}");
+    assert!(stderr.contains("Conversion incomplete"), "{stderr}");
 }

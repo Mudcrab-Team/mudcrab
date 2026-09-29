@@ -10,7 +10,7 @@ use crate::{
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
     integration::{IntegrationReport, finalize_world_database},
     mesh::MeshConverter,
-    progress::{ProgressEvent, ProgressStage},
+    progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic},
 };
@@ -87,6 +87,47 @@ impl Cancellation {
     }
 }
 
+/// The error a run ends with when it was stopped (Ctrl+C, a launcher's Stop button) rather than
+/// failing. A stop that raced a real error keeps that error as its cause, so a front end can still
+/// show it; a plain stop has no cause. Front ends find it with `report.downcast_ref::<Interrupted>()`
+/// instead of matching the error text.
+#[derive(Debug, Default)]
+pub struct Interrupted {
+    cause: Option<color_eyre::Report>,
+}
+
+impl Interrupted {
+    /// A stop with no error behind it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A stop that landed while `error` was ending the same work. An `error` that is itself a
+    /// plain stop (the extractor noticed the stop first) adds nothing, so it is not kept as a cause.
+    pub fn after(error: color_eyre::Report) -> Self {
+        match error.downcast_ref::<Interrupted>() {
+            Some(stop) if stop.cause.is_none() => Self::new(),
+            _ => Self { cause: Some(error) },
+        }
+    }
+
+    /// The error that raced the stop, if there was one.
+    pub fn cause(&self) -> Option<&color_eyre::Report> {
+        self.cause.as_ref()
+    }
+}
+
+impl fmt::Display for Interrupted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.cause {
+            Some(cause) => write!(formatter, "conversion interrupted ({cause:#})"),
+            None => formatter.write_str("conversion interrupted"),
+        }
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
 /// A run that stopped short of publishing. `staging` is the folder left behind, when one was kept,
 /// and `cancelled` says whether the user interrupted the run rather than it failing.
 #[derive(Debug)]
@@ -125,11 +166,7 @@ fn publish_if_not_interrupted(
     cancellation: &Cancellation,
 ) -> Result<(), PipelineFailure> {
     if cancellation.is_cancelled() {
-        return Err(failure(
-            color_eyre::eyre::eyre!("conversion interrupted"),
-            staging,
-            cancellation,
-        ));
+        return Err(failure(Interrupted::new().into(), staging, cancellation));
     }
     publish_directory(staging, output).map_err(|error| failure(error, staging, cancellation))
 }
@@ -151,6 +188,13 @@ fn failure(
 pub struct AssetPipeline;
 
 impl AssetPipeline {
+    /// Runs a conversion, reporting on `progress_tx`.
+    ///
+    /// The channel is bounded, and a front end should keep reading it. Events that matter on their
+    /// own (a stage or an archive starting and ending, an asset failing, a notice) wait for room;
+    /// the per-file updates sent while an archive is extracted are dropped when the channel is
+    /// full, so extraction never waits on the front end. Each of them carries cumulative numbers,
+    /// so the next one that gets through is as good as any that were dropped.
     pub async fn run_async(
         config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
@@ -408,7 +452,10 @@ impl AssetPipeline {
                 } else {
                     1.0
                 };
-                let _ = progress_for_worker.blocking_send(
+                // The extraction threads never wait on the front end: an update that finds the
+                // channel full is dropped, and the next one carries the cumulative numbers. The
+                // archive's start and end events, and every failure, are still sent reliably.
+                let _ = progress_for_worker.try_send(
                     ProgressEvent::new(
                         ProgressStage::Extracting,
                         archive_index,
@@ -454,13 +501,13 @@ impl AssetPipeline {
             // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
             // between archives, rather than being counted as a skipped archive. Its cache entry
             // was never recorded, so a resume extracts it again from the start.
-            if let Err(error) = &result {
+            let result = match result {
                 // A stop that races an archive error keeps the archive's error as its cause.
-                if cancellation.is_cancelled() {
-                    bail!("conversion interrupted ({error:#})");
+                Err(error) if cancellation.is_cancelled() => {
+                    return Err(Interrupted::after(error).into());
                 }
-                interrupt(cancellation)?;
-            }
+                result => result,
+            };
 
             send(
                 progress_tx,
@@ -1084,15 +1131,18 @@ impl ConversionBatch<'_> {
                     if fail_fast {
                         if first_error.is_none() {
                             cancelled.store(true, Ordering::Relaxed);
-                            send(
-                                &progress_tx,
-                                stage,
-                                completed,
-                                total_files,
-                                Some(relative),
-                                "Asset conversion failed",
-                            )
-                            .await;
+                            let _ = progress_tx
+                                .send(
+                                    ProgressEvent::new(
+                                        stage,
+                                        completed,
+                                        total_files,
+                                        Some(relative),
+                                        "Asset conversion failed",
+                                    )
+                                    .with_outcome(AssetOutcome::Failed),
+                                )
+                                .await;
                             first_error = Some(error);
                         }
                     } else {
@@ -1122,15 +1172,19 @@ impl ConversionBatch<'_> {
         relative: PathBuf,
         error: color_eyre::eyre::Error,
     ) {
-        send(
-            self.progress_tx,
-            stage,
-            completed,
-            total,
-            Some(relative.clone()),
-            "Asset skipped",
-        )
-        .await;
+        let _ = self
+            .progress_tx
+            .send(
+                ProgressEvent::new(
+                    stage,
+                    completed,
+                    total,
+                    Some(relative.clone()),
+                    "Asset skipped",
+                )
+                .with_outcome(AssetOutcome::Skipped),
+            )
+            .await;
         let message = format!("{}: {error:#}", relative.display());
         self.manifest.failures.insert(key, message.clone());
         self.report.warnings.push(message);
@@ -1738,7 +1792,9 @@ async fn send_with_bytes(
 /// Stops the run at the next safe point when the user interrupted it. The caller keeps the staging
 /// folder, so the run can be resumed where it stopped.
 fn interrupt(cancellation: &Cancellation) -> Result<()> {
-    ensure!(!cancellation.is_cancelled(), "conversion interrupted");
+    if cancellation.is_cancelled() {
+        return Err(Interrupted::new().into());
+    }
     Ok(())
 }
 
@@ -1791,6 +1847,7 @@ mod tests {
         fs::create_dir_all(&staging).unwrap();
         assert_eq!(crate::find_resumable_staging(&output), Some((staging, 0)));
     }
+    use std::time::Duration;
     use tokio::sync::mpsc;
 
     #[test]
@@ -2101,6 +2158,7 @@ mod tests {
         assert!(staging.is_dir());
         let last = events.last().unwrap();
         assert_eq!(last.stage, ProgressStage::Textures);
+        assert_eq!(last.outcome, Some(AssetOutcome::Failed));
         assert_eq!(last.message, "Asset conversion failed");
         assert!(last.current_file.as_ref().is_some_and(|path| {
             path == Path::new("textures/bad.dds") || path == Path::new("textures/also-bad.dds")
@@ -2272,7 +2330,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| event.message == "Asset skipped")
+                .filter(|event| event.outcome == Some(AssetOutcome::Skipped))
                 .count(),
             2
         );
@@ -2682,7 +2740,13 @@ mod tests {
         watcher.await.unwrap();
 
         assert!(failure.cancelled, "a stop is reported as an interrupt");
-        assert!(failure.to_string().contains("interrupted"));
+        assert!(
+            failure
+                .error
+                .downcast_ref::<Interrupted>()
+                .is_some_and(|stop| stop.cause().is_none()),
+            "a plain stop inside an archive has no cause to show: {failure}"
+        );
         assert!(!output.exists(), "an interrupted run does not publish");
         let staging = failure
             .staging
@@ -2724,6 +2788,90 @@ mod tests {
         assert_eq!(fs::read(blob).unwrap(), b"entry 2047");
     }
 
+    /// A front end that stops reading progress must not stall extraction: the per-file updates
+    /// find the channel full and are dropped, so the archive's threads run to the end. Only the
+    /// events that matter on their own wait for room, and reading again lets the run finish.
+    #[tokio::test]
+    async fn extraction_does_not_wait_for_a_front_end_that_stopped_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        // Enough entries for several per-file updates, one every 512 files.
+        let entries = 2048;
+        let names: Vec<String> = (0..entries)
+            .map(|index| format!("docs/file{index:04}.txt"))
+            .collect();
+        let contents: Vec<Vec<u8>> = (0..entries)
+            .map(|index| format!("entry {index}").into_bytes())
+            .collect();
+        let archive_entries: Vec<_> = names
+            .iter()
+            .zip(&contents)
+            .map(|(name, data)| dummy_content::Entry::new(name, data))
+            .collect();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(&archive_entries, dummy_content::ba2::Compression::None)
+                .unwrap(),
+        )
+        .unwrap();
+        // The extractor caches the files only once every one of them is written, so the last
+        // file's blob in the staging cache shows the extraction threads have finished.
+        let last_blob = crate::cache::hash_bytes(b"entry 2047");
+
+        // Room for one event: after the archive's first update, the channel stays full.
+        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(1);
+        let front_end = async {
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                    .await
+                    .expect("the run reaches extraction")
+                    .expect("the run is still sending");
+                if event.stage == ProgressStage::Extracting && event.stage_fraction.is_none() {
+                    break;
+                }
+            }
+            // Stop reading until the archive is extracted.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                let blob = crate::find_resumable_staging(&output).map(|(staging, _)| {
+                    staging
+                        .join(".ingestion-cache/sha256")
+                        .join(&last_blob[..2])
+                        .join(&last_blob)
+                });
+                if blob.is_some_and(|blob| blob.is_file()) {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    // Close the channel first, so stalled threads end and the test fails
+                    // instead of hanging.
+                    drop(rx);
+                    panic!("extraction stalled while nobody read its progress");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // Reading again lets the waiting events through.
+            while rx.recv().await.is_some() {}
+        };
+        let (report, ()) = tokio::join!(
+            AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx),
+            front_end
+        );
+
+        let report = report.unwrap();
+        assert!(report.complete);
+        let cache_root = PipelineConfig::new(&data, &output).ingestion_cache_dir();
+        let blobs = WalkDir::new(cache_root.join(".ingestion-cache"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .count();
+        assert_eq!(blobs, entries);
+        assert_eq!(report.converted, entries as u64);
+    }
+
     /// The window between the last stage and the publish rename cannot be hit from outside in a
     /// test without racing the run, so the gate itself is driven directly: a run that was
     /// interrupted while it was packing up must not publish, and must keep its staging folder.
@@ -2739,6 +2887,7 @@ mod tests {
         cancellation.cancel();
         let failure = publish_if_not_interrupted(&staging, &output, &cancellation).unwrap_err();
         assert!(failure.cancelled);
+        assert!(failure.error.downcast_ref::<Interrupted>().is_some());
         assert!(failure.to_string().contains("interrupted"));
         assert!(!output.exists(), "an interrupted run must not publish");
         assert_eq!(failure.staging.as_deref(), Some(staging.as_path()));

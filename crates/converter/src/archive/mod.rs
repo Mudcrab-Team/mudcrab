@@ -7,6 +7,7 @@ use crate::{
         IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy,
         link_or_copy_spilling,
     },
+    pipeline::Interrupted,
 };
 use color_eyre::{
     Result,
@@ -42,10 +43,10 @@ pub type ExtractionProgressCallback<'a> = &'a (dyn Fn(ExtractionProgress) + Send
 /// Checked from the extraction threads, like [`ExtractionProgressCallback`].
 pub type StopCheck<'a> = &'a (dyn Fn() -> bool + Send + Sync);
 
-/// Returns the "conversion interrupted" error once `stop` says the run was stopped.
+/// Returns the [`Interrupted`] error once `stop` says the run was stopped.
 fn check_stop(stop: Option<StopCheck<'_>>) -> Result<()> {
     if stop.is_some_and(|stop| stop()) {
-        bail!("conversion interrupted");
+        return Err(Interrupted::new().into());
     }
     Ok(())
 }

@@ -25,4 +25,4 @@ pub use config::{PipelineConfig, find_resumable_staging};
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;
 pub use pipeline::{AssetPipeline, Cancellation, PipelineFailure, PipelineReport};
-pub use progress::{ProgressEstimate, ProgressEvent, ProgressStage};
+pub use progress::{AssetOutcome, ProgressEstimate, ProgressEvent, ProgressStage};
