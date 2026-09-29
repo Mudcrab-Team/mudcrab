@@ -254,3 +254,4 @@ B33|2026-09-29|fixture WALK camera reused prior pitch instead of `LookIntent.pit
 B34|2026-09-29|Update overwrote jump press before next fixed tick at high render fps|V67
 B35|2026-09-29|fixture flags selected conflicting owners; benchmark ignored physics validation|V68
 B36|2026-09-29|fixture test reassigned field after Default; CI Clippy rejected it|struct initializer
+B37|2026-09-29|record tuning and scene helper used patterns Clippy rejects under workspace warning gate|struct initializer and scoped argument allows

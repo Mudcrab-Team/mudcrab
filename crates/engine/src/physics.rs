@@ -164,19 +164,20 @@ impl MovementTuning {
                 "MOVT 0003580D SPED[{index}] is invalid: {value}"
             );
         }
-        let mut tuning = Self::default();
-        tuning.walk_speed = values[4];
-        tuning.run_speed = values[5];
-        tuning.record_speeds = Some(DirectionalMovementSpeeds {
-            directions: [
-                [values[0], values[1]],
-                [values[2], values[3]],
-                [values[4], values[5]],
-                [values[6], values[7]],
-            ],
-            source: format!("MOVT 0003580D NPC_Default_MT ({plugin})"),
-        });
-        Ok(tuning)
+        Ok(Self {
+            walk_speed: values[4],
+            run_speed: values[5],
+            record_speeds: Some(DirectionalMovementSpeeds {
+                directions: [
+                    [values[0], values[1]],
+                    [values[2], values[3]],
+                    [values[4], values[5]],
+                    [values[6], values[7]],
+                ],
+                source: format!("MOVT 0003580D NPC_Default_MT ({plugin})"),
+            }),
+            ..Self::default()
+        })
     }
 
     fn target_speed(&self, strafe: Vec2, slow: bool, sprint: bool) -> f32 {
@@ -1753,6 +1754,7 @@ fn noclip_flight_system(
     );
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters are supplied independently.
 fn walk_intent_system(
     mode: Res<MoveMode>,
     capture: Res<CursorCapture>,

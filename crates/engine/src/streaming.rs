@@ -965,6 +965,7 @@ fn attach_authored_collision(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Scene queries and assets belong to this extraction pass.
 fn static_collision_from_hierarchy(
     record_type: Option<&str>,
     path: &str,
