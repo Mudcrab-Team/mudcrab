@@ -70,6 +70,9 @@ V16: ∀ collision phase gate P1–P3 → exercise actual WALK capsule & dynamic
 V17: Player WALK, terrain, fixed statics, & tankards share one Rapier physics context with matching collision groups; player & tankards contact surfaces, tankards contact player, NOCLIP camera contacts none.
 V19: P1 character controller keeps `apply_impulse_to_dynamic_bodies=false` until upstream Rapier manifold-transfer panic fixed; hill gate walks slope with tankards nearby & asserts zero Rapier panics.
 V18: Input sampled once/frame, movement integrated once/60 Hz physics tick; streamed collider commits & origin rebase reach Rapier before next physics tick. Same fixture inputs at 30/60/120 render fps → positions/contact outcomes within declared tolerance.
+V20: WALK view pitch follows `LookIntent.pitch`; body pitch stays zero.
+V21: `Space` press remains latched across Update frames until WALK fixed tick consumes it; no repeat after consumption.
+V22: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
 
 ## §T TASKS
 
@@ -90,3 +93,6 @@ T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regressio
 id|date|cause|fix
 B1|2026-09-26|probe-only collision phases deferred WALK/dynamic validation until too late|V16
 B2|2026-09-26|Rapier 0.35 controller panics slicing empty manifold vec when pushing dynamic bodies on slope|V19
+B3|2026-09-29|WALK camera reused prior pitch instead of `LookIntent.pitch`|V20
+B4|2026-09-29|Update overwrote jump press before next fixed tick at high render fps|V21
+B5|2026-09-29|fixture flags selected conflicting owners; benchmark ignored physics validation|V22

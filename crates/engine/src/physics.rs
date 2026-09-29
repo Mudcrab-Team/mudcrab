@@ -529,7 +529,7 @@ pub fn integrate_walk(
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
     mode: Res<MoveMode>,
-    intent: Res<WalkIntent>,
+    mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
     mut player: Query<(
         &mut KinematicCharacterController,
@@ -545,6 +545,7 @@ pub fn walk_movement_system(
     };
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
     integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
+    intent.jump_pressed = false;
     let displacement =
         (state.horizontal_velocity + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
     controller.translation = Some(displacement);
@@ -554,6 +555,7 @@ pub fn walk_movement_system(
 pub fn walk_camera_follow_system(
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
+    look: Res<LookIntent>,
     player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
@@ -563,10 +565,9 @@ pub fn walk_camera_follow_system(
     let (Ok(body), Ok(mut view)) = (player.single(), camera.single_mut()) else {
         return;
     };
-    let (_, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
     let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
     view.translation = body.translation + Vec3::Y * tuning.eye_height;
-    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
 }
 
 /// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward,
@@ -1102,7 +1103,7 @@ fn walk_intent_system(
     } else {
         0.0
     };
-    intent.jump_pressed = keyboard.just_pressed(KeyCode::Space);
+    intent.jump_pressed |= keyboard.just_pressed(KeyCode::Space);
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1175,6 +1176,45 @@ fn overlay_system(
 #[cfg(test)]
 mod noclip_tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn walk_view_pitch_tracks_mouse_look_without_tilting_body() {
+        let mut app = headless::fixture_app();
+        headless::place_player(&mut app, Vec3::new(120.0, 300.0, 120.0));
+        app.world_mut().resource_mut::<LookIntent>().pitch = 0.35;
+        app.world_mut()
+            .run_system_once(walk_camera_follow_system)
+            .unwrap();
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        let view = camera.single(app.world()).unwrap();
+        let (_, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
+        assert!((pitch - 0.35).abs() < 1.0e-5);
+        let mut player = app
+            .world_mut()
+            .query_filtered::<&Transform, With<PlayerBody>>();
+        let body = player.single(app.world()).unwrap();
+        assert!(body.rotation.to_euler(EulerRot::YXZ).1.abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn jump_press_survives_input_updates_until_fixed_tick() {
+        let mut app = headless::fixture_app();
+        headless::place_player(&mut app, Vec3::new(120.0, 300.0, 120.0));
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.world_mut().run_system_once(walk_intent_system).unwrap();
+        assert!(app.world().resource::<WalkIntent>().jump_pressed);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut().run_system_once(walk_intent_system).unwrap();
+        assert!(app.world().resource::<WalkIntent>().jump_pressed);
+    }
 
     #[test]
     fn pitch_clamps_inside_bounded_range() {
