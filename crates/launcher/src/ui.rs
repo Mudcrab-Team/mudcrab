@@ -8,7 +8,7 @@ use crate::{
 pub fn ui_header() -> impl Scene {
     bsn! {
         #HeaderBanner
-        Text::new("OPENSKYRIM")
+        Text::new("MUDCRAB")
         TextFont { font_size: FontSize::Px(30.0) }
         TextColor(TITLE_COLOR)
         Node { align_self: AlignSelf::Center }
@@ -74,7 +74,7 @@ pub fn ui_play_button() -> impl Scene {
         BackgroundColor(Color::srgb(0.16, 0.18, 0.22))
         Children [
             (
-                Text::new("PLAY OPENSKYRIM")
+                Text::new("PLAY MUDCRAB")
                 TextFont { font_size: FontSize::Px(18.0) }
                 TextColor(Color::WHITE)
             )

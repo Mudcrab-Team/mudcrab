@@ -1,4 +1,4 @@
-# OpenSkyrim Launcher & Setup Workflow
+# Mudcrab Launcher & Setup Workflow
 
 This document details the user journey, automatic game directory detection, asset transformation pipeline trigger, and game launch process.
 
@@ -8,7 +8,7 @@ This document details the user journey, automatic game directory detection, asse
 
 ```
                  ┌───────────────────────────────┐
-                 │    Gamer Runs OpenSkyrim      │
+                 │    Gamer Runs Mudcrab         │
                  │          Launcher             │
                  └───────────────┬───────────────┘
                                  │
@@ -51,7 +51,7 @@ This document details the user journey, automatic game directory detection, asse
                                   ▼
                  ┌───────────────────────────────┐
                  │   Enable "PLAY" Button in UI  │
-                 │  Launch OpenSkyrim Bevy Engine│
+                 │  Launch Mudcrab Bevy Engine   │
                  └───────────────────────────────┘
 ```
 
@@ -115,7 +115,7 @@ pub fn run_conversion_job(game_dir: PathBuf, progress_tx: Sender<ProgressUpdate>
 When conversion finishes (or on subsequent launches):
 
 1. The launcher saves the path configuration to `config.json`.
-2. Clicking **"PLAY OPENSKYRIM"** spawns the game engine binary (`engine`):
+2. Clicking **"PLAY MUDCRAB"** spawns the game engine binary (`engine`):
    ```rust
    use std::process::Command;
 
@@ -124,7 +124,7 @@ When conversion finishes (or on subsequent launches):
            .arg("--config")
            .arg("config.json")
            .spawn()
-           .expect("Failed to launch OpenSkyrim engine binary!");
+           .expect("Failed to launch Mudcrab engine binary!");
 
        // Optionally close the launcher
        std::process::exit(0);
