@@ -9,7 +9,7 @@ use crate::{
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
     integration::{IntegrationReport, finalize_world_database},
     mesh::MeshConverter,
-    progress::{ProgressEvent, ProgressStage},
+    progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic},
 };
@@ -70,6 +70,47 @@ impl Cancellation {
     }
 }
 
+/// The error a run ends with when it was stopped (Ctrl+C, a launcher's Stop button) rather than
+/// failing. A stop that raced a real error keeps that error as its cause, so a front end can still
+/// show it; a plain stop has no cause. Front ends find it with `report.downcast_ref::<Interrupted>()`
+/// instead of matching the error text.
+#[derive(Debug, Default)]
+pub struct Interrupted {
+    cause: Option<color_eyre::Report>,
+}
+
+impl Interrupted {
+    /// A stop with no error behind it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A stop that landed while `error` was ending the same work. An `error` that is itself a
+    /// plain stop (the extractor noticed the stop first) adds nothing, so it is not kept as a cause.
+    pub fn after(error: color_eyre::Report) -> Self {
+        match error.downcast_ref::<Interrupted>() {
+            Some(stop) if stop.cause.is_none() => Self::new(),
+            _ => Self { cause: Some(error) },
+        }
+    }
+
+    /// The error that raced the stop, if there was one.
+    pub fn cause(&self) -> Option<&color_eyre::Report> {
+        self.cause.as_ref()
+    }
+}
+
+impl fmt::Display for Interrupted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.cause {
+            Some(cause) => write!(formatter, "conversion interrupted ({cause:#})"),
+            None => formatter.write_str("conversion interrupted"),
+        }
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
 /// A run that stopped short of publishing. `staging` is the folder left behind, when one was kept,
 /// and `cancelled` says whether the user interrupted the run rather than it failing.
 #[derive(Debug)]
@@ -107,11 +148,7 @@ fn publish_if_not_interrupted(
     cancellation: &Cancellation,
 ) -> Result<(), PipelineFailure> {
     if cancellation.is_cancelled() {
-        return Err(failure(
-            color_eyre::eyre::eyre!("conversion interrupted"),
-            staging,
-            cancellation,
-        ));
+        return Err(failure(Interrupted::new().into(), staging, cancellation));
     }
     publish_directory(staging, output).map_err(|error| failure(error, staging, cancellation))
 }
@@ -359,13 +396,13 @@ impl AssetPipeline {
             // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
             // between archives, rather than being counted as a skipped archive. Its cache entry
             // was never recorded, so a resume extracts it again from the start.
-            if let Err(error) = &result {
+            let result = match result {
                 // A stop that races an archive error keeps the archive's error as its cause.
-                if cancellation.is_cancelled() {
-                    bail!("conversion interrupted ({error:#})");
+                Err(error) if cancellation.is_cancelled() => {
+                    return Err(Interrupted::after(error).into());
                 }
-                interrupt(cancellation)?;
-            }
+                result => result,
+            };
 
             send(
                 progress_tx,
@@ -905,15 +942,18 @@ impl ConversionBatch<'_> {
                     if fail_fast {
                         if first_error.is_none() {
                             cancelled.store(true, Ordering::Relaxed);
-                            send(
-                                &progress_tx,
-                                stage,
-                                completed,
-                                total_files,
-                                Some(relative),
-                                "Asset conversion failed",
-                            )
-                            .await;
+                            let _ = progress_tx
+                                .send(
+                                    ProgressEvent::new(
+                                        stage,
+                                        completed,
+                                        total_files,
+                                        Some(relative),
+                                        "Asset conversion failed",
+                                    )
+                                    .with_outcome(AssetOutcome::Failed),
+                                )
+                                .await;
                             first_error = Some(error);
                         }
                     } else {
@@ -943,15 +983,19 @@ impl ConversionBatch<'_> {
         relative: PathBuf,
         error: color_eyre::eyre::Error,
     ) {
-        send(
-            self.progress_tx,
-            stage,
-            completed,
-            total,
-            Some(relative.clone()),
-            "Asset skipped",
-        )
-        .await;
+        let _ = self
+            .progress_tx
+            .send(
+                ProgressEvent::new(
+                    stage,
+                    completed,
+                    total,
+                    Some(relative.clone()),
+                    "Asset skipped",
+                )
+                .with_outcome(AssetOutcome::Skipped),
+            )
+            .await;
         let message = format!("{}: {error:#}", relative.display());
         self.manifest.failures.insert(key, message.clone());
         self.report.warnings.push(message);
@@ -1345,7 +1389,9 @@ async fn send_with_bytes(
 /// Stops the run at the next safe point when the user interrupted it. The caller keeps the staging
 /// folder, so the run can be resumed where it stopped.
 fn interrupt(cancellation: &Cancellation) -> Result<()> {
-    ensure!(!cancellation.is_cancelled(), "conversion interrupted");
+    if cancellation.is_cancelled() {
+        return Err(Interrupted::new().into());
+    }
     Ok(())
 }
 
@@ -1582,6 +1628,7 @@ mod tests {
         assert!(staging.is_dir());
         let last = events.last().unwrap();
         assert_eq!(last.stage, ProgressStage::Textures);
+        assert_eq!(last.outcome, Some(AssetOutcome::Failed));
         assert_eq!(last.message, "Asset conversion failed");
         assert!(last.current_file.as_ref().is_some_and(|path| {
             path == Path::new("textures/bad.dds") || path == Path::new("textures/also-bad.dds")
@@ -1662,7 +1709,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| event.message == "Asset skipped")
+                .filter(|event| event.outcome == Some(AssetOutcome::Skipped))
                 .count(),
             2
         );
@@ -1791,7 +1838,13 @@ mod tests {
         watcher.await.unwrap();
 
         assert!(failure.cancelled, "a stop is reported as an interrupt");
-        assert!(failure.to_string().contains("interrupted"));
+        assert!(
+            failure
+                .error
+                .downcast_ref::<Interrupted>()
+                .is_some_and(|stop| stop.cause().is_none()),
+            "a plain stop inside an archive has no cause to show: {failure}"
+        );
         assert!(!output.exists(), "an interrupted run does not publish");
         let staging = failure
             .staging
@@ -1845,6 +1898,7 @@ mod tests {
         cancellation.cancel();
         let failure = publish_if_not_interrupted(&staging, &output, &cancellation).unwrap_err();
         assert!(failure.cancelled);
+        assert!(failure.error.downcast_ref::<Interrupted>().is_some());
         assert!(failure.to_string().contains("interrupted"));
         assert!(!output.exists(), "an interrupted run must not publish");
         assert_eq!(failure.staging.as_deref(), Some(staging.as_path()));

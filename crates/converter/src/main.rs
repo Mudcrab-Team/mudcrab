@@ -4,7 +4,7 @@ use color_eyre::{
 };
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
-    pipeline::{Cancellation, PipelineFailure},
+    pipeline::{Cancellation, Interrupted, PipelineFailure},
     progress::{ProgressRenderer, format_bytes, format_elapsed},
 };
 use serde::Serialize;
@@ -107,7 +107,7 @@ impl RunWatch {
     const NAMED_FAILURES: usize = 3;
 
     fn observe(&mut self, event: &ProgressEvent) {
-        if event.message == "Asset skipped" || event.message == "Asset conversion failed" {
+        if event.is_asset_failure() {
             self.failures += 1;
             if self.failed.len() < Self::NAMED_FAILURES {
                 self.failed
@@ -291,9 +291,8 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
             "Conversion interrupted after {}{stage}.",
             format_elapsed(elapsed.as_secs_f64())
         );
-        // A plain stop says only that; anything more is a cause worth showing.
-        if failure.error.to_string() != "conversion interrupted" {
-            eprintln!("  Cause: {:#}", failure.error);
+        if let Some(cause) = stop_cause(failure) {
+            eprintln!("  Cause: {cause}");
         }
     } else {
         eprintln!(
@@ -325,6 +324,15 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
         None => eprintln!(
             "  The run stopped before it created a staging folder; fix the error above and run again."
         ),
+    }
+}
+
+/// What to show under "Conversion interrupted": nothing for a plain stop, otherwise the error that
+/// raced it, or the error that ended the run while the stop was pending.
+fn stop_cause(failure: &PipelineFailure) -> Option<String> {
+    match failure.error.downcast_ref::<Interrupted>() {
+        Some(stop) => stop.cause().map(|cause| format!("{cause:#}")),
+        None => Some(format!("{:#}", failure.error)),
     }
 }
 
@@ -611,19 +619,65 @@ mod tests {
     fn watches_the_first_few_failed_assets() {
         let mut watch = RunWatch::default();
         for index in 0..5 {
-            let mut event = ProgressEvent::new(
+            let event = ProgressEvent::new(
                 ProgressStage::Textures,
                 index,
                 5,
                 Some(PathBuf::from(format!("textures/bad{index}.dds"))),
                 "Asset skipped",
-            );
-            event.message = "Asset skipped".to_owned();
+            )
+            .with_outcome(converter::AssetOutcome::Skipped);
             watch.observe(&event);
         }
-        assert_eq!(watch.failures, 5);
+        // A failure is recognised by its outcome, not by the wording of its message.
+        let reworded = ProgressEvent::new(
+            ProgressStage::Meshes,
+            0,
+            1,
+            Some(PathBuf::from("meshes/bad.nif")),
+            "Some other wording",
+        )
+        .with_outcome(converter::AssetOutcome::Failed);
+        watch.observe(&reworded);
+        let converted = ProgressEvent::new(
+            ProgressStage::Meshes,
+            1,
+            1,
+            Some(PathBuf::from("meshes/good.nif")),
+            "Asset skipped",
+        );
+        watch.observe(&converted);
+        assert_eq!(watch.failures, 6);
         assert_eq!(watch.failed.len(), RunWatch::NAMED_FAILURES);
         assert_eq!(watch.failed[0], PathBuf::from("textures/bad0.dds"));
+    }
+
+    #[test]
+    fn a_stop_shows_a_cause_only_when_there_is_one() {
+        let failure = |error: color_eyre::Report| PipelineFailure {
+            error,
+            staging: None,
+            cancelled: true,
+        };
+        assert_eq!(stop_cause(&failure(Interrupted::new().into())), None);
+        // The extractor noticed the stop first: its error is the same plain stop.
+        assert_eq!(
+            stop_cause(&failure(
+                Interrupted::after(Interrupted::new().into()).into()
+            )),
+            None
+        );
+        assert_eq!(
+            stop_cause(&failure(
+                Interrupted::after(color_eyre::eyre::eyre!("bad archive header")).into()
+            ))
+            .as_deref(),
+            Some("bad archive header")
+        );
+        assert_eq!(
+            stop_cause(&failure(color_eyre::eyre::eyre!("disk full"))).as_deref(),
+            Some("disk full")
+        );
     }
 
     #[test]

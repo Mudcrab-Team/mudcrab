@@ -63,6 +63,17 @@ pub fn overall_fraction(stage: ProgressStage, fraction: f32) -> f32 {
     (stage.offset() + stage.weight() * fraction.clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
+/// How one asset's conversion ended, for the events that report that end. Front ends read this
+/// rather than the event's message, which is text for people and may change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetOutcome {
+    /// The asset failed and the run carried on without it; the manifest lists it as a failure.
+    Skipped,
+    /// The asset failed and the run stops because of it (`--fail-fast`).
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub stage: ProgressStage,
@@ -88,6 +99,9 @@ pub struct ProgressEvent {
     /// update: it is printed on its own line, and a GUI can list it in a log pane.
     #[serde(default)]
     pub notice: bool,
+    /// Set on the event that ends a failed asset's conversion; `None` on every other event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AssetOutcome>,
 }
 
 impl ProgressEvent {
@@ -109,6 +123,7 @@ impl ProgressEvent {
             stage_fraction: None,
             overall: 0.0,
             notice: false,
+            outcome: None,
         };
         event.refresh_overall();
         event
@@ -128,6 +143,20 @@ impl ProgressEvent {
         self.bytes_total = Some(total);
         self.refresh_overall();
         self
+    }
+
+    /// Marks the event as the end of one asset's conversion, and how it ended.
+    pub fn with_outcome(mut self, outcome: AssetOutcome) -> Self {
+        self.outcome = Some(outcome);
+        self
+    }
+
+    /// Whether this event reports an asset that failed, whether or not the run carried on.
+    pub fn is_asset_failure(&self) -> bool {
+        matches!(
+            self.outcome,
+            Some(AssetOutcome::Skipped | AssetOutcome::Failed)
+        )
     }
 
     /// Overrides the stage fraction, for a stage whose units are not its files.
