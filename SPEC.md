@@ -115,12 +115,12 @@ V4: P3 player blocks at rock/wall, passes doorway/opening & excluded visual; tan
 V5: P1 interactive exterior → one streaming camera, NOCLIP ON, walking collider/gravity disabled; camera crosses fixture/world geometry; noninteractive paths unchanged.
 V6: P1 mouse yaw/pitch controls view, pitch bounded; uncaptured/unfocused input cannot move or look; focus loss clears held keys; render-origin rebase preserves position & view.
 V7: P1 debug overlay reports actual mode every frame with adjacent `[V]` key hint; overlay never obscures center view or screenshot path.
-V8: P1 `V` press toggles once; NOCLIP→WALK only with nearby valid collision & non-overlapping capsule; failed entry leaves NOCLIP ON with visible reason; WALK→NOCLIP removes collision/gravity immediately.
+V8: P1 `V` press toggles once; NOCLIP→WALK at any height when capsule fits; failed overlap search leaves NOCLIP ON with visible reason; WALK→NOCLIP removes collision/gravity immediately.
 V9: P1 WALK capsule upright independent of camera pitch; camera follows body at eye offset; yaw moves body, pitch moves view. P2+ render-origin rebase shifts Rapier body poses & Bevy transforms together; body/camera/tankards/world colliders stay aligned without added velocity.
 V10: P1 WALK input normalized & camera-relative; acceleration/deceleration bounded; WALK < RUN < SPRINT; velocity frame-rate independent. Initial guesses: walk 160, run 300 Creation units/s, sprint 1.5× directional run; horizontal acceleration 1800 units/s².
 V11: P1 gravity applies while airborne; jump requires grounded contact & new `Space` press; no air repeat. Initial guesses: gravity 900 units/s² downward, jump launch 340 units/s upward; fixture records actual apex/time.
 V12: P1 capsule radius 28, standing height 100.8, eye height 89.6 Creation units; slope climb 50°, slide 55°, autostep height 36 units, ground snap 12 units; provisional values centralized. Fixture ground, wall, step, slope outcomes match configured behavior.
-V13: P1+ missing/loading ground near WALK capsule → hold vertical position, suspend displacement, show status; resume when collider ready; no synthetic floor. NOCLIP remains available.
+V13: NOCLIP→WALK requires free capsule placement, independent of ground distance; failed entry keeps NOCLIP with reason. Active airborne WALK applies gravity through absent ground collision; no synthetic floor or loading claim from ray miss. NOCLIP remains available.
 V14: P1 toggling clears stale flight/walk velocities & jump state; mode/overlay/collision response agree after switch in air, on ground, or near obstacle.
 V15: P1 dynamic debug tankards use 60 Hz Rapier fixed step, same downward 900 Creation units/s² gravity as WALK, & compound convex colliders; fixture cups tumble/roll downhill, contact ground/wall, settle without persistent penetration; P2+ `T` spawns only near loaded collider, capped at 32 live bodies; switch to NOCLIP leaves tankard physics active.
 V16: ∀ collision phase gate P1–P3 → exercise actual WALK capsule & dynamic tankard against phase geometry; probe-only success insufficient. Record position/contact outcomes, frame-step settings, asset/collision provenance, & manual playtest result.
@@ -169,13 +169,15 @@ V58: Jump fixture measures `PlayerBody` pose from grounded rest through launch a
 V59: Portable Riverwood launcher leaves host Vulkan ICD discovery intact and preserves caller `VK_ICD_FILENAMES`; bundled ALSA config hook resolves through package `lib` on target. Target smoke reaches `AdapterInfo` and runtime initialization.
 V60: WALK overlay reports `Alt` latch and actual horizontal speed from Rapier `effective_translation` per fixed step, never target speed; under 5 Creation units/s contact jitter reads 0, vertical jump excluded. Controlled perspective gains 8° FOV only during moving WALK sprint, with 0.12 s exponential half-life back to base on stop/mode change; noninteractive cameras retain base FOV.
 V61: Provisional sprint target = 1.5× selected directional run speed, including winning `MOVT` fields; packaged forward 370 → 555 Creation units/s. Collision-free fixed-step actual speed reaches targets; blocked speed remains 0 despite nonzero target.
-V62: WALK entry requires ground within 400 units; active WALK keeps falling when loaded ground lies farther below. Missing loaded ground still suspends movement.
+V62: WALK entry has no ground-distance limit; active WALK keeps falling when ground lies far below or no ground ray hits.
 V63: Compressed Havok mesh vertices scale by finite positive serialized quantization error; alternate valid scales preserve geometry.
 V64: Selected `MOVT SPED` accepts 40- or 44-byte layouts; rejects other lengths and invalid speed fields.
 V65: Package launcher resolves XKB data on Nix and standard Linux paths or reports missing data before engine start; configured valid `XKB_CONFIG_ROOT` survives.
 V66: WALK view pitch follows `LookIntent.pitch`; body pitch stays zero.
 V67: `Space` press remains latched across Update frames until WALK fixed tick consumes it; no repeat after consumption.
 V68: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
+V69: Active airborne WALK with no downward collision ray continues descending across fixed ticks; ground-ray miss alone never resets velocity or reports terrain loading.
+V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
 
 ## §T TASKS
 
@@ -255,3 +257,5 @@ B34|2026-09-29|Update overwrote jump press before next fixed tick at high render
 B35|2026-09-29|fixture flags selected conflicting owners; benchmark ignored physics validation|V68
 B36|2026-09-29|fixture test reassigned field after Default; CI Clippy rejected it|struct initializer
 B37|2026-09-29|record tuning and scene helper used patterns Clippy rejects under workspace warning gate|struct initializer and scoped argument allows
+B38|2026-09-29|active WALK treated any downward ray miss as loading and reset fall state every tick|V69
+B39|2026-09-29|NOCLIP→WALK rejected free high-altitude capsule because ground lay beyond 400-unit cast|V70

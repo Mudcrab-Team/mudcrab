@@ -766,10 +766,6 @@ pub struct WalkState {
 /// Upward search budget when entering WALK inside geometry (V8).
 pub const WALK_ENTRY_SEARCH_STEPS: u32 = 12;
 pub const WALK_ENTRY_STEP_HEIGHT: f32 = 28.0;
-/// Ground must exist within this distance below the capsule for WALK entry (V13).
-pub const WALK_ENTRY_GROUND_SEARCH: f32 = 400.0;
-/// Long falls still need to find loaded terrain below the capsule (V13).
-pub const WALK_GROUND_PRESENCE_SEARCH: f32 = 100_000.0;
 
 /// Build the upright player capsule + controller from tuning (V9, V12).
 pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
@@ -845,10 +841,7 @@ pub fn walk_movement_system(
     mode: Res<MoveMode>,
     mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
-    context: ReadRapierContext,
-    mut status: ResMut<WalkEntryStatus>,
     mut player: Query<(
-        &Transform,
         &mut KinematicCharacterController,
         &mut WalkState,
         Option<&KinematicCharacterControllerOutput>,
@@ -857,27 +850,9 @@ pub fn walk_movement_system(
     if *mode != MoveMode::Walk {
         return;
     }
-    let Ok((pose, mut controller, mut state, output)) = player.single_mut() else {
+    let Ok((mut controller, mut state, output)) = player.single_mut() else {
         return;
     };
-    let ground_available = context.single().is_ok_and(|context| {
-        context
-            .cast_ray(
-                pose.translation,
-                Vec3::NEG_Y,
-                WALK_GROUND_PRESENCE_SEARCH,
-                true,
-                QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
-            )
-            .is_some()
-    });
-    if !ground_available {
-        controller.translation = None;
-        *state = WalkState::default();
-        status.blocked_reason = Some("terrain loading below player".to_owned());
-        return;
-    }
-    status.blocked_reason = None;
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
     integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
     intent.jump_pressed = false;
@@ -905,8 +880,8 @@ pub fn walk_camera_follow_system(
     view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
 }
 
-/// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward,
-/// missing ground keeps NOCLIP with a visible reason (V8, V13).
+/// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward
+/// until the capsule fits or leaves NOCLIP active with a visible reason (V8).
 pub fn try_enter_walk(
     context: &RapierContext,
     tuning: &MovementTuning,
@@ -928,18 +903,7 @@ pub fn try_enter_walk(
             },
         );
         if !overlapping {
-            let ground_hit = context.cast_shape(
-                candidate,
-                Quat::IDENTITY,
-                Vec3::NEG_Y * WALK_ENTRY_GROUND_SEARCH,
-                shape,
-                ShapeCastOptions::with_max_time_of_impact(WALK_ENTRY_GROUND_SEARCH),
-                QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
-            );
-            if ground_hit.is_some() {
-                return Ok(candidate);
-            }
-            return Err("no walkable ground below".to_owned());
+            return Ok(candidate);
         }
         candidate.y += WALK_ENTRY_STEP_HEIGHT;
     }
@@ -1180,6 +1144,7 @@ pub(crate) mod headless {
 mod simulation_tests {
     use super::headless;
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
 
     #[test]
     fn walk_falls_when_loaded_ground_is_far_below() {
@@ -1201,6 +1166,104 @@ mod simulation_tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn walk_falls_without_a_downward_ground_ray() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(2000.0, 1200.0, 2000.0);
+        headless::place_player(&mut app, start);
+        for _ in 0..20 {
+            app.update();
+        }
+        let (position, _) = headless::player_pose(&mut app);
+        assert!(
+            position.y < start.y - 10.0,
+            "airborne WALK froze at {position:?}"
+        );
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn noclip_can_enter_walk_and_fall_from_far_above_ground() {
+        let mut app = headless::fixture_app();
+        let camera_height = 8000.0;
+        let start = Vec3::new(120.0, camera_height, 120.0);
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<ControlledCamera>>();
+            query.single(app.world()).expect("controlled camera")
+        };
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation = start;
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.world_mut().run_system_once(toggle_mode_system).unwrap();
+        assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Walk);
+        let initial = headless::player_pose(&mut app).0;
+        assert!(
+            (initial.y - (camera_height - app.world().resource::<MovementTuning>().eye_height))
+                .abs()
+                < 0.01
+        );
+        for _ in 0..20 {
+            app.update();
+        }
+        let after = headless::player_pose(&mut app).0;
+        assert!(
+            after.y < initial.y - 10.0,
+            "high-altitude WALK froze at {after:?}"
+        );
+    }
+
+    #[test]
+    fn noclip_stays_enabled_when_no_free_capsule_placement_exists() {
+        let mut app = headless::fixture_app();
+        let tuning = app.world().resource::<MovementTuning>().clone();
+        let camera_position = Vec3::new(2000.0, 300.0 + tuning.eye_height, 2000.0);
+        app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(500.0, 500.0, 500.0),
+            world_collision_groups(),
+            Transform::from_xyz(2000.0, 300.0, 2000.0),
+        ));
+        app.update();
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<ControlledCamera>>();
+            query.single(app.world()).expect("controlled camera")
+        };
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation = camera_position;
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.world_mut().run_system_once(toggle_mode_system).unwrap();
+        assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Noclip);
+        assert_eq!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_deref(),
+            Some("no free capsule placement nearby")
+        );
+    }
+
     #[test]
     fn sprint_increases_collision_resolved_speed_and_idle_reads_zero() {
         let mut app = headless::fixture_app();
@@ -2108,7 +2171,7 @@ mod noclip_tests {
             "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop"
         );
         let blocked = WalkEntryStatus {
-            blocked_reason: Some("no walkable ground below".to_owned()),
+            blocked_reason: Some("no free capsule placement nearby".to_owned()),
         };
         assert!(noclip_overlay_text(MoveMode::Noclip, &blocked).contains("WALK blocked"));
     }
