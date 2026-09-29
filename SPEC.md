@@ -65,7 +65,7 @@ V8: P1 `V` press toggles once; NOCLIP→WALK only with nearby valid collision & 
 V9: P1 WALK capsule upright independent of camera pitch; camera follows body at eye offset; yaw moves body, pitch moves view. P2+ render-origin rebase shifts Rapier body poses & Bevy transforms together; body/camera/tankards/world colliders stay aligned without added velocity.
 V10: P1 WALK input normalized & camera-relative; acceleration/deceleration bounded; WALK < RUN < SPRINT; velocity frame-rate independent. Initial guesses: walk 160, run 300, sprint 420 Creation units/s; horizontal acceleration 1800 units/s².
 V11: P1 gravity applies while airborne; jump requires grounded contact & new `Space` press; no air repeat. Initial guesses: gravity 900 units/s² downward, jump launch 340 units/s upward; fixture records actual apex/time.
-V12: P1 capsule radius 28, standing height 126, eye height 112 Creation units; slope climb 50°, slide 55°, autostep height 36 units, ground snap 12 units; provisional values centralized. Fixture ground, wall, step, slope outcomes match configured behavior.
+V12: P1 capsule radius 28, standing height 126, eye height 112 Creation units; slope climb 50°, slide 55°, autostep height 24 units, ground snap 12 units; provisional values centralized. Fixture ground, wall, step, slope outcomes match configured behavior.
 V13: P1+ missing/loading ground near WALK capsule → hold vertical position, suspend displacement, show status; resume when collider ready; no synthetic floor. NOCLIP remains available.
 V14: P1 toggling clears stale flight/walk velocities & jump state; mode/overlay/collision response agree after switch in air, on ground, or near obstacle.
 V15: P1 dynamic debug tankards use 60 Hz Rapier fixed step, same downward 900 Creation units/s² gravity as WALK, & compound convex colliders; fixture cups tumble/roll downhill, contact ground/wall, settle without persistent penetration; P2+ `T` spawns only near loaded collider, capped at 32 live bodies; switch to NOCLIP leaves tankard physics active.
@@ -77,9 +77,6 @@ V20: Interactive Riverwood uses one controller camera; WALK yaw & pitch consume 
 V21: P2 `E` picks aimed `DebugTankard` within 240 units only; held body follows camera, collision & gravity suspended; second `E` releases dynamic body without stale velocity. Unload/rebase/mode toggle leaves no dangling hold. Overlay shows `T`/`E` controls.
 V22: Fiji Riverwood launcher with unset display vars + live `/run/user/<uid>/wayland-N` socket → set `XDG_RUNTIME_DIR` + `WAYLAND_DISPLAY` before engine; preserve explicit display vars; no socket → clear launcher error.
 V23: P3 `RockCliff` `BLEND` rock faces → render proxy; `MASK` detail & unrelated blended visuals → no proxy. Fiji warning log ! `RockCliff` skipped for no eligible triangles.
-V24: P3 `TREE` pine models & `STAT` pine logs/stumps, firewood piles, road ramps → fixed render proxy from supported primitives; `FLOR`, plant `TREE`, movable records → no fixed collider.
-V25: P3 lumbermill walkway `MASK` primitive → proxy; masked roof/rope & unrelated masked primitives → no proxy.
-V26: WALK crosses adjacent 15-unit floor rises without jump while existing wall/24-unit step tests remain green.
 
 ## §T TASKS
 
@@ -92,7 +89,7 @@ T5|~|P2 attach validated terrain trimesh to quadrant lifetime; handle failures &
 T6|~|P2 enable bounded `T` tankard spawn; rebase Rapier poses with world; test player + tankards on real hill, seams, stream unload/reload; record gate evidence|V1,V2,V9,V13,V15,V16,V18
 T7|x|P3 inventory NIF/Havok collision support, base record types, & representative statics; record original/proxy/skip policy|V3
 T8|x|P3 convert/load eligible fixed colliders with full transforms, streamed lifetime, & source/skip counts; exclude movable records|V3
-T9|~|P3 test player + tankards at rocks, walls, openings, excluded visuals & unload/reload; adjust CCD/contact only from measured failures|V3,V4,V15,V16,V17,V23,V24,V25,V26,R10
+T9|~|P3 test player + tankards at rocks, walls, openings, excluded visuals & unload/reload; adjust CCD/contact only from measured failures|V3,V4,V15,V16,V17,V23,R10
 T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regression; record evidence, controls, static proxy limits|V1,V2,V3,V4,V5,V7,V15,V16
 T11|x|P2 mount controller in Riverwood, fix WALK pitch, add `E` tankard pickup/drop; preserve noninteractive camera paths|V5,V6,V9,V20,V21
 T12|x|Package Fiji launcher with display discovery; verify from shell with display vars unset|V22
@@ -107,6 +104,3 @@ B4|2026-09-27|Fiji launcher assumed graphical display variables inherited by ter
 B5|2026-09-26|direct Cargo test lacked Wayland pkg-config path|§C build env
 B6|2026-09-27|static proxy draft used wrong Bevy iterator and Parry ray types; Clippy found non-idiomatic loops|compile + Clippy fixes
 B7|2026-09-27|opaque-only proxy skipped `RockCliff` rock faces exported as `BLEND`|V23
-B8|2026-09-27|fixed proxy eligibility omitted Riverwood pine, woodpile, & road-ramp models|V24
-B9|2026-09-27|opaque-only proxy skipped lumbermill walkway exported as `MASK`|V25
-B10|2026-09-27|24-unit autostep clearance blocked adjoining 15-unit floor rises|V26

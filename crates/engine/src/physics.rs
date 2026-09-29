@@ -57,7 +57,7 @@ impl Default for MovementTuning {
             eye_height: 112.0,
             slope_climb_degrees: 50.0,
             slope_slide_degrees: 55.0,
-            autostep_height: 36.0,
+            autostep_height: 24.0,
             ground_snap: 12.0,
         }
     }
@@ -1425,41 +1425,6 @@ mod gate_tests {
     use bevy::ecs::system::RunSystemOnce;
 
     #[test]
-    fn walk_crosses_narrow_raised_floor_join() {
-        let mut app = headless::fixture_app();
-        for (x, width, top) in [(0.0, 12.0, 15.0), (206.0, 400.0, 30.0)] {
-            app.world_mut().spawn((
-                RigidBody::Fixed,
-                Collider::cuboid(width * 0.5, top * 0.5, 80.0),
-                world_collision_groups(),
-                Transform::from_xyz(x, top * 0.5, 850.0),
-            ));
-        }
-        headless::place_player(&mut app, Vec3::new(-150.0, 200.0, 850.0));
-        for _ in 0..150 {
-            app.update();
-        }
-        let start = headless::player_pose(&mut app).0;
-        assert!(start.y < 80.0, "player never grounded: {start:?}");
-        let tuning = app.world().resource::<MovementTuning>();
-        app.insert_resource(WalkIntent {
-            wish_dir: Vec3::X,
-            target_speed: tuning.run_speed,
-            jump_pressed: false,
-        });
-        let mut peak = start.y;
-        for _ in 0..180 {
-            app.update();
-            peak = peak.max(headless::player_pose(&mut app).0.y);
-        }
-        let (end, grounded) = headless::player_pose(&mut app);
-        assert!(
-            end.x > 120.0 && peak > start.y + 25.0 && grounded,
-            "player stuck at raised floor join: {start:?} -> {end:?}, peak={peak}, grounded={grounded}"
-        );
-    }
-
-    #[test]
     fn walk_camera_pitch_uses_current_mouse_intent() {
         let mut app = headless::fixture_app();
         headless::place_player(&mut app, Vec3::new(120.0, 300.0, 120.0));
@@ -1666,7 +1631,7 @@ mod gate_tests {
             "capsule tunneled the wall: {blocked:?}"
         );
 
-        // Step top is y=24; the 36-unit autostep budget includes it (V12).
+        // Step top is y=24; autostep height is 24 (V12).
         headless::place_player(&mut app, Vec3::new(100.0, 300.0, 240.0));
         for _ in 0..120 {
             app.update();
