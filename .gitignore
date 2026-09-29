@@ -23,6 +23,7 @@ Thumbs.db
 *.fuz
 vendor/project-wormhole-nif/Materials/
 
+mudcrab.cfg
 openskyrim.cfg
 .env
 .env.local

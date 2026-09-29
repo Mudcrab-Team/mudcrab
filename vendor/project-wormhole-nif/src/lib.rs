@@ -1,6 +1,6 @@
 #![allow(unused)]
 // This crate is vendored compatibility code. Keep workspace Clippy focused on
-// OpenSkyrim changes while upstream's legacy style is incrementally replaced.
+// Mudcrab changes while upstream's legacy style is incrementally replaced.
 #![allow(clippy::all)]
 pub mod export;
 pub mod legacy;

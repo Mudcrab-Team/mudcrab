@@ -63,7 +63,7 @@ fn bench_esm(criterion: &mut Criterion) {
         })
         .collect();
     let spec = dummy_content::esm::Plugin {
-        author: "OpenSkyrim dummy-content",
+        author: "Mudcrab dummy-content",
         worldspace: "BenchWorld",
         cells: &cells,
         model_path: "meshes/generated.nif",

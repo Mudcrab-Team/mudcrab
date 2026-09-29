@@ -95,7 +95,7 @@ fn performance_esm_generation_stays_within_budget() {
         })
         .collect();
     let spec = dummy_content::esm::Plugin {
-        author: "OpenSkyrim dummy-content",
+        author: "Mudcrab dummy-content",
         worldspace: "BenchWorld",
         cells: &cells,
         model_path: "meshes/generated.nif",

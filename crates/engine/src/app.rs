@@ -314,7 +314,7 @@ impl StreamingFixtureDirectory {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
         let path = std::env::temp_dir().join(format!(
-            "openskyrim-streaming-{}-{suffix}",
+            "mudcrab-streaming-{}-{suffix}",
             std::process::id()
         ));
         fs::create_dir(&path).wrap_err_with(|| format!("failed to create {}", path.display()))?;
@@ -1797,7 +1797,7 @@ fn setup_world(
         ground_height,
         camera = ?camera_position,
         target = ?target,
-        "OpenSkyrim runtime initialized"
+        "Mudcrab runtime initialized"
     );
 }
 
