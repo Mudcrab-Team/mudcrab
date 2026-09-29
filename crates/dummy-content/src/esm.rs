@@ -27,6 +27,7 @@ const WRLD_FORM_ID: u32 = 0x0000_0001;
 const TXST_FORM_ID: u32 = 0x0000_0002;
 const STAT_FORM_ID: u32 = 0x0000_0003;
 const LTEX_FORM_ID: u32 = 0x0000_0004;
+const MATT_FORM_ID: u32 = 0x0000_0008;
 /// The `DOOR` base record the exterior door of an [`Interior`] places.
 const EXTERIOR_DOOR_FORM_ID: u32 = 0x0000_0005;
 /// The `DOOR` base record the interior door of an [`Interior`] places.
@@ -492,7 +493,8 @@ fn landscape_texture_record() -> Result<Vec<u8>> {
         &[
             (*b"EDID", cstring("GeneratedLandscape")),
             (*b"TNAM", TXST_FORM_ID.to_le_bytes().to_vec()),
-            (*b"HNAM", 0u16.to_le_bytes().to_vec()),
+            (*b"MNAM", MATT_FORM_ID.to_le_bytes().to_vec()),
+            (*b"HNAM", vec![30, 30]),
         ],
     )
 }
