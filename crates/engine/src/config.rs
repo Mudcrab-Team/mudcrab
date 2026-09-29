@@ -55,6 +55,7 @@ pub struct EngineConfig {
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
+    pub physics_fixture: bool,
 }
 
 impl Default for EngineConfig {
@@ -109,6 +110,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            physics_fixture: false,
         }
     }
 }
@@ -297,6 +299,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--physics-fixture" => config.physics_fixture = true,
                 _ => {}
             }
         }
@@ -464,6 +467,7 @@ mod tests {
                 "--renderer-fixture",
                 "--streaming-fixture",
                 "--lights",
+                "--physics-fixture",
             ]
             .map(str::to_owned),
         );
@@ -495,6 +499,7 @@ mod tests {
         assert!(config.renderer_fixture);
         assert!(config.streaming_fixture);
         assert!(config.lights);
+        assert!(config.physics_fixture);
     }
 
     /// Lights are opt-in: the flag is off unless it is given, so the default run - and every

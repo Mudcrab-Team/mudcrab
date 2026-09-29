@@ -192,7 +192,8 @@ fn collect_and_finish(
     ) && (!config.streaming_fixture
         || streaming
             .as_deref()
-            .is_some_and(|value| value.streaming_fixture_validated));
+            .is_some_and(|value| value.streaming_fixture_validated))
+        && physics_fixture_ready(config.physics_fixture, streaming.as_deref());
     let commit_budget_respected = streaming
         .as_deref()
         .is_none_or(|value| value.commit_budget_violations == 0);
@@ -365,6 +366,13 @@ fn diagnostic_value(
     store.get(path).and_then(|diagnostic| diagnostic.value())
 }
 
+fn physics_fixture_ready(selected: bool, metrics: Option<&StreamingMetrics>) -> bool {
+    !selected
+        || metrics.is_some_and(|value| {
+            value.physics_fixture_validated && value.physics_fixture_failures == 0
+        })
+}
+
 fn no_runtime_failures(
     streaming: Option<&StreamingMetrics>,
     require_material_fixture: bool,
@@ -461,6 +469,18 @@ mod tests {
             config.benchmark_frame_times.as_deref(),
             Some(std::path::Path::new("out/frames.csv"))
         );
+    }
+
+    #[test]
+    fn physics_fixture_benchmark_requires_validation_without_failures() {
+        let mut metrics = StreamingMetrics::default();
+        assert!(physics_fixture_ready(false, None));
+        assert!(!physics_fixture_ready(true, None));
+        assert!(!physics_fixture_ready(true, Some(&metrics)));
+        metrics.physics_fixture_validated = true;
+        assert!(physics_fixture_ready(true, Some(&metrics)));
+        metrics.physics_fixture_failures = 1;
+        assert!(!physics_fixture_ready(true, Some(&metrics)));
     }
 
     #[test]

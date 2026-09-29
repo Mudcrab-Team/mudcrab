@@ -227,6 +227,8 @@ pub struct StreamingMetrics {
     pub origin_rebases: u64,
     pub streaming_fixture_validated: bool,
     pub streaming_fixture_failures: u64,
+    pub physics_fixture_validated: bool,
+    pub physics_fixture_failures: u64,
     pub asset_failures: Vec<AssetFailure>,
 }
 
