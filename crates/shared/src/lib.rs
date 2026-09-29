@@ -1,5 +1,6 @@
 //! Stable data contracts shared by the offline converter and the runtime.
 
+pub mod collision;
 pub mod coordinates;
 
 use rkyv::{Archive, Deserialize, Serialize};

@@ -18,6 +18,13 @@ pub(crate) const EXTERIOR_CELL_ID_SQL: &str = "SELECT c.id FROM cells c
      ORDER BY (l.cell_id IS NOT NULL) DESC, c.id DESC
      LIMIT 1";
 
+/// Schema 4 adds fields while retaining the runtime's schema 3 query columns.
+pub(crate) const MAX_RUNTIME_DATABASE_SCHEMA_VERSION: u32 = 4;
+
+pub(crate) fn supports_runtime_database_schema(version: u32) -> bool {
+    (shared::WORLD_DATABASE_SCHEMA_VERSION..=MAX_RUNTIME_DATABASE_SCHEMA_VERSION).contains(&version)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellKey {
     Exterior {
@@ -33,6 +40,8 @@ pub struct ReferenceRow {
     pub form_id: u32,
     pub cell_id: u32,
     pub base_form_id: u32,
+    /// Authoritative base record type; `statics` also contains movable clutter.
+    pub base_record_type: Option<String>,
     pub model_path: Option<String>,
     pub position: [f32; 3],
     pub rotation: [f32; 3],
@@ -313,9 +322,10 @@ fn validate(path: &Path) -> Result<()> {
         })
         .wrap_err("world database has no schema version")?;
     color_eyre::eyre::ensure!(
-        version == shared::WORLD_DATABASE_SCHEMA_VERSION,
-        "world database schema {version} is unsupported; reconvert assets for version {}",
-        shared::WORLD_DATABASE_SCHEMA_VERSION
+        supports_runtime_database_schema(version),
+        "world database schema {version} is unsupported; supported versions are {} through {}",
+        shared::WORLD_DATABASE_SCHEMA_VERSION,
+        MAX_RUNTIME_DATABASE_SCHEMA_VERSION
     );
     Ok(())
 }
@@ -408,6 +418,13 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 /// each reference lighting the space at its own radius.
 const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
 
+fn has_records(connection: &Connection) -> Result<bool> {
+    let count: i64 = connection
+        .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'")?
+        .query_row([], |row| row.get(0))?;
+    Ok(count > 0)
+}
+
 /// Whether the database carries the `lights` table. A database converted before lights were
 /// exported still loads; every reference then reads as unlit.
 fn has_lights(connection: &Connection) -> Result<bool> {
@@ -439,6 +456,8 @@ struct ReferenceQuery {
 
 impl ReferenceQuery {
     fn for_connection(connection: &Connection) -> Result<Self> {
+        let has_records = has_records(connection)?;
+        let record_column = if has_records { "b.record_type" } else { "NULL" };
         let has_lights = has_lights(connection)?;
         let light_columns = if has_lights {
             LIGHT_COLUMNS
@@ -451,11 +470,14 @@ impl ReferenceQuery {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
         let mut joins = String::from(REFERENCE_JOIN);
+        if has_records {
+            joins.push_str(" LEFT JOIN records b ON b.form_id=r.base_form_id");
+        }
         if has_lights {
             joins.push_str(LIGHT_JOIN);
         }
         Ok(Self {
-            columns: format!("{REFERENCE_COLUMNS},{light_columns},{override_column}"),
+            columns: format!("{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column}"),
             joins,
         })
     }
@@ -517,14 +539,13 @@ fn load_cell(
 }
 
 fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
-    // The `lights` row is present exactly when the join found one and it has the radius the
-    // converter's table makes `NOT NULL`; anything else is a reference this database cannot light.
-    let radius: Option<f32> = row.get(18)?;
+    let base_record_type: Option<String> = row.get(18)?;
+    let radius: Option<f32> = row.get(19)?;
     let light = match radius {
         Some(radius) => Some(LightRow {
             radius,
-            color: [row.get(19)?, row.get(20)?, row.get(21)?],
-            flags: row.get(22)?,
+            color: [row.get(20)?, row.get(21)?, row.get(22)?],
+            flags: row.get(23)?,
         }),
         None => None,
     };
@@ -532,6 +553,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         form_id: row.get(0)?,
         cell_id: row.get(1)?,
         base_form_id: row.get(2)?,
+        base_record_type,
         model_path: row.get(3)?,
         position: [row.get(4)?, row.get(5)?, row.get(6)?],
         rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
@@ -540,7 +562,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         bounds_max: [row.get(14)?, row.get(15)?, row.get(16)?],
         bounds_valid: row.get(17)?,
         light,
-        light_radius_override: row.get(23)?,
+        light_radius_override: row.get(24)?,
     })
 }
 
@@ -637,6 +659,36 @@ mod tests {
             converted_texture_path("textures/land/grass.dds".to_owned()),
             Some("textures/land/grass.ktx2".to_owned())
         );
+    }
+
+    #[test]
+    fn base_record_type_distinguishes_fixed_static_from_movable_model() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(
+                "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL);
+                 INSERT INTO records VALUES(20,'STAT');
+                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1);
+                 INSERT INTO records VALUES(22,'MISC');
+                 INSERT INTO \"references\" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);",
+            )
+            .unwrap();
+        let payload = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        let fixed = payload.references.iter().find(|r| r.form_id == 30).unwrap();
+        let movable = payload.references.iter().find(|r| r.form_id == 40).unwrap();
+        assert_eq!(fixed.base_record_type.as_deref(), Some("STAT"));
+        assert_eq!(movable.base_record_type.as_deref(), Some("MISC"));
     }
 
     #[test]
@@ -774,6 +826,36 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES(2);",
             )
+            .unwrap();
+        drop(connection);
+        assert!(validate(&path).is_err());
+    }
+
+    #[test]
+    fn accepts_schema_four_database_with_legacy_query_columns() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        fixture(&connection);
+        connection
+            .execute("UPDATE schema_info SET version=4", [])
+            .unwrap();
+        drop(connection);
+        validate(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let payload = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        assert_eq!(payload.references.len(), 2);
+        connection
+            .execute("UPDATE schema_info SET version=5", [])
             .unwrap();
         drop(connection);
         assert!(validate(&path).is_err());

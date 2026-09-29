@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 rkyv.workspace = true
+serde.workspace = true

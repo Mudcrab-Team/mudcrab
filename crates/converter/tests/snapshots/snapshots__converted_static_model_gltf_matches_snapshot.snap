@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 176
 expression: document
 ---
 {
@@ -167,6 +168,14 @@ expression: document
   "scene": 0,
   "scenes": [
     {
+      "extras": {
+        "openSkyrimCollision": {
+          "authored": true,
+          "shapes": [],
+          "skipped": [],
+          "version": 1
+        }
+      },
       "nodes": [
         2
       ]

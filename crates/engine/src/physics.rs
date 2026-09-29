@@ -1,9 +1,5 @@
-//! Player movement physics: Rapier context, debug tankards, fixture arena.
-//!
-//! P1 owns the interactive `--physics-fixture`: a primitive slope/wall arena
-//! with an asset-free debug tankard (compound cup + handle collider) used to
-//! validate the walking controller and dynamic bodies before streamed terrain
-//! (P2) and static (P3) collision arrive. All units are Creation units.
+//! Player movement physics: one controller for Riverwood and the regression fixture.
+//! All units are Creation units.
 
 use bevy::{
     input::mouse::MouseMotion,
@@ -11,13 +7,22 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions},
 };
 use bevy_rapier3d::prelude::*;
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, ensure},
+};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use std::path::Path;
 
 use crate::{
-    profiling::ProfilingState, streaming::StreamingMetrics, world::components::StreamingCamera,
+    profiling::ProfilingState,
+    streaming::{StreamingMetrics, TerrainCollider},
+    world::components::StreamingCamera,
 };
 
 /// Fixed physics step: 60 Hz Rapier simulation (V15, V18).
 pub const PHYSICS_TIMESTEP: f32 = 1.0 / 60.0;
+const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
 /// Shared downward gravity in Creation units/s^2 for WALK and tankards (V11, V15).
 pub const GRAVITY_CREATION_UNITS: f32 = 900.0;
 /// Collision groups: world surfaces (V17).
@@ -32,7 +37,8 @@ pub const GROUP_TANKARD: Group = Group::GROUP_3;
 pub struct MovementTuning {
     pub walk_speed: f32,
     pub run_speed: f32,
-    pub sprint_speed: f32,
+    /// Provisional sprint factor applied to the selected directional run speed.
+    pub sprint_multiplier: f32,
     pub horizontal_acceleration: f32,
     pub gravity: f32,
     pub jump_launch: f32,
@@ -43,6 +49,15 @@ pub struct MovementTuning {
     pub slope_slide_degrees: f32,
     pub autostep_height: f32,
     pub ground_snap: f32,
+    /// Selected MOVT's left/right/forward/back walk/run speeds, when packaged.
+    pub record_speeds: Option<DirectionalMovementSpeeds>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirectionalMovementSpeeds {
+    /// Each pair is [walk, run], ordered left/right/forward/back.
+    pub directions: [[f32; 2]; 4],
+    pub source: String,
 }
 
 impl Default for MovementTuning {
@@ -50,17 +65,18 @@ impl Default for MovementTuning {
         Self {
             walk_speed: 160.0,
             run_speed: 300.0,
-            sprint_speed: 420.0,
+            sprint_multiplier: 1.5,
             horizontal_acceleration: 1800.0,
             gravity: GRAVITY_CREATION_UNITS,
             jump_launch: 340.0,
             capsule_radius: 28.0,
-            capsule_standing_height: 126.0,
-            eye_height: 112.0,
+            capsule_standing_height: 100.8,
+            eye_height: 89.6,
             slope_climb_degrees: 50.0,
             slope_slide_degrees: 55.0,
-            autostep_height: 24.0,
+            autostep_height: 36.0,
             ground_snap: 12.0,
+            record_speeds: None,
         }
     }
 }
@@ -68,6 +84,126 @@ impl Default for MovementTuning {
 impl MovementTuning {
     pub fn capsule_half_height(&self) -> f32 {
         (self.capsule_standing_height * 0.5 - self.capsule_radius).max(1.0)
+    }
+
+    /// Legacy packages lack `movement_types`. A package with the table must
+    /// contain a valid selected profile; otherwise it cannot claim record speeds.
+    pub fn from_world_database(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .wrap_err_with(|| format!("opening movement records in {}", path.display()))?;
+        let has_table: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_types')",
+            [], |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(Self::default());
+        }
+        let race_id: u32 = conn
+            .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
+            .wrap_err("record-backed movement needs Player NPC_ 00000007 RNAM")?;
+        let race_type: String = conn
+            .query_row(
+                "SELECT record_type FROM records WHERE form_id=?1",
+                [race_id],
+                |row| row.get(0),
+            )
+            .wrap_err_with(|| format!("Player NPC_ 00000007 RNAM {race_id:08X} is missing"))?;
+        ensure!(
+            race_type == "RACE",
+            "Player NPC_ 00000007 RNAM {race_id:08X} is {race_type}, expected RACE"
+        );
+        let (walk_link, run_link): (Option<u32>, Option<u32>) = conn
+            .query_row(
+                "SELECT walk_movt_id, run_movt_id FROM race_movement_links WHERE id=?1",
+                [race_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .wrap_err_with(|| {
+                format!("RACE {race_id:08X} movement links missing; reconvert assets")
+            })?;
+        ensure!(
+            walk_link.is_none() && run_link.is_none(),
+            "RACE {race_id:08X} has WKMV={walk_link:?} RNMV={run_link:?}; first-pass NPC_Default_MT selection supports only unset race links"
+        );
+        let selected: Option<(String, [f32; 8], String)> = conn
+            .query_row(
+                "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
+                    m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
+                    COALESCE(p.name, '<unknown plugin>') \
+             FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \
+             WHERE m.id=?1",
+                params![NPC_DEFAULT_MOVT_FORM_ID],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        [
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                        ],
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let (editor_id, values, plugin) = selected.ok_or_else(|| color_eyre::eyre::eyre!(
+            "movement_types exists but MOVT 0003580D NPC_Default_MT is missing; reconvert assets"
+        ))?;
+        ensure!(
+            editor_id == "NPC_Default_MT",
+            "MOVT 0003580D EDID is {editor_id}, expected NPC_Default_MT"
+        );
+        for (index, value) in values.iter().enumerate() {
+            ensure!(
+                value.is_finite() && *value > 0.0,
+                "MOVT 0003580D SPED[{index}] is invalid: {value}"
+            );
+        }
+        Ok(Self {
+            walk_speed: values[4],
+            run_speed: values[5],
+            record_speeds: Some(DirectionalMovementSpeeds {
+                directions: [
+                    [values[0], values[1]],
+                    [values[2], values[3]],
+                    [values[4], values[5]],
+                    [values[6], values[7]],
+                ],
+                source: format!("MOVT 0003580D NPC_Default_MT ({plugin})"),
+            }),
+            ..Self::default()
+        })
+    }
+
+    fn target_speed(&self, strafe: Vec2, slow: bool, sprint: bool) -> f32 {
+        let gait = if slow && !sprint { 0 } else { 1 };
+        let Some(speeds) = &self.record_speeds else {
+            let base = if gait == 0 {
+                self.walk_speed
+            } else {
+                self.run_speed
+            };
+            return if sprint {
+                base * self.sprint_multiplier
+            } else {
+                base
+            };
+        };
+        let x = strafe.x.abs();
+        let y = strafe.y.abs();
+        let lateral = speeds.directions[if strafe.x < 0.0 { 0 } else { 1 }][gait];
+        let longitudinal = speeds.directions[if strafe.y < 0.0 { 2 } else { 3 }][gait];
+        let base = (lateral * x + longitudinal * y) / (x + y).max(1.0);
+        if sprint {
+            base * self.sprint_multiplier
+        } else {
+            base
+        }
     }
 }
 
@@ -125,10 +261,27 @@ impl Plugin for PhysicsCorePlugin {
             dt: PHYSICS_TIMESTEP,
             substeps: 1,
         })
+        .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_resource::<MovementTuning>()
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())
-        .add_systems(Startup, configure_physics_gravity);
+        .add_systems(Startup, (configure_physics_gravity, report_movement_tuning));
     }
+}
+
+fn report_movement_tuning(tuning: Res<MovementTuning>) {
+    let source = tuning
+        .record_speeds
+        .as_ref()
+        .map_or("legacy provisional constants", |s| s.source.as_str());
+    info!(
+        "WALK speeds: forward walk={} run={} Creation units/s (first-pass factor 1); provisional sprint={} ({}x directional run); source={source}; jump_launch={} and gravity={} provisional",
+        tuning.walk_speed,
+        tuning.run_speed,
+        tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
+        tuning.sprint_multiplier,
+        tuning.jump_launch,
+        tuning.gravity
+    );
 }
 
 fn configure_physics_gravity(
@@ -145,17 +298,28 @@ pub struct PhysicsFixturePlugin;
 
 impl Plugin for PhysicsFixturePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(PhysicsCorePlugin)
+        app.add_plugins(PlayerControlsPlugin)
             .init_resource::<PhysicsFixtureState>()
-            .init_resource::<MoveMode>()
-            .init_resource::<WalkIntent>()
-            .init_resource::<LookIntent>()
-            .init_resource::<WalkEntryStatus>()
-            .init_resource::<CursorCapture>()
             .add_systems(
                 Startup,
                 (setup_physics_fixture, setup_fixture_player).chain(),
             )
+            .add_systems(FixedUpdate, validate_physics_fixture);
+    }
+}
+
+/// Mouse and movement systems shared by Riverwood and the regression fixture.
+pub struct PlayerControlsPlugin;
+
+impl Plugin for PlayerControlsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(PhysicsCorePlugin)
+            .init_resource::<MoveMode>()
+            .init_resource::<WalkIntent>()
+            .init_resource::<SprintLatch>()
+            .init_resource::<LookIntent>()
+            .init_resource::<WalkEntryStatus>()
+            .init_resource::<CursorCapture>()
             .add_systems(
                 Update,
                 (
@@ -164,16 +328,99 @@ impl Plugin for PhysicsFixturePlugin {
                     noclip_flight_system,
                     walk_intent_system,
                     toggle_mode_system,
+                    walk_camera_follow_system,
+                    sprint_fov_system,
                     overlay_system,
                 )
                     .chain(),
             )
-            .add_systems(
-                FixedUpdate,
-                (walk_movement_system, walk_camera_follow_system).chain(),
-            )
-            .add_systems(FixedUpdate, validate_physics_fixture);
+            .add_systems(FixedUpdate, walk_movement_system);
     }
+}
+
+pub struct WorldPlayerPlugin;
+
+impl Plugin for WorldPlayerPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(PlayerControlsPlugin)
+            .add_plugins(
+                RapierDebugRenderPlugin {
+                    default_collider_debug: ColliderDebug::NeverRender,
+                    mode: DebugRenderMode::COLLIDER_SHAPES,
+                    ..default()
+                }
+                .disabled(),
+            )
+            .init_resource::<HeldTankard>()
+            .add_systems(PostStartup, setup_world_player)
+            .add_systems(
+                Update,
+                (
+                    toggle_collision_debug_system,
+                    update_collision_debug_visibility,
+                )
+                    .chain()
+                    .before(overlay_system),
+            )
+            .add_systems(Update, (world_tankard_input, move_held_tankard).chain());
+    }
+}
+
+#[derive(Resource, Default)]
+struct HeldTankard(Option<Entity>);
+
+#[derive(Resource)]
+struct TankardVisuals {
+    cup: Handle<Mesh>,
+    handle: Handle<Mesh>,
+    wood: Handle<StandardMaterial>,
+}
+
+fn tankard_visuals(
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) -> TankardVisuals {
+    TankardVisuals {
+        cup: meshes.add(Cylinder::new(
+            TANKARD_CUP_RADIUS,
+            TANKARD_CUP_HALF_HEIGHT * 2.0,
+        )),
+        handle: meshes.add(Cylinder::new(
+            TANKARD_HANDLE_RADIUS,
+            TANKARD_HANDLE_HALF_HEIGHT * 2.0,
+        )),
+        wood: materials.add(fixture_material(Color::srgb(0.5, 0.32, 0.14))),
+    }
+}
+
+fn spawn_debug_tankard(commands: &mut Commands, visuals: &TankardVisuals, position: Vec3) {
+    commands
+        .spawn((
+            Name::new("Debug tankard"),
+            DebugTankard,
+            RigidBody::Dynamic,
+            debug_tankard_collider(),
+            ActiveEvents::COLLISION_EVENTS,
+            CollidingEntities::default(),
+            tankard_collision_groups(),
+            ColliderMassProperties::Density(0.001),
+            Velocity::zero(),
+            Transform::from_translation(position),
+            Visibility::default(),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Mesh3d(visuals.cup.clone()),
+                MeshMaterial3d(visuals.wood.clone()),
+                Transform::IDENTITY,
+            ));
+            parent.spawn((
+                Mesh3d(visuals.handle.clone()),
+                MeshMaterial3d(visuals.wood.clone()),
+                Transform::from_xyz(TANKARD_CUP_RADIUS + TANKARD_HANDLE_RADIUS, 0.0, 0.0)
+                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+            ));
+        });
 }
 
 #[derive(Resource, Default)]
@@ -248,49 +495,13 @@ fn setup_physics_fixture(
     ));
 
     // Visible cup + handle meshes; collider stays compound convex (V15).
-    let cup_mesh = meshes.add(Cylinder::new(
-        TANKARD_CUP_RADIUS,
-        TANKARD_CUP_HALF_HEIGHT * 2.0,
-    ));
-    let handle_mesh = meshes.add(Cylinder::new(
-        TANKARD_HANDLE_RADIUS,
-        TANKARD_HANDLE_HALF_HEIGHT * 2.0,
-    ));
-    let wood = materials.add(fixture_material(Color::srgb(0.5, 0.32, 0.14)));
-    for (index, position) in [
+    let visuals = tankard_visuals(&mut meshes, &mut materials);
+    for position in [
         Vec3::new(-700.0, 420.0, -500.0),
         Vec3::new(-640.0, 480.0, -420.0),
         Vec3::new(120.0, 320.0, 120.0),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        commands
-            .spawn((
-                Name::new(format!("Debug tankard fixture {index}")),
-                DebugTankard,
-                RigidBody::Dynamic,
-                debug_tankard_collider(),
-                ActiveEvents::COLLISION_EVENTS,
-                CollidingEntities::default(),
-                tankard_collision_groups(),
-                ColliderMassProperties::Density(0.001),
-                Transform::from_translation(position),
-                Visibility::default(),
-            ))
-            .with_children(|parent| {
-                parent.spawn((
-                    Mesh3d(cup_mesh.clone()),
-                    MeshMaterial3d(wood.clone()),
-                    Transform::IDENTITY,
-                ));
-                parent.spawn((
-                    Mesh3d(handle_mesh.clone()),
-                    MeshMaterial3d(wood.clone()),
-                    Transform::from_xyz(TANKARD_CUP_RADIUS + TANKARD_HANDLE_RADIUS, 0.0, 0.0)
-                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-                ));
-            });
+    ] {
+        spawn_debug_tankard(&mut commands, &visuals, position);
     }
 
     commands.spawn((
@@ -363,10 +574,103 @@ mod tests {
     #[test]
     fn movement_tuning_preserves_spec_speed_ordering() {
         let tuning = MovementTuning::default();
-        assert!(tuning.walk_speed < tuning.run_speed);
-        assert!(tuning.run_speed < tuning.sprint_speed);
+        let forward = Vec2::new(0.0, -1.0);
+        let walk = tuning.target_speed(forward, true, false);
+        let run = tuning.target_speed(forward, false, false);
+        let sprint = tuning.target_speed(forward, false, true);
+        assert!(walk < run && run < sprint);
+        assert_eq!(sprint, run * tuning.sprint_multiplier);
         assert!(tuning.horizontal_acceleration > 0.0);
         assert_eq!(tuning.gravity, GRAVITY_CREATION_UNITS);
+        assert_eq!(tuning.capsule_standing_height, 100.8);
+        assert_eq!(tuning.eye_height, 89.6);
+        assert_eq!(tuning.capsule_radius, 28.0);
+    }
+
+    #[test]
+    fn packaged_movement_profile_resolves_and_legacy_package_falls_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skyrim_world.db");
+        let conn = Connection::open(&path).unwrap();
+        let legacy = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(legacy.run_speed, 300.0);
+        assert!(legacy.record_speeds.is_none());
+        conn.execute_batch(
+            "CREATE TABLE npcs(id INTEGER PRIMARY KEY, race_id INTEGER);
+            CREATE TABLE records(form_id INTEGER PRIMARY KEY, record_type TEXT);
+            CREATE TABLE plugins(id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE race_movement_links(id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER);
+            CREATE TABLE movement_types(id INTEGER PRIMARY KEY, editor_id TEXT,
+                left_walk REAL, left_run REAL, right_walk REAL, right_run REAL,
+                forward_walk REAL, forward_run REAL, back_walk REAL, back_run REAL,
+                load_order INTEGER);
+            INSERT INTO npcs VALUES(7, 79686);
+            INSERT INTO records VALUES(79686, 'RACE');
+            INSERT INTO race_movement_links VALUES(79686, NULL, NULL);
+            INSERT INTO plugins VALUES(0, 'Skyrim.esm');
+            INSERT INTO movement_types VALUES(219149, 'NPC_Default_MT',
+                80.09, 370, 79.75, 370, 80.1, 370, 71.93, 205.25, 0);",
+        )
+        .unwrap();
+        let tuning = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!(tuning.walk_speed, 80.1);
+        assert_eq!(tuning.run_speed, 370.0);
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, -1.0), false, true),
+            555.0
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(0.0, 1.0), false, false),
+            205.25
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(-1.0, 0.0), true, false),
+            80.09
+        );
+        assert_eq!(
+            tuning.target_speed(Vec2::new(1.0, -1.0), false, false),
+            370.0
+        );
+        assert!(tuning.record_speeds.unwrap().source.contains("Skyrim.esm"));
+        conn.execute(
+            "UPDATE records SET record_type='STAT' WHERE form_id=79686",
+            [],
+        )
+        .unwrap();
+        assert!(
+            MovementTuning::from_world_database(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("expected RACE")
+        );
+        conn.execute(
+            "UPDATE records SET record_type='RACE' WHERE form_id=79686",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE race_movement_links SET walk_movt_id=219149 WHERE id=79686",
+            [],
+        )
+        .unwrap();
+        assert!(
+            MovementTuning::from_world_database(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("supports only unset race links")
+        );
+        conn.execute(
+            "UPDATE race_movement_links SET walk_movt_id=NULL WHERE id=79686",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM movement_types", []).unwrap();
+        assert!(
+            MovementTuning::from_world_database(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("MOVT 0003580D")
+        );
     }
 
     #[test]
@@ -402,6 +706,10 @@ mod tests {
             }
         );
         assert!((PHYSICS_TIMESTEP - 1.0 / 60.0).abs() < f32::EPSILON);
+        assert_eq!(
+            app.world().resource::<Time<Fixed>>().timestep(),
+            std::time::Duration::from_secs_f64(1.0 / 60.0)
+        );
     }
 }
 
@@ -440,6 +748,10 @@ pub struct WalkIntent {
     pub jump_pressed: bool,
 }
 
+/// WALK sprint toggle; cleared whenever movement or controls stop.
+#[derive(Debug, Clone, Copy, Default, Resource)]
+struct SprintLatch(bool);
+
 /// Live walk state: horizontal velocity + vertical velocity (V10, V11).
 #[derive(Debug, Clone, Copy, Default, Component)]
 pub struct WalkState {
@@ -454,8 +766,6 @@ pub struct WalkState {
 /// Upward search budget when entering WALK inside geometry (V8).
 pub const WALK_ENTRY_SEARCH_STEPS: u32 = 12;
 pub const WALK_ENTRY_STEP_HEIGHT: f32 = 28.0;
-/// Ground must exist within this distance below the capsule for WALK entry (V13).
-pub const WALK_ENTRY_GROUND_SEARCH: f32 = 400.0;
 
 /// Build the upright player capsule + controller from tuning (V9, V12).
 pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
@@ -570,8 +880,8 @@ pub fn walk_camera_follow_system(
     view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
 }
 
-/// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward,
-/// missing ground keeps NOCLIP with a visible reason (V8, V13).
+/// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward
+/// until the capsule fits or leaves NOCLIP active with a visible reason (V8).
 pub fn try_enter_walk(
     context: &RapierContext,
     tuning: &MovementTuning,
@@ -586,25 +896,14 @@ pub fn try_enter_walk(
             candidate,
             Quat::IDENTITY,
             shape,
-            QueryFilter::default(),
+            QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
             |_| {
                 overlapping = true;
                 false
             },
         );
         if !overlapping {
-            let ground_hit = context.cast_shape(
-                candidate,
-                Quat::IDENTITY,
-                Vec3::NEG_Y * WALK_ENTRY_GROUND_SEARCH,
-                shape,
-                ShapeCastOptions::with_max_time_of_impact(WALK_ENTRY_GROUND_SEARCH),
-                QueryFilter::default(),
-            );
-            if ground_hit.is_some() {
-                return Ok(candidate);
-            }
-            return Err("no walkable ground below".to_owned());
+            return Ok(candidate);
         }
         candidate.y += WALK_ENTRY_STEP_HEIGHT;
     }
@@ -612,12 +911,14 @@ pub fn try_enter_walk(
 }
 
 /// Clear stale velocities + jump state on every toggle (V14).
-pub fn clear_motion_state(
+fn clear_motion_state(
     intent: &mut WalkIntent,
+    sprint: &mut SprintLatch,
     states: &mut Query<&mut WalkState>,
     controllers: &mut Query<&mut KinematicCharacterController>,
 ) {
     *intent = WalkIntent::default();
+    sprint.0 = false;
     for mut state in states {
         *state = WalkState::default();
     }
@@ -629,6 +930,95 @@ pub fn clear_motion_state(
 #[cfg(test)]
 mod walk_tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn alt_sprint_latches_until_movement_stops_or_controls_leave_walk() {
+        let mut app = App::new();
+        app.insert_resource(MoveMode::Walk)
+            .insert_resource(CursorCapture::Captured)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(MovementTuning::default())
+            .insert_resource(LookIntent::default())
+            .insert_resource(WalkIntent::default())
+            .insert_resource(SprintLatch::default());
+        app.world_mut().spawn((PlayerBody, Transform::default()));
+        let sample = |app: &mut App| {
+            app.world_mut().run_system_once(walk_intent_system).unwrap();
+            app.world().resource::<WalkIntent>().target_speed
+        };
+        let tuning = app.world().resource::<MovementTuning>().clone();
+        let sprint_speed = tuning.target_speed(Vec2::new(0.0, -1.0), false, true);
+
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::AltLeft);
+        }
+        assert_eq!(sample(&mut app), sprint_speed);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.release(KeyCode::AltLeft);
+        }
+        assert_eq!(sample(&mut app), sprint_speed);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.press(KeyCode::AltLeft);
+        }
+        assert_eq!(sample(&mut app), tuning.run_speed);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.release(KeyCode::AltLeft);
+            keys.press(KeyCode::AltRight);
+        }
+        assert_eq!(sample(&mut app), sprint_speed);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.release(KeyCode::AltRight);
+            keys.release(KeyCode::KeyW);
+        }
+        assert_eq!(sample(&mut app), 0.0);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.press(KeyCode::KeyW);
+        }
+        assert_eq!(sample(&mut app), tuning.run_speed);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::AltLeft);
+        assert_eq!(sample(&mut app), sprint_speed);
+        app.insert_resource(MoveMode::Noclip);
+        sample(&mut app);
+        app.insert_resource(MoveMode::Walk);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        assert_eq!(sample(&mut app), tuning.run_speed);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::AltLeft);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::AltRight);
+        assert_eq!(sample(&mut app), sprint_speed);
+        app.insert_resource(CursorCapture::Released);
+        sample(&mut app);
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        assert_eq!(sample(&mut app), tuning.run_speed);
+    }
 
     #[test]
     fn walk_integrates_toward_wish_speed_with_bounded_acceleration() {
@@ -754,6 +1144,194 @@ pub(crate) mod headless {
 mod simulation_tests {
     use super::headless;
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn walk_falls_when_loaded_ground_is_far_below() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(120.0, 1200.0, 120.0);
+        headless::place_player(&mut app, start);
+        for _ in 0..20 {
+            app.update();
+        }
+        let (position, _) = headless::player_pose(&mut app);
+        assert!(
+            position.y < start.y - 10.0,
+            "long fall froze at {position:?}"
+        );
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn walk_falls_without_a_downward_ground_ray() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(2000.0, 1200.0, 2000.0);
+        headless::place_player(&mut app, start);
+        for _ in 0..20 {
+            app.update();
+        }
+        let (position, _) = headless::player_pose(&mut app);
+        assert!(
+            position.y < start.y - 10.0,
+            "airborne WALK froze at {position:?}"
+        );
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn noclip_can_enter_walk_and_fall_from_far_above_ground() {
+        let mut app = headless::fixture_app();
+        let camera_height = 8000.0;
+        let start = Vec3::new(120.0, camera_height, 120.0);
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<ControlledCamera>>();
+            query.single(app.world()).expect("controlled camera")
+        };
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation = start;
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.world_mut().run_system_once(toggle_mode_system).unwrap();
+        assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Walk);
+        let initial = headless::player_pose(&mut app).0;
+        assert!(
+            (initial.y - (camera_height - app.world().resource::<MovementTuning>().eye_height))
+                .abs()
+                < 0.01
+        );
+        for _ in 0..20 {
+            app.update();
+        }
+        let after = headless::player_pose(&mut app).0;
+        assert!(
+            after.y < initial.y - 10.0,
+            "high-altitude WALK froze at {after:?}"
+        );
+    }
+
+    #[test]
+    fn noclip_stays_enabled_when_no_free_capsule_placement_exists() {
+        let mut app = headless::fixture_app();
+        let tuning = app.world().resource::<MovementTuning>().clone();
+        let camera_position = Vec3::new(2000.0, 300.0 + tuning.eye_height, 2000.0);
+        app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(500.0, 500.0, 500.0),
+            world_collision_groups(),
+            Transform::from_xyz(2000.0, 300.0, 2000.0),
+        ));
+        app.update();
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<ControlledCamera>>();
+            query.single(app.world()).expect("controlled camera")
+        };
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation = camera_position;
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.world_mut().run_system_once(toggle_mode_system).unwrap();
+        assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Noclip);
+        assert_eq!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_deref(),
+            Some("no free capsule placement nearby")
+        );
+    }
+
+    #[test]
+    fn sprint_increases_collision_resolved_speed_and_idle_reads_zero() {
+        let mut app = headless::fixture_app();
+        app.world_mut().resource_mut::<MovementTuning>().run_speed = 370.0;
+        headless::place_player(&mut app, Vec3::new(0.0, 300.0, 700.0));
+        for _ in 0..150 {
+            app.update();
+        }
+        let measure = |app: &mut App| {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&KinematicCharacterControllerOutput, With<PlayerBody>>();
+            actual_walk_speed(query.single(app.world()).ok())
+        };
+        assert_eq!(measure(&mut app), 0.0);
+        let tuning = app.world().resource::<MovementTuning>().clone();
+        let forward = Vec2::new(0.0, -1.0);
+        let run_target = tuning.target_speed(forward, false, false);
+        let sprint_target = tuning.target_speed(forward, false, true);
+        for target_speed in [run_target, sprint_target] {
+            app.insert_resource(WalkIntent {
+                wish_dir: Vec3::NEG_Z,
+                target_speed,
+                jump_pressed: false,
+            });
+            for _ in 0..45 {
+                app.update();
+            }
+            let actual = measure(&mut app);
+            assert!(
+                (actual - target_speed).abs() < 2.0,
+                "target {target_speed}, actual {actual}"
+            );
+        }
+        assert_eq!(run_target, 370.0);
+        assert_eq!(sprint_target, 555.0);
+        app.insert_resource(WalkIntent::default());
+        for _ in 0..30 {
+            app.update();
+        }
+        assert!(measure(&mut app) < 0.5);
+    }
+
+    #[test]
+    fn blocked_player_reports_zero_actual_speed_despite_sprint_target() {
+        let mut app = headless::fixture_app();
+        headless::place_player(&mut app, Vec3::new(500.0, 300.0, 0.0));
+        for _ in 0..150 {
+            app.update();
+        }
+        let sprint_target =
+            app.world()
+                .resource::<MovementTuning>()
+                .target_speed(Vec2::X, false, true);
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: sprint_target,
+            jump_pressed: false,
+        });
+        for _ in 0..120 {
+            app.update();
+        }
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&KinematicCharacterControllerOutput, With<PlayerBody>>();
+        let actual = actual_walk_speed(query.single(app.world()).ok());
+        assert!(sprint_target > 0.0 && actual < 1.0, "actual {actual}");
+    }
 
     #[test]
     fn tankards_fall_and_settle_on_fixture_ground() {
@@ -839,36 +1417,34 @@ mod simulation_tests {
         for _ in 0..240 {
             app.update();
         }
-        let rest_y = {
-            let mut query = app.world_mut().query::<&Transform>();
-            query
-                .iter(app.world())
-                .map(|t| t.translation.y)
-                .find(|y| *y < 200.0)
-                .unwrap_or(0.0)
-        };
+        let (rest, grounded) = headless::player_pose(&mut app);
+        assert!(grounded, "player did not settle before jump: {rest:?}");
+        let rest_y = rest.y;
         app.insert_resource(WalkIntent {
             jump_pressed: true,
             ..default()
         });
+        let mut apex = rest_y;
         for _ in 0..6 {
             app.update();
+            apex = apex.max(headless::player_pose(&mut app).0.y);
         }
         app.insert_resource(WalkIntent::default());
-        let mut apex = rest_y;
         for _ in 0..240 {
             app.update();
-            let mut query = app.world_mut().query::<&Transform>();
-            for transform in query.iter(app.world()) {
-                if transform.translation.y < 1200.0 {
-                    apex = apex.max(transform.translation.y);
-                }
-            }
+            apex = apex.max(headless::player_pose(&mut app).0.y);
         }
+        let (landing, grounded) = headless::player_pose(&mut app);
         // v^2/2g = 340^2/1800 ~ 64 units of apex above rest.
         assert!(
             apex - rest_y > 30.0,
             "jump apex {apex} too low above rest {rest_y}"
+        );
+        assert!(grounded, "player did not land: {landing:?}");
+        assert!(
+            (landing.y - rest_y).abs() < 2.0,
+            "player landed at {} instead of {rest_y}",
+            landing.y
         );
     }
 }
@@ -882,6 +1458,9 @@ pub const NOCLIP_SPEED: f32 = 900.0;
 pub const NOCLIP_FAST_MULTIPLIER: f32 = 4.0;
 pub const MOUSE_SENSITIVITY: f32 = 0.0025;
 pub const MAX_PITCH_RADIANS: f32 = 1.5533;
+const SPRINT_FOV_BONUS_DEGREES: f32 = 8.0;
+const SPRINT_FOV_HALF_LIFE_SECS: f32 = 0.12;
+const SPEED_DISPLAY_DEADZONE: f32 = 5.0;
 
 /// Sampled look intent (V6, V18).
 #[derive(Debug, Clone, Copy, Default, Resource)]
@@ -894,9 +1473,9 @@ pub struct LookIntent {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct NoclipOverlay;
 
-/// Marker for the physics-fixture player rig (V5).
+/// Marker for the camera owned by the NOCLIP/WALK controller.
 #[derive(Component, Debug, Clone, Copy)]
-pub struct FixturePlayer;
+pub struct ControlledCamera;
 
 /// Cursor capture state machine (V6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Resource)]
@@ -950,35 +1529,111 @@ fn noclip_overlay_text(mode: MoveMode, status: &WalkEntryStatus) -> String {
         MoveMode::Noclip => "NOCLIP: ON  [V]",
         MoveMode::Walk => "NOCLIP: OFF  [V]",
     };
-    match (&mode, &status.blocked_reason) {
-        (MoveMode::Noclip, Some(reason)) => format!("{base}  WALK blocked: {reason}"),
-        _ => base.to_owned(),
+    match &status.blocked_reason {
+        Some(reason) => format!("{base}  [T] tankard  [E] grab/drop  WALK blocked: {reason}"),
+        None => format!("{base}  [T] tankard  [E] grab/drop"),
+    }
+}
+
+fn toggle_collision_debug_system(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut debug: ResMut<DebugRenderContext>,
+) {
+    if keyboard.just_pressed(KeyCode::F3) {
+        debug.enabled = !debug.enabled;
+    }
+}
+
+/// Keep a collider when any part of its world-space AABB reaches the camera's
+/// forward half-space. Large terrain pieces crossing the camera plane stay visible.
+fn debug_collider_in_front(camera: &Transform, mins: Vec3, maxs: Vec3) -> bool {
+    let forward = camera.forward().as_vec3();
+    let center = (mins + maxs) * 0.5;
+    let half_extents = (maxs - mins) * 0.5;
+    forward.dot(center - camera.translation) + forward.abs().dot(half_extents) >= 0.0
+}
+
+fn update_collision_debug_visibility(
+    debug: Res<DebugRenderContext>,
+    camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
+    context: ReadRapierContext,
+    overrides: Query<Option<&ColliderDebug>, With<Collider>>,
+    mut commands: Commands,
+) {
+    if !debug.enabled {
+        return;
+    }
+    let (Ok(camera), Ok(context)) = (camera.single(), context.single()) else {
+        return;
+    };
+    for (_, collider) in context.colliders.colliders.iter() {
+        let entity = Entity::from_bits(collider.user_data as u64);
+        let Ok(current) = overrides.get(entity) else {
+            continue;
+        };
+        let bounds = collider.compute_aabb();
+        let mins = Vec3::new(bounds.mins.x, bounds.mins.y, bounds.mins.z);
+        let maxs = Vec3::new(bounds.maxs.x, bounds.maxs.y, bounds.maxs.z);
+        let wanted = if debug_collider_in_front(camera, mins, maxs) {
+            ColliderDebug::AlwaysRender
+        } else {
+            ColliderDebug::NeverRender
+        };
+        if current.copied() != Some(wanted) {
+            commands.entity(entity).insert(wanted);
+        }
     }
 }
 
 fn setup_fixture_player(
     mut commands: Commands,
     tuning: Res<MovementTuning>,
-    camera: Query<Entity, With<StreamingCamera>>,
+    mut look: ResMut<LookIntent>,
+    camera: Query<(Entity, &Transform), With<StreamingCamera>>,
 ) {
-    let Ok(camera) = camera.single() else {
+    let Ok((camera, view)) = camera.single() else {
         return;
     };
-    // Player capsule starts parked at the camera; WALK entry repositions it.
+    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
+}
+
+fn setup_world_player(
+    mut commands: Commands,
+    tuning: Res<MovementTuning>,
+    mut look: ResMut<LookIntent>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    camera: Query<(Entity, &Transform), With<StreamingCamera>>,
+) {
+    let Ok((camera, view)) = camera.single() else {
+        return;
+    };
+    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
+    commands.insert_resource(tankard_visuals(&mut meshes, &mut materials));
+}
+
+fn setup_controlled_player(
+    commands: &mut Commands,
+    tuning: &MovementTuning,
+    look: &mut LookIntent,
+    camera: Entity,
+    view: &Transform,
+) {
+    let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
+    *look = LookIntent { yaw, pitch };
     let body = commands
         .spawn((
-            FixturePlayer,
-            player_controller_bundle(&tuning),
-            Transform::from_xyz(120.0, 300.0, 120.0),
+            player_controller_bundle(tuning),
+            Transform::from_translation(view.translation - Vec3::Y * tuning.eye_height),
         ))
         .id();
     // Noclip starts ON with the capsule disabled (V5, V8).
     commands.entity(body).insert(RigidBodyDisabled);
-    commands.entity(camera).insert(FixturePlayer);
+    commands.entity(camera).insert(ControlledCamera);
     commands.spawn((
         Name::new("Noclip overlay"),
         NoclipOverlay,
-        Text::new("NOCLIP: ON  [V]"),
+        Text::new("NOCLIP: ON  [V]    [T] tankard  [E] grab/drop"),
         TextFont::from_font_size(18.0),
         TextColor(Color::WHITE),
         Node {
@@ -990,6 +1645,100 @@ fn setup_fixture_player(
     ));
 }
 
+/// Riverwood test objects stay in world coordinates and are never children of a streamed cell.
+#[allow(clippy::too_many_arguments)]
+fn world_tankard_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    capture: Res<CursorCapture>,
+    camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
+    terrain: Query<(), With<TerrainCollider>>,
+    tankards: Query<(), With<DebugTankard>>,
+    player: Query<Entity, With<PlayerBody>>,
+    visuals: Option<Res<TankardVisuals>>,
+    mut held: ResMut<HeldTankard>,
+    context: ReadRapierContext,
+    mut commands: Commands,
+) {
+    if *capture != CursorCapture::Captured {
+        return;
+    }
+    let (Ok(camera), Ok(context)) = (camera.single(), context.single()) else {
+        return;
+    };
+    if keyboard.just_pressed(KeyCode::KeyT)
+        && tankards.iter().count() < MAX_LIVE_TANKARDS
+        && let Some(visuals) = visuals
+    {
+        let horizontal = camera.forward().as_vec3().with_y(0.0).normalize_or_zero();
+        let origin = camera.translation + horizontal * 140.0 + Vec3::Y * 300.0;
+        let is_terrain = |entity| terrain.get(entity).is_ok();
+        if let Some((_, distance)) = context.cast_ray(
+            origin,
+            Vec3::NEG_Y,
+            700.0,
+            true,
+            QueryFilter::default().predicate(&is_terrain),
+        ) {
+            spawn_debug_tankard(
+                &mut commands,
+                &visuals,
+                origin - Vec3::Y * distance + Vec3::Y * 120.0,
+            );
+        }
+    }
+    if !keyboard.just_pressed(KeyCode::KeyE) {
+        return;
+    }
+    if let Some(entity) = held.0.take() {
+        if tankards.get(entity).is_ok() {
+            commands
+                .entity(entity)
+                .remove::<(RigidBodyDisabled, ColliderDisabled)>();
+            commands.entity(entity).insert(Velocity::zero());
+        }
+        return;
+    }
+    let filter = if let Ok(player) = player.single() {
+        QueryFilter::default().exclude_rigid_body(player)
+    } else {
+        QueryFilter::default()
+    };
+    if let Some((entity, _)) = context.cast_ray(
+        camera.translation,
+        camera.forward().as_vec3(),
+        240.0,
+        true,
+        filter,
+    ) && tankards.get(entity).is_ok()
+    {
+        commands
+            .entity(entity)
+            .insert((RigidBodyDisabled, ColliderDisabled, Velocity::zero()));
+        held.0 = Some(entity);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn move_held_tankard(
+    mut held: ResMut<HeldTankard>,
+    camera: Query<
+        &Transform,
+        (
+            With<StreamingCamera>,
+            With<ControlledCamera>,
+            Without<DebugTankard>,
+        ),
+    >,
+    mut tankards: Query<&mut Transform, (With<DebugTankard>, Without<StreamingCamera>)>,
+) {
+    let Some(entity) = held.0 else { return };
+    let (Ok(camera), Ok(mut tankard)) = (camera.single(), tankards.get_mut(entity)) else {
+        held.0 = None;
+        return;
+    };
+    tankard.translation = camera.translation + camera.forward().as_vec3() * 110.0;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cursor_lifecycle_system(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -998,6 +1747,7 @@ fn cursor_lifecycle_system(
     mut capture: ResMut<CursorCapture>,
     mut cursor_options: Query<&mut CursorOptions>,
     mut intent: ResMut<WalkIntent>,
+    mut sprint: ResMut<SprintLatch>,
     mut states: Query<&mut WalkState>,
     mut controllers: Query<&mut KinematicCharacterController>,
 ) {
@@ -1008,7 +1758,7 @@ fn cursor_lifecycle_system(
     if !focused || keyboard.just_pressed(KeyCode::Escape) {
         if *capture == CursorCapture::Captured {
             *capture = CursorCapture::Released;
-            clear_motion_state(&mut intent, &mut states, &mut controllers);
+            clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
         }
     } else if mouse_buttons.just_pressed(MouseButton::Left) && *capture == CursorCapture::Released {
         *capture = CursorCapture::Captured;
@@ -1041,7 +1791,7 @@ fn noclip_flight_system(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     look: Res<LookIntent>,
-    mut camera: Query<&mut Transform, (With<StreamingCamera>, With<FixturePlayer>)>,
+    mut camera: Query<&mut Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
 ) {
     if *mode != MoveMode::Noclip || *capture != CursorCapture::Captured {
         return;
@@ -1067,6 +1817,7 @@ fn noclip_flight_system(
     );
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters are supplied independently.
 fn walk_intent_system(
     mode: Res<MoveMode>,
     capture: Res<CursorCapture>,
@@ -1074,12 +1825,15 @@ fn walk_intent_system(
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
     mut intent: ResMut<WalkIntent>,
+    mut sprint: ResMut<SprintLatch>,
     mut player: Query<&mut Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
 ) {
     if *mode != MoveMode::Walk || *capture != CursorCapture::Captured {
+        sprint.0 = false;
         return;
     }
     let Ok(mut body) = player.single_mut() else {
+        sprint.0 = false;
         return;
     };
     // Yaw moves body, pitch moves view (V9).
@@ -1092,14 +1846,15 @@ fn walk_intent_system(
     );
     let wish = (right * strafe.x - forward * strafe.y).normalize_or_zero();
     let slow = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    let sprint = keyboard.pressed(KeyCode::AltLeft) || keyboard.pressed(KeyCode::AltRight);
+    let moving = wish.length_squared() > 0.0;
+    if !moving {
+        sprint.0 = false;
+    } else if keyboard.just_pressed(KeyCode::AltLeft) || keyboard.just_pressed(KeyCode::AltRight) {
+        sprint.0 = !sprint.0;
+    }
     intent.wish_dir = wish;
-    intent.target_speed = if sprint {
-        tuning.sprint_speed
-    } else if slow {
-        tuning.walk_speed
-    } else if wish.length_squared() > 0.0 {
-        tuning.run_speed
+    intent.target_speed = if moving {
+        tuning.target_speed(strafe, slow, sprint.0)
     } else {
         0.0
     };
@@ -1115,8 +1870,9 @@ fn toggle_mode_system(
     mut mode: ResMut<MoveMode>,
     mut status: ResMut<WalkEntryStatus>,
     mut intent: ResMut<WalkIntent>,
+    mut sprint: ResMut<SprintLatch>,
     mut look: ResMut<LookIntent>,
-    camera: Query<&Transform, (With<StreamingCamera>, With<FixturePlayer>)>,
+    camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
     mut player: Query<
         (Entity, &mut Transform, &Collider),
         (With<PlayerBody>, Without<StreamingCamera>),
@@ -1159,24 +1915,167 @@ fn toggle_mode_system(
             *mode = MoveMode::Noclip;
         }
     }
-    clear_motion_state(&mut intent, &mut states, &mut controllers);
+    clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
 }
 
 fn overlay_system(
     mode: Res<MoveMode>,
     status: Res<WalkEntryStatus>,
+    sprint: Res<SprintLatch>,
+    collision_debug: Option<Res<DebugRenderContext>>,
+    player: Query<Option<&KinematicCharacterControllerOutput>, With<PlayerBody>>,
     mut overlay: Query<&mut Text, With<NoclipOverlay>>,
 ) {
     let Ok(mut text) = overlay.single_mut() else {
         return;
     };
-    **text = noclip_overlay_text(*mode, &status);
+    let mut label = noclip_overlay_text(*mode, &status);
+    if *mode == MoveMode::Walk {
+        let speed = actual_walk_speed(player.single().ok().flatten());
+        let sprint_status = if sprint.0 { "ON" } else { "OFF" };
+        label.push_str(&format!(
+            "  SPRINT: {sprint_status}  [ALT]  SPEED: {speed:.0} u/s"
+        ));
+    }
+    if let Some(debug) = collision_debug {
+        label.push_str(if debug.enabled {
+            "  COLLISION: ON  [F3]"
+        } else {
+            "  COLLISION: OFF  [F3]"
+        });
+    }
+    **text = label;
+}
+
+/// Horizontal, collision-resolved player speed from the last fixed physics step.
+fn actual_walk_speed(output: Option<&KinematicCharacterControllerOutput>) -> f32 {
+    let Some(output) = output else { return 0.0 };
+    let movement = output.effective_translation;
+    let speed = Vec2::new(movement.x, movement.z).length() / PHYSICS_TIMESTEP;
+    if speed < SPEED_DISPLAY_DEADZONE {
+        0.0
+    } else {
+        speed
+    }
+}
+
+fn exponential_fov_step(current: f32, target: f32, delta_secs: f32) -> f32 {
+    let remaining = (-delta_secs / SPRINT_FOV_HALF_LIFE_SECS).exp2();
+    target + (current - target) * remaining
+}
+
+fn sprint_fov_system(
+    mode: Res<MoveMode>,
+    sprint: Res<SprintLatch>,
+    time: Res<Time>,
+    player: Query<Option<&KinematicCharacterControllerOutput>, With<PlayerBody>>,
+    mut camera: Query<&mut Projection, (With<StreamingCamera>, With<ControlledCamera>)>,
+) {
+    let Ok(mut projection) = camera.single_mut() else {
+        return;
+    };
+    let Projection::Perspective(perspective) = &mut *projection else {
+        return;
+    };
+    let base_fov = PerspectiveProjection::default().fov;
+    let moving = actual_walk_speed(player.single().ok().flatten()) > 1.0;
+    let target_fov = if *mode == MoveMode::Walk && sprint.0 && moving {
+        base_fov + SPRINT_FOV_BONUS_DEGREES.to_radians()
+    } else {
+        base_fov
+    };
+    perspective.fov = exponential_fov_step(perspective.fov, target_fov, time.delta_secs());
 }
 
 #[cfg(test)]
 mod noclip_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn sprint_fov_interpolation_is_exponential_and_returns_to_base() {
+        let base = PerspectiveProjection::default().fov;
+        let sprint = base + SPRINT_FOV_BONUS_DEGREES.to_radians();
+        let mut at_30_hz = base;
+        let mut at_120_hz = base;
+        for _ in 0..30 {
+            at_30_hz = exponential_fov_step(at_30_hz, sprint, 1.0 / 30.0);
+        }
+        for _ in 0..120 {
+            at_120_hz = exponential_fov_step(at_120_hz, sprint, 1.0 / 120.0);
+        }
+        assert!((at_30_hz - at_120_hz).abs() < 0.0001);
+        assert!((at_30_hz - sprint).abs() < 0.001);
+        for _ in 0..60 {
+            at_30_hz = exponential_fov_step(at_30_hz, base, 1.0 / 60.0);
+        }
+        assert!((at_30_hz - base).abs() < 0.001);
+    }
+
+    #[test]
+    fn sprint_fov_changes_only_the_controlled_camera_during_actual_motion() {
+        let mut app = App::new();
+        app.insert_resource(MoveMode::Walk)
+            .insert_resource(SprintLatch(true))
+            .insert_resource(Time::<()>::default());
+        app.world_mut()
+            .resource_mut::<Time<()>>()
+            .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+        let base = PerspectiveProjection::default().fov;
+        let controlled = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                ControlledCamera,
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        let unrelated = app
+            .world_mut()
+            .spawn(Projection::Perspective(PerspectiveProjection::default()))
+            .id();
+        app.world_mut().spawn((
+            PlayerBody,
+            KinematicCharacterControllerOutput {
+                grounded: true,
+                desired_translation: Vec3::ZERO,
+                effective_translation: Vec3::new(0.0, 0.0, -10.0),
+                collisions: Vec::new(),
+                is_sliding_down_slope: false,
+            },
+        ));
+        app.world_mut().run_system_once(sprint_fov_system).unwrap();
+        let fov = |app: &App, entity| match app.world().get::<Projection>(entity).unwrap() {
+            Projection::Perspective(perspective) => perspective.fov,
+            _ => panic!("expected perspective camera"),
+        };
+        let widened = fov(&app, controlled);
+        assert!(widened > base);
+        assert_eq!(fov(&app, unrelated), base);
+        app.insert_resource(MoveMode::Noclip);
+        app.world_mut().run_system_once(sprint_fov_system).unwrap();
+        assert!(fov(&app, controlled) < widened);
+    }
+
+    #[test]
+    fn collision_debug_keeps_shapes_crossing_view_plane() {
+        let camera = Transform::IDENTITY;
+        assert!(debug_collider_in_front(
+            &camera,
+            Vec3::new(-2.0, -2.0, -10.0),
+            Vec3::new(2.0, 2.0, -2.0)
+        ));
+        assert!(debug_collider_in_front(
+            &camera,
+            Vec3::new(-2.0, -2.0, -2.0),
+            Vec3::new(2.0, 2.0, 2.0)
+        ));
+        assert!(!debug_collider_in_front(
+            &camera,
+            Vec3::new(-2.0, -2.0, 2.0),
+            Vec3::new(2.0, 2.0, 10.0)
+        ));
+    }
 
     #[test]
     fn walk_view_pitch_tracks_mouse_look_without_tilting_body() {
@@ -1265,14 +2164,14 @@ mod noclip_tests {
         let status = WalkEntryStatus::default();
         assert_eq!(
             noclip_overlay_text(MoveMode::Noclip, &status),
-            "NOCLIP: ON  [V]"
+            "NOCLIP: ON  [V]  [T] tankard  [E] grab/drop"
         );
         assert_eq!(
             noclip_overlay_text(MoveMode::Walk, &status),
-            "NOCLIP: OFF  [V]"
+            "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop"
         );
         let blocked = WalkEntryStatus {
-            blocked_reason: Some("no walkable ground below".to_owned()),
+            blocked_reason: Some("no free capsule placement nearby".to_owned()),
         };
         assert!(noclip_overlay_text(MoveMode::Noclip, &blocked).contains("WALK blocked"));
     }
@@ -1285,6 +2184,220 @@ mod gate_tests {
     use super::headless;
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn walk_crosses_narrow_raised_floor_join() {
+        let mut app = headless::fixture_app();
+        for (x, width, top) in [(0.0, 12.0, 15.0), (206.0, 400.0, 30.0)] {
+            app.world_mut().spawn((
+                RigidBody::Fixed,
+                Collider::cuboid(width * 0.5, top * 0.5, 80.0),
+                world_collision_groups(),
+                Transform::from_xyz(x, top * 0.5, 850.0),
+            ));
+        }
+        headless::place_player(&mut app, Vec3::new(-150.0, 200.0, 850.0));
+        for _ in 0..150 {
+            app.update();
+        }
+        let start = headless::player_pose(&mut app).0;
+        assert!(start.y < 80.0, "player never grounded: {start:?}");
+        let tuning = app.world().resource::<MovementTuning>();
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: tuning.run_speed,
+            jump_pressed: false,
+        });
+        let mut peak = start.y;
+        for _ in 0..180 {
+            app.update();
+            peak = peak.max(headless::player_pose(&mut app).0.y);
+        }
+        let (end, grounded) = headless::player_pose(&mut app);
+        assert!(
+            end.x > 120.0 && peak > start.y + 25.0 && grounded,
+            "player stuck at raised floor join: {start:?} -> {end:?}, peak={peak}, grounded={grounded}"
+        );
+    }
+
+    #[test]
+    fn walk_camera_pitch_uses_current_mouse_intent() {
+        let mut app = headless::fixture_app();
+        headless::place_player(&mut app, Vec3::new(120.0, 300.0, 120.0));
+        app.world_mut().resource_mut::<LookIntent>().pitch = 0.6;
+        app.update();
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&Transform, With<ControlledCamera>>();
+        let view = camera.single(app.world()).expect("controlled camera");
+        let (_, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
+        assert!((pitch - 0.6).abs() < 0.001, "WALK pitch was {pitch}");
+        let mut body = app
+            .world_mut()
+            .query_filtered::<&Transform, With<PlayerBody>>();
+        let pose = body.single(app.world()).expect("player body");
+        assert!(pose.rotation.x.abs() < 0.001 && pose.rotation.z.abs() < 0.001);
+    }
+
+    #[test]
+    fn riverwood_tankard_spawn_pickup_and_drop() {
+        let mut app = headless::fixture_app();
+        app.init_resource::<HeldTankard>();
+        let visuals = {
+            let world = app.world_mut();
+            world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
+                tankard_visuals(
+                    &mut meshes,
+                    &mut world.resource_mut::<Assets<StandardMaterial>>(),
+                )
+            })
+        };
+        app.insert_resource(visuals);
+        let ground = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<FixtureArena>>();
+            query
+                .iter(app.world())
+                .find(|(_, pose)| pose.translation.y == -20.0)
+                .unwrap()
+                .0
+        };
+        app.world_mut().entity_mut(ground).insert(TerrainCollider);
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<ControlledCamera>>();
+            query.single(app.world()).unwrap()
+        };
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .clone_from(
+                &Transform::from_xyz(0.0, 200.0, 0.0)
+                    .looking_at(Vec3::new(0.0, 200.0, -1.0), Vec3::Y),
+            );
+        app.update();
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyT);
+        let ground_hit = app
+            .world_mut()
+            .run_system_once(
+                |context: ReadRapierContext, terrain: Query<(), With<TerrainCollider>>| {
+                    let is_terrain = |entity| terrain.get(entity).is_ok();
+                    context.single().unwrap().cast_ray(
+                        Vec3::new(0.0, 500.0, -140.0),
+                        Vec3::NEG_Y,
+                        700.0,
+                        true,
+                        QueryFilter::default().predicate(&is_terrain),
+                    )
+                },
+            )
+            .unwrap();
+        let any_hit = app
+            .world_mut()
+            .run_system_once(|context: ReadRapierContext| {
+                context.single().unwrap().cast_ray(
+                    Vec3::new(0.0, 500.0, -140.0),
+                    Vec3::NEG_Y,
+                    700.0,
+                    true,
+                    QueryFilter::default(),
+                )
+            })
+            .unwrap();
+        assert!(
+            ground_hit.is_some(),
+            "fixture terrain ray must hit; nearest={any_hit:?}, ground={ground:?}"
+        );
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        let spawned = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<DebugTankard>>();
+            query
+                .iter(app.world())
+                .find(|(_, pose)| pose.translation.z < -100.0)
+                .map(|(entity, pose)| (entity, pose.translation))
+                .expect("spawned tankard above terrain")
+        };
+        let mut query = app
+            .world_mut()
+            .query_filtered::<Entity, With<DebugTankard>>();
+        assert_eq!(query.iter(app.world()).count(), 4);
+        app.update();
+        let spawned_pose = app
+            .world()
+            .entity(spawned.0)
+            .get::<Transform>()
+            .unwrap()
+            .translation;
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .look_at(spawned_pose, Vec3::Y);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        assert_eq!(app.world().resource::<HeldTankard>().0, Some(spawned.0));
+        assert!(
+            app.world()
+                .entity(spawned.0)
+                .contains::<RigidBodyDisabled>()
+        );
+        assert!(app.world().entity(spawned.0).contains::<ColliderDisabled>());
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation
+            .x += 100.0;
+        app.world_mut().run_system_once(move_held_tankard).unwrap();
+        let held_pose = app
+            .world()
+            .entity(spawned.0)
+            .get::<Transform>()
+            .unwrap()
+            .translation;
+        assert!(held_pose.x > 90.0, "held tankard did not follow the view");
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::KeyE);
+            keys.clear();
+            keys.press(KeyCode::KeyE);
+        }
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        assert_eq!(app.world().resource::<HeldTankard>().0, None);
+        assert!(
+            !app.world()
+                .entity(spawned.0)
+                .contains::<RigidBodyDisabled>()
+        );
+        assert!(!app.world().entity(spawned.0).contains::<ColliderDisabled>());
+        app.update();
+        let dropped_pose = app
+            .world()
+            .entity(spawned.0)
+            .get::<Transform>()
+            .unwrap()
+            .translation;
+        assert!(
+            (dropped_pose - held_pose).length() < 10.0,
+            "drop teleported tankard: {held_pose:?} -> {dropped_pose:?}"
+        );
+    }
 
     fn run_speed_intent(app: &mut App, wish_dir: Vec3) {
         let speed = app.world().resource::<MovementTuning>().run_speed;
@@ -1314,7 +2427,7 @@ mod gate_tests {
             "capsule tunneled the wall: {blocked:?}"
         );
 
-        // Step top is y=24; autostep height is 24 (V12).
+        // Step top is y=24; the 36-unit autostep budget includes it (V12).
         headless::place_player(&mut app, Vec3::new(100.0, 300.0, 240.0));
         for _ in 0..120 {
             app.update();
@@ -1417,9 +2530,10 @@ mod gate_tests {
         });
         let _ = app.world_mut().run_system_once(
             |mut intent: ResMut<WalkIntent>,
+             mut sprint: ResMut<SprintLatch>,
              mut states: Query<&mut WalkState>,
              mut controllers: Query<&mut KinematicCharacterController>| {
-                clear_motion_state(&mut intent, &mut states, &mut controllers);
+                clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
             },
         );
         let intent = app.world().resource::<WalkIntent>();
@@ -1433,7 +2547,10 @@ mod gate_tests {
             .world_mut()
             .query_filtered::<&Text, With<NoclipOverlay>>();
         let text = query.single(app.world()).expect("overlay").clone();
-        assert_eq!(text.as_str(), "NOCLIP: OFF  [V]");
+        assert_eq!(
+            text.as_str(),
+            "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop  SPRINT: OFF  [ALT]  SPEED: 0 u/s"
+        );
         app.insert_resource(MoveMode::Noclip);
         for _ in 0..5 {
             app.update();
@@ -1442,54 +2559,41 @@ mod gate_tests {
             .world_mut()
             .query_filtered::<&Text, With<NoclipOverlay>>();
         let text = query.single(app.world()).expect("overlay").clone();
-        assert_eq!(text.as_str(), "NOCLIP: ON  [V]");
+        assert_eq!(text.as_str(), "NOCLIP: ON  [V]  [T] tankard  [E] grab/drop");
     }
 
     #[test]
     fn fixed_step_walk_is_frame_rate_independent() {
-        // Same intents, different render cadence: 30/60/120 updates per
-        // simulated second must agree within tolerance (V18). Time runs at
-        // real 60 Hz fixed ticks; render-only updates add no physics.
-        fn drive(frames_per_tick: u32) -> Vec3 {
+        // Two simulated seconds at 30/60/120 render fps must all run the same
+        // 120 fixed physics ticks and reach the same point (V18).
+        fn drive(render_hz: u32) -> Vec3 {
             let mut app = headless::fixture_app();
             headless::place_player(&mut app, Vec3::new(120.0, 300.0, 120.0));
             for _ in 0..120 {
                 app.update();
             }
             let speed = app.world().resource::<MovementTuning>().run_speed;
-            for _ in 0..120 {
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / render_hz as f64),
+            ));
+            for _ in 0..render_hz * 2 {
                 app.insert_resource(WalkIntent {
                     wish_dir: Vec3::X,
                     target_speed: speed,
                     jump_pressed: false,
                 });
-                for _ in 0..frames_per_tick {
-                    app.update();
-                }
+                app.update();
             }
             headless::player_pose(&mut app).0
         }
-        // frames_per_tick scales total ticks, so normalize: 1x120 vs 2x60.
-        let mut fast = headless::fixture_app();
-        headless::place_player(&mut fast, Vec3::new(120.0, 300.0, 120.0));
-        for _ in 0..120 {
-            fast.update();
+        let reference = drive(60);
+        for render_hz in [30, 120] {
+            let pose = drive(render_hz);
+            assert!(
+                (pose - reference).length() < 10.0,
+                "frame-rate divergence at {render_hz} fps: {pose:?} vs {reference:?}"
+            );
         }
-        let speed = fast.world().resource::<MovementTuning>().run_speed;
-        for _ in 0..240 {
-            fast.insert_resource(WalkIntent {
-                wish_dir: Vec3::X,
-                target_speed: speed,
-                jump_pressed: false,
-            });
-            fast.update();
-        }
-        let slow_pose = drive(1);
-        let fast_pose = headless::player_pose(&mut fast).0;
-        assert!(
-            (slow_pose - fast_pose).length() < 60.0,
-            "frame-rate divergence: {slow_pose:?} vs {fast_pose:?}"
-        );
     }
 
     #[test]

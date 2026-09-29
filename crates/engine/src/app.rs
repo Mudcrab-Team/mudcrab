@@ -1,7 +1,7 @@
 use crate::{
     config::EngineConfig,
     metrics::AcceptanceMetricsPlugin,
-    physics::PhysicsFixturePlugin,
+    physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
         LIGHT_LAYERS, MAIN_VIEW_LAYERS, RendererMetrics, TerrainExtension, TerrainMaterial,
@@ -18,7 +18,10 @@ use crate::{
         components::{
             CellRef, ExpectedModelBounds, FormId, InstanceBounds, StreamedCellRoot, StreamingCamera,
         },
-        database::{AssetCatalog, CellKey, WorldDatabase},
+        database::{
+            AssetCatalog, CellKey, WorldDatabase,
+            supports_runtime_database_schema,
+        },
     },
 };
 use bevy::{
@@ -55,6 +58,7 @@ struct InitialCameraGroundHeight(f32);
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
     configure_io_task_pool();
+    let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
         let fixture = StreamingFixtureDirectory::create(config.worldspace_id, config.start_grid)?;
         config.assets_dir = fixture.path.clone();
@@ -90,6 +94,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             InitialCameraGroundHeight(ground_height),
         ))
     };
+    let movement_tuning = (interactive_world_physics
+        && runtime_data.is_some()
+        && !config.streaming_fixture)
+        .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
+        .transpose()?;
     let asset_path = config.assets_dir.to_string_lossy().into_owned();
     let benchmark_active =
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
@@ -113,6 +122,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    if let Some(tuning) = movement_tuning {
+        app.insert_resource(tuning);
+    }
     if benchmark_active {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
@@ -162,6 +174,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .insert_resource(ground_height)
             .add_plugins(StreamingPlugin);
         app.add_systems(Startup, setup_world);
+        if interactive_world_physics {
+            app.add_plugins(WorldPlayerPlugin);
+        }
         if app.world().resource::<EngineConfig>().streaming_fixture {
             app.init_resource::<StreamingFixtureState>()
                 .add_systems(Startup, setup_streaming_fixture_visual)
@@ -1450,8 +1465,8 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
     )
     .wrap_err("invalid conversion manifest")?;
     let expected_schema = converter_schema_version();
-    if manifest.schema_version != expected_schema {
-        let rejection = if manifest.schema_version < expected_schema {
+    if !(15..=expected_schema).contains(&manifest.schema_version) {
+        let rejection = if manifest.schema_version < 15 {
             AssetSetRejection::ConverterSchemaOlder {
                 found: manifest.schema_version,
                 expected: expected_schema,
@@ -1483,7 +1498,7 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
             .wrap_err_with(|| format!("failed to read {}", report_path.display()))?,
     )
     .wrap_err("invalid integration report")?;
-    if report.schema_version != shared::WORLD_DATABASE_SCHEMA_VERSION {
+    if !supports_runtime_database_schema(report.schema_version) {
         color_eyre::eyre::bail!(
             "{}",
             asset_set_rejection_message(
@@ -1559,7 +1574,7 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
         ),
         AssetSetRejection::WorldDatabaseSchema { found, expected } => format!(
             "the converted assets use a different world database schema: {} reports world \
-             database schema {found}, but this engine requires {expected}; reconvert with a \
+             database schema {found} is unsupported; this engine requires {expected}; reconvert with a \
              converter built from the same revision as this engine: `{reconvert}`",
             report.display()
         ),
@@ -1574,7 +1589,7 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    15
+    16
 }
 
 fn setup_synthetic_benchmark(
@@ -1723,15 +1738,28 @@ fn setup_world(
     mut commands: Commands,
     config: Res<EngineConfig>,
     ground_height: Option<Res<InitialCameraGroundHeight>>,
+    tuning: Option<Res<MovementTuning>>,
 ) {
     let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
     let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
-    let camera_position = target + camera_offset(&config);
+    let camera_offset = if config.interactive_world_physics() {
+        let tuning = tuning.as_deref().cloned().unwrap_or_default();
+        Vec3::Y * (tuning.eye_height + tuning.capsule_standing_height * 0.5 + 16.0)
+    } else {
+        camera_offset(&config)
+    };
+    let camera_position = target + camera_offset;
     let far = crate::world::components::CELL_SIZE * (config.stream_radius.max(1) + 2) as f32 * 2.0;
+    let camera_transform = if config.interactive_world_physics() {
+        Transform::from_translation(camera_position)
+            .looking_at(camera_position + Vec3::NEG_Z, Vec3::Y)
+    } else {
+        Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
+    };
     commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
-        Transform::from_translation(camera_position).looking_at(target, Vec3::Y),
+        camera_transform,
         StreamingCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
@@ -1847,9 +1875,8 @@ fn fly_camera(
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
 ) {
-    // The physics fixture owns its camera via NOCLIP/WALK; legacy fly controls
-    // stay on every other path (V5).
-    if config.physics_fixture {
+    // Interactive player paths own the camera; automated camera paths keep legacy controls.
+    if config.physics_fixture || config.interactive_world_physics() {
         return;
     }
     let started = std::time::Instant::now();
@@ -2685,7 +2712,7 @@ mod tests {
         let world = shared::WORLD_DATABASE_SCHEMA_VERSION;
         let passing_report = format!(r#"{{"schema_version":{world},"passed":true}}"#);
         let stale = runtime_asset_error(
-            &format!(r#"{{"schema_version":{},"complete":true}}"#, engine - 1),
+            r#"{"schema_version":14,"complete":true}"#,
             &passing_report,
         );
         let incomplete = runtime_asset_error(
@@ -2734,6 +2761,65 @@ mod tests {
                 r#"{{"schema_version":{},"complete":true}}"#,
                 converter_schema_version()
             ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ),
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":5,"passed":true}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_runtime_assets(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("schema 5 is unsupported")
+        );
+    }
+
+    #[test]
+    fn accepts_passing_schema_four_integration_report() {
+        let directory = tempfile::tempdir().unwrap();
+        for required in ["skyrim_world.db", "cell_cache.rkyv"] {
+            std::fs::write(directory.path().join(required), []).unwrap();
+        }
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"schema_version":15,"complete":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":4,"passed":true}"#,
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+    }
+
+    #[test]
+    fn accepts_legacy_schema_15_assets_with_runtime_proxy_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"schema_version":15,"complete":true}"#,
         )
         .unwrap();
         std::fs::write(

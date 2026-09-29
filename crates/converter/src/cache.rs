@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CONVERTER_SCHEMA_VERSION: u32 = 15;
+pub const CONVERTER_SCHEMA_VERSION: u32 = 16;
 
 /// Provenance journal the converter keeps inside a staging directory.
 ///
@@ -210,12 +210,10 @@ impl ConversionManifest {
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let mut manifest: Self =
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
-        if matches!(manifest.schema_version, 12..=14) && CONVERTER_SCHEMA_VERSION == 15 {
-            // Schemas 13/14/15 change only NIF material publication, LAND
-            // normalization, and cutout vertex-alpha handling. Preserve
-            // verified archive ingestion, textures, and scripts, but force
-            // every GLB plus the always-rebuilt world database and cell cache
-            // through the new contracts.
+        if matches!(manifest.schema_version, 12..=15) && CONVERTER_SCHEMA_VERSION == 16 {
+            // Schemas 13-15 changed mesh/material publication; schema 16 adds
+            // authored collision to GLBs. Preserve verified archive ingestion,
+            // textures, and scripts, but rebuild every GLB and the world data.
             manifest.complete = false;
             manifest
                 .entries
@@ -587,7 +585,7 @@ mod tests {
 
     #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14] {
+        for schema_version in [12, 13, 14, 15] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {

@@ -153,6 +153,7 @@ fn is_form_id_subrecord(record_type: &[u8; 4], tag: &[u8], len: usize) -> bool {
         (b"WRLD", b"WNAM" | b"CNAM" | b"RNAM" | b"TNAM") if len == 4 => true,
         (b"CELL", b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") if len == 4 => true,
         (b"NPC_", b"RNAM" | b"CNAM" | b"INAM") if len == 4 => true,
+        (b"RACE", b"WKMV" | b"RNMV") if len == 4 => true,
         (b"NPC_", b"SNAM") if len >= 4 => true,
         (
             b"REFR" | b"ACHR" | b"ACRE" | b"PGRE" | b"PMIS",
@@ -209,6 +210,36 @@ fn remap_record_form_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remaps_optional_race_movement_links() {
+        let normal_indices = HashMap::from([
+            ("skyrim.esm".to_string(), 0),
+            ("movement.esp".to_string(), 3),
+        ]);
+        let mut race = RawRecord {
+            form_id: 0x0101_3746,
+            record_type: *b"RACE",
+            flags: 0,
+            subrecords: vec![(b"WKMV".to_vec(), 0x0100_1234u32.to_le_bytes().to_vec())],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        remap_record_form_ids(
+            &mut race,
+            "movement.esp",
+            &["skyrim.esm".to_string()],
+            &normal_indices,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(race.form_id, 0x0301_3746);
+        assert_eq!(
+            u32::from_le_bytes(race.subrecords[0].1[..4].try_into().unwrap()),
+            0x0300_1234
+        );
+    }
 
     #[test]
     fn does_not_corrupt_tes4_author_strings_or_clfm_colors() {

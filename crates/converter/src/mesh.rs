@@ -1,3 +1,4 @@
+use crate::collision;
 use crate::material::{
     NifAlphaMode, NifMaterialDisposition, NifShapeMaterial, build_nif_material_contract,
     publish_gltf_materials,
@@ -14,6 +15,7 @@ use project_wormhole_nif::{
     nif_header::{Endianess, NifFileVersion, NifHeader},
 };
 use serde::{Deserialize, Serialize};
+use shared::collision::CollisionAsset;
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
@@ -49,6 +51,7 @@ impl MeshConverter {
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
+        let collision = collision::from_nif(nif_path, &nif)?;
         let skeleton = if nif.has_skeleton() {
             let skeleton_path = find_skeleton(nif_path).ok_or_else(|| {
                 color_eyre::eyre::eyre!(
@@ -99,7 +102,10 @@ impl MeshConverter {
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
-            return write_glb_atomic(output, &empty_scene_glb(&name));
+            return write_glb_atomic(
+                output,
+                &embed_collision(empty_scene_glb(&name), &collision)?,
+            );
         }
         let output = glb_output_path.as_ref();
         let mut glb = catch_unwind(AssertUnwindSafe(|| model.to_glb(name.clone())))
@@ -146,7 +152,17 @@ impl MeshConverter {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        write_glb_atomic(output, &glb)
+        write_glb_atomic(output, &embed_collision(glb, &collision)?)
+    }
+
+    /// Add NIF-authored collision to an already converted GLB without changing its render data.
+    /// This supports upgrading a packaged world without repeating texture conversion.
+    pub fn annotate_glb_collision(nif_path: &Path, glb_path: &Path) -> Result<CollisionAsset> {
+        let (nif, _, _) = open_nif_resilient(nif_path)?;
+        let collision = collision::from_nif(nif_path, &nif)?;
+        let glb = fs::read(glb_path)?;
+        write_glb_atomic(glb_path, &embed_collision(glb, &collision)?)?;
+        Ok(collision)
     }
 
     pub fn inspect_nif(path: &Path) -> Result<NifParseDiagnostics> {
@@ -435,6 +451,17 @@ fn rebuild_glb_with_document(original: &[u8], document: &serde_json::Value) -> R
     glb.extend_from_slice(&json);
     glb.extend_from_slice(binary);
     Ok(glb)
+}
+
+fn embed_collision(glb: Vec<u8>, collision: &CollisionAsset) -> Result<Vec<u8>> {
+    let mut document = glb_json_from_bytes(&glb)?;
+    let scene = document
+        .get_mut("scenes")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|scenes| scenes.first_mut())
+        .ok_or_else(|| color_eyre::eyre::eyre!("GLB has no scene for collision metadata"))?;
+    scene["extras"]["openSkyrimCollision"] = serde_json::to_value(collision)?;
+    rebuild_glb_with_document(&glb, &document)
 }
 
 fn is_declared_geometry_block(block_type: &str) -> bool {
@@ -808,7 +835,10 @@ fn nif_scene_depth(blocks: &[NifBlock]) -> usize {
         .unwrap_or(0)
 }
 
-fn parse_skyrim_header<'a>(bytes: &'a [u8], path: &Path) -> Result<(&'a [u8], NifHeader)> {
+pub(crate) fn parse_skyrim_header<'a>(
+    bytes: &'a [u8],
+    path: &Path,
+) -> Result<(&'a [u8], NifHeader)> {
     let mut cursor = NifCursor::new(bytes, path);
     let file_desc = cursor.line()?;
     ensure!(
