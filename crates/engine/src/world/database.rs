@@ -33,8 +33,6 @@ pub struct ReferenceRow {
     pub form_id: u32,
     pub cell_id: u32,
     pub base_form_id: u32,
-    /// Authoritative type of the base record. `statics` also contains movable clutter.
-    pub base_record_type: Option<String>,
     pub model_path: Option<String>,
     pub position: [f32; 3],
     pub rotation: [f32; 3],
@@ -393,7 +391,6 @@ const REFERENCE_COLUMNS: &str = "r.id,r.cell_id,r.base_form_id,s.model_path,r.po
      COALESCE(s.bounds_valid,0)";
 
 const REFERENCE_JOIN: &str = " LEFT JOIN statics s ON s.id=r.base_form_id";
-const RECORD_JOIN: &str = " LEFT JOIN records b ON b.form_id=r.base_form_id";
 
 /// The `lights` row of the reference's base record, in the order [`map_reference`] reads them.
 const LIGHT_COLUMNS: &str = "l.radius,l.color_r,l.color_g,l.color_b,l.flags";
@@ -416,13 +413,6 @@ const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
 fn has_lights(connection: &Connection) -> Result<bool> {
     let count: i64 = connection
         .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lights'")?
-        .query_row([], |row| row.get(0))?;
-    Ok(count > 0)
-}
-
-fn has_records(connection: &Connection) -> Result<bool> {
-    let count: i64 = connection
-        .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'")?
         .query_row([], |row| row.get(0))?;
     Ok(count > 0)
 }
@@ -464,16 +454,8 @@ impl ReferenceQuery {
         if has_lights {
             joins.push_str(LIGHT_JOIN);
         }
-        let record_type_column = if has_records(connection)? {
-            joins.push_str(RECORD_JOIN);
-            "b.record_type"
-        } else {
-            "NULL"
-        };
         Ok(Self {
-            columns: format!(
-                "{REFERENCE_COLUMNS},{light_columns},{override_column},{record_type_column}"
-            ),
+            columns: format!("{REFERENCE_COLUMNS},{light_columns},{override_column}"),
             joins,
         })
     }
@@ -550,7 +532,6 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         form_id: row.get(0)?,
         cell_id: row.get(1)?,
         base_form_id: row.get(2)?,
-        base_record_type: row.get(24)?,
         model_path: row.get(3)?,
         position: [row.get(4)?, row.get(5)?, row.get(6)?],
         rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
@@ -656,36 +637,6 @@ mod tests {
             converted_texture_path("textures/land/grass.dds".to_owned()),
             Some("textures/land/grass.ktx2".to_owned())
         );
-    }
-
-    #[test]
-    fn base_record_type_distinguishes_fixed_static_from_movable_model() {
-        let connection = Connection::open_in_memory().unwrap();
-        fixture(&connection);
-        connection
-            .execute_batch(
-                "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL);
-                 INSERT INTO records VALUES(20,'STAT');
-                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1);
-                 INSERT INTO records VALUES(22,'MISC');
-                 INSERT INTO \"references\" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
-                 INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);",
-            )
-            .unwrap();
-        let payload = load_cell(
-            &connection,
-            1,
-            CellKey::Exterior {
-                worldspace_id: 60,
-                grid_x: 2,
-                grid_y: -3,
-            },
-        )
-        .unwrap();
-        let fixed = payload.references.iter().find(|r| r.form_id == 30).unwrap();
-        let movable = payload.references.iter().find(|r| r.form_id == 40).unwrap();
-        assert_eq!(fixed.base_record_type.as_deref(), Some("STAT"));
-        assert_eq!(movable.base_record_type.as_deref(), Some("MISC"));
     }
 
     #[test]
