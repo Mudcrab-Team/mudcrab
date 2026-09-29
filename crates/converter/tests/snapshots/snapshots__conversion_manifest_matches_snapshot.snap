@@ -61,7 +61,7 @@ expression: manifest
     }
   },
   "complete": true,
-  "configuration_hash": "1a56351b088bb4a65b89e4313abc9a0813c5f4fa29dae55695316b6d8970fa41",
+  "configuration_hash": "b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -84,31 +84,31 @@ expression: manifest
     "textures/generated_color.dds": {
       "output": "textures/generated_color.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 5824,
+      "output_size": 3169,
       "source_hash": "[source_hash]"
     },
     "textures/generated_color_x8.dds": {
       "output": "textures/generated_color_x8.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 1696,
+      "output_size": 1785,
       "source_hash": "[source_hash]"
     },
     "textures/generated_cube.dds": {
       "output": "textures/generated_cube.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 8656,
+      "output_size": 4537,
       "source_hash": "[source_hash]"
     },
     "textures/generated_normal.dds": {
       "output": "textures/generated_normal.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 5824,
+      "output_size": 5913,
       "source_hash": "[source_hash]"
     },
     "textures/generated_volume.dds": {
       "output": "textures/generated_volume.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 5008,
+      "output_size": 2689,
       "source_hash": "[source_hash]"
     }
   },
@@ -118,5 +118,6 @@ expression: manifest
     "nif": 1,
     "pex": 2
   },
-  "schema_version": 14
+  "pruned_texture_references": {},
+  "schema_version": 15
 }

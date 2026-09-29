@@ -38,7 +38,7 @@ expression: report
     "missing_texture_count": 0,
     "passed": true,
     "references_total": 9,
-    "schema_version": 3,
+    "schema_version": 4,
     "statics_total": 1,
     "statics_with_models": 1,
     "terrain_cells": 9,
@@ -48,6 +48,7 @@ expression: report
     "unbounded_model_count": 0,
     "waters_with_flow_normal": 0
   },
+  "pruned_texture_references": 0,
   "skipped": 0,
   "warnings": []
 }

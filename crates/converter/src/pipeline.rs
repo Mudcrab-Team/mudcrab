@@ -1,5 +1,5 @@
 use crate::{
-    archive::ArchiveExtractor,
+    archive::{ArchiveExtractor, ExtractionProgress},
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
@@ -22,10 +22,10 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -65,13 +65,104 @@ fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
+/// A run's stop button. The command line sets it when the user interrupts (Ctrl+C); the pipeline
+/// checks it between units of work, finishes the asset in flight, and leaves the staging folder
+/// behind so `--resume-staging` can pick the run up where it stopped.
+#[derive(Clone, Default)]
+pub struct Cancellation {
+    flag: Arc<AtomicBool>,
+}
+
+impl Cancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+}
+
+/// A run that stopped short of publishing. `staging` is the folder left behind, when one was kept,
+/// and `cancelled` says whether the user interrupted the run rather than it failing.
+#[derive(Debug)]
+pub struct PipelineFailure {
+    pub error: color_eyre::Report,
+    pub staging: Option<PathBuf>,
+    pub cancelled: bool,
+}
+
+impl fmt::Display for PipelineFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for PipelineFailure {}
+
+impl From<color_eyre::Report> for PipelineFailure {
+    fn from(error: color_eyre::Report) -> Self {
+        Self {
+            error,
+            staging: None,
+            cancelled: false,
+        }
+    }
+}
+
+/// Renames the staged tree over the output, unless the run was interrupted while it was packing
+/// up. The check here is the last one before the output changes, so an interrupt that lands after
+/// the final stage stops the run instead of publishing over a good output — the staging folder is
+/// kept either way, so the run resumes from where it stopped.
+#[cfg(test)]
+fn publish_if_not_interrupted(
+    staging: &Path,
+    output: &Path,
+    cancellation: &Cancellation,
+) -> Result<(), PipelineFailure> {
+    if cancellation.is_cancelled() {
+        return Err(failure(
+            color_eyre::eyre::eyre!("conversion interrupted"),
+            staging,
+            cancellation,
+        ));
+    }
+    publish_directory(staging, output).map_err(|error| failure(error, staging, cancellation))
+}
+
+/// A failure with the staging folder attached when one was kept, so the caller can tell the user
+/// how to resume.
+fn failure(
+    error: color_eyre::Report,
+    staging: &Path,
+    cancellation: &Cancellation,
+) -> PipelineFailure {
+    PipelineFailure {
+        error,
+        staging: staging.exists().then(|| staging.to_path_buf()),
+        cancelled: cancellation.is_cancelled(),
+    }
+}
+
 pub struct AssetPipeline;
 
 impl AssetPipeline {
     pub async fn run_async(
         config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
-    ) -> Result<PipelineReport> {
+    ) -> Result<PipelineReport, PipelineFailure> {
+        Self::run_async_with_cancel(config, progress_tx, Cancellation::new()).await
+    }
+
+    pub async fn run_async_with_cancel(
+        config: PipelineConfig,
+        progress_tx: Sender<ProgressEvent>,
+        cancellation: Cancellation,
+    ) -> Result<PipelineReport, PipelineFailure> {
         config.validate()?;
         let started = Instant::now();
         send(
@@ -99,29 +190,65 @@ impl AssetPipeline {
         } else {
             ConversionManifest::default()
         };
-        let resumed = config.resume_staging.is_some();
         let staging = config
             .resume_staging
             .clone()
             .unwrap_or_else(|| staging_path(&config.output_dir));
-        fs::create_dir_all(staging.join("vfs"))?;
+        let resumed = config.resume_staging.is_some();
+        fs::create_dir_all(staging.join("vfs"))
+            .wrap_err_with(|| format!("failed to create {}", staging.join("vfs").display()))?;
         if resumed {
-            // No provenance source exists on this branch yet: every staged
-            // mesh is unverified and goes. The PR31 merge passes the set of
-            // journal-current mesh outputs here instead of an empty set, so a
-            // mesh the journal vouches for survives invalidation and reaches
-            // the journal reuse gate.
-            invalidate_staged_mesh_outputs(&staging, &BTreeSet::new())?;
+            let mut verified = BTreeSet::new();
+            if !config.invalidate_cache {
+                if let Ok(staged) = load_staged_outputs(&staging) {
+                    for (key, record) in staged {
+                        if record.schema_version == CONVERTER_SCHEMA_VERSION
+                            && record.configuration_hash == expected_configuration
+                        {
+                            let mut glb_path = PathBuf::from(key);
+                            glb_path.set_extension("glb");
+                            let rel = glb_path.to_string_lossy().replace('\\', "/");
+                            let full = staging.join(&rel);
+                            if full.is_file()
+                                && fs::metadata(&full).is_ok_and(|m| m.len() == record.output_size)
+                                && hash_file(&full).is_ok_and(|h| h == record.output_hash)
+                            {
+                                verified.insert(rel);
+                            }
+                        }
+                    }
+                }
+                for glb in previous_manifest.pruned_texture_references.keys() {
+                    let full = staging.join(glb);
+                    if full.is_file() {
+                        verified.insert(glb.clone());
+                    }
+                }
+                for entry in previous_manifest.entries.values() {
+                    if entry.output.ends_with(".glb") {
+                        let full = staging.join(&entry.output);
+                        if full.is_file() {
+                            verified.insert(entry.output.clone());
+                        }
+                    }
+                }
+            }
+            invalidate_staged_mesh_outputs(&staging, &verified)?;
         }
-        let run_result = Self::run_into(&config, &staging, &previous_manifest, &progress_tx).await;
+        // A run that stops keeps its staging folder, whether it failed or was interrupted: the
+        // folder is everything the run has done so far, and the caller reports the command that
+        // resumes from it. Only publishing removes it, by renaming it over the output.
+        let run_result = Self::run_into(
+            &config,
+            &staging,
+            &previous_manifest,
+            &progress_tx,
+            &cancellation,
+        )
+        .await;
         let mut report = match run_result {
             Ok(report) => report,
-            Err(error) => {
-                if !resumed {
-                    let _ = fs::remove_dir_all(&staging);
-                }
-                return Err(error);
-            }
+            Err(error) => return Err(failure(error, &staging, &cancellation)),
         };
         send(
             &progress_tx,
@@ -132,14 +259,28 @@ impl AssetPipeline {
             "Publishing converted assets",
         )
         .await;
-        publish_runtime_pack(&staging, &config.output_dir, &report)?;
+        // The run's own checks are behind it, but an interrupt that landed while it was packing up
+        // must still stop it before the staging folder is renamed over the output. The folder is
+        // kept, so the run resumes from where it stopped.
+        if cancellation.is_cancelled() {
+            return Err(failure(
+                color_eyre::eyre::eyre!("conversion interrupted"),
+                &staging,
+                &cancellation,
+            ));
+        }
+        publish_runtime_pack(&staging, &config.output_dir, &report)
+            .map_err(|error| failure(error, &staging, &cancellation))?;
         let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
         if staging.join(".ingestion-cache").is_dir() {
-            persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)?;
+            persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
+                .map_err(|error| failure(error, &staging, &cancellation))?;
         }
         let manifest =
-            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))?;
-        prune_stale_ingestion_blobs(&cache_root, &manifest)?;
+            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))
+                .map_err(|error| failure(error, &staging, &cancellation))?;
+        prune_stale_ingestion_blobs(&cache_root, &manifest)
+            .map_err(|error| failure(error, &staging, &cancellation))?;
         if !resumed {
             let _ = fs::remove_dir_all(&staging);
         }
@@ -163,6 +304,7 @@ impl AssetPipeline {
         staging: &Path,
         previous: &ConversionManifest,
         progress_tx: &Sender<ProgressEvent>,
+        cancellation: &Cancellation,
     ) -> Result<PipelineReport> {
         let mut report = PipelineReport::default();
         let expected_configuration = configuration_hash(config)?;
@@ -218,7 +360,12 @@ impl AssetPipeline {
         let vfs_dir = staging.join("vfs");
         fs::create_dir_all(&vfs_dir)?;
 
+        // Bytes already extracted, so each archive reports progress against the whole run instead
+        // of restarting at zero.
+        let mut extracted_bytes = 0u64;
+
         for (index, archive) in enabled_archives.iter().enumerate() {
+            interrupt(cancellation)?;
             send(
                 progress_tx,
                 ProgressStage::Extracting,
@@ -241,6 +388,55 @@ impl AssetPipeline {
             let previous_entry = previous.archives.get(&archive_key).cloned();
             let verify_cache = config.verify_cache;
 
+            // The extractor reports file by file; the event keeps the archive count the launcher
+            // reads and carries the smoother per-file fraction for the status line.
+            let archive_totals = Arc::new(Mutex::new((0u64, 0u64)));
+            let totals_for_worker = Arc::clone(&archive_totals);
+            let progress_for_worker = progress_tx.clone();
+            let progress_archive = archive.clone();
+            let archives_total = enabled_archives.len() as u64;
+            let archive_index = index as u64;
+            let progress = move |extracted: ExtractionProgress| {
+                *totals_for_worker
+                    .lock()
+                    .expect("archive totals mutex poisoned") =
+                    (extracted.total_files, extracted.total_bytes);
+                let archive_fraction = if extracted.total_bytes > 0 {
+                    extracted.completed_bytes as f32 / extracted.total_bytes as f32
+                } else if extracted.total_files > 0 {
+                    extracted.completed_files as f32 / extracted.total_files as f32
+                } else {
+                    1.0
+                };
+                let _ = progress_for_worker.blocking_send(
+                    ProgressEvent::new(
+                        ProgressStage::Extracting,
+                        archive_index,
+                        archives_total,
+                        Some(progress_archive.clone()),
+                        "Extracting archive",
+                    )
+                    .with_bytes(
+                        extracted_bytes + extracted.completed_bytes,
+                        extracted_bytes + extracted.total_bytes,
+                    )
+                    .with_stage_fraction(
+                        (archive_index as f32 + archive_fraction) / archives_total as f32,
+                    ),
+                );
+            };
+
+            // A stop is checked before every entry, so it does not wait for a multi-gigabyte
+            // archive to finish.
+            let stop_for_worker = cancellation.clone();
+            #[cfg(test)]
+            let output_for_hook = config.output_dir.clone();
+            let stop = move || {
+                #[cfg(test)]
+                stop_hook::tick(&output_for_hook, &stop_for_worker);
+                stop_for_worker.is_cancelled()
+            };
+
             let result = spawn_blocking(move || {
                 ArchiveExtractor::extract_cached(
                     &archive_for_worker,
@@ -249,10 +445,22 @@ impl AssetPipeline {
                     &cache_root,
                     previous_entry.as_ref(),
                     verify_cache,
+                    Some(&progress),
+                    Some(&stop),
                 )
             })
             .await
             .wrap_err("archive worker panicked")?;
+            // An archive abandoned by a stop ends the run as an interrupt, the same as a stop
+            // between archives, rather than being counted as a skipped archive. Its cache entry
+            // was never recorded, so a resume extracts it again from the start.
+            if let Err(error) = &result {
+                // A stop that races an archive error keeps the archive's error as its cause.
+                if cancellation.is_cancelled() {
+                    bail!("conversion interrupted ({error:#})");
+                }
+                interrupt(cancellation)?;
+            }
 
             send(
                 progress_tx,
@@ -266,6 +474,10 @@ impl AssetPipeline {
 
             match result {
                 Ok(outcome) => {
+                    let (_, bytes) = *archive_totals
+                        .lock()
+                        .expect("archive totals mutex poisoned");
+                    extracted_bytes += bytes;
                     if outcome.cache_hit {
                         report.cache_hits += outcome.files.len() as u64;
                     } else {
@@ -287,6 +499,7 @@ impl AssetPipeline {
         }
 
         overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
+        interrupt(cancellation)?;
 
         if !plugins.is_empty() {
             send(
@@ -326,6 +539,7 @@ impl AssetPipeline {
                 manifest: &mut manifest,
                 report: &mut report,
                 progress_tx,
+                cancellation,
             };
             batch
                 .convert_kind(&vfs_files, "nif", ProgressStage::Meshes, None)
@@ -343,6 +557,7 @@ impl AssetPipeline {
                 manifest: &mut manifest,
                 report: &mut report,
                 progress_tx,
+                cancellation,
             };
             batch
                 .convert_kind(
@@ -363,13 +578,18 @@ impl AssetPipeline {
             for file in &pruned {
                 for uri in &file.removed_uris {
                     pruned_completed += 1;
-                    // The converter has no logging framework; progress events
-                    // carry only a generic message, so warn on stderr with the
-                    // exact dangling reference while the run log is watching.
-                    eprintln!(
-                        "warning: pruned dangling texture {uri} referenced by {} (no converted artifact)",
-                        file.glb
-                    );
+                    // The warning goes out as a notice on the progress channel rather than to
+                    // stderr, so it cannot splice into the status line the CLI is redrawing.
+                    send_notice(
+                        progress_tx,
+                        ProgressStage::Textures,
+                        Some(PathBuf::from(&file.glb)),
+                        &format!(
+                            "warning: pruned dangling texture {uri} referenced by {} (no converted artifact)",
+                            file.glb
+                        ),
+                    )
+                    .await;
                     let reference = resolve_asset_uri(staging, &staging.join(&file.glb), uri)
                         .ok()
                         .and_then(|resolved| {
@@ -423,6 +643,7 @@ impl AssetPipeline {
                 .convert_kind(&vfs_files, "pex", ProgressStage::Scripts, None)
                 .await?;
         }
+        interrupt(cancellation)?;
         if let Some(integration) = finalize_world_database(staging)? {
             if !integration.passed {
                 report.warnings.push(format!(
@@ -474,6 +695,7 @@ impl AssetPipeline {
             "Generated artifacts are valid",
         )
         .await;
+        interrupt(cancellation)?;
         manifest.complete = conversion_is_complete(&report);
         report.complete = manifest.complete;
         report.inputs_by_kind = manifest.inputs_by_kind.clone();
@@ -497,6 +719,7 @@ struct ConversionBatch<'a> {
     manifest: &'a mut ConversionManifest,
     report: &'a mut PipelineReport,
     progress_tx: &'a Sender<ProgressEvent>,
+    cancellation: &'a Cancellation,
 }
 
 impl ConversionBatch<'_> {
@@ -522,6 +745,10 @@ impl ConversionBatch<'_> {
         let staging_vfs = self.staging.join("vfs");
         let mut target_sources = BTreeMap::<String, PathBuf>::new();
         let mut selected = Vec::with_capacity(selected_paths.len());
+        // The source sizes are one `stat` each and give the status line something to weigh the
+        // stage by: a mesh and a texture are the same "item" but not the same work.
+        let mut source_sizes = BTreeMap::<String, u64>::new();
+        let mut bytes_total = 0u64;
         for source in selected_paths {
             let relative = source.strip_prefix(&staging_vfs)?.to_owned();
             let target_key =
@@ -544,6 +771,9 @@ impl ConversionBatch<'_> {
             } else {
                 None
             };
+            let source_bytes = fs::metadata(&source).map_or(0, |metadata| metadata.len());
+            bytes_total += source_bytes;
+            source_sizes.insert(source_key.clone(), source_bytes);
             selected.push((
                 source,
                 relative,
@@ -560,6 +790,7 @@ impl ConversionBatch<'_> {
         if selected.is_empty() {
             return Ok(());
         }
+        interrupt(self.cancellation)?;
 
         let total_files = selected.len() as u64;
         let progress_tx = self.progress_tx.clone();
@@ -573,10 +804,12 @@ impl ConversionBatch<'_> {
         let zstd_level = self.config.texture_zstd_level;
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
+        let previous_pruned = self.previous.pruned_texture_references.clone();
         let staged_outputs = Arc::clone(&self.staged);
         let expected_configuration = self.expected_configuration.to_owned();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
+        let run_cancelled = self.cancellation.clone();
 
         let rayon_handle = spawn_blocking(move || -> Result<()> {
             use rayon::prelude::*;
@@ -588,7 +821,10 @@ impl ConversionBatch<'_> {
             pool.install(|| {
                 selected.into_par_iter().enumerate().for_each(
                     |(index, (source, relative, target_rel, key, encoding))| {
-                        if worker_cancelled.load(Ordering::Relaxed) {
+                        // An interrupted run stops before starting another asset; the one already
+                        // in flight finishes, so no half-written output is left behind.
+                        if worker_cancelled.load(Ordering::Relaxed) || run_cancelled.is_cancelled()
+                        {
                             return;
                         }
                         let target = staging_root.join(&target_rel);
@@ -675,6 +911,10 @@ impl ConversionBatch<'_> {
                         // size and hash. Any other output is converted again.
                         let staged_is_current = staged_outputs.get(&key).is_some_and(|record| {
                             record.is_current(&target, &hash, &expected_configuration)
+                        }) || previous_entries.get(&key).is_some_and(|entry| {
+                            entry.source_hash == hash
+                                && (entry.output_hash == hash_file(&target).unwrap_or_default()
+                                    || previous_pruned.contains_key(&entry.output))
                         });
                         let existing_is_valid = staged_is_current
                             && fs::metadata(&target).is_ok_and(|metadata| metadata.len() > 0)
@@ -730,10 +970,15 @@ impl ConversionBatch<'_> {
         let mut completed = 0u64;
         let mut first_error = None;
         let fail_fast = self.config.fail_fast;
+        let mut bytes_completed = 0u64;
         while let Some((_, key, hash, target_rel, relative, conversion, target)) =
             outcome_rx.recv().await
         {
             completed += 1;
+            bytes_completed += source_sizes.get(&key).copied().unwrap_or(0);
+            if self.cancellation.is_cancelled() {
+                break;
+            }
 
             match conversion {
                 Ok(is_cache_hit) => {
@@ -783,13 +1028,14 @@ impl ConversionBatch<'_> {
                                 continue;
                             }
                         };
-                        send(
+                        send_with_bytes(
                             &progress_tx,
                             stage,
                             completed,
                             total_files,
                             Some(relative.clone()),
                             "Converted asset",
+                            (bytes_completed, bytes_total),
                         )
                         .await;
                         let entry = CacheEntry {
@@ -808,13 +1054,14 @@ impl ConversionBatch<'_> {
                         self.manifest.entries.insert(key, entry);
                         self.report.converted += 1;
                     } else {
-                        send(
+                        send_with_bytes(
                             &progress_tx,
                             stage,
                             completed,
                             total_files,
                             Some(relative.clone()),
                             "Converted asset",
+                            (bytes_completed, bytes_total),
                         )
                         .await;
                         if let Some(entry) = self.previous.entries.get(&key).cloned() {
@@ -859,6 +1106,7 @@ impl ConversionBatch<'_> {
         rayon_handle
             .await
             .wrap_err("rayon batch worker panicked")??;
+        interrupt(self.cancellation)?;
         if let Some(error) = first_error {
             return Err(error);
         }
@@ -1274,7 +1522,10 @@ fn staging_path(output: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    output.with_extension(format!("staging-{}-{stamp}", std::process::id()))
+    // The whole file name, not `with_extension`: a dotted output name (`Skyrim.Converted`) must
+    // give `Skyrim.Converted.staging-...`, the prefix resuming and `find_resumable_staging` expect.
+    let name = output.file_name().unwrap_or_default().to_string_lossy();
+    output.with_file_name(format!("{name}.staging-{}-{stamp}", std::process::id()))
 }
 
 /// Where the staging journal waits while its staging directory is published.
@@ -1442,19 +1693,104 @@ async fn send(
     message: &str,
 ) {
     let _ = tx
-        .send(ProgressEvent {
+        .send(ProgressEvent::new(
             stage,
             completed,
             total,
             current_file,
-            message: message.to_owned(),
-        })
+            message,
+        ))
         .await;
+}
+
+/// Sends a one-off line for the person watching: the CLI ends any open status line before it, so a
+/// warning never splices into a redrawn line.
+async fn send_notice(
+    tx: &Sender<ProgressEvent>,
+    stage: ProgressStage,
+    current_file: Option<PathBuf>,
+    message: &str,
+) {
+    let _ = tx
+        .send(ProgressEvent::notice(stage, current_file, message))
+        .await;
+}
+
+/// Sends a progress event that also carries byte counts, which the status line weighs a stage by.
+#[allow(clippy::too_many_arguments)]
+async fn send_with_bytes(
+    tx: &Sender<ProgressEvent>,
+    stage: ProgressStage,
+    completed: u64,
+    total: u64,
+    current_file: Option<PathBuf>,
+    message: &str,
+    bytes: (u64, u64),
+) {
+    let _ = tx
+        .send(
+            ProgressEvent::new(stage, completed, total, current_file, message)
+                .with_bytes(bytes.0, bytes.1),
+        )
+        .await;
+}
+
+/// Stops the run at the next safe point when the user interrupted it. The caller keeps the staging
+/// folder, so the run can be resumed where it stopped.
+fn interrupt(cancellation: &Cancellation) -> Result<()> {
+    ensure!(!cancellation.is_cancelled(), "conversion interrupted");
+    Ok(())
+}
+
+/// Test-only: presses Stop from inside the extractor after a given number of per-entry stop
+/// checks of one output's run, so a test stops part way through an archive without racing it.
+#[cfg(test)]
+mod stop_hook {
+    use super::Cancellation;
+    use std::{
+        path::{Path, PathBuf},
+        sync::Mutex,
+    };
+
+    static CANCEL_AFTER: Mutex<Vec<(PathBuf, usize)>> = Mutex::new(Vec::new());
+
+    pub(super) fn cancel_after(output: &Path, checks: usize) {
+        CANCEL_AFTER
+            .lock()
+            .unwrap()
+            .push((output.to_path_buf(), checks));
+    }
+
+    pub(super) fn tick(output: &Path, cancellation: &Cancellation) {
+        let mut hooks = CANCEL_AFTER.lock().unwrap();
+        if let Some(index) = hooks.iter().position(|(path, _)| path == output) {
+            if hooks[index].1 == 0 {
+                hooks.remove(index);
+                cancellation.cancel();
+            } else {
+                hooks[index].1 -= 1;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dotted_output_name_keeps_its_whole_name_in_the_staging_folder() {
+        let staging = staging_path(Path::new("converted/Skyrim.Converted"));
+        let name = staging.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("Skyrim.Converted.staging-"), "{name}");
+        assert_eq!(staging.parent(), Some(Path::new("converted")));
+        // And the folder it names is the one a resume finds.
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Skyrim.Converted");
+        let staging = staging_path(&output);
+        fs::create_dir_all(&staging).unwrap();
+        assert_eq!(crate::find_resumable_staging(&output), Some((staging, 0)));
+    }
     use tokio::sync::mpsc;
 
     #[test]
@@ -1735,7 +2071,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancels_failed_batch_before_removing_staging() {
+    async fn a_failed_batch_stops_and_keeps_staging_for_a_resume() {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
@@ -1753,25 +2089,20 @@ mod tests {
         });
         let mut config = PipelineConfig::new(&data, &output);
         config.fail_fast = true;
-        let error = AssetPipeline::run_async(config, tx).await.unwrap_err();
+        let failure = AssetPipeline::run_async(config, tx).await.unwrap_err();
         let events = collect.await.unwrap();
 
-        assert!(error.to_string().contains("failed to convert"));
+        assert!(failure.to_string().contains("failed to convert"));
+        assert!(!failure.cancelled);
         assert!(!output.exists());
-        assert!(
-            fs::read_dir(temp.path()).unwrap().all(|entry| {
-                !entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("modern.staging-")
-            }),
-            "failed pipeline left a staging directory"
-        );
-        let failure = events.last().unwrap();
-        assert_eq!(failure.stage, ProgressStage::Textures);
-        assert_eq!(failure.message, "Asset conversion failed");
-        assert!(failure.current_file.as_ref().is_some_and(|path| {
+        let staging = failure
+            .staging
+            .expect("a failed run keeps the work it has done");
+        assert!(staging.is_dir());
+        let last = events.last().unwrap();
+        assert_eq!(last.stage, ProgressStage::Textures);
+        assert_eq!(last.message, "Asset conversion failed");
+        assert!(last.current_file.as_ref().is_some_and(|path| {
             path == Path::new("textures/bad.dds") || path == Path::new("textures/also-bad.dds")
         }));
     }
@@ -1814,6 +2145,8 @@ mod tests {
 
         let error = result.unwrap_err();
         assert!(format!("{error:?}").contains("injected journal write failure"));
+        let staging = error.staging.expect("staging directory was kept");
+        fs::remove_dir_all(&staging).unwrap();
         // A worker left running would write into staging after it was removed.
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert!(!output.exists());
@@ -1862,7 +2195,48 @@ mod tests {
         AssetPipeline::run_async(config, tx).await.unwrap();
         assert!(output.join("conversion-manifest.json").is_file());
         assert!(!StagingJournal::path_in(&output).exists());
-        assert_eq!(staging_entries(temp.path()), Vec::<PathBuf>::new());
+        assert_eq!(staging_entries(temp.path()), vec![staging[0].clone()]);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_run_keeps_staging_and_resumes_from_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let failure = AssetPipeline::run_async_with_cancel(
+            PipelineConfig::new(&data, &output),
+            tx,
+            cancellation,
+        )
+        .await
+        .unwrap_err();
+        drain.await.unwrap();
+
+        assert!(failure.cancelled);
+        assert!(failure.to_string().contains("interrupted"));
+        assert!(!output.exists(), "an interrupted run does not publish");
+        let staging = failure
+            .staging
+            .expect("an interrupted run keeps its staging folder");
+        assert!(staging.is_dir());
+
+        // The kept folder is a working resume point: the run finishes from it.
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let report = run_without_progress(config).await;
+        assert!(report.complete);
+        assert!(output.join("scripts/one.luau").is_file());
     }
 
     #[tokio::test]
@@ -2182,6 +2556,203 @@ mod tests {
             published_manifest(&output)
                 .pruned_texture_references
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_mid_batch_stops_at_the_next_asset_and_resumes() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        let assets = 300;
+        for index in 0..assets {
+            let script = dummy_content::pex::minimal("Script").unwrap();
+            fs::write(data.join(format!("scripts/script{index:03}.pex")), script).unwrap();
+        }
+
+        let cancellation = Cancellation::new();
+        let interrupt = cancellation.clone();
+        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(64);
+        let watcher = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if event.message == "Converted asset" {
+                    interrupt.cancel();
+                }
+            }
+        });
+        let mut config = PipelineConfig::new(&data, &output);
+        config.cpu_jobs = 1;
+        let failure = AssetPipeline::run_async_with_cancel(config, tx, cancellation)
+            .await
+            .unwrap_err();
+        watcher.await.unwrap();
+
+        assert!(failure.cancelled);
+        let staging = failure
+            .staging
+            .clone()
+            .expect("an interrupted run keeps staging");
+        assert!(staging.is_dir());
+        assert!(!output.exists(), "an interrupted run does not publish");
+        // The manifest is written once, at the end of a run, so nothing in flight — or after it —
+        // is recorded as converted; the resume re-checks the staged files instead.
+        assert!(!staging.join("conversion-manifest.json").exists());
+        let staged: Vec<_> = fs::read_dir(staging.join("scripts"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "luau")
+            })
+            .collect();
+        assert!(
+            staged.len() < assets,
+            "the run converted all {assets} assets despite the interrupt"
+        );
+        for file in &staged {
+            assert!(
+                !fs::read(file).unwrap().is_empty(),
+                "{} was left half written",
+                file.display()
+            );
+        }
+
+        // The kept folder resumes the run to completion.
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let report = run_without_progress(config).await;
+        assert!(report.complete);
+        assert_eq!(report.skipped, 0);
+        let converted = fs::read_dir(output.join("scripts"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "luau")
+            })
+            .count();
+        assert!(converted >= assets, "resume left assets behind");
+    }
+
+    /// A stop pressed while one large archive is being extracted takes effect inside it, not
+    /// when the whole archive is done, and ends the run as an interrupt rather than as a skipped
+    /// archive. Nothing of the archive is cached, so the resume extracts it again in full.
+    #[tokio::test]
+    async fn an_interrupt_inside_an_archive_stops_its_extraction_and_resumes() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let entries = 2048;
+        let names: Vec<String> = (0..entries)
+            .map(|index| format!("docs/file{index:04}.txt"))
+            .collect();
+        let contents: Vec<Vec<u8>> = (0..entries)
+            .map(|index| format!("entry {index}").into_bytes())
+            .collect();
+        let archive_entries: Vec<_> = names
+            .iter()
+            .zip(&contents)
+            .map(|(name, data)| dummy_content::Entry::new(name, data))
+            .collect();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(&archive_entries, dummy_content::ba2::Compression::None)
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Stop from inside the extractor after its first entries: only the entries already in
+        // flight on other threads can still finish, far fewer than the archive holds.
+        stop_hook::cancel_after(&output, 16);
+        let cancellation = Cancellation::new();
+        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(64);
+        let watcher = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let failure = AssetPipeline::run_async_with_cancel(
+            PipelineConfig::new(&data, &output),
+            tx,
+            cancellation,
+        )
+        .await
+        .unwrap_err();
+        watcher.await.unwrap();
+
+        assert!(failure.cancelled, "a stop is reported as an interrupt");
+        assert!(failure.to_string().contains("interrupted"));
+        assert!(!output.exists(), "an interrupted run does not publish");
+        let staging = failure
+            .staging
+            .clone()
+            .expect("an interrupted run keeps staging");
+        let written: Vec<_> = fs::read_dir(staging.join("vfs/docs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            written.len() < entries,
+            "the whole archive was extracted despite the stop"
+        );
+        assert!(
+            written.iter().all(|name| !name.ends_with(".partial")),
+            "a stop left a half-written file behind"
+        );
+        // The archive's cache entry is only recorded once it is complete.
+        assert!(!staging.join(".ingestion-cache/sha256").exists());
+        assert!(!staging.join("conversion-manifest.json").exists());
+
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let report = run_without_progress(config.clone()).await;
+        assert!(report.complete);
+        assert!(!output.join("vfs").exists());
+        let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert_eq!(manifest.archives["assets.ba2"].files.len(), entries);
+        let file_entry = manifest.archives["assets.ba2"]
+            .files
+            .iter()
+            .find(|file| file.path == "docs/file2047.txt")
+            .expect("file2047.txt not in archive manifest");
+        let blob = config
+            .ingestion_cache_dir()
+            .join(".ingestion-cache/sha256")
+            .join(&file_entry.hash[..2])
+            .join(&file_entry.hash);
+        assert_eq!(fs::read(blob).unwrap(), b"entry 2047");
+    }
+
+    /// The window between the last stage and the publish rename cannot be hit from outside in a
+    /// test without racing the run, so the gate itself is driven directly: a run that was
+    /// interrupted while it was packing up must not publish, and must keep its staging folder.
+    #[test]
+    fn an_interrupt_before_the_publish_keeps_staging_and_leaves_the_output_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("modern");
+
+        let staging = temp.path().join("modern.staging-1-1");
+        fs::create_dir_all(staging.join("scripts")).unwrap();
+        fs::write(staging.join("scripts/one.luau"), b"return 1").unwrap();
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+        let failure = publish_if_not_interrupted(&staging, &output, &cancellation).unwrap_err();
+        assert!(failure.cancelled);
+        assert!(failure.to_string().contains("interrupted"));
+        assert!(!output.exists(), "an interrupted run must not publish");
+        assert_eq!(failure.staging.as_deref(), Some(staging.as_path()));
+        assert!(staging.is_dir(), "the staging folder is kept for a resume");
+
+        // Without the interrupt the same gate publishes, so the assertion above is about the
+        // cancellation and not about publishing being broken.
+        let staging = temp.path().join("modern.staging-2-2");
+        fs::create_dir_all(staging.join("scripts")).unwrap();
+        fs::write(staging.join("scripts/one.luau"), b"return 1").unwrap();
+        publish_if_not_interrupted(&staging, &output, &Cancellation::new()).unwrap();
+        assert_eq!(
+            fs::read(output.join("scripts/one.luau")).unwrap(),
+            b"return 1"
         );
     }
 
