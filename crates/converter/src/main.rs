@@ -315,7 +315,7 @@ fn print_failure(cli: &Cli, failure: &PipelineFailure, watch: &RunWatch, elapsed
         Some(staging) => {
             eprintln!("  The staging folder was kept: {}", staging.display());
             eprintln!("  Resume where it stopped with:");
-            eprintln!("    {}", resume_command(cli, staging));
+            eprintln!("    {}", resume_command(&program_name(), cli, staging));
             eprintln!(
                 "  Delete that folder to free the space if you would rather start over: {}",
                 staging.display()
@@ -336,10 +336,27 @@ fn stop_cause(failure: &PipelineFailure) -> Option<String> {
     }
 }
 
-/// The exact command that resumes a run from a kept staging folder.
-fn resume_command(cli: &Cli, staging: &Path) -> String {
+/// The name the converter was started as (`converter`, `converter.exe`, or whatever a packager
+/// renamed it to), for the commands it prints. `converter` when the system cannot say.
+fn program_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "converter".to_owned())
+}
+
+/// The exact command that resumes a run from a kept staging folder, started as `program`.
+fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
+    let program = if program.contains(char::is_whitespace) {
+        format!("\"{program}\"")
+    } else {
+        program.to_owned()
+    };
     format!(
-        "converter \"{}\" \"{}\" --resume-staging \"{}\"",
+        "{program} \"{}\" \"{}\" --resume-staging \"{}\"",
         cli.data.display(),
         cli.output.display(),
         staging.display()
@@ -586,10 +603,18 @@ mod tests {
             verify_cache: true,
             verbose: false,
         };
+        let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
-            resume_command(&cli, Path::new("C:/Modding/SkyrimConverted.staging-1-2")),
-            "converter \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            resume_command("converter.exe", &cli, staging),
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
         );
+        // A renamed binary is named as it is, quoted when its name has a space.
+        assert_eq!(
+            resume_command("mudcrab converter", &cli, staging),
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+        );
+        // The test binary itself stands in for the running converter.
+        assert!(!program_name().is_empty());
     }
 
     #[test]

@@ -132,6 +132,13 @@ fn a_failed_run_prints_what_went_wrong_and_the_command_that_resumes_it() {
     assert!(stderr.contains("The staging folder was kept"), "{stderr}");
     assert!(stderr.contains("Resume where it stopped with:"), "{stderr}");
     assert!(stderr.contains("--resume-staging"), "{stderr}");
+    // The command names the binary that ran, as it is called on this system.
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_converter"))
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(stderr.contains(&format!("    {binary} \"")), "{stderr}");
     assert!(
         stderr.contains("Delete that folder to free the space"),
         "{stderr}"
