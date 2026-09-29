@@ -17,7 +17,6 @@ pub mod texture;
 
 #[cfg(test)]
 mod test_strategies;
-
 pub use check::{
     CheckCancelled, CheckMode, CheckProblem, CheckReport, check_output, check_output_with_cancel,
 };

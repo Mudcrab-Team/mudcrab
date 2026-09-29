@@ -514,20 +514,6 @@ fn format_check_report(report: &converter::CheckReport) -> String {
     text
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
-    if bytes < 1024 {
-        return format!("{bytes} bytes");
-    }
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
-
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
@@ -632,9 +618,6 @@ fn usage() -> &'static str {
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose]
        converter check <output directory> [--full]
-         checks a converted output against its conversion-manifest.json without converting:
-         existence and size of every file, and with --full their hashes too.
-         Exit code 0: all good, 1: problems found, 2: no readable manifest.
 
 Converts a Skyrim Data directory into runtime assets.
 
@@ -646,7 +629,11 @@ With stderr piped to a file or a CI log, one plain line per stage every few seco
 instead. --verbose prints one line per converted asset, as older versions always did.
 
 Ctrl+C stops the run after the asset in flight and keeps the staging folder; the exact command that
-resumes where it stopped is printed when the run stops. A second Ctrl+C exits immediately."
+resumes where it stopped is printed when the run stops. A second Ctrl+C exits immediately.
+
+converter check compares a converted output with its conversion-manifest.json without converting:
+the existence and size of every file, and with --full their hashes too. Exit code 0: all good,
+1: problems found, 2: no readable manifest."
 }
 
 #[cfg(test)]
@@ -776,7 +763,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "23 problem(s) in 100 files, 3.0 MiB, quick check: existence and size, 0.2 s:"
+            "23 problem(s) in 100 files, 3.1 MB, quick check: existence and size, 0.2 s:"
         );
         assert_eq!(lines[1], "  missing: meshes/00.glb");
         assert_eq!(lines[20], "  missing: meshes/19.glb");
@@ -789,7 +776,7 @@ mod tests {
         };
         assert_eq!(
             format_check_report(&ok),
-            "All good: 100 files, 3.0 MiB, quick check: existence and size, 0.2 s\n"
+            "All good: 100 files, 3.1 MB, quick check: existence and size, 0.2 s\n"
         );
     }
 

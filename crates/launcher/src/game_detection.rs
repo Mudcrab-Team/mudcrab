@@ -1,3 +1,6 @@
+//! Finding the Skyrim `Data` folder: at start-up, when Detect is pressed, and when a folder is
+//! dropped onto the launcher.
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,7 +38,7 @@ fn find_skyrim_in_root(root: PathBuf) -> Option<PathBuf> {
 
 /// Checks whether a given directory is a valid Skyrim `Data` folder by searching
 /// for `Skyrim.esm` case-insensitively on both Windows and POSIX file systems.
-fn is_skyrim_data_dir(data_dir: &Path) -> bool {
+pub(crate) fn is_skyrim_data_dir(data_dir: &Path) -> bool {
     data_dir.join("Skyrim.esm").is_file()
         || data_dir.join("skyrim.esm").is_file()
         || fs::read_dir(data_dir)
@@ -51,6 +54,17 @@ fn is_skyrim_data_dir(data_dir: &Path) -> bool {
                 })
             })
             .unwrap_or(false)
+}
+
+/// The `Data` folder a dropped path means, if it means one at all: the path itself when it is a
+/// `Data` folder, or its own `Data` subfolder when a Skyrim installation root was dropped. `None`
+/// means the folder is not a Skyrim installation and belongs in the Output row.
+pub(crate) fn data_dir_from_drop(path: &Path) -> Option<PathBuf> {
+    if is_skyrim_data_dir(path) {
+        return Some(path.to_owned());
+    }
+    let nested = path.join("Data");
+    is_skyrim_data_dir(&nested).then_some(nested)
 }
 
 fn steam_library_paths() -> Vec<PathBuf> {
@@ -219,6 +233,29 @@ mod tests {
         fs::create_dir_all(&data_dir).unwrap();
         fs::write(data_dir.join("skyrim.esm"), []).unwrap();
         assert!(is_skyrim_data_dir(&data_dir));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A dropped folder means the Data row when it is a Skyrim `Data` folder or an installation
+    /// root, and the Output row (which the window reads as `None`) otherwise.
+    #[test]
+    fn a_dropped_folder_is_a_data_folder_only_when_it_holds_skyrim_esm() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("openskyrim-drop-detection-{unique}"));
+        let install = root.join("Skyrim Special Edition");
+        let data = install.join("Data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("Skyrim.esm"), []).unwrap();
+        let elsewhere = root.join("somewhere else");
+        fs::create_dir_all(&elsewhere).unwrap();
+
+        assert_eq!(data_dir_from_drop(&data), Some(data.clone()));
+        assert_eq!(data_dir_from_drop(&install), Some(data.clone()));
+        assert_eq!(data_dir_from_drop(&elsewhere), None);
+
         fs::remove_dir_all(root).unwrap();
     }
 }
