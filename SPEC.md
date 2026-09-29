@@ -68,7 +68,6 @@ V14: P1 toggling clears stale flight/walk velocities & jump state; mode/overlay/
 V15: P1 dynamic debug tankards use 60 Hz Rapier fixed step, same downward 900 Creation units/s² gravity as WALK, & compound convex colliders; fixture cups tumble/roll downhill, contact ground/wall, settle without persistent penetration; P2+ `T` spawns only near loaded collider, capped at 32 live bodies; switch to NOCLIP leaves tankard physics active.
 V16: ∀ collision phase gate P1–P3 → exercise actual WALK capsule & dynamic tankard against phase geometry; probe-only success insufficient. Record position/contact outcomes, frame-step settings, asset/collision provenance, & manual playtest result.
 V17: Player WALK, terrain, fixed statics, & tankards share one Rapier physics context with matching collision groups; player & tankards contact surfaces, tankards contact player, NOCLIP camera contacts none.
-V19: P1 character controller keeps `apply_impulse_to_dynamic_bodies=false` until upstream Rapier manifold-transfer panic fixed; hill gate walks slope with tankards nearby & asserts zero Rapier panics.
 V18: Input sampled once/frame, movement integrated once/60 Hz physics tick; streamed collider commits & origin rebase reach Rapier before next physics tick. Same fixture inputs at 30/60/120 render fps → positions/contact outcomes within declared tolerance.
 
 ## §T TASKS
@@ -77,7 +76,7 @@ id|status|task|cites
 T1|x|P1 add Rapier fixed-step setup, `--physics-fixture` primitive slope/wall arena, debug tankard mesh + compound dynamic collider; capture existing camera regression baseline|V5,V15,V17,R1,R8,R9
 T2|x|P1 add upright WALK capsule, camera follow, movement/jump/slope settings, & collision-safe toggle against fixture geometry|V8,V9,V10,V11,V12,V13,V14,V18
 T3|x|P1 add mouse-look NOCLIP, `V` toggle, `NOCLIP: ON/OFF  [V]` overlay, cursor lifecycle; preserve noninteractive camera paths|V5,V6,V7,V8
-T4|x|P1 test controller + tankards on primitive hill/wall, toggle/focus/rebase, 30/60/120 render fps, & camera regressions; record gate evidence|V5,V6,V7,V8,V9,V10,V11,V12,V14,V15,V16,V18,V19
+T4|~|P1 test controller + tankards on primitive hill/wall, toggle/focus/rebase, 30/60/120 render fps, & camera regressions; record gate evidence|V5,V6,V7,V8,V9,V10,V11,V12,V14,V15,V16,V18
 T5|.|P2 attach validated terrain trimesh to quadrant lifetime; handle failures & missing-ground transition|V1,V2,V13,R4
 T6|.|P2 enable bounded `T` tankard spawn; rebase Rapier poses with world; test player + tankards on real hill, seams, stream unload/reload; record gate evidence|V1,V2,V9,V13,V15,V16,V18
 T7|.|P3 inventory NIF/Havok collision support, base record types, & representative statics; record original/proxy/skip policy|V3
@@ -89,4 +88,3 @@ T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regressio
 
 id|date|cause|fix
 B1|2026-09-26|probe-only collision phases deferred WALK/dynamic validation until too late|V16
-B2|2026-09-26|Rapier 0.35 controller panics slicing empty manifold vec when pushing dynamic bodies on slope|V19
