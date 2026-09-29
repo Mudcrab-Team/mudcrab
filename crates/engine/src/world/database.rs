@@ -18,6 +18,13 @@ pub(crate) const EXTERIOR_CELL_ID_SQL: &str = "SELECT c.id FROM cells c
      ORDER BY (l.cell_id IS NOT NULL) DESC, c.id DESC
      LIMIT 1";
 
+/// Schema 4 adds fields while retaining the runtime's schema 3 query columns.
+pub(crate) const MAX_RUNTIME_DATABASE_SCHEMA_VERSION: u32 = 4;
+
+pub(crate) fn supports_runtime_database_schema(version: u32) -> bool {
+    (shared::WORLD_DATABASE_SCHEMA_VERSION..=MAX_RUNTIME_DATABASE_SCHEMA_VERSION).contains(&version)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellKey {
     Exterior {
@@ -193,9 +200,10 @@ fn validate(path: &Path) -> Result<()> {
         })
         .wrap_err("world database has no schema version")?;
     color_eyre::eyre::ensure!(
-        version == shared::WORLD_DATABASE_SCHEMA_VERSION,
-        "world database schema {version} is unsupported; reconvert assets for version {}",
-        shared::WORLD_DATABASE_SCHEMA_VERSION
+        supports_runtime_database_schema(version),
+        "world database schema {version} is unsupported; supported versions are {} through {}",
+        shared::WORLD_DATABASE_SCHEMA_VERSION,
+        MAX_RUNTIME_DATABASE_SCHEMA_VERSION
     );
     Ok(())
 }
@@ -446,6 +454,36 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES(2);",
             )
+            .unwrap();
+        drop(connection);
+        assert!(validate(&path).is_err());
+    }
+
+    #[test]
+    fn accepts_schema_four_database_with_legacy_query_columns() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        fixture(&connection);
+        connection
+            .execute("UPDATE schema_info SET version=4", [])
+            .unwrap();
+        drop(connection);
+        validate(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let payload = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        assert_eq!(payload.references.len(), 2);
+        connection
+            .execute("UPDATE schema_info SET version=5", [])
             .unwrap();
         drop(connection);
         assert!(validate(&path).is_err());

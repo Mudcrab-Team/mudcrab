@@ -178,6 +178,7 @@ V67: `Space` press remains latched across Update frames until WALK fixed tick co
 V68: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
 V69: Active airborne WALK with no downward collision ray continues descending across fixed ticks; ground-ray miss alone never resets velocity or reports terrain loading.
 V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
+V71: Runtime accepts passed integration report & world database schema 3 or additive schema 4; rejects older/newer schemas; schema 4 Riverwood package reaches world loading without `--allow-incomplete-assets`.
 
 ## §T TASKS
 
@@ -259,3 +260,4 @@ B36|2026-09-29|fixture test reassigned field after Default; CI Clippy rejected i
 B37|2026-09-29|record tuning and scene helper used patterns Clippy rejects under workspace warning gate|struct initializer and scoped argument allows
 B38|2026-09-29|active WALK treated any downward ray miss as loading and reset fall state every tick|V69
 B39|2026-09-29|NOCLIP→WALK rejected free high-altitude capsule because ground lay beyond 400-unit cast|V70
+B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; report & database gates rejected valid package|V71

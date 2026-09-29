@@ -14,7 +14,10 @@ use crate::{
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{ExpectedModelBounds, InstanceBounds, StreamingCamera},
-        database::{AssetCatalog, WorldDatabase},
+        database::{
+            AssetCatalog, MAX_RUNTIME_DATABASE_SCHEMA_VERSION, WorldDatabase,
+            supports_runtime_database_schema,
+        },
     },
 };
 use bevy::{
@@ -1246,7 +1249,14 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
     )
     .wrap_err("invalid integration report")?;
     color_eyre::eyre::ensure!(
-        report.schema_version == shared::WORLD_DATABASE_SCHEMA_VERSION && report.passed,
+        supports_runtime_database_schema(report.schema_version),
+        "asset integration report schema {} is unsupported; supported versions are {} through {}",
+        report.schema_version,
+        shared::WORLD_DATABASE_SCHEMA_VERSION,
+        MAX_RUNTIME_DATABASE_SCHEMA_VERSION
+    );
+    color_eyre::eyre::ensure!(
+        report.passed,
         "asset integration report did not pass; inspect {}",
         report_path.display()
     );
@@ -1642,6 +1652,40 @@ mod tests {
         std::fs::write(
             directory.path().join("integration-report.json"),
             br#"{"schema_version":3,"passed":true}"#,
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":5,"passed":true}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_runtime_assets(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("schema 5 is unsupported")
+        );
+    }
+
+    #[test]
+    fn accepts_passing_schema_four_integration_report() {
+        let directory = tempfile::tempdir().unwrap();
+        for required in ["skyrim_world.db", "cell_cache.rkyv"] {
+            std::fs::write(directory.path().join(required), []).unwrap();
+        }
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"schema_version":15,"complete":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":4,"passed":true}"#,
         )
         .unwrap();
         let config = EngineConfig {
