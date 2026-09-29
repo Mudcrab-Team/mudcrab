@@ -11,6 +11,80 @@ use std::{collections::HashMap, str::from_utf8};
 
 const CELL_SIZE: f32 = 4096.0;
 
+fn invalid_movement_field(form_id: u32, field: &str) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("record {form_id:08X} has invalid {field}"),
+    )))
+}
+
+fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
+    if view.get_string(b"EDID").as_deref() != Some("NPC_Default_MT") {
+        return Err(invalid_movement_field(
+            form_id,
+            "MOVT EDID (expected NPC_Default_MT)",
+        ));
+    }
+    let data = view
+        .find(b"SPED")
+        .ok_or_else(|| invalid_movement_field(form_id, "MOVT SPED"))?;
+    if data.len() != 44 {
+        return Err(invalid_movement_field(
+            form_id,
+            "MOVT SPED length (expected 44 bytes)",
+        ));
+    }
+    let mut speeds = [0.0; 8];
+    for (index, speed) in speeds.iter_mut().enumerate() {
+        *speed = f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
+        if !speed.is_finite() || *speed <= 0.0 {
+            return Err(invalid_movement_field(
+                form_id,
+                &format!("MOVT SPED[{index}]"),
+            ));
+        }
+    }
+    Ok(speeds)
+}
+
+fn decode_movement_setting(view: &SubrecordView<'_>, form_id: u32) -> Result<f32> {
+    let data = view
+        .find(b"DATA")
+        .ok_or_else(|| invalid_movement_field(form_id, "GMST DATA"))?;
+    if data.len() != 4 {
+        return Err(invalid_movement_field(
+            form_id,
+            "GMST DATA length (expected 4 bytes)",
+        ));
+    }
+    let value = f32::from_le_bytes(data.try_into().unwrap());
+    if !value.is_finite() {
+        return Err(invalid_movement_field(form_id, "GMST DATA value"));
+    }
+    Ok(value)
+}
+
+fn optional_race_movement_link(
+    view: &SubrecordView<'_>,
+    form_id: u32,
+    tag: &[u8; 4],
+) -> Result<Option<u32>> {
+    let Some(data) = view.find(tag) else {
+        return Ok(None);
+    };
+    if data.len() != 4 {
+        return Err(invalid_movement_field(
+            form_id,
+            &format!(
+                "RACE {} length (expected 4 bytes)",
+                String::from_utf8_lossy(tag)
+            ),
+        ));
+    }
+    let value = u32::from_le_bytes(data.try_into().unwrap());
+    Ok((value != 0).then_some(value))
+}
+
 pub fn create_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"PRAGMA foreign_keys = ON;
@@ -60,6 +134,22 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              race_id INTEGER, class_id INTEGER, flags INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
+         CREATE TABLE IF NOT EXISTS movement_types (
+             id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
+             left_walk REAL NOT NULL, left_run REAL NOT NULL,
+             right_walk REAL NOT NULL, right_run REAL NOT NULL,
+             forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
+             back_walk REAL NOT NULL, back_run REAL NOT NULL,
+             load_order INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS race_movement_links (
+             id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER,
+             load_order INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS movement_game_settings (
+             id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
+             value REAL NOT NULL, load_order INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS lod (
              cell_id INTEGER NOT NULL, lod_level INTEGER NOT NULL, mesh_data BLOB NOT NULL,
              PRIMARY KEY (cell_id, lod_level)
@@ -97,6 +187,9 @@ type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM movement_types", [])?;
+    tx.execute("DELETE FROM movement_game_settings", [])?;
+    tx.execute("DELETE FROM race_movement_links", [])?;
     let mut cells: HashMap<u32, CellMetadata> = HashMap::new();
 
     for (&form_id, record) in master
@@ -202,6 +295,34 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
                     "INSERT OR REPLACE INTO npcs(id, editor_id, full_name, race_id, class_id, flags) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![form_id, view.get_string(b"EDID"), view.get_string(b"FULL"), view.get_form_id(b"RNAM"), view.get_form_id(b"CNAM"), record.flags],
                 )?;
+            }
+            "RACE" => {
+                let walk = optional_race_movement_link(&view, form_id, b"WKMV")?;
+                let run = optional_race_movement_link(&view, form_id, b"RNMV")?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO race_movement_links(id, walk_movt_id, run_movt_id, load_order) VALUES (?1, ?2, ?3, ?4)",
+                    params![form_id, walk, run, record.load_order],
+                )?;
+            }
+            "MOVT" if form_id == 0x0003_580D => {
+                let speeds = decode_npc_default_speeds(&view, form_id)?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO movement_types(id, editor_id, left_walk, left_run, right_walk, right_run, forward_walk, forward_run, back_walk, back_run, load_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![form_id, "NPC_Default_MT", speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
+                )?;
+            }
+            "GMST" => {
+                let editor_id = view.get_string(b"EDID");
+                if matches!(
+                    editor_id.as_deref(),
+                    Some("fMoveCharWalkBase" | "fJumpHeightMin")
+                ) {
+                    let value = decode_movement_setting(&view, form_id)?;
+                    tx.execute(
+                        "INSERT OR REPLACE INTO movement_game_settings(id, editor_id, value, load_order) VALUES (?1, ?2, ?3, ?4)",
+                        params![form_id, editor_id, value, record.load_order],
+                    )?;
+                }
             }
             "WATR" => {
                 let view = SubrecordView::new(&record.subrecords);
@@ -379,6 +500,9 @@ mod tests {
             "land",
             "statics",
             "npcs",
+            "movement_types",
+            "race_movement_links",
+            "movement_game_settings",
             "scripts",
             "waters",
             "texture_sets",
@@ -394,6 +518,103 @@ mod tests {
             assert_eq!(present, 1, "missing semantic table {table}");
         }
         validate_database(&conn).unwrap();
+    }
+
+    #[test]
+    fn exports_selected_movement_values_and_rejects_bad_sped() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let speeds: Vec<u8> = [
+            80.09f32,
+            370.0,
+            79.75,
+            370.0,
+            80.1,
+            370.0,
+            71.93,
+            205.25,
+            std::f32::consts::PI,
+            std::f32::consts::PI,
+            std::f32::consts::PI,
+        ]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+        let movement = RawRecord {
+            form_id: 0x0003_580D,
+            record_type: *b"MOVT",
+            flags: 0,
+            subrecords: vec![
+                (b"EDID".to_vec(), b"NPC_Default_MT\0".to_vec()),
+                (b"SPED".to_vec(), speeds),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 2,
+        };
+        let jump = RawRecord {
+            form_id: 0x000A_BEF6,
+            record_type: *b"GMST",
+            flags: 0,
+            subrecords: vec![
+                (b"EDID".to_vec(), b"fJumpHeightMin\0".to_vec()),
+                (b"DATA".to_vec(), 76.0f32.to_le_bytes().to_vec()),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        let race = RawRecord {
+            form_id: 0x0001_3746,
+            record_type: *b"RACE",
+            flags: 0,
+            subrecords: vec![(b"EDID".to_vec(), b"NordRace\0".to_vec())],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 1,
+        };
+        let master = HashMap::from([
+            (movement.form_id, movement.clone()),
+            (jump.form_id, jump),
+            (race.form_id, race.clone()),
+        ]);
+        export_to_db(&conn, &master).unwrap();
+        let (walk_link, run_link, race_source): (Option<u32>, Option<u32>, u32) = conn
+            .query_row(
+                "SELECT walk_movt_id, run_movt_id, load_order FROM race_movement_links WHERE id=79686",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((walk_link, run_link, race_source), (None, None, 1));
+        let (forward_walk, forward_run, back_run, source): (f32, f32, f32, u32) = conn.query_row(
+            "SELECT forward_walk, forward_run, back_run, load_order FROM movement_types WHERE id=219149",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(
+            (forward_walk, forward_run, back_run, source),
+            (80.1, 370.0, 205.25, 2)
+        );
+        let height: f32 = conn
+            .query_row(
+                "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(height, 76.0);
+
+        let mut broken = movement;
+        broken.subrecords[1].1[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        let error = export_to_db(&conn, &HashMap::from([(broken.form_id, broken)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT SPED[0]"));
+        let mut broken_race = race;
+        broken_race
+            .subrecords
+            .push((b"WKMV".to_vec(), vec![1, 2, 3]));
+        let error =
+            export_to_db(&conn, &HashMap::from([(broken_race.form_id, broken_race)])).unwrap_err();
+        assert!(error.to_string().contains("RACE WKMV length"));
     }
 
     #[test]
