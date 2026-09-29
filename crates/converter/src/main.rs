@@ -229,13 +229,7 @@ async fn main() -> Result<()> {
 
 /// The summary a finished run prints: what it produced, how long it took, and where to look.
 fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
-    println!(
-        "Conversion complete in {}: converted {}, reused {}, failed {}",
-        format_elapsed(report.elapsed_ms as f64 / 1000.0),
-        report.converted,
-        report.cache_hits,
-        report.skipped,
-    );
+    println!("{}", summary_headline(report));
     let (bytes, files) = artifact_size(&cli.output, &report.artifacts);
     println!(
         "  output: {} in {} artifacts ({})",
@@ -251,6 +245,21 @@ fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
         println!("  report: {}", path.display());
     }
     println!("{}", clock.summary());
+}
+
+/// The summary's first line. A run that skipped inputs published an output without them, so it
+/// says it finished incomplete rather than that it is complete.
+fn summary_headline(report: &PipelineReport) -> String {
+    let elapsed = format_elapsed(report.elapsed_ms as f64 / 1000.0);
+    let counts = format!(
+        "converted {}, reused {}, failed {}",
+        report.converted, report.cache_hits, report.skipped
+    );
+    if report.complete {
+        format!("Conversion complete in {elapsed}: {counts}")
+    } else {
+        format!("Conversion finished in {elapsed}, incomplete: {counts}")
+    }
 }
 
 /// The size of the converted artifacts. The published tree also holds the extracted `vfs` and the
@@ -572,6 +581,29 @@ mod tests {
         assert_eq!(
             resume_command(&cli, Path::new("C:/Modding/SkyrimConverted.staging-1-2")),
             "converter \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+        );
+    }
+
+    #[test]
+    fn the_summary_calls_a_run_complete_only_when_it_is() {
+        let mut report = PipelineReport {
+            converted: 10,
+            cache_hits: 4,
+            skipped: 0,
+            elapsed_ms: 62_300,
+            complete: true,
+            ..PipelineReport::default()
+        };
+        assert_eq!(
+            summary_headline(&report),
+            "Conversion complete in 0:01:02.3: converted 10, reused 4, failed 0"
+        );
+
+        report.skipped = 2;
+        report.complete = false;
+        assert_eq!(
+            summary_headline(&report),
+            "Conversion finished in 0:01:02.3, incomplete: converted 10, reused 4, failed 2"
         );
     }
 
