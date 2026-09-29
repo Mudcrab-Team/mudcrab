@@ -169,6 +169,20 @@ impl ProgressEvent {
     }
 }
 
+/// The line `--verbose` prints for one event: the stage, how far through it the run is, what
+/// happened, and the file it happened to.
+fn verbose_line(event: &ProgressEvent) -> String {
+    let mut line = format!("{:<11}", format!("{:?}", event.stage));
+    if event.total > 0 {
+        let _ = write!(line, " {}/{}", event.completed, event.total);
+    }
+    let _ = write!(line, "  {}", event.message);
+    if let Some(file) = &event.current_file {
+        let _ = write!(line, ": {}", file.display());
+    }
+    line
+}
+
 /// `line` put back on the terminal row at the start of `previous_width`, padded with spaces so
 /// nothing of a longer line stays visible to the right of it. The padding replaces the
 /// clear-to-end-of-line escape some consoles print literally.
@@ -426,10 +440,19 @@ impl ProgressRenderer {
             return None;
         }
 
-        let line = self.line(event, elapsed);
         self.stage = Some(event.stage);
         self.last_emit = Some(elapsed);
-        if self.verbose || !self.terminal {
+        if self.verbose {
+            self.open_line = false;
+            return Some(format!(
+                "[{}] {}
+",
+                format_elapsed(elapsed.as_secs_f64()),
+                verbose_line(event)
+            ));
+        }
+        let line = self.line(event, elapsed);
+        if !self.terminal {
             self.open_line = false;
             Some(format!(
                 "[{}] {line}\n",
@@ -531,6 +554,7 @@ impl ProgressRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn event(stage: ProgressStage, completed: u64, total: u64) -> ProgressEvent {
         ProgressEvent::new(stage, completed, total, None, "test")
@@ -862,6 +886,40 @@ mod tests {
             lines += 1;
         }
         assert_eq!(lines, 20);
+    }
+
+    #[test]
+    fn verbose_lines_name_the_asset_and_what_happened() {
+        let mut renderer = ProgressRenderer::new(true, true);
+        let converted = ProgressEvent::new(
+            ProgressStage::Textures,
+            3,
+            20,
+            Some(PathBuf::from("textures/rock.dds")),
+            "Converted asset",
+        );
+        let line = renderer
+            .update(&converted, Duration::from_millis(1_500))
+            .expect("verbose prints every event");
+        assert_eq!(
+            line,
+            format!(
+                "[0:00:01.5] Textures    3/20  Converted asset: {}
+",
+                Path::new("textures/rock.dds").display()
+            )
+        );
+
+        // An event about the stage rather than one file says what happened and nothing more.
+        let started = ProgressEvent::new(ProgressStage::Database, 0, 0, None, "Building world");
+        let line = renderer
+            .update(&started, Duration::from_secs(2))
+            .expect("verbose prints every event");
+        assert_eq!(
+            line,
+            "[0:00:02.0] Database     Building world
+"
+        );
     }
 
     #[test]
