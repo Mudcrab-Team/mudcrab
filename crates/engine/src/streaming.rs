@@ -3138,7 +3138,6 @@ mod tests {
             &mut water_materials,
             IVec2::ZERO,
             false,
-            false,
             CellPayload {
                 generation: 1,
                 key: CellKey::Exterior {
@@ -3164,8 +3163,7 @@ mod tests {
             },
             Some(terrain),
             &mut profiler,
-        )
-        .expect("the layer fixture cell should spawn");
+        );
     }
 
     /// What the emptiness rule reads: the converted model's own node and mesh count, taken from
