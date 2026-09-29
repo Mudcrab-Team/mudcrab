@@ -145,7 +145,7 @@ impl EngineConfig {
     }
 
     /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
-    /// the taskbar says what it is. An interactive run is plain "Mudcrab".
+    /// the taskbar says what it is. An interactive run is plain "OpenSkyrim".
     pub fn window_title(&self) -> String {
         let kind = if self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some() {
             Some("benchmark")
@@ -155,10 +155,10 @@ impl EngineConfig {
             None
         };
         match (kind, self.run_label.as_deref()) {
-            (Some(kind), Some(label)) => format!("Mudcrab - {kind}: {label}"),
-            (Some(kind), None) => format!("Mudcrab - {kind}"),
-            (None, Some(label)) => format!("Mudcrab - {label}"),
-            (None, None) => "Mudcrab".to_owned(),
+            (Some(kind), Some(label)) => format!("OpenSkyrim - {kind}: {label}"),
+            (Some(kind), None) => format!("OpenSkyrim - {kind}"),
+            (None, Some(label)) => format!("OpenSkyrim - {label}"),
+            (None, None) => "OpenSkyrim".to_owned(),
         }
     }
 
@@ -425,11 +425,11 @@ mod tests {
             |list: &[&str]| EngineConfig::from_args(list.iter().map(|value| (*value).to_owned()));
         assert_eq!(
             args(&["--benchmark-duration", "20", "--run-label", "main rural r1"]).window_title(),
-            "Mudcrab - benchmark: main rural r1"
+            "OpenSkyrim - benchmark: main rural r1"
         );
         assert_eq!(
             args(&["--benchmark-frames", "600"]).window_title(),
-            "Mudcrab - benchmark"
+            "OpenSkyrim - benchmark"
         );
         // A label left out does not swallow the next option.
         let config = args(&["--run-label", "--benchmark-frames", "600"]);
@@ -440,9 +440,9 @@ mod tests {
         assert_eq!(config.benchmark_frames, Some(600));
         assert_eq!(
             args(&["--streaming-fixture"]).window_title(),
-            "Mudcrab - streaming fixture"
+            "OpenSkyrim - streaming fixture"
         );
-        assert_eq!(args(&[]).window_title(), "Mudcrab");
+        assert_eq!(args(&[]).window_title(), "OpenSkyrim");
     }
 
     #[test]

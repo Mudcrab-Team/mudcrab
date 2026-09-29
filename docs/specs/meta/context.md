@@ -1,4 +1,4 @@
-# Mudcrab Domain Context
+# OpenSkyrim Domain Context
 
 ## Glossary & Canonical Terms
 

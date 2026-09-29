@@ -65,7 +65,7 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
         u32::try_from(blocks.len()).map_err(|_| eyre!("NIF block count overflow"))?,
     );
     push_u32(&mut bytes, BETHESDA_VERSION);
-    push_string8(&mut bytes, "Mudcrab dummy-content");
+    push_string8(&mut bytes, "OpenSkyrim dummy-content");
     push_string8(&mut bytes, "");
     push_string8(&mut bytes, "");
     push_u16(

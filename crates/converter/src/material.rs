@@ -252,7 +252,7 @@ pub fn publish_gltf_materials(
         .then(|| {
             let index = materials.len();
             materials.push(serde_json::json!({
-                "name": "Mudcrab non-rendering excluded geometry",
+                "name": "OpenSkyrim non-rendering excluded geometry",
                 "alphaMode": "MASK",
                 "alphaCutoff": 1.0,
                 "pbrMetallicRoughness": {

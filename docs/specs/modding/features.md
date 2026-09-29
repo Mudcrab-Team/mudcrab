@@ -1,6 +1,6 @@
-# Mudcrab Advanced Features & Lua Scripting Innovations
+# OpenSkyrim Advanced Features & Lua Scripting Innovations
 
-This document details new gameplay, networking, and modding capabilities unlocked by Mudcrab's modern engine architecture (**Luau**, **Bevy ECS**, **WebGPU**).
+This document details new gameplay, networking, and modding capabilities unlocked by OpenSkyrim's modern engine architecture (**Luau**, **Bevy ECS**, **WebGPU**).
 
 ---
 
@@ -58,23 +58,23 @@ end
 
 ---
 
-## 3. Game-Changing Engine Capabilities Unlocked by Mudcrab
+## 3. Game-Changing Engine Capabilities Unlocked by OpenSkyrim
 
-Because Mudcrab removes Skyrim's 15-year-old engine bottlenecks, we unlock features that were previously **impossible** in original Skyrim:
+Because OpenSkyrim removes Skyrim's 15-year-old engine bottlenecks, we unlock features that were previously **impossible** in original Skyrim:
 
 ---
 
 ### 🚀 A. Zero-Loading-Screen Seamless World (Instant Cell Transitions)
 
 - **Original Skyrim:** Entering cities like Whiterun, Solitude, or Riften requires a loading screen that splits the city from the main worldspace.
-- **Mudcrab:** Thanks to **SQLite 3 R-Tree spatial indexing**, **`rkyv` zero-copy memory mapping**, and **multithreaded streaming**, all interior and exterior city doors load **100% seamlessly in real time without any loading screens!**
+- **OpenSkyrim:** Thanks to **SQLite 3 R-Tree spatial indexing**, **`rkyv` zero-copy memory mapping**, and **multithreaded streaming**, all interior and exterior city doors load **100% seamlessly in real time without any loading screens!**
 
 ---
 
 ### 🌐 B. Native Built-In Co-op & Multiplayer Architecture
 
 - **Original Skyrim:** Multiplayer mods (like Skyrim Together) had to reverse-engineer memory addresses, leading to desyncs and crash bugs.
-- **Mudcrab:** Bevy's ECS architecture cleanly separates game state from rendering. Entity replication across WebSockets / UDP is built natively into the engine core, enabling **flawless, low-latency co-op gameplay**.
+- **OpenSkyrim:** Bevy's ECS architecture cleanly separates game state from rendering. Entity replication across WebSockets / UDP is built natively into the engine core, enabling **flawless, low-latency co-op gameplay**.
 
 ---
 
@@ -105,7 +105,7 @@ Because Mudcrab removes Skyrim's 15-year-old engine bottlenecks, we unlock featu
 
 - **Luau State Snapshots:**
   - Saving in original Skyrim takes several seconds and risks bloat/corruption.
-  - In Mudcrab, serializing Luau table states and SQLite entity deltas creates **instant sub-second quick-saves**.
+  - In OpenSkyrim, serializing Luau table states and SQLite entity deltas creates **instant sub-second quick-saves**.
 
 ---
 

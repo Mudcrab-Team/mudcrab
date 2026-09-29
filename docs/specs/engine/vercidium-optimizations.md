@@ -1,4 +1,4 @@
-# Mudcrab High-Performance Rendering & Engine Optimizations
+# OpenSkyrim High-Performance Rendering & Engine Optimizations
 
 Inspired by key engine optimizations demonstrated by **Vercidium** (developer of the custom high-FPS engine _Sector's Edge_).
 
@@ -10,7 +10,7 @@ Inspired by key engine optimizations demonstrated by **Vercidium** (developer of
 
 In original Skyrim, every tree, rock, building, or barrel incurs an individual CPU-to-GPU draw call. Rendering Whiterun or a dense forest creates thousands of driver state changes per frame, overwhelming the CPU main thread.
 
-### The Mudcrab Solution:
+### The OpenSkyrim Solution:
 
 - **GPU Instancing Batching:**
   - Group identical glTF models (e.g. `PineTree01.glb`, `WhiterunWall02.glb`).
@@ -26,7 +26,7 @@ In original Skyrim, every tree, rock, building, or barrel incurs an individual C
 
 Divide the game world into uniform spatial chunks/grid cells and eliminate non-visible geometry before it touches the render pipeline.
 
-### Mudcrab Implementation:
+### OpenSkyrim Implementation:
 
 1. **Bounding Volume Hierarchy (BVH) / Spatial Chunks:**
    - Exterior cells in Skyrim are divided into 32x32 world grids.
@@ -43,7 +43,7 @@ Divide the game world into uniform spatial chunks/grid cells and eliminate non-v
 
 Skyrim often renders objects obscured behind mountains, city walls, or closed doors because CPU occlusion checking is primitive.
 
-### Mudcrab Solution:
+### OpenSkyrim Solution:
 
 - **Hierarchical Z-Buffer (HZB) Culling:**
   - Generate a low-resolution depth pyramid map from the previous frame's depth buffer.
@@ -58,7 +58,7 @@ Skyrim often renders objects obscured behind mountains, city walls, or closed do
 
 Avoid Garbage Collection (GC) pressure and heap allocations during frame rendering loops.
 
-### Mudcrab (Rust Native Advantage):
+### OpenSkyrim (Rust Native Advantage):
 
 - **Zero Heap Allocations at 60+ FPS:**
   - All ECS system queries in Bevy reuse pre-allocated array buffers (`Vec::clear()` instead of re-allocating).
@@ -69,7 +69,7 @@ Avoid Garbage Collection (GC) pressure and heap allocations during frame renderi
 
 ## 5. Summary Table of Optimization Techniques
 
-| Optimization Technique | Original Skyrim Behavior                        | **Mudcrab Vercidium-Style Engine**                   |
+| Optimization Technique | Original Skyrim Behavior                        | **OpenSkyrim Vercidium-Style Engine**                   |
 | :--------------------- | :---------------------------------------------- | :------------------------------------------------------ |
 | **Draw Calls**         | 1 draw call per static object (Thousands/frame) | **Batched Instanced Indirect Draw Calls** (< 100/frame) |
 | **Memory Allocation**  | Runtime allocation during cell loads            | **Pre-allocated buffers + `mmap` zero-copy**            |
