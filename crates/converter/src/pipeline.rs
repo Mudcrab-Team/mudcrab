@@ -170,6 +170,13 @@ fn failure(
 pub struct AssetPipeline;
 
 impl AssetPipeline {
+    /// Runs a conversion, reporting on `progress_tx`.
+    ///
+    /// The channel is bounded, and a front end should keep reading it. Events that matter on their
+    /// own (a stage or an archive starting and ending, an asset failing, a notice) wait for room;
+    /// the per-file updates sent while an archive is extracted are dropped when the channel is
+    /// full, so extraction never waits on the front end. Each of them carries cumulative numbers,
+    /// so the next one that gets through is as good as any that were dropped.
     pub async fn run_async(
         config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
@@ -350,7 +357,10 @@ impl AssetPipeline {
                 } else {
                     1.0
                 };
-                let _ = progress_for_worker.blocking_send(
+                // The extraction threads never wait on the front end: an update that finds the
+                // channel full is dropped, and the next one carries the cumulative numbers. The
+                // archive's start and end events, and every failure, are still sent reliably.
+                let _ = progress_for_worker.try_send(
                     ProgressEvent::new(
                         ProgressStage::Extracting,
                         archive_index,
@@ -1444,6 +1454,7 @@ mod tests {
         fs::create_dir_all(&staging).unwrap();
         assert_eq!(crate::find_resumable_staging(&output), Some((staging, 0)));
     }
+    use std::time::Duration;
     use tokio::sync::mpsc;
 
     #[test]
@@ -1881,6 +1892,86 @@ mod tests {
         );
         let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
         assert_eq!(manifest.archives["assets.ba2"].files.len(), entries);
+    }
+
+    /// A front end that stops reading progress must not stall extraction: the per-file updates
+    /// find the channel full and are dropped, so the archive's threads run to the end. Only the
+    /// events that matter on their own wait for room, and reading again lets the run finish.
+    #[tokio::test]
+    async fn extraction_does_not_wait_for_a_front_end_that_stopped_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        // Enough entries for several per-file updates, one every 512 files.
+        let entries = 2048;
+        let names: Vec<String> = (0..entries)
+            .map(|index| format!("docs/file{index:04}.txt"))
+            .collect();
+        let contents: Vec<Vec<u8>> = (0..entries)
+            .map(|index| format!("entry {index}").into_bytes())
+            .collect();
+        let archive_entries: Vec<_> = names
+            .iter()
+            .zip(&contents)
+            .map(|(name, data)| dummy_content::Entry::new(name, data))
+            .collect();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(&archive_entries, dummy_content::ba2::Compression::None)
+                .unwrap(),
+        )
+        .unwrap();
+        // The extractor caches the files only once every one of them is written, so the last
+        // file's blob in the staging cache shows the extraction threads have finished.
+        let last_blob = crate::cache::hash_bytes(b"entry 2047");
+
+        // Room for one event: after the archive's first update, the channel stays full.
+        let (tx, mut rx) = mpsc::channel::<ProgressEvent>(1);
+        let front_end = async {
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                    .await
+                    .expect("the run reaches extraction")
+                    .expect("the run is still sending");
+                if event.stage == ProgressStage::Extracting && event.stage_fraction.is_none() {
+                    break;
+                }
+            }
+            // Stop reading until the archive is extracted.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                let blob = crate::find_resumable_staging(&output).map(|(staging, _)| {
+                    staging
+                        .join(".ingestion-cache/sha256")
+                        .join(&last_blob[..2])
+                        .join(&last_blob)
+                });
+                if blob.is_some_and(|blob| blob.is_file()) {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    // Close the channel first, so stalled threads end and the test fails
+                    // instead of hanging.
+                    drop(rx);
+                    panic!("extraction stalled while nobody read its progress");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // Reading again lets the waiting events through.
+            while rx.recv().await.is_some() {}
+        };
+        let (report, ()) = tokio::join!(
+            AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx),
+            front_end
+        );
+
+        let report = report.unwrap();
+        assert!(report.complete);
+        assert_eq!(
+            fs::read_dir(output.join("vfs/docs")).unwrap().count(),
+            entries
+        );
     }
 
     /// The window between the last stage and the publish rename cannot be hit from outside in a
