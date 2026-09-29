@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 204
 expression: snapshot
 ---
 {
@@ -121,10 +122,10 @@ expression: snapshot
   "landscape_textures": [
     {
       "editor_id": "GeneratedLandscape",
-      "friction": null,
+      "friction": 30.0,
       "id": 4,
-      "material_type": 0,
-      "restitution": null,
+      "material_type": 8,
+      "restitution": 30.0,
       "texture_set_id": 2
     }
   ],

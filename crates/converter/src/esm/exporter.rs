@@ -205,8 +205,9 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             // Every base record type with a world model. The runtime spawns
             // anything that resolves a model path here, so trees, flora,
             // containers, doors, activators, and placed inventory all render;
-            // records without MODL (triggers, markers) store NULL and are skipped
-            // at spawn time.
+            // records without MODL (triggers, markers) store NULL and are
+            // skipped at spawn time. `LIGH` is handled above: the light goes
+            // in `lights` and only a light with geometry lands in `statics`.
             "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI"
             | "WEAP" | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
             | "ARMO" => {
@@ -271,15 +272,15 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             }
             "LTEX" => {
                 let view = SubrecordView::new(&record.subrecords);
-                let material = view
-                    .find(b"HNAM")
-                    .filter(|bytes| bytes.len() >= 2)
-                    .map(|bytes| {
-                        u16::from_le_bytes(bytes[..2].try_into().expect("two-byte material type"))
-                    });
+                let havok = view.find(b"HNAM");
+                let friction = havok
+                    .and_then(|bytes| bytes.first())
+                    .copied()
+                    .map(f32::from);
+                let restitution = havok.and_then(|bytes| bytes.get(1)).copied().map(f32::from);
                 tx.execute(
                     "INSERT OR REPLACE INTO landscape_textures(id,editor_id,texture_set_id,material_type,friction,restitution) VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![form_id, view.get_string(b"EDID"), view.get_form_id(b"TNAM"), material, Option::<f32>::None, Option::<f32>::None],
+                    params![form_id, view.get_string(b"EDID"), view.get_form_id(b"TNAM"), view.get_form_id(b"MNAM"), friction, restitution],
                 )?;
             }
             _ => {}
@@ -613,6 +614,49 @@ mod tests {
         assert_eq!(reflection, u32::from_le_bytes([119, 140, 157, 0]));
         assert!((fresnel - 0.10).abs() < 1.0e-6);
         assert!((reflectivity - 0.8).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn reads_ltex_material_from_mnam_and_havok_from_hnam() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        // Real-world shape: MNAM is the material-type MATT FormID, HNAM is two
+        // Havok bytes (friction, restitution). Values mirror observed rows like
+        // LDirtSnowPath01 (HNAM 1e 1e).
+        let record = RawRecord {
+            form_id: 0x0001_B342,
+            record_type: *b"LTEX",
+            flags: 0,
+            subrecords: vec![
+                (b"EDID".to_vec(), b"LDirtSnowPath01\0".to_vec()),
+                (b"TNAM".to_vec(), 0x0001_2F38u32.to_le_bytes().to_vec()),
+                (b"MNAM".to_vec(), 0x0001_2F38u32.to_le_bytes().to_vec()),
+                (b"HNAM".to_vec(), vec![0x1e, 0x1e]),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        let mut master = HashMap::new();
+        master.insert(record.form_id, record);
+        export_to_db(&conn, &master).unwrap();
+
+        let (texture_set_id, material, friction, restitution): (
+            Option<u32>,
+            Option<u32>,
+            Option<f32>,
+            Option<f32>,
+        ) = conn
+            .query_row(
+                "SELECT texture_set_id, material_type, friction, restitution FROM landscape_textures WHERE id=?1",
+                [0x0001_B342u32],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(texture_set_id, Some(0x0001_2F38));
+        assert_eq!(material, Some(0x0001_2F38));
+        assert_eq!(friction, Some(30.0));
+        assert_eq!(restitution, Some(30.0));
     }
 
     #[test]
