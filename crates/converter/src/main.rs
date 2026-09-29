@@ -5,7 +5,7 @@ use color_eyre::{
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
     pipeline::{Cancellation, PipelineFailure},
-    progress::{ProgressRenderer, format_elapsed},
+    progress::{ProgressRenderer, format_bytes, format_elapsed},
 };
 use serde::Serialize;
 use std::{
