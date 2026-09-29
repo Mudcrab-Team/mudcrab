@@ -281,7 +281,7 @@ impl AssetPipeline {
         }
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
-        // resumes from it. Only publishing removes it, by renaming it over the output.
+        // resumes from it. Only a successful publish removes it, once the runtime pack is out.
         let run_result = Self::run_into(
             &config,
             &staging,
@@ -321,9 +321,10 @@ impl AssetPipeline {
                 .map_err(|error| failure(error, &staging, &cancellation))?;
         prune_stale_ingestion_blobs(&cache_root, &manifest)
             .map_err(|error| failure(error, &staging, &cancellation))?;
-        if !resumed {
-            let _ = fs::remove_dir_all(&staging);
-        }
+        // Resumed or not, the staging folder has done its job: the pack links the published files,
+        // so removing it frees only names. Kept, a resumed folder would be offered for resume
+        // again (`find_resumable_staging`) while holding a full copy's worth of disk.
+        let _ = fs::remove_dir_all(&staging);
         report.elapsed_ms = started.elapsed().as_millis();
         if report.complete {
             send(
@@ -2266,7 +2267,7 @@ mod tests {
         AssetPipeline::run_async(config, tx).await.unwrap();
         assert!(output.join("conversion-manifest.json").is_file());
         assert!(!StagingJournal::path_in(&output).exists());
-        assert_eq!(staging_entries(temp.path()), vec![staging[0].clone()]);
+        assert_eq!(staging_entries(temp.path()), Vec::<PathBuf>::new());
     }
 
     #[tokio::test]
@@ -3025,7 +3026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumed_reconversion_does_not_write_through_pack_links() {
+    async fn a_resumed_publish_removes_its_staging_and_keeps_the_output() {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
@@ -3035,26 +3036,23 @@ mod tests {
             dummy_content::pex::minimal("One").unwrap(),
         )
         .unwrap();
+        run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let expected = fs::read(output.join("scripts/one.luau")).unwrap();
 
-        // First conversion publishes the pack; pack files may share inodes
-        // with whatever staging survives publication.
+        // The published pack shares files with staging through hard links, so removing the
+        // resumed staging folder must leave every published file in place.
         let staging = temp.path().join("modern.staging-resume-links");
         fs::create_dir_all(&staging).unwrap();
         let mut config = PipelineConfig::new(&data, &output);
         config.resume_staging = Some(staging.clone());
-        let first = run_without_progress(config.clone()).await;
-        assert!(first.complete);
-        let first_bytes = fs::read(output.join("scripts/one.luau")).unwrap();
+        let resumed = run_without_progress(config).await;
 
-        // A resumed reconversion rewrites staged artifacts in place of the
-        // same paths. If any writer truncates through a hard link instead of
-        // replacing the path, the published pack changes under it.
-        let second = run_without_progress(config.clone()).await;
-        assert!(second.complete);
-        assert_eq!(
-            fs::read(output.join("scripts/one.luau")).unwrap(),
-            first_bytes,
-            "the resumed run wrote through a pack link into the previous output"
+        assert!(resumed.complete);
+        assert!(
+            !staging.exists(),
+            "a resumed publish kept its staging folder, which would be offered for resume again"
         );
+        assert_eq!(fs::read(output.join("scripts/one.luau")).unwrap(), expected);
+        assert_eq!(crate::find_resumable_staging(&output), None);
     }
 }
