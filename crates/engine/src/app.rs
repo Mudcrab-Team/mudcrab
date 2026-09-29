@@ -1423,10 +1423,7 @@ fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
 /// walk-around view from behind and above it. [`sun_shadow_cascades`] measures its range from the
 /// camera, so the offsets live here rather than in two places.
 fn camera_offset(config: &EngineConfig) -> Vec3 {
-    if config.interactive_world_physics() {
-        let tuning = MovementTuning::default();
-        Vec3::Y * (tuning.eye_height + tuning.capsule_standing_height * 0.5 + 16.0)
-    } else if config.acceptance_screenshot.is_some() {
+    if config.acceptance_screenshot.is_some() {
         config
             .screenshot_camera_offset
             .map(Vec3::from)
