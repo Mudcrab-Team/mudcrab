@@ -47,6 +47,7 @@ use std::{
 struct InitialCameraGroundHeight(f32);
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
+    validate_fixture_selection(&config)?;
     configure_io_task_pool();
     let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
@@ -186,6 +187,22 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     app.run();
     drop(app);
     drop(streaming_fixture_dir);
+    Ok(())
+}
+
+fn validate_fixture_selection(config: &EngineConfig) -> Result<()> {
+    let selected = [
+        config.material_fixture,
+        config.terrain_water_fixture,
+        config.transform_bounds_fixture,
+        config.renderer_fixture,
+        config.streaming_fixture,
+        config.physics_fixture,
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    color_eyre::eyre::ensure!(selected <= 1, "select only one fixture mode");
     Ok(())
 }
 
@@ -1541,6 +1558,15 @@ struct ScreenshotCaptureState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_conflicting_fixture_modes() {
+        let mut config = EngineConfig::default();
+        config.physics_fixture = true;
+        assert!(validate_fixture_selection(&config).is_ok());
+        config.streaming_fixture = true;
+        assert!(validate_fixture_selection(&config).is_err());
+    }
 
     #[test]
     fn screenshot_readiness_requires_resident_cells_only_with_world_streaming() {

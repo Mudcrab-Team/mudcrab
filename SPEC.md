@@ -173,6 +173,9 @@ V62: WALK entry requires ground within 400 units; active WALK keeps falling when
 V63: Compressed Havok mesh vertices scale by finite positive serialized quantization error; alternate valid scales preserve geometry.
 V64: Selected `MOVT SPED` accepts 40- or 44-byte layouts; rejects other lengths and invalid speed fields.
 V65: Package launcher resolves XKB data on Nix and standard Linux paths or reports missing data before engine start; configured valid `XKB_CONFIG_ROOT` survives.
+V66: WALK view pitch follows `LookIntent.pitch`; body pitch stays zero.
+V67: `Space` press remains latched across Update frames until WALK fixed tick consumes it; no repeat after consumption.
+V68: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
 
 ## §T TASKS
 
@@ -247,3 +250,6 @@ B29|2026-09-29|launcher searched XKB only in Nix store; standard Linux hosts cou
 B30|2026-09-29|collision audit compared normalized model key but reported raw-key status|normalize report status
 B31|2026-09-29|launcher test expected `/bin/sh` to depend on libdl after glibc 2.34|readable preflight fixture
 B32|2026-09-29|new converter loops failed CI Clippy under Rust 1.98|collapse node condition and use `as_chunks`
+B33|2026-09-29|fixture WALK camera reused prior pitch instead of `LookIntent.pitch`|V66
+B34|2026-09-29|Update overwrote jump press before next fixed tick at high render fps|V67
+B35|2026-09-29|fixture flags selected conflicting owners; benchmark ignored physics validation|V68
