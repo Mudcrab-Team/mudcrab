@@ -96,23 +96,6 @@ impl Default for EngineConfig {
 }
 
 impl EngineConfig {
-    /// Interactive exterior play owns the mouse/controller; automated camera paths keep their
-    /// existing movement and framing.
-    pub fn interactive_world_physics(&self) -> bool {
-        !self.headless
-            && !self.benchmark_only
-            && self.benchmark_frames.is_none()
-            && self.benchmark_duration_secs.is_none()
-            && self.acceptance_screenshot.is_none()
-            && self.auto_fly_speed <= 0.0
-            && !self.material_fixture
-            && !self.terrain_water_fixture
-            && !self.transform_bounds_fixture
-            && !self.renderer_fixture
-            && !self.streaming_fixture
-            && !self.physics_fixture
-    }
-
     pub fn from_env() -> Self {
         Self::from_args(std::env::args().skip(1))
     }
@@ -446,38 +429,5 @@ mod tests {
         let config = EngineConfig::from_args(["--log-file", "bugs/run1.log"].map(str::to_owned));
         assert_eq!(config.log_file, Some(PathBuf::from("bugs/run1.log")));
         assert_eq!(EngineConfig::default().log_file, None);
-    }
-
-    #[test]
-    fn interactive_physics_preserves_automated_camera_paths() {
-        assert!(EngineConfig::default().interactive_world_physics());
-        for config in [
-            EngineConfig {
-                headless: true,
-                ..EngineConfig::default()
-            },
-            EngineConfig {
-                benchmark_frames: Some(60),
-                ..EngineConfig::default()
-            },
-            EngineConfig {
-                auto_fly_speed: 900.0,
-                ..EngineConfig::default()
-            },
-            EngineConfig {
-                acceptance_screenshot: Some("shot.png".into()),
-                ..EngineConfig::default()
-            },
-            EngineConfig {
-                streaming_fixture: true,
-                ..EngineConfig::default()
-            },
-            EngineConfig {
-                physics_fixture: true,
-                ..EngineConfig::default()
-            },
-        ] {
-            assert!(!config.interactive_world_physics());
-        }
     }
 }

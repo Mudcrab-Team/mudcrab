@@ -1,5 +1,9 @@
-//! Player movement physics: one controller for Riverwood and the regression fixture.
-//! All units are Creation units.
+//! Player movement physics: Rapier context, debug tankards, fixture arena.
+//!
+//! P1 owns the interactive `--physics-fixture`: a primitive slope/wall arena
+//! with an asset-free debug tankard (compound cup + handle collider) used to
+//! validate the walking controller and dynamic bodies before streamed terrain
+//! (P2) and static (P3) collision arrive. All units are Creation units.
 
 use bevy::{
     input::mouse::MouseMotion,
@@ -9,9 +13,7 @@ use bevy::{
 use bevy_rapier3d::prelude::*;
 
 use crate::{
-    profiling::ProfilingState,
-    streaming::{StreamingMetrics, TerrainCollider},
-    world::components::StreamingCamera,
+    profiling::ProfilingState, streaming::StreamingMetrics, world::components::StreamingCamera,
 };
 
 /// Fixed physics step: 60 Hz Rapier simulation (V15, V18).
@@ -143,27 +145,17 @@ pub struct PhysicsFixturePlugin;
 
 impl Plugin for PhysicsFixturePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(PlayerControlsPlugin)
-            .init_resource::<PhysicsFixtureState>()
-            .add_systems(
-                Startup,
-                (setup_physics_fixture, setup_fixture_player).chain(),
-            )
-            .add_systems(FixedUpdate, validate_physics_fixture);
-    }
-}
-
-/// Mouse and movement systems shared by Riverwood and the regression fixture.
-pub struct PlayerControlsPlugin;
-
-impl Plugin for PlayerControlsPlugin {
-    fn build(&self, app: &mut App) {
         app.add_plugins(PhysicsCorePlugin)
+            .init_resource::<PhysicsFixtureState>()
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
             .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
             .init_resource::<CursorCapture>()
+            .add_systems(
+                Startup,
+                (setup_physics_fixture, setup_fixture_player).chain(),
+            )
             .add_systems(
                 Update,
                 (
@@ -172,81 +164,16 @@ impl Plugin for PlayerControlsPlugin {
                     noclip_flight_system,
                     walk_intent_system,
                     toggle_mode_system,
-                    walk_camera_follow_system,
                     overlay_system,
                 )
                     .chain(),
             )
-            .add_systems(FixedUpdate, walk_movement_system);
+            .add_systems(
+                FixedUpdate,
+                (walk_movement_system, walk_camera_follow_system).chain(),
+            )
+            .add_systems(FixedUpdate, validate_physics_fixture);
     }
-}
-
-pub struct WorldPlayerPlugin;
-
-impl Plugin for WorldPlayerPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins(PlayerControlsPlugin)
-            .init_resource::<HeldTankard>()
-            .add_systems(PostStartup, setup_world_player)
-            .add_systems(Update, (world_tankard_input, move_held_tankard).chain());
-    }
-}
-
-#[derive(Resource, Default)]
-struct HeldTankard(Option<Entity>);
-
-#[derive(Resource)]
-struct TankardVisuals {
-    cup: Handle<Mesh>,
-    handle: Handle<Mesh>,
-    wood: Handle<StandardMaterial>,
-}
-
-fn tankard_visuals(
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) -> TankardVisuals {
-    TankardVisuals {
-        cup: meshes.add(Cylinder::new(
-            TANKARD_CUP_RADIUS,
-            TANKARD_CUP_HALF_HEIGHT * 2.0,
-        )),
-        handle: meshes.add(Cylinder::new(
-            TANKARD_HANDLE_RADIUS,
-            TANKARD_HANDLE_HALF_HEIGHT * 2.0,
-        )),
-        wood: materials.add(fixture_material(Color::srgb(0.5, 0.32, 0.14))),
-    }
-}
-
-fn spawn_debug_tankard(commands: &mut Commands, visuals: &TankardVisuals, position: Vec3) {
-    commands
-        .spawn((
-            Name::new("Debug tankard"),
-            DebugTankard,
-            RigidBody::Dynamic,
-            debug_tankard_collider(),
-            ActiveEvents::COLLISION_EVENTS,
-            CollidingEntities::default(),
-            tankard_collision_groups(),
-            ColliderMassProperties::Density(0.001),
-            Velocity::zero(),
-            Transform::from_translation(position),
-            Visibility::default(),
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Mesh3d(visuals.cup.clone()),
-                MeshMaterial3d(visuals.wood.clone()),
-                Transform::IDENTITY,
-            ));
-            parent.spawn((
-                Mesh3d(visuals.handle.clone()),
-                MeshMaterial3d(visuals.wood.clone()),
-                Transform::from_xyz(TANKARD_CUP_RADIUS + TANKARD_HANDLE_RADIUS, 0.0, 0.0)
-                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-            ));
-        });
 }
 
 #[derive(Resource, Default)]
@@ -321,13 +248,49 @@ fn setup_physics_fixture(
     ));
 
     // Visible cup + handle meshes; collider stays compound convex (V15).
-    let visuals = tankard_visuals(&mut meshes, &mut materials);
-    for position in [
+    let cup_mesh = meshes.add(Cylinder::new(
+        TANKARD_CUP_RADIUS,
+        TANKARD_CUP_HALF_HEIGHT * 2.0,
+    ));
+    let handle_mesh = meshes.add(Cylinder::new(
+        TANKARD_HANDLE_RADIUS,
+        TANKARD_HANDLE_HALF_HEIGHT * 2.0,
+    ));
+    let wood = materials.add(fixture_material(Color::srgb(0.5, 0.32, 0.14)));
+    for (index, position) in [
         Vec3::new(-700.0, 420.0, -500.0),
         Vec3::new(-640.0, 480.0, -420.0),
         Vec3::new(120.0, 320.0, 120.0),
-    ] {
-        spawn_debug_tankard(&mut commands, &visuals, position);
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        commands
+            .spawn((
+                Name::new(format!("Debug tankard fixture {index}")),
+                DebugTankard,
+                RigidBody::Dynamic,
+                debug_tankard_collider(),
+                ActiveEvents::COLLISION_EVENTS,
+                CollidingEntities::default(),
+                tankard_collision_groups(),
+                ColliderMassProperties::Density(0.001),
+                Transform::from_translation(position),
+                Visibility::default(),
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(cup_mesh.clone()),
+                    MeshMaterial3d(wood.clone()),
+                    Transform::IDENTITY,
+                ));
+                parent.spawn((
+                    Mesh3d(handle_mesh.clone()),
+                    MeshMaterial3d(wood.clone()),
+                    Transform::from_xyz(TANKARD_CUP_RADIUS + TANKARD_HANDLE_RADIUS, 0.0, 0.0)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
     }
 
     commands.spawn((
@@ -568,10 +531,7 @@ pub fn walk_movement_system(
     mode: Res<MoveMode>,
     intent: Res<WalkIntent>,
     tuning: Res<MovementTuning>,
-    context: ReadRapierContext,
-    mut status: ResMut<WalkEntryStatus>,
     mut player: Query<(
-        &Transform,
         &mut KinematicCharacterController,
         &mut WalkState,
         Option<&KinematicCharacterControllerOutput>,
@@ -580,27 +540,9 @@ pub fn walk_movement_system(
     if *mode != MoveMode::Walk {
         return;
     }
-    let Ok((pose, mut controller, mut state, output)) = player.single_mut() else {
+    let Ok((mut controller, mut state, output)) = player.single_mut() else {
         return;
     };
-    let ground_available = context.single().is_ok_and(|context| {
-        context
-            .cast_ray(
-                pose.translation,
-                Vec3::NEG_Y,
-                WALK_ENTRY_GROUND_SEARCH,
-                true,
-                QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
-            )
-            .is_some()
-    });
-    if !ground_available {
-        controller.translation = None;
-        *state = WalkState::default();
-        status.blocked_reason = Some("terrain loading below player".to_owned());
-        return;
-    }
-    status.blocked_reason = None;
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
     integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
     let displacement =
@@ -612,7 +554,6 @@ pub fn walk_movement_system(
 pub fn walk_camera_follow_system(
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
-    look: Res<LookIntent>,
     player: Query<&Transform, (With<PlayerBody>, Without<StreamingCamera>)>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
@@ -622,9 +563,10 @@ pub fn walk_camera_follow_system(
     let (Ok(body), Ok(mut view)) = (player.single(), camera.single_mut()) else {
         return;
     };
+    let (_, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
     let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
     view.translation = body.translation + Vec3::Y * tuning.eye_height;
-    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
+    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
 }
 
 /// Attempt NOCLIP->WALK at the camera pose; overlap pushes the search upward,
@@ -643,7 +585,7 @@ pub fn try_enter_walk(
             candidate,
             Quat::IDENTITY,
             shape,
-            QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
+            QueryFilter::default(),
             |_| {
                 overlapping = true;
                 false
@@ -656,7 +598,7 @@ pub fn try_enter_walk(
                 Vec3::NEG_Y * WALK_ENTRY_GROUND_SEARCH,
                 shape,
                 ShapeCastOptions::with_max_time_of_impact(WALK_ENTRY_GROUND_SEARCH),
-                QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
+                QueryFilter::default(),
             );
             if ground_hit.is_some() {
                 return Ok(candidate);
@@ -951,9 +893,9 @@ pub struct LookIntent {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct NoclipOverlay;
 
-/// Marker for the camera owned by the NOCLIP/WALK controller.
+/// Marker for the physics-fixture player rig (V5).
 #[derive(Component, Debug, Clone, Copy)]
-pub struct ControlledCamera;
+pub struct FixturePlayer;
 
 /// Cursor capture state machine (V6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Resource)]
@@ -1007,61 +949,35 @@ fn noclip_overlay_text(mode: MoveMode, status: &WalkEntryStatus) -> String {
         MoveMode::Noclip => "NOCLIP: ON  [V]",
         MoveMode::Walk => "NOCLIP: OFF  [V]",
     };
-    match &status.blocked_reason {
-        Some(reason) => format!("{base}  [T] tankard  [E] grab/drop  WALK blocked: {reason}"),
-        None => format!("{base}  [T] tankard  [E] grab/drop"),
+    match (&mode, &status.blocked_reason) {
+        (MoveMode::Noclip, Some(reason)) => format!("{base}  WALK blocked: {reason}"),
+        _ => base.to_owned(),
     }
 }
 
 fn setup_fixture_player(
     mut commands: Commands,
     tuning: Res<MovementTuning>,
-    mut look: ResMut<LookIntent>,
-    camera: Query<(Entity, &Transform), With<StreamingCamera>>,
+    camera: Query<Entity, With<StreamingCamera>>,
 ) {
-    let Ok((camera, view)) = camera.single() else {
+    let Ok(camera) = camera.single() else {
         return;
     };
-    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
-}
-
-fn setup_world_player(
-    mut commands: Commands,
-    tuning: Res<MovementTuning>,
-    mut look: ResMut<LookIntent>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    camera: Query<(Entity, &Transform), With<StreamingCamera>>,
-) {
-    let Ok((camera, view)) = camera.single() else {
-        return;
-    };
-    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
-    commands.insert_resource(tankard_visuals(&mut meshes, &mut materials));
-}
-
-fn setup_controlled_player(
-    commands: &mut Commands,
-    tuning: &MovementTuning,
-    look: &mut LookIntent,
-    camera: Entity,
-    view: &Transform,
-) {
-    let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
-    *look = LookIntent { yaw, pitch };
+    // Player capsule starts parked at the camera; WALK entry repositions it.
     let body = commands
         .spawn((
-            player_controller_bundle(tuning),
-            Transform::from_translation(view.translation - Vec3::Y * tuning.eye_height),
+            FixturePlayer,
+            player_controller_bundle(&tuning),
+            Transform::from_xyz(120.0, 300.0, 120.0),
         ))
         .id();
     // Noclip starts ON with the capsule disabled (V5, V8).
     commands.entity(body).insert(RigidBodyDisabled);
-    commands.entity(camera).insert(ControlledCamera);
+    commands.entity(camera).insert(FixturePlayer);
     commands.spawn((
         Name::new("Noclip overlay"),
         NoclipOverlay,
-        Text::new("NOCLIP: ON  [V]    [T] tankard  [E] grab/drop"),
+        Text::new("NOCLIP: ON  [V]"),
         TextFont::from_font_size(18.0),
         TextColor(Color::WHITE),
         Node {
@@ -1071,100 +987,6 @@ fn setup_controlled_player(
             ..default()
         },
     ));
-}
-
-/// Riverwood test objects stay in world coordinates and are never children of a streamed cell.
-#[allow(clippy::too_many_arguments)]
-fn world_tankard_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    capture: Res<CursorCapture>,
-    camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
-    terrain: Query<(), With<TerrainCollider>>,
-    tankards: Query<(), With<DebugTankard>>,
-    player: Query<Entity, With<PlayerBody>>,
-    visuals: Option<Res<TankardVisuals>>,
-    mut held: ResMut<HeldTankard>,
-    context: ReadRapierContext,
-    mut commands: Commands,
-) {
-    if *capture != CursorCapture::Captured {
-        return;
-    }
-    let (Ok(camera), Ok(context)) = (camera.single(), context.single()) else {
-        return;
-    };
-    if keyboard.just_pressed(KeyCode::KeyT)
-        && tankards.iter().count() < MAX_LIVE_TANKARDS
-        && let Some(visuals) = visuals
-    {
-        let horizontal = camera.forward().as_vec3().with_y(0.0).normalize_or_zero();
-        let origin = camera.translation + horizontal * 140.0 + Vec3::Y * 300.0;
-        let is_terrain = |entity| terrain.get(entity).is_ok();
-        if let Some((_, distance)) = context.cast_ray(
-            origin,
-            Vec3::NEG_Y,
-            700.0,
-            true,
-            QueryFilter::default().predicate(&is_terrain),
-        ) {
-            spawn_debug_tankard(
-                &mut commands,
-                &visuals,
-                origin - Vec3::Y * distance + Vec3::Y * 120.0,
-            );
-        }
-    }
-    if !keyboard.just_pressed(KeyCode::KeyE) {
-        return;
-    }
-    if let Some(entity) = held.0.take() {
-        if tankards.get(entity).is_ok() {
-            commands
-                .entity(entity)
-                .remove::<(RigidBodyDisabled, ColliderDisabled)>();
-            commands.entity(entity).insert(Velocity::zero());
-        }
-        return;
-    }
-    let filter = if let Ok(player) = player.single() {
-        QueryFilter::default().exclude_rigid_body(player)
-    } else {
-        QueryFilter::default()
-    };
-    if let Some((entity, _)) = context.cast_ray(
-        camera.translation,
-        camera.forward().as_vec3(),
-        240.0,
-        true,
-        filter,
-    ) && tankards.get(entity).is_ok()
-    {
-        commands
-            .entity(entity)
-            .insert((RigidBodyDisabled, ColliderDisabled, Velocity::zero()));
-        held.0 = Some(entity);
-    }
-}
-
-#[allow(clippy::type_complexity)]
-fn move_held_tankard(
-    mut held: ResMut<HeldTankard>,
-    camera: Query<
-        &Transform,
-        (
-            With<StreamingCamera>,
-            With<ControlledCamera>,
-            Without<DebugTankard>,
-        ),
-    >,
-    mut tankards: Query<&mut Transform, (With<DebugTankard>, Without<StreamingCamera>)>,
-) {
-    let Some(entity) = held.0 else { return };
-    let (Ok(camera), Ok(mut tankard)) = (camera.single(), tankards.get_mut(entity)) else {
-        held.0 = None;
-        return;
-    };
-    tankard.translation = camera.translation + camera.forward().as_vec3() * 110.0;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1218,7 +1040,7 @@ fn noclip_flight_system(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     look: Res<LookIntent>,
-    mut camera: Query<&mut Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
+    mut camera: Query<&mut Transform, (With<StreamingCamera>, With<FixturePlayer>)>,
 ) {
     if *mode != MoveMode::Noclip || *capture != CursorCapture::Captured {
         return;
@@ -1293,7 +1115,7 @@ fn toggle_mode_system(
     mut status: ResMut<WalkEntryStatus>,
     mut intent: ResMut<WalkIntent>,
     mut look: ResMut<LookIntent>,
-    camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
+    camera: Query<&Transform, (With<StreamingCamera>, With<FixturePlayer>)>,
     mut player: Query<
         (Entity, &mut Transform, &Collider),
         (With<PlayerBody>, Without<StreamingCamera>),
@@ -1403,11 +1225,11 @@ mod noclip_tests {
         let status = WalkEntryStatus::default();
         assert_eq!(
             noclip_overlay_text(MoveMode::Noclip, &status),
-            "NOCLIP: ON  [V]  [T] tankard  [E] grab/drop"
+            "NOCLIP: ON  [V]"
         );
         assert_eq!(
             noclip_overlay_text(MoveMode::Walk, &status),
-            "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop"
+            "NOCLIP: OFF  [V]"
         );
         let blocked = WalkEntryStatus {
             blocked_reason: Some("no walkable ground below".to_owned()),
@@ -1423,185 +1245,6 @@ mod gate_tests {
     use super::headless;
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
-
-    #[test]
-    fn walk_camera_pitch_uses_current_mouse_intent() {
-        let mut app = headless::fixture_app();
-        headless::place_player(&mut app, Vec3::new(120.0, 300.0, 120.0));
-        app.world_mut().resource_mut::<LookIntent>().pitch = 0.6;
-        app.update();
-        let mut camera = app
-            .world_mut()
-            .query_filtered::<&Transform, With<ControlledCamera>>();
-        let view = camera.single(app.world()).expect("controlled camera");
-        let (_, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
-        assert!((pitch - 0.6).abs() < 0.001, "WALK pitch was {pitch}");
-        let mut body = app
-            .world_mut()
-            .query_filtered::<&Transform, With<PlayerBody>>();
-        let pose = body.single(app.world()).expect("player body");
-        assert!(pose.rotation.x.abs() < 0.001 && pose.rotation.z.abs() < 0.001);
-    }
-
-    #[test]
-    fn riverwood_tankard_spawn_pickup_and_drop() {
-        let mut app = headless::fixture_app();
-        app.init_resource::<HeldTankard>();
-        let visuals = {
-            let world = app.world_mut();
-            world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
-                tankard_visuals(
-                    &mut meshes,
-                    &mut world.resource_mut::<Assets<StandardMaterial>>(),
-                )
-            })
-        };
-        app.insert_resource(visuals);
-        let ground = {
-            let mut query = app
-                .world_mut()
-                .query_filtered::<(Entity, &Transform), With<FixtureArena>>();
-            query
-                .iter(app.world())
-                .find(|(_, pose)| pose.translation.y == -20.0)
-                .unwrap()
-                .0
-        };
-        app.world_mut().entity_mut(ground).insert(TerrainCollider);
-        let camera = {
-            let mut query = app
-                .world_mut()
-                .query_filtered::<Entity, With<ControlledCamera>>();
-            query.single(app.world()).unwrap()
-        };
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .clone_from(
-                &Transform::from_xyz(0.0, 200.0, 0.0)
-                    .looking_at(Vec3::new(0.0, 200.0, -1.0), Vec3::Y),
-            );
-        app.update();
-        app.insert_resource(CursorCapture::Captured);
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyT);
-        let ground_hit = app
-            .world_mut()
-            .run_system_once(
-                |context: ReadRapierContext, terrain: Query<(), With<TerrainCollider>>| {
-                    let is_terrain = |entity| terrain.get(entity).is_ok();
-                    context.single().unwrap().cast_ray(
-                        Vec3::new(0.0, 500.0, -140.0),
-                        Vec3::NEG_Y,
-                        700.0,
-                        true,
-                        QueryFilter::default().predicate(&is_terrain),
-                    )
-                },
-            )
-            .unwrap();
-        let any_hit = app
-            .world_mut()
-            .run_system_once(|context: ReadRapierContext| {
-                context.single().unwrap().cast_ray(
-                    Vec3::new(0.0, 500.0, -140.0),
-                    Vec3::NEG_Y,
-                    700.0,
-                    true,
-                    QueryFilter::default(),
-                )
-            })
-            .unwrap();
-        assert!(
-            ground_hit.is_some(),
-            "fixture terrain ray must hit; nearest={any_hit:?}, ground={ground:?}"
-        );
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        let spawned = {
-            let mut query = app
-                .world_mut()
-                .query_filtered::<(Entity, &Transform), With<DebugTankard>>();
-            query
-                .iter(app.world())
-                .find(|(_, pose)| pose.translation.z < -100.0)
-                .map(|(entity, pose)| (entity, pose.translation))
-                .expect("spawned tankard above terrain")
-        };
-        let mut query = app
-            .world_mut()
-            .query_filtered::<Entity, With<DebugTankard>>();
-        assert_eq!(query.iter(app.world()).count(), 4);
-        app.update();
-        let spawned_pose = app
-            .world()
-            .entity(spawned.0)
-            .get::<Transform>()
-            .unwrap()
-            .translation;
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .look_at(spawned_pose, Vec3::Y);
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyE);
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        assert_eq!(app.world().resource::<HeldTankard>().0, Some(spawned.0));
-        assert!(
-            app.world()
-                .entity(spawned.0)
-                .contains::<RigidBodyDisabled>()
-        );
-        assert!(app.world().entity(spawned.0).contains::<ColliderDisabled>());
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .translation
-            .x += 100.0;
-        app.world_mut().run_system_once(move_held_tankard).unwrap();
-        let held_pose = app
-            .world()
-            .entity(spawned.0)
-            .get::<Transform>()
-            .unwrap()
-            .translation;
-        assert!(held_pose.x > 90.0, "held tankard did not follow the view");
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.release(KeyCode::KeyE);
-            keys.clear();
-            keys.press(KeyCode::KeyE);
-        }
-        app.world_mut()
-            .run_system_once(world_tankard_input)
-            .unwrap();
-        assert_eq!(app.world().resource::<HeldTankard>().0, None);
-        assert!(
-            !app.world()
-                .entity(spawned.0)
-                .contains::<RigidBodyDisabled>()
-        );
-        assert!(!app.world().entity(spawned.0).contains::<ColliderDisabled>());
-        app.update();
-        let dropped_pose = app
-            .world()
-            .entity(spawned.0)
-            .get::<Transform>()
-            .unwrap()
-            .translation;
-        assert!(
-            (dropped_pose - held_pose).length() < 10.0,
-            "drop teleported tankard: {held_pose:?} -> {dropped_pose:?}"
-        );
-    }
 
     fn run_speed_intent(app: &mut App, wish_dir: Vec3) {
         let speed = app.world().resource::<MovementTuning>().run_speed;
@@ -1750,10 +1393,7 @@ mod gate_tests {
             .world_mut()
             .query_filtered::<&Text, With<NoclipOverlay>>();
         let text = query.single(app.world()).expect("overlay").clone();
-        assert_eq!(
-            text.as_str(),
-            "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop"
-        );
+        assert_eq!(text.as_str(), "NOCLIP: OFF  [V]");
         app.insert_resource(MoveMode::Noclip);
         for _ in 0..5 {
             app.update();
@@ -1762,7 +1402,7 @@ mod gate_tests {
             .world_mut()
             .query_filtered::<&Text, With<NoclipOverlay>>();
         let text = query.single(app.world()).expect("overlay").clone();
-        assert_eq!(text.as_str(), "NOCLIP: ON  [V]  [T] tankard  [E] grab/drop");
+        assert_eq!(text.as_str(), "NOCLIP: ON  [V]");
     }
 
     #[test]

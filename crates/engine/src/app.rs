@@ -2,7 +2,7 @@ use crate::{
     config::EngineConfig,
     file_log::custom_file_layer,
     metrics::AcceptanceMetricsPlugin,
-    physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
+    physics::PhysicsFixturePlugin,
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
         LIGHT_LAYERS, MAIN_VIEW_LAYERS, RendererMetrics, TerrainExtension, TerrainMaterial,
@@ -51,7 +51,6 @@ struct InitialCameraGroundHeight(f32);
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
     configure_io_task_pool();
-    let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
         let fixture = StreamingFixtureDirectory::create(config.worldspace_id, config.start_grid)?;
         config.assets_dir = fixture.path.clone();
@@ -155,9 +154,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .insert_resource(ground_height)
             .add_plugins(StreamingPlugin);
         app.add_systems(Startup, setup_world);
-        if interactive_world_physics {
-            app.add_plugins(WorldPlayerPlugin);
-        }
         if app.world().resource::<EngineConfig>().streaming_fixture {
             app.init_resource::<StreamingFixtureState>()
                 .add_systems(Startup, setup_streaming_fixture_visual)
@@ -1448,24 +1444,13 @@ fn setup_world(
     mut commands: Commands,
     config: Res<EngineConfig>,
     ground_height: Option<Res<InitialCameraGroundHeight>>,
-    tuning: Option<Res<MovementTuning>>,
 ) {
     let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
     let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
-    let camera_offset = if config.interactive_world_physics() {
-        let tuning = tuning.as_deref().cloned().unwrap_or_default();
-        Vec3::Y * (tuning.eye_height + tuning.capsule_standing_height * 0.5 + 16.0)
-    } else {
-        camera_offset(&config)
-    };
+    let camera_offset = camera_offset(&config);
     let camera_position = target + camera_offset;
     let far = crate::world::components::CELL_SIZE * (config.stream_radius.max(1) + 2) as f32 * 2.0;
-    let camera_transform = if config.interactive_world_physics() {
-        Transform::from_translation(camera_position)
-            .looking_at(camera_position + Vec3::NEG_Z, Vec3::Y)
-    } else {
-        Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
-    };
+    let camera_transform = Transform::from_translation(camera_position).looking_at(target, Vec3::Y);
     commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
@@ -1583,8 +1568,9 @@ fn fly_camera(
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
 ) {
-    // Interactive player paths own the camera; automated camera paths keep legacy controls.
-    if config.physics_fixture || config.interactive_world_physics() {
+    // The physics fixture owns its camera via NOCLIP/WALK; legacy fly controls
+    // stay on every other path (V5).
+    if config.physics_fixture {
         return;
     }
     let started = std::time::Instant::now();

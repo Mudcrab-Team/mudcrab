@@ -1,4 +1,3 @@
-use crate::physics::{DebugTankard, PlayerBody};
 use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
@@ -23,11 +22,10 @@ use bevy::{
     gltf::{GltfExtras, GltfMaterialName},
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
-    mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
+    mesh::{Indices, PrimitiveTopology},
     prelude::*,
     world_serialization::WorldInstanceReady,
 };
-use bevy_rapier3d::prelude::{Collider, ColliderDisabled, RigidBody, WriteRapierContext};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
@@ -41,11 +39,10 @@ fn commit_budget_exceeded(elapsed_micros: u64, budget_micros: u64) -> bool {
     elapsed_micros > budget_micros.saturating_add(COMMIT_BUDGET_SCHEDULER_TOLERANCE_MICROS)
 }
 
-pub struct StreamingPlugin;
+#[cfg(test)]
+use bevy::mesh::VertexAttributeValues;
 
-/// Ready terrain collider attached to the same streamed quadrant as its mesh.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct TerrainCollider;
+pub struct StreamingPlugin;
 
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
@@ -458,7 +455,6 @@ fn collect_cells(
                         continue;
                     }
                 }
-                let cell_id = payload.cell_id;
                 let root = spawn_cell(
                     &mut commands,
                     &asset_server,
@@ -469,32 +465,13 @@ fn collect_cells(
                     &mut water_materials,
                     origin.0,
                     config.lights,
-                    config.interactive_world_physics(),
                     payload,
                     terrain,
                     &mut profiler,
                 );
-                match root {
-                    Ok(root) => {
-                        streaming
-                            .cells
-                            .insert(response.key, CellStatus::Resident { root });
-                    }
-                    Err(reason) => {
-                        error!(cell = format_args!("{cell_id:08X}"), %reason, "terrain collider build failed");
-                        metrics.failed_cells = metrics.failed_cells.saturating_add(1);
-                        metrics.terrain_validation_failures =
-                            metrics.terrain_validation_failures.saturating_add(1);
-                        metrics.asset_failures.push(AssetFailure {
-                            model_path: format!("terrain/{cell_id:08X}"),
-                            reference_form_id: 0,
-                            base_form_id: 0,
-                            cell_id,
-                            dependency_chain: vec![reason],
-                        });
-                        streaming.cells.insert(response.key, CellStatus::Failed);
-                    }
-                }
+                streaming
+                    .cells
+                    .insert(response.key, CellStatus::Resident { root });
             }
             Err(error) => {
                 debug!(?response.key, %error, "cell could not be streamed");
@@ -560,27 +537,13 @@ fn spawn_cell(
     water_materials: &mut Assets<WaterMaterial>,
     origin: IVec2,
     lights: bool,
-    terrain_physics: bool,
     payload: CellPayload,
     terrain: Option<TerrainSnapshot>,
     profiler: &mut ProfilingState,
-) -> Result<Entity, String> {
+) -> Entity {
     let spawn_started = Instant::now();
     let reference_count = payload.references.len();
     let root_translation = cell_translation(payload.key, origin);
-    let terrain_quadrants = if let Some(terrain) = &terrain {
-        (0..4)
-            .map(|quadrant| {
-                let mesh = build_terrain_quadrant_mesh(terrain, quadrant)?;
-                let collider = terrain_physics
-                    .then(|| terrain_collider_from_mesh(&mesh))
-                    .transpose()?;
-                Ok((quadrant, mesh, collider))
-            })
-            .collect::<Result<Vec<_>, String>>()?
-    } else {
-        Vec::new()
-    };
     let mut root_commands = commands.spawn((
         Name::new(format!("Cell {:08X}", payload.cell_id)),
         CellRef(payload.cell_id),
@@ -594,8 +557,10 @@ fn spawn_cell(
     let root = root_commands.id();
     commands.entity(root).with_children(|parent| {
         if let Some(terrain) = terrain {
-            for (quadrant, mesh, collider) in terrain_quadrants {
+            for quadrant in 0..4 {
                 let started = Instant::now();
+                let mesh = build_terrain_quadrant_mesh(&terrain, quadrant)
+                    .expect("validated terrain must build");
                 profiler.record_elapsed("streaming/terrain_mesh", started);
                 let (extension, images) =
                     TerrainExtension::from_quadrant(&terrain, quadrant, catalog, asset_server)
@@ -610,7 +575,7 @@ fn spawn_cell(
                     },
                     extension,
                 });
-                let mut patch = parent.spawn((
+                parent.spawn((
                     Name::new(format!("Terrain quadrant {quadrant}")),
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(material),
@@ -624,15 +589,6 @@ fn spawn_cell(
                         normals: images.normal,
                     },
                 ));
-                if let Some(collider) = collider {
-                    patch.insert((
-                        TerrainCollider,
-                        RigidBody::Fixed,
-                        collider,
-                        ColliderDisabled,
-                        crate::physics::world_collision_groups(),
-                    ));
-                }
             }
             if let Some(height) = terrain
                 .water_height
@@ -784,26 +740,7 @@ fn spawn_cell(
     });
     profiler.increment("streaming/references_spawned", reference_count as u64);
     profiler.record_elapsed("streaming/spawn_cell", spawn_started);
-    Ok(root)
-}
-
-/// Rapier consumes the exact vertex and triangle buffers rendered by this quadrant.
-fn terrain_collider_from_mesh(mesh: &Mesh) -> Result<Collider, String> {
-    let Some(VertexAttributeValues::Float32x3(positions)) =
-        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-    else {
-        return Err("terrain mesh lacks Float32x3 positions".to_owned());
-    };
-    let Some(Indices::U32(indices)) = mesh.indices() else {
-        return Err("terrain mesh lacks U32 triangle indices".to_owned());
-    };
-    if indices.len() % 3 != 0 {
-        return Err("terrain mesh triangle indices are incomplete".to_owned());
-    }
-    let vertices = positions.iter().copied().map(Vec3::from_array).collect();
-    let triangles = indices.as_chunks::<3>().0.to_vec();
-    Collider::trimesh(vertices, triangles)
-        .map_err(|error| format!("invalid terrain trimesh: {error}"))
+    root
 }
 
 #[derive(Component)]
@@ -1097,7 +1034,6 @@ fn track_surface_readiness(
                     .saturating_add((pending.images.len() + normals_validated) as u64);
                 profiler.increment("terrain/patches_validated", 1);
                 commands.entity(entity).insert(Visibility::Inherited);
-                commands.entity(entity).remove::<ColliderDisabled>();
                 commands.entity(entity).remove::<PendingTerrainProfile>();
                 completed += 1;
             }
@@ -2237,28 +2173,11 @@ fn recompute_packed_normals(terrain: &mut TerrainSnapshot, points: &[usize]) {
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update_render_origin(
     config: Res<EngineConfig>,
     mut origin: ResMut<RenderOrigin>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
-    mut roots: Query<
-        (&ExteriorCellGrid, &mut Transform),
-        (
-            Without<StreamingCamera>,
-            Without<PlayerBody>,
-            Without<DebugTankard>,
-        ),
-    >,
-    mut participants: Query<
-        (Entity, &mut Transform),
-        (
-            Or<(With<PlayerBody>, With<DebugTankard>)>,
-            Without<StreamingCamera>,
-        ),
-    >,
-    terrain: Query<Entity, With<TerrainCollider>>,
-    mut physics: WriteRapierContext,
+    mut roots: Query<(&ExteriorCellGrid, &mut Transform), Without<StreamingCamera>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -2280,28 +2199,8 @@ fn update_render_origin(
         return;
     }
     origin.0 += shift;
-    let displacement = Vec3::new(
-        shift.x as f32 * CELL_SIZE,
-        0.0,
-        -(shift.y as f32) * CELL_SIZE,
-    );
-    camera.translation -= displacement;
-    let mut bodies = Vec::new();
-    for (entity, mut transform) in &mut participants {
-        transform.translation -= displacement;
-        bodies.push(entity);
-    }
-    bodies.extend(terrain.iter());
-    if let Ok(mut context) = physics.single_mut() {
-        for entity in bodies {
-            if let Some(handle) = context.entity2body().get(&entity).copied()
-                && let Some(body) = context.rigidbody_set.bodies.get_mut(handle)
-            {
-                body.set_translation(body.translation() - displacement, false);
-            }
-        }
-        context.propagate_modified_body_positions_to_colliders();
-    }
+    camera.translation.x -= shift.x as f32 * CELL_SIZE;
+    camera.translation.z += shift.y as f32 * CELL_SIZE;
     for (grid, mut transform) in &mut roots {
         transform.translation = Vec3::new(
             (grid.0.x - origin.0.x) as f32 * CELL_SIZE,
@@ -2399,8 +2298,6 @@ fn validate_streaming_lifecycle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::ecs::system::RunSystemOnce;
-    use bevy_rapier3d::prelude::ReadRapierContext;
 
     #[test]
     fn terrain_sampler_check_rejects_default_and_clamped_images() {
@@ -2441,32 +2338,6 @@ mod tests {
                 .collect(),
             water_height: None,
             water_type_form_id: None,
-        }
-    }
-
-    #[test]
-    fn terrain_colliders_match_each_render_quadrant() {
-        let terrain = terrain_fixture(91, 120.0);
-        for quadrant in 0..4 {
-            let mesh = build_terrain_quadrant_mesh(&terrain, quadrant).unwrap();
-            let collider = terrain_collider_from_mesh(&mesh).unwrap();
-            let trimesh = collider.as_trimesh().expect("terrain trimesh");
-            let VertexAttributeValues::Float32x3(positions) =
-                mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
-            else {
-                panic!("terrain positions")
-            };
-            let Indices::U32(indices) = mesh.indices().unwrap() else {
-                panic!("terrain indices")
-            };
-            assert_eq!(trimesh.vertices().len(), positions.len());
-            for (vertex, position) in trimesh.vertices().zip(positions) {
-                assert_eq!(vertex, Vec3::from_array(*position));
-            }
-            assert_eq!(trimesh.indices().len() * 3, indices.len());
-            for (triangle, indices) in trimesh.indices().iter().zip(indices.as_chunks::<3>().0) {
-                assert_eq!(*triangle, [indices[0], indices[1], indices[2]]);
-            }
         }
     }
 
@@ -2587,45 +2458,6 @@ mod tests {
                 -(-3 - origin.y) as f32 * CELL_SIZE,
             )
         );
-    }
-
-    #[test]
-    fn rebase_moves_dynamic_rapier_pose_with_tankard_transform() {
-        let mut app = crate::physics::headless::fixture_app();
-        app.insert_resource(EngineConfig::default())
-            .insert_resource(RenderOrigin(IVec2::ZERO))
-            .add_systems(Update, update_render_origin);
-        for _ in 0..3 {
-            app.update();
-        }
-        let pose = |world: &mut World| {
-            world.run_system_once(
-                |context: ReadRapierContext, tankards: Query<(Entity, &Transform), With<DebugTankard>>| {
-                    let (entity, visual) = tankards.iter().next().unwrap();
-                    let context = context.single().unwrap();
-                    let handle = context.entity2body()[&entity];
-                    (visual.translation, context.rigidbody_set.bodies.get(handle).unwrap().translation())
-                },
-            ).unwrap()
-        };
-        let before = pose(app.world_mut());
-        let camera = {
-            let mut query = app
-                .world_mut()
-                .query_filtered::<Entity, With<StreamingCamera>>();
-            query.single(app.world()).unwrap()
-        };
-        app.world_mut()
-            .entity_mut(camera)
-            .get_mut::<Transform>()
-            .unwrap()
-            .translation
-            .x += CELL_SIZE;
-        app.update();
-        let after = pose(app.world_mut());
-        assert!((after.0.x - (before.0.x - CELL_SIZE)).abs() < 0.01);
-        assert!((after.1.x - (before.1.x - CELL_SIZE)).abs() < 0.01);
-        assert!((after.0.x - after.1.x).abs() < 0.01);
     }
 
     #[test]
@@ -3890,29 +3722,25 @@ mod tests {
         mut water_materials: ResMut<Assets<WaterMaterial>>,
         mut profiler: ResMut<ProfilingState>,
     ) {
-        root.0 = Some(
-            spawn_cell(
-                &mut commands,
-                &asset_server,
-                &catalog,
-                &reflection,
-                &mut meshes,
-                &mut terrain_materials,
-                &mut water_materials,
-                IVec2::ZERO,
-                config.lights,
-                false,
-                CellPayload {
-                    generation: 1,
-                    key: CellKey::Interior(99),
-                    cell_id: 99,
-                    references: queued.0.clone(),
-                },
-                None,
-                &mut profiler,
-            )
-            .expect("reference fixture cell"),
-        );
+        root.0 = Some(spawn_cell(
+            &mut commands,
+            &asset_server,
+            &catalog,
+            &reflection,
+            &mut meshes,
+            &mut terrain_materials,
+            &mut water_materials,
+            IVec2::ZERO,
+            config.lights,
+            CellPayload {
+                generation: 1,
+                key: CellKey::Interior(99),
+                cell_id: 99,
+                references: queued.0.clone(),
+            },
+            None,
+            &mut profiler,
+        ));
     }
 
     /// An empty catalogue database: the three tables [`AssetCatalog::open`] reads, with no rows.
