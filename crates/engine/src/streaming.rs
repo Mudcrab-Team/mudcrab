@@ -1,3 +1,4 @@
+use crate::physics::{DebugTankard, PlayerBody};
 use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
@@ -17,14 +18,16 @@ use crate::{
 use bevy::{
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
     camera::primitives::MeshAabb,
-    gltf::GltfExtras,
+    gltf::{GltfExtras, GltfMaterialName, GltfSceneExtras},
     image::{ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
-    mesh::{Indices, PrimitiveTopology},
+    mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
     world_serialization::WorldInstanceReady,
 };
+use bevy_rapier3d::prelude::{Collider, ColliderDisabled, RigidBody, WriteRapierContext};
 use serde::{Deserialize, Serialize};
+use shared::collision::{COLLISION_ASSET_VERSION, CollisionAsset, CollisionShape};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::time::Instant;
@@ -37,10 +40,18 @@ fn commit_budget_exceeded(elapsed_micros: u64, budget_micros: u64) -> bool {
     elapsed_micros > budget_micros.saturating_add(COMMIT_BUDGET_SCHEDULER_TOLERANCE_MICROS)
 }
 
-#[cfg(test)]
-use bevy::mesh::VertexAttributeValues;
-
 pub struct StreamingPlugin;
+
+/// Ready terrain collider attached to the same streamed quadrant as its mesh.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct TerrainCollider;
+
+/// A fixed placement's collision provenance.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticColliderSource {
+    NifAuthored,
+    RenderProxy,
+}
 
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
@@ -48,6 +59,7 @@ impl Plugin for StreamingPlugin {
             .init_resource::<StreamingMetrics>()
             .init_resource::<DiagnosticFallbackAssets>()
             .init_resource::<TerrainContinuity>()
+            .init_resource::<StaticCollisionCache>()
             .add_observer(mark_world_instance_ready)
             .add_systems(
                 Update,
@@ -108,6 +120,17 @@ pub struct StreamingMetrics {
     pub terrain_patches_validated: u64,
     pub terrain_seams_validated: u64,
     pub terrain_validation_failures: u64,
+    /// Fixed placements represented by NIF-authored Havok shapes.
+    pub static_colliders_authored: u64,
+    /// Authored colliders that also contain shape families this extractor could not decode.
+    pub static_colliders_partial: u64,
+    /// Fixed placements represented by a legacy render-triangle proxy.
+    pub static_colliders_proxy: u64,
+    pub resident_static_colliders: usize,
+    /// NIF models that explicitly have no physical collision.
+    pub static_colliders_authored_absent: u64,
+    /// Eligible fixed placements for which no supported collision could be made.
+    pub static_colliders_skipped: u64,
     pub water_surfaces_validated: u64,
     pub water_validation_failures: u64,
     pub terrain_water_fixture_validated: bool,
@@ -153,6 +176,24 @@ pub struct AssetFailure {
 struct DiagnosticFallbackAssets {
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<StandardMaterial>>,
+}
+
+#[derive(Resource, Default)]
+struct StaticCollisionCache(HashMap<(Option<String>, String), StaticCollisionDecision>);
+
+#[derive(Clone)]
+enum StaticCollisionDecision {
+    Authored(Vec<AuthoredColliderPart>, Vec<String>),
+    RenderProxy(Collider),
+    AuthoredAbsent,
+    LegacyExcluded,
+    Skipped(String),
+}
+
+#[derive(Clone)]
+struct AuthoredColliderPart {
+    translation: Vec3,
+    collider: Collider,
 }
 
 #[derive(Resource, Default)]
@@ -355,6 +396,7 @@ fn collect_cells(
                         continue;
                     }
                 }
+                let cell_id = payload.cell_id;
                 let root = spawn_cell(
                     &mut commands,
                     &asset_server,
@@ -364,13 +406,32 @@ fn collect_cells(
                     &mut terrain_materials,
                     &mut water_materials,
                     origin.0,
+                    config.interactive_world_physics(),
                     payload,
                     terrain,
                     &mut profiler,
                 );
-                streaming
-                    .cells
-                    .insert(response.key, CellStatus::Resident { root });
+                match root {
+                    Ok(root) => {
+                        streaming
+                            .cells
+                            .insert(response.key, CellStatus::Resident { root });
+                    }
+                    Err(reason) => {
+                        error!(cell = format_args!("{cell_id:08X}"), %reason, "terrain collider build failed");
+                        metrics.failed_cells = metrics.failed_cells.saturating_add(1);
+                        metrics.terrain_validation_failures =
+                            metrics.terrain_validation_failures.saturating_add(1);
+                        metrics.asset_failures.push(AssetFailure {
+                            model_path: format!("terrain/{cell_id:08X}"),
+                            reference_form_id: 0,
+                            base_form_id: 0,
+                            cell_id,
+                            dependency_chain: vec![reason],
+                        });
+                        streaming.cells.insert(response.key, CellStatus::Failed);
+                    }
+                }
             }
             Err(error) => {
                 debug!(?response.key, %error, "cell could not be streamed");
@@ -435,13 +496,27 @@ fn spawn_cell(
     terrain_materials: &mut Assets<TerrainMaterial>,
     water_materials: &mut Assets<WaterMaterial>,
     origin: IVec2,
+    terrain_physics: bool,
     payload: CellPayload,
     terrain: Option<TerrainSnapshot>,
     profiler: &mut ProfilingState,
-) -> Entity {
+) -> Result<Entity, String> {
     let spawn_started = Instant::now();
     let reference_count = payload.references.len();
     let root_translation = cell_translation(payload.key, origin);
+    let terrain_quadrants = if let Some(terrain) = &terrain {
+        (0..4)
+            .map(|quadrant| {
+                let mesh = build_terrain_quadrant_mesh(terrain, quadrant)?;
+                let collider = terrain_physics
+                    .then(|| terrain_collider_from_mesh(&mesh))
+                    .transpose()?;
+                Ok((quadrant, mesh, collider))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        Vec::new()
+    };
     let mut root_commands = commands.spawn((
         Name::new(format!("Cell {:08X}", payload.cell_id)),
         CellRef(payload.cell_id),
@@ -455,10 +530,8 @@ fn spawn_cell(
     let root = root_commands.id();
     commands.entity(root).with_children(|parent| {
         if let Some(terrain) = terrain {
-            for quadrant in 0..4 {
+            for (quadrant, mesh, collider) in terrain_quadrants {
                 let started = Instant::now();
-                let mesh = build_terrain_quadrant_mesh(&terrain, quadrant)
-                    .expect("validated terrain must build");
                 profiler.record_elapsed("streaming/terrain_mesh", started);
                 let (extension, images) =
                     TerrainExtension::from_quadrant(&terrain, quadrant, catalog, asset_server)
@@ -473,7 +546,7 @@ fn spawn_cell(
                     },
                     extension,
                 });
-                parent.spawn((
+                let mut patch = parent.spawn((
                     Name::new(format!("Terrain quadrant {quadrant}")),
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(material),
@@ -486,6 +559,15 @@ fn spawn_cell(
                         images,
                     },
                 ));
+                if let Some(collider) = collider {
+                    patch.insert((
+                        TerrainCollider,
+                        RigidBody::Fixed,
+                        collider,
+                        ColliderDisabled,
+                        crate::physics::world_collision_groups(),
+                    ));
+                }
             }
             if let Some(height) = terrain
                 .water_height
@@ -532,7 +614,6 @@ fn spawn_cell(
                         cell_id: terrain.cell_id,
                         flow_normal,
                     },
-                    bevy::camera::visibility::RenderLayers::layer(1),
                 ));
             }
         }
@@ -583,6 +664,8 @@ fn spawn_cell(
                         path,
                         form_id: reference.form_id,
                         base_form_id: reference.base_form_id,
+                        base_record_type: reference.base_record_type,
+                        static_physics: terrain_physics,
                         cell_id: reference.cell_id,
                     },
                 ));
@@ -591,7 +674,331 @@ fn spawn_cell(
     });
     profiler.increment("streaming/references_spawned", reference_count as u64);
     profiler.record_elapsed("streaming/spawn_cell", spawn_started);
-    root
+    Ok(root)
+}
+
+/// Rapier consumes the exact vertex and triangle buffers rendered by this quadrant.
+fn terrain_collider_from_mesh(mesh: &Mesh) -> Result<Collider, String> {
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return Err("terrain mesh lacks Float32x3 positions".to_owned());
+    };
+    let Some(Indices::U32(indices)) = mesh.indices() else {
+        return Err("terrain mesh lacks U32 triangle indices".to_owned());
+    };
+    if indices.len() % 3 != 0 {
+        return Err("terrain mesh triangle indices are incomplete".to_owned());
+    }
+    let vertices = positions.iter().copied().map(Vec3::from_array).collect();
+    let triangles = indices.as_chunks::<3>().0.to_vec();
+    Collider::trimesh(vertices, triangles)
+        .map_err(|error| format!("invalid terrain trimesh: {error}"))
+}
+
+/// Fixed Riverwood solids with a declared render-triangle proxy policy. Record type remains
+/// authoritative: plant TREE records outside the pine family and movable clutter stay excluded.
+fn static_proxy_eligible(record_type: Option<&str>, path: &str) -> bool {
+    let pine = path.starts_with("meshes/landscape/trees/treepineforest");
+    match record_type {
+        Some("TREE") => pine,
+        Some("STAT") => {
+            path.starts_with("meshes/landscape/rocks/")
+                || path.starts_with("meshes/architecture/")
+                || pine
+                || path.starts_with("meshes/clutter/firewood/firewoodpile")
+                || (path.starts_with("meshes/landscape/roads/road") && path.contains("ramp"))
+        }
+        _ => false,
+    }
+}
+
+/// Placed furniture is fixed in the world, but may use only its authored NIF shape.
+/// Render proxies remain restricted to the verified STAT/TREE families above.
+fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
+    matches!(record_type, Some("STAT" | "TREE" | "FURN"))
+}
+
+fn static_proxy_material_allowed(
+    path: &str,
+    material_name: Option<&str>,
+    material: &StandardMaterial,
+) -> bool {
+    matches!(material.alpha_mode, AlphaMode::Opaque)
+        // Riverwood RockCliff GLBs put the large rock faces in BLEND primitives. Their masked
+        // detail primitives stay excluded, as do blended materials on unrelated models.
+        || (path.starts_with("meshes/landscape/rocks/rockcliff")
+            && matches!(material.alpha_mode, AlphaMode::Blend))
+        // The lumbermill's walkable ramp/boards are woodwalkway01 with MASK alpha. Rope and
+        // roof cutouts remain excluded; the material name comes from the converted GLB.
+        || (path == "meshes/architecture/farmhouse/lumbermill01.glb"
+            && material_name.is_some_and(|name| name.starts_with("LumbermillMesh:19"))
+            && matches!(material.alpha_mode, AlphaMode::Mask(_)))
+}
+
+/// Build one model-local proxy from the validated spawned scene. Bevy/Rapier apply the reference
+/// instance translation, rotation, and scale when this collider is attached to its reference root.
+/// Node transforms are baked into vertices, preserving mesh holes such as doorways.
+fn static_proxy_from_hierarchy(
+    path: &str,
+    root: Entity,
+    children: &Query<&Children>,
+    transforms: &Query<(&Transform, &GlobalTransform)>,
+    primitives: &RenderPrimitiveQuery,
+    meshes: &Assets<Mesh>,
+    materials: &Assets<StandardMaterial>,
+) -> Result<Option<Collider>, String> {
+    let mut vertices = Vec::new();
+    let mut triangles = Vec::new();
+    let mut stack = Vec::new();
+    if let Ok(kids) = children.get(root) {
+        stack.extend(kids.iter().map(|child| (child, Affine3A::IDENTITY)));
+    }
+    while let Some((entity, parent_to_root)) = stack.pop() {
+        let (local, _) = transforms
+            .get(entity)
+            .map_err(|_| format!("static proxy node {entity:?} has no transform"))?;
+        let node_to_root = parent_to_root * local.compute_affine();
+        if let Ok((mesh_handle, material_handle, material_name, extras)) = primitives.get(entity)
+            && !extras.is_some_and(has_explicit_material_exclusion)
+        {
+            let material = material_handle.and_then(|handle| materials.get(handle));
+            if material.is_some_and(|material| {
+                static_proxy_material_allowed(
+                    path,
+                    material_name.map(|name| name.0.as_str()),
+                    material,
+                )
+            }) {
+                let mesh = meshes.get(mesh_handle).ok_or_else(|| {
+                    format!("static proxy mesh {:?} is missing", mesh_handle.id())
+                })?;
+                if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
+                    return Err("static proxy mesh is not a triangle list".to_owned());
+                }
+                let Some(VertexAttributeValues::Float32x3(positions)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                else {
+                    return Err("static proxy mesh lacks Float32x3 positions".to_owned());
+                };
+                let indices: Vec<u32> = match mesh.indices() {
+                    Some(Indices::U16(indices)) => {
+                        indices.iter().map(|index| u32::from(*index)).collect()
+                    }
+                    Some(Indices::U32(indices)) => indices.clone(),
+                    None => return Err("static proxy mesh lacks triangle indices".to_owned()),
+                };
+                if !indices.len().is_multiple_of(3) {
+                    return Err("static proxy mesh has incomplete triangles".to_owned());
+                }
+                let offset = u32::try_from(vertices.len())
+                    .map_err(|_| "static proxy vertex count exceeds u32".to_owned())?;
+                for position in positions {
+                    let position = node_to_root.transform_point3(Vec3::from_array(*position));
+                    if !position.is_finite() {
+                        return Err("static proxy has a non-finite vertex".to_owned());
+                    }
+                    vertices.push(position);
+                }
+                for index in indices.as_chunks::<3>().0 {
+                    if index.iter().any(|index| *index as usize >= positions.len()) {
+                        return Err("static proxy triangle index is out of range".to_owned());
+                    }
+                    triangles.push([offset + index[0], offset + index[1], offset + index[2]]);
+                }
+            }
+        }
+        if let Ok(kids) = children.get(entity) {
+            stack.extend(kids.iter().map(|child| (child, node_to_root)));
+        }
+    }
+    if triangles.is_empty() {
+        return Ok(None);
+    }
+    Collider::trimesh(vertices, triangles)
+        .map(Some)
+        .map_err(|error| format!("invalid static proxy trimesh: {error}"))
+}
+
+fn authored_collision_from_hierarchy(
+    root: Entity,
+    children: &Query<&Children>,
+    extras: &Query<&GltfSceneExtras>,
+) -> Result<Option<CollisionAsset>, String> {
+    let mut stack = vec![root];
+    while let Some(entity) = stack.pop() {
+        if let Ok(scene_extras) = extras.get(entity) {
+            if scene_extras.value.len() > 64 * 1024 * 1024 {
+                return Err("GLB collision extras exceed 64 MiB".to_owned());
+            }
+            let value: serde_json::Value = serde_json::from_str(&scene_extras.value)
+                .map_err(|error| format!("invalid GLB scene extras: {error}"))?;
+            if let Some(collision) = value.get("openSkyrimCollision") {
+                let asset: CollisionAsset = serde_json::from_value(collision.clone())
+                    .map_err(|error| format!("invalid GLB collision data: {error}"))?;
+                if asset.version != COLLISION_ASSET_VERSION || !asset.authored {
+                    return Err("unsupported GLB collision contract".to_owned());
+                }
+                return Ok(Some(asset));
+            }
+        }
+        if let Ok(kids) = children.get(entity) {
+            stack.extend(kids.iter());
+        }
+    }
+    Ok(None)
+}
+
+fn collider_parts_from_authored(
+    asset: &CollisionAsset,
+) -> Result<Vec<AuthoredColliderPart>, String> {
+    let mut shapes = Vec::new();
+    for shape in &asset.shapes {
+        let (translation, collider) = match shape {
+            CollisionShape::Mesh {
+                vertices,
+                triangles,
+            } => {
+                if vertices.len() > 1_000_000 || triangles.len() > 2_000_000 {
+                    return Err("authored mesh exceeds safety limit".to_owned());
+                }
+                if vertices.iter().flatten().any(|value| !value.is_finite())
+                    || triangles
+                        .iter()
+                        .flatten()
+                        .any(|index| *index as usize >= vertices.len())
+                {
+                    return Err("authored mesh contains invalid vertices or indices".to_owned());
+                }
+                let collider = Collider::trimesh(
+                    vertices.iter().copied().map(Vec3::from_array).collect(),
+                    triangles.clone(),
+                )
+                .map_err(|error| format!("invalid authored trimesh: {error}"))?;
+                (Vec3::ZERO, collider)
+            }
+            CollisionShape::Capsule { a, b, radius } => {
+                if !a.iter().chain(b).all(|value| value.is_finite())
+                    || !radius.is_finite()
+                    || *radius <= 0.0
+                {
+                    return Err("invalid authored capsule".to_owned());
+                }
+                (
+                    Vec3::ZERO,
+                    Collider::capsule(Vec3::from_array(*a), Vec3::from_array(*b), *radius),
+                )
+            }
+            CollisionShape::Box {
+                center,
+                half_extents,
+            } => {
+                if !center
+                    .iter()
+                    .chain(half_extents)
+                    .all(|value| value.is_finite())
+                    || half_extents.iter().any(|value| *value <= 0.0)
+                {
+                    return Err("invalid authored box".to_owned());
+                }
+                (
+                    Vec3::from_array(*center),
+                    Collider::cuboid(half_extents[0], half_extents[1], half_extents[2]),
+                )
+            }
+            CollisionShape::Hull { points } => {
+                if points.len() > 1_000_000
+                    || points.iter().flatten().any(|value| !value.is_finite())
+                {
+                    return Err("invalid authored hull".to_owned());
+                }
+                let collider = Collider::convex_hull(
+                    &points
+                        .iter()
+                        .copied()
+                        .map(Vec3::from_array)
+                        .collect::<Vec<_>>(),
+                )
+                .ok_or_else(|| "invalid authored convex hull".to_owned())?;
+                (Vec3::ZERO, collider)
+            }
+        };
+        shapes.push(AuthoredColliderPart {
+            translation,
+            collider,
+        });
+    }
+    Ok(shapes)
+}
+
+fn attach_authored_collision(
+    commands: &mut Commands,
+    entity: Entity,
+    parts: &[AuthoredColliderPart],
+) {
+    if let [
+        AuthoredColliderPart {
+            translation,
+            collider,
+        },
+    ] = parts
+        && *translation == Vec3::ZERO
+    {
+        commands.entity(entity).insert((
+            StaticColliderSource::NifAuthored,
+            RigidBody::Fixed,
+            collider.clone(),
+            crate::physics::world_collision_groups(),
+        ));
+        return;
+    }
+    commands
+        .entity(entity)
+        .insert((StaticColliderSource::NifAuthored, RigidBody::Fixed));
+    for part in parts {
+        commands.spawn((
+            part.collider.clone(),
+            Transform::from_translation(part.translation),
+            crate::physics::world_collision_groups(),
+            ChildOf(entity),
+        ));
+    }
+}
+
+fn static_collision_from_hierarchy(
+    record_type: Option<&str>,
+    path: &str,
+    root: Entity,
+    children: &Query<&Children>,
+    scene_extras: &Query<&GltfSceneExtras>,
+    transforms: &Query<(&Transform, &GlobalTransform)>,
+    primitives: &RenderPrimitiveQuery,
+    meshes: &Assets<Mesh>,
+    materials: &Assets<StandardMaterial>,
+) -> StaticCollisionDecision {
+    match authored_collision_from_hierarchy(root, children, scene_extras) {
+        Ok(Some(asset)) => match collider_parts_from_authored(&asset) {
+            Ok(parts) if !parts.is_empty() => {
+                StaticCollisionDecision::Authored(parts, asset.skipped)
+            }
+            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
+            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
+            Err(reason) => StaticCollisionDecision::Skipped(reason),
+        },
+        Ok(None) if static_proxy_eligible(record_type, path) => {
+            match static_proxy_from_hierarchy(
+                path, root, children, transforms, primitives, meshes, materials,
+            ) {
+                Ok(Some(collider)) => StaticCollisionDecision::RenderProxy(collider),
+                Ok(None) => StaticCollisionDecision::Skipped(
+                    "legacy render proxy has no eligible triangles".to_owned(),
+                ),
+                Err(reason) => StaticCollisionDecision::Skipped(reason),
+            }
+        }
+        Ok(None) => StaticCollisionDecision::LegacyExcluded,
+        Err(reason) => StaticCollisionDecision::Skipped(reason),
+    }
 }
 
 #[derive(Component)]
@@ -601,6 +1008,8 @@ struct PendingAssetProfile {
     path: String,
     form_id: u32,
     base_form_id: u32,
+    base_record_type: Option<String>,
+    static_physics: bool,
     cell_id: u32,
 }
 
@@ -623,6 +1032,7 @@ type RenderPrimitiveQuery<'world, 'state> = Query<
     (
         &'static Mesh3d,
         Option<&'static MeshMaterial3d<StandardMaterial>>,
+        Option<&'static GltfMaterialName>,
         Option<&'static GltfExtras>,
     ),
 >;
@@ -657,11 +1067,13 @@ fn track_asset_readiness(
     asset_server: Res<AssetServer>,
     pending: PendingAssetQuery,
     children: Query<&Children>,
+    scene_extras: Query<&GltfSceneExtras>,
     primitives: RenderPrimitiveQuery,
     transforms: Query<(&Transform, &GlobalTransform)>,
     images: Res<Assets<Image>>,
     world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
+    mut static_cache: ResMut<StaticCollisionCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -671,6 +1083,8 @@ fn track_asset_readiness(
     metrics.pending_asset_instances = pending.iter().count();
     let mut completed_this_scan = 0usize;
     for (entity, root, pending, local, global, world_transform, expected_bounds) in &pending {
+        let static_candidate = pending.static_physics
+            && fixed_collision_record_eligible(pending.base_record_type.as_deref());
         let load_failure =
             asset_server
                 .get_load_states(root.0.id())
@@ -682,6 +1096,9 @@ fn track_asset_readiness(
         if let Some(error) = load_failure {
             let chain = error_chain(error.as_ref());
             record_asset_failure(&mut metrics, &mut profiler, pending, chain, false);
+            if static_candidate {
+                note_static_proxy_skip(&mut metrics, &mut profiler);
+            }
             hide_partial_scene(&mut commands, entity, &children);
             if config.diagnostic_asset_fallbacks {
                 spawn_diagnostic_fallback(
@@ -716,6 +1133,9 @@ fn track_asset_readiness(
                         .saturating_add(1);
                     profiler.increment("transforms/validation_failures", 1);
                     record_asset_failure(&mut metrics, &mut profiler, pending, vec![reason], false);
+                    if static_candidate {
+                        note_static_proxy_skip(&mut metrics, &mut profiler);
+                    }
                     hide_partial_scene(&mut commands, entity, &children);
                     if config.diagnostic_asset_fallbacks {
                         spawn_diagnostic_fallback(
@@ -738,6 +1158,9 @@ fn track_asset_readiness(
             // else about the reference stays: it keeps its transform, and its scene is left alone
             // (it is empty; there is nothing in it to hide).
             if transform_summary.empty_model {
+                if static_candidate {
+                    note_static_proxy_skip(&mut metrics, &mut profiler);
+                }
                 metrics.empty_model_references = metrics.empty_model_references.saturating_add(1);
                 profiler.increment("assets/empty_model_references", 1);
                 profiler.event(&pending.path, "asset_empty", None);
@@ -757,6 +1180,9 @@ fn track_asset_readiness(
                 Ok(summary) => summary,
                 Err(reason) => {
                     record_asset_failure(&mut metrics, &mut profiler, pending, vec![reason], true);
+                    if static_candidate {
+                        note_static_proxy_skip(&mut metrics, &mut profiler);
+                    }
                     hide_partial_scene(&mut commands, entity, &children);
                     if config.diagnostic_asset_fallbacks {
                         spawn_diagnostic_fallback(
@@ -774,6 +1200,62 @@ fn track_asset_readiness(
                     continue;
                 }
             };
+            if static_candidate {
+                let key = (pending.base_record_type.clone(), pending.path.clone());
+                let first_placement = !static_cache.0.contains_key(&key);
+                let decision = static_cache.0.entry(key).or_insert_with(|| {
+                    static_collision_from_hierarchy(
+                        pending.base_record_type.as_deref(),
+                        &pending.path,
+                        entity,
+                        &children,
+                        &scene_extras,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                });
+                match decision {
+                    StaticCollisionDecision::Authored(parts, skipped) => {
+                        attach_authored_collision(&mut commands, entity, parts);
+                        metrics.static_colliders_authored =
+                            metrics.static_colliders_authored.saturating_add(1);
+                        profiler.increment("physics/static_authored_placements", 1);
+                        if !skipped.is_empty() {
+                            metrics.static_colliders_partial =
+                                metrics.static_colliders_partial.saturating_add(1);
+                            profiler.increment("physics/static_authored_partial", 1);
+                            if first_placement {
+                                warn!(model = %pending.path, reason = %skipped.join("; "), "authored collision is partial");
+                            }
+                        }
+                    }
+                    StaticCollisionDecision::RenderProxy(collider) => {
+                        commands.entity(entity).insert((
+                            StaticColliderSource::RenderProxy,
+                            RigidBody::Fixed,
+                            collider.clone(),
+                            crate::physics::world_collision_groups(),
+                        ));
+                        metrics.static_colliders_proxy =
+                            metrics.static_colliders_proxy.saturating_add(1);
+                        profiler.increment("physics/static_proxy_placements", 1);
+                    }
+                    StaticCollisionDecision::AuthoredAbsent => {
+                        metrics.static_colliders_authored_absent =
+                            metrics.static_colliders_authored_absent.saturating_add(1);
+                        profiler.increment("physics/static_authored_absent", 1);
+                    }
+                    StaticCollisionDecision::LegacyExcluded => {}
+                    StaticCollisionDecision::Skipped(reason) => {
+                        if first_placement {
+                            warn!(model = %pending.path, %reason, "static collision skipped");
+                        }
+                        note_static_proxy_skip(&mut metrics, &mut profiler);
+                    }
+                }
+            }
             let micros = pending
                 .started
                 .elapsed()
@@ -812,6 +1294,12 @@ fn track_asset_readiness(
     profiler.record_elapsed("assets/readiness_scan", started);
 }
 
+fn note_static_proxy_skip(metrics: &mut StreamingMetrics, profiler: &mut ProfilingState) {
+    metrics.static_colliders_skipped = metrics.static_colliders_skipped.saturating_add(1);
+    profiler.increment("physics/static_proxy_skipped", 1);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn track_surface_readiness(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -835,6 +1323,7 @@ fn track_surface_readiness(
                     .saturating_add(pending.images.len() as u64);
                 profiler.increment("terrain/patches_validated", 1);
                 commands.entity(entity).insert(Visibility::Inherited);
+                commands.entity(entity).remove::<ColliderDisabled>();
                 commands.entity(entity).remove::<PendingTerrainProfile>();
                 completed += 1;
             }
@@ -1112,7 +1601,7 @@ fn accumulate_relative_bounds(
         validate_transform(&format!("hierarchy node {entity:?}"), local, global)?;
         *nodes += 1;
         let relative_to_root = parent_to_root * local.compute_affine();
-        if let Ok((mesh_handle, _, _)) = primitives.get(entity) {
+        if let Ok((mesh_handle, _, _, _)) = primitives.get(entity) {
             let mesh = meshes.get(mesh_handle).ok_or_else(|| {
                 format!(
                     "mesh {:?} is absent while validating bounds",
@@ -1183,7 +1672,7 @@ fn validate_spawned_asset(
 ) -> Result<AssetValidationSummary, String> {
     let mut summary = AssetValidationSummary::default();
     for descendant in children.iter_descendants(root) {
-        let Ok((mesh, material_handle, extras)) = primitives.get(descendant) else {
+        let Ok((mesh, material_handle, _, extras)) = primitives.get(descendant) else {
             continue;
         };
         if meshes.get(mesh).is_none() {
@@ -1748,11 +2237,29 @@ fn validate_and_register_terrain_edges(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update_render_origin(
     config: Res<EngineConfig>,
     mut origin: ResMut<RenderOrigin>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
-    mut roots: Query<(&ExteriorCellGrid, &mut Transform), Without<StreamingCamera>>,
+    mut roots: Query<
+        (&ExteriorCellGrid, &mut Transform),
+        (
+            Without<StreamingCamera>,
+            Without<PlayerBody>,
+            Without<DebugTankard>,
+        ),
+    >,
+    mut participants: Query<
+        (Entity, &mut Transform),
+        (
+            Or<(With<PlayerBody>, With<DebugTankard>)>,
+            Without<StreamingCamera>,
+        ),
+    >,
+    terrain: Query<Entity, With<TerrainCollider>>,
+    static_colliders: Query<Entity, With<StaticColliderSource>>,
+    mut physics: WriteRapierContext,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -1774,8 +2281,29 @@ fn update_render_origin(
         return;
     }
     origin.0 += shift;
-    camera.translation.x -= shift.x as f32 * CELL_SIZE;
-    camera.translation.z += shift.y as f32 * CELL_SIZE;
+    let displacement = Vec3::new(
+        shift.x as f32 * CELL_SIZE,
+        0.0,
+        -(shift.y as f32) * CELL_SIZE,
+    );
+    camera.translation -= displacement;
+    let mut bodies = Vec::new();
+    for (entity, mut transform) in &mut participants {
+        transform.translation -= displacement;
+        bodies.push(entity);
+    }
+    bodies.extend(terrain.iter());
+    bodies.extend(static_colliders.iter());
+    if let Ok(mut context) = physics.single_mut() {
+        for entity in bodies {
+            if let Some(handle) = context.entity2body().get(&entity).copied()
+                && let Some(body) = context.rigidbody_set.bodies.get_mut(handle)
+            {
+                body.set_translation(body.translation() - displacement, false);
+            }
+        }
+        context.propagate_modified_body_positions_to_colliders();
+    }
     for (grid, mut transform) in &mut roots {
         transform.translation = Vec3::new(
             (grid.0.x - origin.0.x) as f32 * CELL_SIZE,
@@ -1793,12 +2321,14 @@ fn update_render_origin(
     profiler.record_elapsed("streaming/render_origin_rebase", started);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_streaming_lifecycle(
     config: Res<EngineConfig>,
     origin: Res<RenderOrigin>,
     streaming: Res<StreamingWorld>,
     camera: Query<&Transform, With<StreamingCamera>>,
     roots: Query<(Entity, &CellRef, Option<&ExteriorCellGrid>), With<StreamedCellRoot>>,
+    static_colliders: Query<(), With<StaticColliderSource>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -1851,6 +2381,7 @@ fn validate_streaming_lifecycle(
     metrics.active_requests = active_requests;
     metrics.peak_active_requests = metrics.peak_active_requests.max(active_requests);
     metrics.resident_roots = root_entries.len();
+    metrics.resident_static_colliders = static_colliders.iter().count();
     metrics.duplicate_cell_roots = metrics.duplicate_cell_roots.max(duplicate_roots);
     metrics.orphaned_cell_roots = metrics.orphaned_cell_roots.max(orphaned_roots);
     metrics.missing_cell_roots = metrics.missing_cell_roots.max(missing_roots);
@@ -1873,6 +2404,488 @@ fn validate_streaming_lifecycle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
+
+    #[test]
+    fn multiple_authored_meshes_attach_to_one_fixed_body_without_nested_composites() {
+        let mut app = crate::physics::headless::fixture_app();
+        let asset = CollisionAsset {
+            version: COLLISION_ASSET_VERSION,
+            authored: true,
+            shapes: [0.0_f32, 100.0]
+                .map(|x| CollisionShape::Mesh {
+                    vertices: vec![
+                        [x - 20.0, 0.0, -20.0],
+                        [x - 20.0, 0.0, 20.0],
+                        [x + 20.0, 0.0, 20.0],
+                        [x + 20.0, 0.0, -20.0],
+                    ],
+                    triangles: vec![[0, 1, 2], [0, 2, 3]],
+                })
+                .into(),
+            skipped: Vec::new(),
+        };
+        let parts = collider_parts_from_authored(&asset).unwrap();
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_xyz(10_000.0, 0.0, 0.0))
+            .id();
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                attach_authored_collision(&mut commands, root, &parts);
+            })
+            .unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        let hits = app
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().unwrap();
+                let body = context
+                    .rigidbody_set
+                    .bodies
+                    .get(context.entity2body()[&root])
+                    .unwrap();
+                assert_eq!(body.colliders().len(), 2);
+                [0.0_f32, 100.0].map(|x| {
+                    context.cast_ray(
+                        Vec3::new(10_000.0 + x, 50.0, 0.0),
+                        Vec3::NEG_Y,
+                        100.0,
+                        true,
+                        QueryFilter::default(),
+                    )
+                })
+            })
+            .unwrap();
+        for hit in hits {
+            let (_, distance) = hit.expect("authored mesh must be queryable");
+            assert!(
+                (distance - 50.0).abs() < 0.01,
+                "unexpected contact: {distance}"
+            );
+        }
+    }
+
+    #[test]
+    fn authored_collision_and_absence_override_legacy_render_proxy_policy() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        assert!(fixed_collision_record_eligible(Some("FURN")));
+        assert!(!fixed_collision_record_eligible(Some("MISC")));
+        assert!(!static_proxy_eligible(
+            Some("FURN"),
+            "meshes/furniture/clutter/milllogpile.glb"
+        ));
+        for (shapes, expected_solid) in [
+            (
+                vec![CollisionShape::Box {
+                    center: [0.0, 5.0, 0.0],
+                    half_extents: [10.0, 5.0, 10.0],
+                }],
+                true,
+            ),
+            (Vec::new(), false),
+        ] {
+            let root = app.world_mut().spawn_empty().id();
+            let asset = CollisionAsset {
+                version: COLLISION_ASSET_VERSION,
+                authored: true,
+                shapes,
+                skipped: Vec::new(),
+            };
+            app.world_mut().spawn((
+                GltfSceneExtras {
+                    value: serde_json::json!({"openSkyrimCollision": asset}).to_string(),
+                },
+                ChildOf(root),
+            ));
+            for record_type in ["STAT", "FURN"] {
+                let decision = app
+                    .world_mut()
+                    .run_system_once(
+                        move |children: Query<&Children>,
+                              scene_extras: Query<&GltfSceneExtras>,
+                              transforms: Query<(&Transform, &GlobalTransform)>,
+                              primitives: RenderPrimitiveQuery,
+                              meshes: Res<Assets<Mesh>>,
+                              materials: Res<Assets<StandardMaterial>>| {
+                            static_collision_from_hierarchy(
+                                Some(record_type),
+                                "meshes/architecture/farmhouse/inn01.glb",
+                                root,
+                                &children,
+                                &scene_extras,
+                                &transforms,
+                                &primitives,
+                                &meshes,
+                                &materials,
+                            )
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(
+                    matches!(decision, StaticCollisionDecision::Authored(_, _)),
+                    expected_solid
+                );
+                assert!(matches!(
+                    decision,
+                    StaticCollisionDecision::Authored(_, _)
+                        | StaticCollisionDecision::AuthoredAbsent
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn static_proxy_policy_excludes_movable_and_decorative_records() {
+        assert!(static_proxy_eligible(
+            Some("STAT"),
+            "meshes/landscape/rocks/rockl01.glb"
+        ));
+        assert!(static_proxy_eligible(
+            Some("STAT"),
+            "meshes/architecture/farmhouse/inn01.glb"
+        ));
+        for path in [
+            "meshes/clutter/firewood/firewoodpilelarge01.glb",
+            "meshes/landscape/trees/treepineforestlog01.glb",
+            "meshes/landscape/roads/roadstraightlongramp01.glb",
+        ] {
+            assert!(static_proxy_eligible(Some("STAT"), path), "{path}");
+        }
+        assert!(static_proxy_eligible(
+            Some("TREE"),
+            "meshes/landscape/trees/treepineforest01.glb"
+        ));
+        assert!(!static_proxy_eligible(
+            Some("TREE"),
+            "meshes/landscape/plants/clover01.glb"
+        ));
+        for kind in [None, Some("MISC"), Some("TREE"), Some("MSTT"), Some("DOOR")] {
+            assert!(!static_proxy_eligible(
+                kind,
+                "meshes/architecture/farmhouse/inn01.glb"
+            ));
+        }
+        assert!(!static_proxy_eligible(
+            Some("STAT"),
+            "meshes/landscape/plants/fern.glb"
+        ));
+        let blended = StandardMaterial {
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        };
+        let masked = StandardMaterial {
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        assert!(static_proxy_material_allowed(
+            "meshes/landscape/rocks/rockcliff02.glb",
+            None,
+            &blended
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/landscape/rocks/rockl01.glb",
+            None,
+            &blended
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/ivy01.glb",
+            None,
+            &masked
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/landscape/rocks/rockcliff02.glb",
+            None,
+            &masked
+        ));
+        assert!(static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/lumbermill01.glb",
+            Some("LumbermillMesh:19 - L1_Posts01:19"),
+            &masked
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/lumbermill01.glb",
+            Some("LumbermillMesh:20"),
+            &masked
+        ));
+        assert!(!static_proxy_material_allowed(
+            "meshes/architecture/farmhouse/inn01.glb",
+            Some("LumbermillMesh:19"),
+            &masked
+        ));
+    }
+
+    #[test]
+    fn static_proxy_bakes_nested_node_transforms_and_leaves_openings() {
+        use bevy_rapier3d::rapier::parry::{math::Pose, query::Ray};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let post = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(20.0, 100.0, 10.0));
+        let opaque = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let root = app.world_mut().spawn(Transform::default()).id();
+        let node = app
+            .world_mut()
+            .spawn((Transform::from_xyz(30.0, 0.0, 0.0), ChildOf(root)))
+            .id();
+        for offset in [-40.0, 40.0] {
+            app.world_mut().spawn((
+                Mesh3d(post.clone()),
+                MeshMaterial3d(opaque.clone()),
+                Transform::from_xyz(offset, 0.0, 0.0),
+                ChildOf(node),
+            ));
+        }
+        app.update();
+        let proxy = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_proxy_from_hierarchy(
+                        "meshes/architecture/farmhouse/inn01.glb",
+                        root,
+                        &children,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(proxy.as_trimesh().is_some());
+        let gap = Ray::new(Vec3::new(30.0, 0.0, 50.0), Vec3::NEG_Z);
+        let post = Ray::new(Vec3::new(-10.0, 0.0, 50.0), Vec3::NEG_Z);
+        assert!(
+            proxy
+                .raw
+                .cast_ray(&Pose::IDENTITY, &gap, 100.0, true)
+                .is_none()
+        );
+        assert!(
+            proxy
+                .raw
+                .cast_ray(&Pose::IDENTITY, &post, 100.0, true)
+                .is_some()
+        );
+        // Rapier applies the placement rotation and scale after node transforms are baked.
+        let mut physics = crate::physics::headless::fixture_app();
+        let placement = physics
+            .world_mut()
+            .spawn((
+                RigidBody::Fixed,
+                proxy,
+                crate::physics::world_collision_groups(),
+                Transform::from_xyz(200.0, 300.0, 200.0)
+                    .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::splat(2.0)),
+            ))
+            .id();
+        for _ in 0..3 {
+            physics.update();
+        }
+        let (post_hit, gap_hit) = physics
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().unwrap();
+                let only_placement = |entity| entity == placement;
+                let filter =
+                    bevy_rapier3d::prelude::QueryFilter::default().predicate(&only_placement);
+                (
+                    context.cast_ray(
+                        Vec3::new(500.0, 300.0, 220.0),
+                        Vec3::NEG_X,
+                        600.0,
+                        true,
+                        filter,
+                    ),
+                    context.cast_ray(
+                        Vec3::new(500.0, 300.0, 140.0),
+                        Vec3::NEG_X,
+                        600.0,
+                        true,
+                        filter,
+                    ),
+                )
+            })
+            .unwrap();
+        assert!(post_hit.is_some(), "scaled, rotated post had no contact");
+        assert!(gap_hit.is_none(), "scaled, rotated opening was filled");
+    }
+
+    #[test]
+    fn lumbermill_walkway_mask_contributes_without_roof_mask() {
+        use bevy_rapier3d::rapier::parry::{math::Pose, query::Ray};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let slab = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(20.0, 4.0, 20.0));
+        let masked = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                alpha_mode: AlphaMode::Mask(0.5),
+                ..default()
+            });
+        let root = app.world_mut().spawn(Transform::default()).id();
+        for (x, name) in [
+            (0.0, "LumbermillMesh:19 - L1_Posts01:19"),
+            (100.0, "LumbermillMesh:20"),
+        ] {
+            app.world_mut().spawn((
+                Mesh3d(slab.clone()),
+                MeshMaterial3d(masked.clone()),
+                GltfMaterialName(name.to_owned()),
+                Transform::from_xyz(x, 10.0, 0.0),
+                ChildOf(root),
+            ));
+        }
+        app.update();
+        let proxy = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_proxy_from_hierarchy(
+                        "meshes/architecture/farmhouse/lumbermill01.glb",
+                        root,
+                        &children,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        for (x, expected) in [(0.0, true), (100.0, false)] {
+            let ray = Ray::new(Vec3::new(x, 50.0, 0.0), Vec3::NEG_Y);
+            assert_eq!(
+                proxy
+                    .raw
+                    .cast_ray(&Pose::IDENTITY, &ray, 100.0, true)
+                    .is_some(),
+                expected,
+                "unexpected lumbermill proxy contact at x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn walk_capsule_and_dynamic_tankard_contact_static_proxy() {
+        use bevy_rapier3d::prelude::{ColliderMassProperties, Velocity};
+
+        let mut app = crate::physics::headless::fixture_app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(20.0, 200.0, 400.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let wall = app
+            .world_mut()
+            .spawn(Transform::from_xyz(250.0, 100.0, 850.0))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::default(),
+            ChildOf(wall),
+        ));
+        app.update();
+        let proxy = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_proxy_from_hierarchy(
+                        "meshes/architecture/farmhouse/inn01.glb",
+                        wall,
+                        &children,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        app.world_mut().entity_mut(wall).insert((
+            StaticColliderSource::RenderProxy,
+            RigidBody::Fixed,
+            proxy,
+            crate::physics::world_collision_groups(),
+        ));
+        crate::physics::headless::place_player(&mut app, Vec3::new(0.0, 200.0, 900.0));
+        let tankard = app
+            .world_mut()
+            .spawn((
+                DebugTankard,
+                RigidBody::Dynamic,
+                crate::physics::debug_tankard_collider(),
+                crate::physics::tankard_collision_groups(),
+                ColliderMassProperties::Density(0.001),
+                Velocity::linear(Vec3::X * 500.0),
+                Transform::from_xyz(60.0, 150.0, 750.0),
+            ))
+            .id();
+        app.insert_resource(crate::physics::WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: crate::physics::MovementTuning::default().run_speed,
+            jump_pressed: false,
+        });
+        let mut max_tankard_x = f32::NEG_INFINITY;
+        for _ in 0..180 {
+            app.update();
+            max_tankard_x =
+                max_tankard_x.max(app.world().get::<Transform>(tankard).unwrap().translation.x);
+        }
+        let (player, _) = crate::physics::headless::player_pose(&mut app);
+        assert!(
+            player.x < 225.0,
+            "WALK capsule crossed static wall: {player:?}"
+        );
+        assert!(
+            max_tankard_x < 270.0,
+            "dynamic tankard tunneled through static wall: {max_tankard_x}"
+        );
+    }
 
     #[test]
     fn commit_budget_ignores_only_the_documented_scheduler_tolerance() {
@@ -1900,6 +2913,32 @@ mod tests {
                 .collect(),
             water_height: None,
             water_type_form_id: None,
+        }
+    }
+
+    #[test]
+    fn terrain_colliders_match_each_render_quadrant() {
+        let terrain = terrain_fixture(91, 120.0);
+        for quadrant in 0..4 {
+            let mesh = build_terrain_quadrant_mesh(&terrain, quadrant).unwrap();
+            let collider = terrain_collider_from_mesh(&mesh).unwrap();
+            let trimesh = collider.as_trimesh().expect("terrain trimesh");
+            let VertexAttributeValues::Float32x3(positions) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+            else {
+                panic!("terrain positions")
+            };
+            let Indices::U32(indices) = mesh.indices().unwrap() else {
+                panic!("terrain indices")
+            };
+            assert_eq!(trimesh.vertices().len(), positions.len());
+            for (vertex, position) in trimesh.vertices().zip(positions) {
+                assert_eq!(vertex, Vec3::from_array(*position));
+            }
+            assert_eq!(trimesh.indices().len() * 3, indices.len());
+            for (triangle, indices) in trimesh.indices().iter().zip(indices.as_chunks::<3>().0) {
+                assert_eq!(*triangle, [indices[0], indices[1], indices[2]]);
+            }
         }
     }
 
@@ -1993,6 +3032,91 @@ mod tests {
                 -(-3 - origin.y) as f32 * CELL_SIZE,
             )
         );
+    }
+
+    #[test]
+    fn rebase_moves_dynamic_rapier_pose_with_tankard_transform() {
+        let mut app = crate::physics::headless::fixture_app();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .add_systems(Update, update_render_origin);
+        let cell = app
+            .world_mut()
+            .spawn((ExteriorCellGrid(IVec2::ZERO), Transform::default()))
+            .id();
+        let static_entity = app
+            .world_mut()
+            .spawn((
+                StaticColliderSource::RenderProxy,
+                Transform::from_xyz(700.0, 100.0, 700.0),
+                ChildOf(cell),
+                RigidBody::Fixed,
+                Collider::cuboid(20.0, 20.0, 20.0),
+                crate::physics::world_collision_groups(),
+            ))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+        let pose = |world: &mut World| {
+            world.run_system_once(
+                |context: ReadRapierContext, tankards: Query<(Entity, &Transform), With<DebugTankard>>| {
+                    let (entity, visual) = tankards.iter().next().unwrap();
+                    let context = context.single().unwrap();
+                    let handle = context.entity2body()[&entity];
+                    (visual.translation, context.rigidbody_set.bodies.get(handle).unwrap().translation())
+                },
+            ).unwrap()
+        };
+        let before = pose(app.world_mut());
+        let static_x = |world: &mut World| {
+            world
+                .run_system_once(move |context: ReadRapierContext| {
+                    let context = context.single().unwrap();
+                    let handle = context.entity2body()[&static_entity];
+                    context
+                        .rigidbody_set
+                        .bodies
+                        .get(handle)
+                        .unwrap()
+                        .translation()
+                        .x
+                })
+                .unwrap()
+        };
+        let before_static_x = static_x(app.world_mut());
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            query.single(app.world()).unwrap()
+        };
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation
+            .x += CELL_SIZE;
+        app.update();
+        let after = pose(app.world_mut());
+        let after_static_x = static_x(app.world_mut());
+        assert!((after.0.x - (before.0.x - CELL_SIZE)).abs() < 0.01);
+        assert!((after.1.x - (before.1.x - CELL_SIZE)).abs() < 0.01);
+        assert!((after.0.x - after.1.x).abs() < 0.01);
+        assert!((after_static_x - (before_static_x - CELL_SIZE)).abs() < 0.01);
+        app.world_mut().entity_mut(cell).despawn();
+        app.update();
+        let body_retained = app
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                context
+                    .single()
+                    .unwrap()
+                    .entity2body()
+                    .contains_key(&static_entity)
+            })
+            .unwrap();
+        assert!(!body_retained, "unloaded cell retained its fixed collider");
     }
 
     #[test]
@@ -2202,12 +3326,14 @@ mod tests {
         .init_resource::<StreamingMetrics>()
         .init_resource::<ProfilingState>()
         .init_resource::<DiagnosticFallbackAssets>()
+        .init_resource::<StaticCollisionCache>()
         // The converted scene holds entities, and the spawner reads each of their components out
         // of the type registry.
         .register_type::<ChildOf>()
         .register_type::<Children>()
         .register_type::<GlobalTransform>()
         .register_type::<Mesh3d>()
+        .register_type::<MeshMaterial3d<StandardMaterial>>()
         .register_type::<Name>()
         .register_type::<Transform>()
         .add_observer(mark_world_instance_ready)
@@ -2245,10 +3371,51 @@ mod tests {
         world
     }
 
-    /// A reference as [`spawn_cell`] spawns one for a model: the root components, the asset root
-    /// pointing at the loaded scene, and the pending profile the readiness scan waits on. No
-    /// `ExpectedModelBounds` is inserted, which is what `statics.bounds_valid = 0` produces - the
-    /// component's absence is the whole signal.
+    #[test]
+    fn ready_fixed_reference_gets_proxy_but_movable_reference_does_not() {
+        let mut app = model_app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(2.0, 2.0, 2.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let mut scene = World::new();
+        let scene_root = scene.spawn(Transform::default()).id();
+        scene.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::default(),
+            ChildOf(scene_root),
+        ));
+        let handle = add_converted_model(&mut app, scene);
+        let bounds = ExpectedModelBounds::new(Vec3::splat(-1.0), Vec3::splat(1.0)).unwrap();
+        let fixed = spawn_model_reference(&mut app, handle.clone(), Some(bounds));
+        let movable = spawn_model_reference(&mut app, handle, Some(bounds));
+        for (entity, kind) in [(fixed, "STAT"), (movable, "MISC")] {
+            let mut entity_mut = app.world_mut().entity_mut(entity);
+            let mut pending = entity_mut.get_mut::<PendingAssetProfile>().unwrap();
+            pending.path = "meshes/landscape/rocks/rockl01.glb".to_owned();
+            pending.base_record_type = Some(kind.to_owned());
+            pending.static_physics = true;
+        }
+        let metrics = settle_readiness(&mut app);
+        assert_eq!(metrics.static_colliders_proxy, 1);
+        assert_eq!(metrics.static_colliders_skipped, 0);
+        assert_eq!(
+            app.world().get::<StaticColliderSource>(fixed),
+            Some(&StaticColliderSource::RenderProxy)
+        );
+        assert!(app.world().get::<Collider>(fixed).is_some());
+        assert!(app.world().get::<Collider>(movable).is_none());
+    }
+
+    /// A reference as [`spawn_cell`] spawns one for a model: the root components, the placed-object
+    /// layer it propagates to its meshes, the asset root pointing at the loaded scene, and the
+    /// pending profile the readiness scan waits on. No `ExpectedModelBounds` is inserted, which is
+    /// what `statics.bounds_valid = 0` produces - the component's absence is the whole signal.
     fn spawn_model_reference(
         app: &mut App,
         handle: Handle<WorldAsset>,
@@ -2269,6 +3436,8 @@ mod tests {
                 path: "meshes/furniture/creatureexit/wispambush.glb".to_owned(),
                 form_id: 0x00F9907,
                 base_form_id: 0x00EF957,
+                base_record_type: None,
+                static_physics: false,
                 cell_id: 0x02D4E0,
             },
         ));
@@ -2297,8 +3466,10 @@ mod tests {
         metrics
     }
 
-    /// What the emptiness rule reads: the converted model's own node and mesh count, taken from
-    /// the asset rather than from anything the engine spawned.
+    /// The layer a reference draws on is what keeps it out of the water reflection pass
+    /// (`render::REFLECTION_VIEW_LAYERS` renders the world layer only). Only `spawn_cell` spawns
+    /// references, so the propagation has to be registered there and nowhere else - in particular
+    /// not on the cell root, whose other children are terrain and water.
     #[test]
     fn reads_a_converted_models_own_node_and_mesh_count() {
         let empty = WorldAsset::new(empty_converted_scene());
@@ -2636,7 +3807,7 @@ mod tests {
         let mut old_min = Vec3::splat(f32::INFINITY);
         let mut old_max = Vec3::splat(f32::NEG_INFINITY);
         for descendant in children.iter_descendants(root) {
-            let Ok((mesh_handle, _, _)) = primitives.get(descendant) else {
+            let Ok((mesh_handle, _, _, _)) = primitives.get(descendant) else {
                 continue;
             };
             let mesh = meshes.get(mesh_handle).unwrap();

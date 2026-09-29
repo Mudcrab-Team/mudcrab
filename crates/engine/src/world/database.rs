@@ -33,6 +33,8 @@ pub struct ReferenceRow {
     pub form_id: u32,
     pub cell_id: u32,
     pub base_form_id: u32,
+    /// Authoritative base record type; `statics` also contains movable clutter.
+    pub base_record_type: Option<String>,
     pub model_path: Option<String>,
     pub position: [f32; 3],
     pub rotation: [f32; 3],
@@ -248,6 +250,17 @@ fn elapsed_micros(started: Instant) -> u64 {
 }
 
 fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
+    let has_records: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='records')",
+        [],
+        |row| row.get(0),
+    )?;
+    let record_column = if has_records { "b.record_type" } else { "NULL" };
+    let record_join = if has_records {
+        " LEFT JOIN records b ON b.form_id=r.base_form_id"
+    } else {
+        ""
+    };
     let cell_id: u32 = match key {
         CellKey::Exterior {
             worldspace_id,
@@ -266,18 +279,18 @@ fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<C
             grid_x,
             grid_y,
         } => {
-            let sql =
+            let sql = format!(
         "SELECT r.id,r.cell_id,r.base_form_id,s.model_path,r.pos_x,r.pos_y,r.pos_z,r.rot_x,r.rot_y,r.rot_z,r.scale,
                 COALESCE(s.bounds_min_x,-64),COALESCE(s.bounds_min_y,-64),COALESCE(s.bounds_min_z,-64),
                 COALESCE(s.bounds_max_x,64),COALESCE(s.bounds_max_y,64),COALESCE(s.bounds_max_z,64),
-                COALESCE(s.bounds_valid,0)
+                COALESCE(s.bounds_valid,0),{record_column}
          FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id
-         LEFT JOIN statics s ON s.id=r.base_form_id
-         WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5";
+         LEFT JOIN statics s ON s.id=r.base_form_id{record_join}
+         WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5");
             let min_x = grid_x as f32 * 4096.0;
             let min_y = grid_y as f32 * 4096.0;
             connection
-                .prepare_cached(sql)?
+                .prepare_cached(&sql)?
                 .query_map(
                     params![worldspace_id, min_x, min_x + 4096.0, min_y, min_y + 4096.0],
                     map_reference,
@@ -285,14 +298,14 @@ fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<C
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
         CellKey::Interior(_) => {
-            let sql =
+            let sql = format!(
         "SELECT r.id,r.cell_id,r.base_form_id,s.model_path,r.pos_x,r.pos_y,r.pos_z,r.rot_x,r.rot_y,r.rot_z,r.scale,
                 COALESCE(s.bounds_min_x,-64),COALESCE(s.bounds_min_y,-64),COALESCE(s.bounds_min_z,-64),
                 COALESCE(s.bounds_max_x,64),COALESCE(s.bounds_max_y,64),COALESCE(s.bounds_max_z,64),
-                COALESCE(s.bounds_valid,0)
-         FROM \"references\" r LEFT JOIN statics s ON s.id=r.base_form_id WHERE r.cell_id=?1";
+                COALESCE(s.bounds_valid,0),{record_column}
+         FROM \"references\" r LEFT JOIN statics s ON s.id=r.base_form_id{record_join} WHERE r.cell_id=?1");
             connection
-                .prepare_cached(sql)?
+                .prepare_cached(&sql)?
                 .query_map([cell_id], map_reference)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
@@ -310,6 +323,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         form_id: row.get(0)?,
         cell_id: row.get(1)?,
         base_form_id: row.get(2)?,
+        base_record_type: row.get(18)?,
         model_path: row.get(3)?,
         position: [row.get(4)?, row.get(5)?, row.get(6)?],
         rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
@@ -372,6 +386,36 @@ mod tests {
             Some("architecture/wall.nif")
         );
         assert_eq!(payload.references[0].bounds_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn base_record_type_distinguishes_fixed_static_from_movable_model() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(
+                "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL);
+                 INSERT INTO records VALUES(20,'STAT');
+                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1);
+                 INSERT INTO records VALUES(22,'MISC');
+                 INSERT INTO \"references\" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);",
+            )
+            .unwrap();
+        let payload = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        let fixed = payload.references.iter().find(|r| r.form_id == 30).unwrap();
+        let movable = payload.references.iter().find(|r| r.form_id == 40).unwrap();
+        assert_eq!(fixed.base_record_type.as_deref(), Some("STAT"));
+        assert_eq!(movable.base_record_type.as_deref(), Some("MISC"));
     }
 
     #[test]

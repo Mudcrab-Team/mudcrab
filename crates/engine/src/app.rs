@@ -1,7 +1,7 @@
 use crate::{
     config::EngineConfig,
     metrics::AcceptanceMetricsPlugin,
-    physics::PhysicsFixturePlugin,
+    physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
     render::{
         RendererMetrics, TerrainExtension, TerrainMaterial, VercidiumRendererPlugin,
@@ -24,7 +24,6 @@ use bevy::{
     core_pipeline::prepass::DepthPrepass,
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     log::{Level, LogPlugin},
-    pbr::{DistanceFog, FogFalloff},
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     render::occlusion_culling::OcclusionCulling,
@@ -49,6 +48,7 @@ struct InitialCameraGroundHeight(f32);
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
     configure_io_task_pool();
+    let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
         let fixture = StreamingFixtureDirectory::create(config.worldspace_id, config.start_grid)?;
         config.assets_dir = fixture.path.clone();
@@ -84,6 +84,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             InitialCameraGroundHeight(ground_height),
         ))
     };
+    let movement_tuning = (interactive_world_physics
+        && runtime_data.is_some()
+        && !config.streaming_fixture)
+        .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
+        .transpose()?;
     let asset_path = config.assets_dir.to_string_lossy().into_owned();
     let benchmark_active =
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
@@ -100,6 +105,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    if let Some(tuning) = movement_tuning {
+        app.insert_resource(tuning);
+    }
     if benchmark_active {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
@@ -144,6 +152,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .insert_resource(ground_height)
             .add_plugins(StreamingPlugin);
         app.add_systems(Startup, setup_world);
+        if interactive_world_physics {
+            app.add_plugins(WorldPlayerPlugin);
+        }
         if app.world().resource::<EngineConfig>().streaming_fixture {
             app.init_resource::<StreamingFixtureState>()
                 .add_systems(Startup, setup_streaming_fixture_visual)
@@ -1207,8 +1218,8 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
     )
     .wrap_err("invalid conversion manifest")?;
     color_eyre::eyre::ensure!(
-        manifest.schema_version == converter_schema_version() && manifest.complete,
-        "asset conversion is incomplete or stale; reconvert assets with converter schema {}",
+        (15..=converter_schema_version()).contains(&manifest.schema_version) && manifest.complete,
+        "asset conversion is incomplete or stale; supported converter schemas are 15 through {}",
         converter_schema_version()
     );
     let report_path = config.assets_dir.join("integration-report.json");
@@ -1228,7 +1239,7 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    15
+    16
 }
 
 fn setup_synthetic_benchmark(
@@ -1266,49 +1277,49 @@ fn setup_synthetic_benchmark(
     profiler.record_elapsed("startup/synthetic_scene", started);
 }
 
-fn setup_world(
-    mut commands: Commands,
-    config: Res<EngineConfig>,
-    ground_height: Option<Res<InitialCameraGroundHeight>>,
-) {
-    let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
-    let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
-    let camera_offset = if config.acceptance_screenshot.is_some() {
+fn camera_offset(config: &EngineConfig) -> Vec3 {
+    if config.acceptance_screenshot.is_some() {
         config
             .screenshot_camera_offset
             .map(Vec3::from)
             .unwrap_or(Vec3::new(0.0, 20_000.0, 1000.0))
     } else {
         Vec3::new(0.0, 1200.0, 2500.0)
+    }
+}
+
+fn setup_world(
+    mut commands: Commands,
+    config: Res<EngineConfig>,
+    ground_height: Option<Res<InitialCameraGroundHeight>>,
+    tuning: Option<Res<MovementTuning>>,
+) {
+    let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
+    let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
+    let camera_offset = if config.interactive_world_physics() {
+        let tuning = tuning.as_deref().cloned().unwrap_or_default();
+        Vec3::Y * (tuning.eye_height + tuning.capsule_standing_height * 0.5 + 16.0)
+    } else {
+        camera_offset(&config)
     };
     let camera_position = target + camera_offset;
     let far = crate::world::components::CELL_SIZE * (config.stream_radius.max(1) + 2) as f32 * 2.0;
-    let camera = commands
-        .spawn((
-            Camera3d::default(),
-            Projection::Perspective(PerspectiveProjection { far, ..default() }),
-            Transform::from_translation(camera_position).looking_at(target, Vec3::Y),
-            StreamingCamera,
-            Msaa::Off,
-            DepthPrepass,
-            OcclusionCulling,
-            RenderLayers::from_layers(&[0, 1]),
-        ))
-        .id();
-    if config.acceptance_screenshot.is_some() {
-        // Beauty path only: sky backdrop plus distance haze so streamed
-        // terrain melts into the horizon instead of ending at a void edge.
-        let sky = Color::srgb(0.6, 0.73, 0.9);
-        commands.insert_resource(ClearColor(sky));
-        commands.entity(camera).insert(DistanceFog {
-            color: sky,
-            falloff: FogFalloff::Linear {
-                start: far * 0.55,
-                end: far * 1.05,
-            },
-            ..default()
-        });
-    }
+    let camera_transform = if config.interactive_world_physics() {
+        Transform::from_translation(camera_position)
+            .looking_at(camera_position + Vec3::NEG_Z, Vec3::Y)
+    } else {
+        Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
+    };
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection { far, ..default() }),
+        camera_transform,
+        StreamingCamera,
+        Msaa::Off,
+        DepthPrepass,
+        OcclusionCulling,
+        RenderLayers::from_layers(&[0, 1]),
+    ));
     commands.spawn((
         DirectionalLight {
             illuminance: 12_000.0,
@@ -1403,9 +1414,8 @@ fn fly_camera(
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
 ) {
-    // The physics fixture owns its camera via NOCLIP/WALK; legacy fly controls
-    // stay on every other path (V5).
-    if config.physics_fixture {
+    // Interactive player paths own the camera; automated camera paths keep legacy controls.
+    if config.physics_fixture || config.interactive_world_physics() {
         return;
     }
     let started = std::time::Instant::now();
@@ -1604,6 +1614,31 @@ mod tests {
         std::fs::write(
             directory.path().join("integration-report.json"),
             br#"{"schema_version":3,"passed":true}"#,
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+    }
+
+    #[test]
+    fn accepts_legacy_schema_15_assets_with_runtime_proxy_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"schema_version":15,"complete":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ),
         )
         .unwrap();
         let config = EngineConfig {
