@@ -2720,7 +2720,10 @@ mod tests {
         );
         let schema_report = runtime_asset_error(
             &format!(r#"{{"schema_version":{engine},"complete":true}}"#),
-            &format!(r#"{{"schema_version":{},"passed":true}}"#, world - 1),
+            &format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                crate::world::database::MIN_RUNTIME_DATABASE_SCHEMA_VERSION - 1
+            ),
         );
 
         assert!(stale.contains("converted assets are stale"), "{stale}");
@@ -2809,6 +2812,7 @@ mod tests {
 
     #[test]
     fn accepts_legacy_schema_15_assets_with_runtime_proxy_fallback() {
+        // A real pre-merge conversion: converter schema 15 wrote world database schema 3.
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
         std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
@@ -2819,10 +2823,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             directory.path().join("integration-report.json"),
-            format!(
-                r#"{{"schema_version":{},"passed":true}}"#,
-                shared::WORLD_DATABASE_SCHEMA_VERSION
-            ),
+            br#"{"schema_version":3,"passed":true}"#,
         )
         .unwrap();
         let config = EngineConfig {
