@@ -1991,10 +1991,7 @@ mod tests {
     #[test]
     #[ignore = "requires MUDCRAB_NORMAL_DDS_FIXTURE with a locally installed normal DDS"]
     fn converts_installed_normal_fixture() {
-        convert_installed_2d_fixture(
-            "MUDCRAB_NORMAL_DDS_FIXTURE",
-            TextureEncoding::NormalLinear,
-        );
+        convert_installed_2d_fixture("MUDCRAB_NORMAL_DDS_FIXTURE", TextureEncoding::NormalLinear);
     }
 
     #[test]

@@ -313,10 +313,8 @@ impl StreamingFixtureDirectory {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let path = std::env::temp_dir().join(format!(
-            "mudcrab-streaming-{}-{suffix}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("mudcrab-streaming-{}-{suffix}", std::process::id()));
         fs::create_dir(&path).wrap_err_with(|| format!("failed to create {}", path.display()))?;
         let fixture = Self { path };
         fixture.populate(worldspace_id, start_grid)?;
