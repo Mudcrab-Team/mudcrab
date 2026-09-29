@@ -19,7 +19,7 @@ use bevy::{
     app::Propagate,
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
     camera::{primitives::MeshAabb, visibility::RenderLayers},
-    gltf::{GltfExtras, GltfMaterialName},
+    gltf::GltfExtras,
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
     mesh::{Indices, PrimitiveTopology},
