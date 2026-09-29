@@ -33,6 +33,11 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
+// Skyrim's base LAND UV frequency is eight repeats per cell, multiplied by
+// fLandTextureTilingMult:Landscape (vanilla default 3). Cell UVs here span 0..1.
+// Apply this only to texture sampling, never to the LAND blend-weight grid.
+const LAND_TEXTURE_REPEATS_PER_CELL: f32 = 8.0 * 3.0;
+
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
 const WAVE_STRENGTH: f32 = 0.05;
@@ -321,7 +326,8 @@ pub(crate) const OVERLAY_WEIGHT_WORDS: usize =
 pub(crate) const WEIGHT_FIELD_WORDS: usize = OVERLAY_WEIGHT_SLOTS * OVERLAY_WEIGHT_WORDS;
 
 /// The sampler a terrain layer texture needs: the shader tiles every layer `tiling` times across a
-/// cell (`uv * 8`), so the address mode must repeat. Bevy's default sampler clamps to the edge,
+/// cell (`uv * LAND_TEXTURE_REPEATS_PER_CELL`), so the address mode must repeat.
+/// Bevy's default sampler clamps to the edge,
 /// which stretches a texture's last texel column, row and corner across everything past the first
 /// tile - long streaks where the edge column is stretched, and one flat colour where the corner
 /// texel covers the rest. A terrain texture that is not loaded through the asset server - the
@@ -331,6 +337,7 @@ pub(crate) fn terrain_layer_sampler() -> ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
         address_mode_w: ImageAddressMode::Repeat,
+        anisotropy_clamp: 16,
         ..ImageSamplerDescriptor::linear()
     }
 }
@@ -371,7 +378,12 @@ impl TerrainSettings {
     /// through a vertex attribute Bevy re-normalizes.
     fn for_quadrant(quadrant: u8, layers: usize, overlay_weights: &[Vec<f32>]) -> Self {
         Self {
-            tiling_and_layer_count: Vec4::new(8.0, 8.0, layers as f32, 0.0),
+            tiling_and_layer_count: Vec4::new(
+                LAND_TEXTURE_REPEATS_PER_CELL,
+                LAND_TEXTURE_REPEATS_PER_CELL,
+                layers as f32,
+                0.0,
+            ),
             quadrant_origin: Vec4::new(f32::from(quadrant % 2), f32::from(quadrant / 2), 0.0, 0.0),
             fallback_weights_0: Vec4::X,
             fallback_weights_1: Vec4::ZERO,
@@ -393,7 +405,12 @@ impl TerrainSettings {
     /// draws without a LAND snapshot - the streaming and benchmark fixtures - uses it.
     fn vertex_weights_only(layers: f32) -> Self {
         Self {
-            tiling_and_layer_count: Vec4::new(8.0, 8.0, layers, 0.0),
+            tiling_and_layer_count: Vec4::new(
+                LAND_TEXTURE_REPEATS_PER_CELL,
+                LAND_TEXTURE_REPEATS_PER_CELL,
+                layers,
+                0.0,
+            ),
             quadrant_origin: Vec4::ZERO,
             fallback_weights_0: Vec4::X,
             fallback_weights_1: Vec4::ZERO,
@@ -1022,7 +1039,7 @@ mod tests {
         assert_eq!(sampler.mag_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.min_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.mipmap_filter, bevy::image::ImageFilterMode::Linear);
-        assert_eq!(sampler.anisotropy_clamp, 1);
+        assert_eq!(sampler.anisotropy_clamp, 16);
     }
 
     use crate::world::cache::TerrainLayerSnapshot;
@@ -1543,15 +1560,14 @@ mod tests {
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_w, ImageAddressMode::Repeat);
-        // Only the address mode deviates from the sampler Bevy installs by default (`ImagePlugin`'s
-        // `ImageSamplerDescriptor::linear()`), so layer textures keep filtering as they did.
+        // Repeat and 16x anisotropy retain linear filtering and the default mip range.
         let default_sampler = ImageSamplerDescriptor::linear();
         assert_eq!(sampler.mag_filter, default_sampler.mag_filter);
         assert_eq!(sampler.min_filter, default_sampler.min_filter);
         assert_eq!(sampler.mipmap_filter, default_sampler.mipmap_filter);
         assert_eq!(sampler.lod_min_clamp, default_sampler.lod_min_clamp);
         assert_eq!(sampler.lod_max_clamp, default_sampler.lod_max_clamp);
-        assert_eq!(sampler.anisotropy_clamp, default_sampler.anisotropy_clamp);
+        assert_eq!(sampler.anisotropy_clamp, 16);
         assert_eq!(sampler.compare, default_sampler.compare);
         assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
         assert_eq!(
@@ -1593,7 +1609,7 @@ mod tests {
         let settings = TerrainSettings::for_quadrant(0, 3, &grids);
         assert_eq!(
             settings.tiling_and_layer_count,
-            Vec4::new(8.0, 8.0, 3.0, 0.0)
+            Vec4::new(24.0, 24.0, 3.0, 0.0)
         );
         assert_eq!(settings.quadrant_origin.xy(), Vec2::ZERO);
         assert_eq!(
@@ -1737,6 +1753,34 @@ mod tests {
         assert_eq!(shader_weight(&settings, 0, [0.0, 16.0]), 0.0);
         for overlay in 1..OVERLAY_WEIGHT_SLOTS {
             assert_eq!(shader_weight(&settings, overlay, [0.0, 0.0]), 0.0);
+        }
+    }
+
+    #[test]
+    fn landscape_uvs_repeat_twelve_times_per_quadrant_without_scaling_weights() {
+        let terrain = terrain_fixture_with_overlays(0x12345, &[vec![(0, 1.0)]]);
+        for quadrant in 0..4 {
+            let mesh = crate::streaming::build_terrain_quadrant_mesh(&terrain, quadrant).unwrap();
+            let VertexAttributeValues::Float32x2(uvs) =
+                mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap()
+            else {
+                panic!("UVs missing")
+            };
+            let grids = crate::streaming::quadrant_overlay_weights(&terrain, quadrant).unwrap();
+            let settings = TerrainSettings::for_quadrant(quadrant, 2, &grids);
+            let tiling = settings.tiling_and_layer_count.xy();
+            let origin = Vec2::from(uvs[0]);
+            assert_eq!(
+                (Vec2::from(uvs[16]) - origin) * tiling,
+                Vec2::new(12.0, 0.0)
+            );
+            assert_eq!(
+                (Vec2::from(uvs[272]) - origin) * tiling,
+                Vec2::new(0.0, 12.0)
+            );
+            // Blend coordinates still address the original 17x17 LAND samples.
+            let last = (Vec2::from(uvs[288]) * 2.0 - settings.quadrant_origin.xy()) * 16.0;
+            assert_eq!(last, Vec2::splat(16.0));
         }
     }
 
