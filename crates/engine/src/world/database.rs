@@ -477,7 +477,9 @@ impl ReferenceQuery {
             joins.push_str(LIGHT_JOIN);
         }
         Ok(Self {
-            columns: format!("{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column}"),
+            columns: format!(
+                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column}"
+            ),
             joins,
         })
     }

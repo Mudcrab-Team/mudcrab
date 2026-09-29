@@ -18,10 +18,7 @@ use crate::{
         components::{
             CellRef, ExpectedModelBounds, FormId, InstanceBounds, StreamedCellRoot, StreamingCamera,
         },
-        database::{
-            AssetCatalog, CellKey, WorldDatabase,
-            supports_runtime_database_schema,
-        },
+        database::{AssetCatalog, CellKey, WorldDatabase, supports_runtime_database_schema},
     },
 };
 use bevy::{
@@ -2711,10 +2708,8 @@ mod tests {
         let engine = converter_schema_version();
         let world = shared::WORLD_DATABASE_SCHEMA_VERSION;
         let passing_report = format!(r#"{{"schema_version":{world},"passed":true}}"#);
-        let stale = runtime_asset_error(
-            r#"{"schema_version":14,"complete":true}"#,
-            &passing_report,
-        );
+        let stale =
+            runtime_asset_error(r#"{"schema_version":14,"complete":true}"#, &passing_report);
         let incomplete = runtime_asset_error(
             &format!(r#"{{"schema_version":{engine},"complete":false}}"#),
             &passing_report,

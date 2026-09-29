@@ -2041,8 +2041,10 @@ fn validate_surface_dependencies(
         if let Err(reason) = validate_image_sampler("surface", &image.sampler) {
             return SurfaceDependencyState::Failed(reason);
         }
-        if matches!(kind, SurfaceImageKind::Terrain | SurfaceImageKind::TerrainNormal)
-            && !terrain_sampler_repeats(&image.sampler)
+        if matches!(
+            kind,
+            SurfaceImageKind::Terrain | SurfaceImageKind::TerrainNormal
+        ) && !terrain_sampler_repeats(&image.sampler)
         {
             return SurfaceDependencyState::Failed(format!(
                 "terrain image {:?} did not load with a repeating sampler",

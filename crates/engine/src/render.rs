@@ -1012,9 +1012,9 @@ mod tests {
         assert_eq!(sampler.anisotropy_clamp, 1);
     }
 
+    use crate::world::cache::TerrainLayerSnapshot;
     use bevy::app::Propagate;
     use bevy::asset::AssetApp;
-    use crate::world::cache::TerrainLayerSnapshot;
     use bevy::{
         image::ImageFilterMode,
         mesh::VertexAttributeValues,

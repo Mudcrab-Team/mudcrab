@@ -956,13 +956,14 @@ impl ConversionBatch<'_> {
                         // from the current source under the current schema and
                         // configuration and its bytes still match the recorded
                         // size and hash. Any other output is converted again.
-                        let staged_is_current = staged_outputs.get(&key).is_some_and(|record| {
-                            record.is_current(&target, &hash, &expected_configuration)
-                        }) || previous_entries.get(&key).is_some_and(|entry| {
-                            entry.source_hash == hash
-                                && (entry.output_hash == hash_file(&target).unwrap_or_default()
-                                    || previous_pruned.contains_key(&entry.output))
-                        });
+                        let staged_is_current =
+                            staged_outputs.get(&key).is_some_and(|record| {
+                                record.is_current(&target, &hash, &expected_configuration)
+                            }) || previous_entries.get(&key).is_some_and(|entry| {
+                                entry.source_hash == hash
+                                    && (entry.output_hash == hash_file(&target).unwrap_or_default()
+                                        || previous_pruned.contains_key(&entry.output))
+                            });
                         let existing_is_valid = staged_is_current
                             && fs::metadata(&target).is_ok_and(|metadata| metadata.len() > 0)
                             && match source_kind.as_str() {

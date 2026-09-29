@@ -168,7 +168,10 @@ pub fn launch_engine(
     command.arg("--assets").arg(&assets);
     match EngineProcess::spawn(command, &stderr_log_path()) {
         Ok(engine) => {
-            status.push_notice(&format!("Mudcrab engine running (process {}).", engine.id()));
+            status.push_notice(&format!(
+                "Mudcrab engine running (process {}).",
+                engine.id()
+            ));
             commands.insert_resource(engine);
         }
         Err(error) => {
