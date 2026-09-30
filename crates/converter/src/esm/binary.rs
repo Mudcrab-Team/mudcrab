@@ -43,7 +43,7 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
     } else {
         payload.to_vec()
     };
-    let masters = extract_subrecords(&decoded)
+    let masters = extract_subrecords(&decoded)?
         .into_iter()
         .filter_map(|(tag, data)| {
             (tag == b"MAST").then(|| {
@@ -200,7 +200,7 @@ pub fn parse_group(
             let raw_payload = &rest[..record_len];
             let subrecords = if header.flags & FLAG_COMPRESSED != 0 {
                 if raw_payload.len() < 4 {
-                    Vec::new()
+                    return Err(eyre!("truncated compressed record {:08x}", header.form_id));
                 } else {
                     let decompressed_size = u32::from_le_bytes([
                         raw_payload[0],
@@ -225,9 +225,11 @@ pub fn parse_group(
                         ));
                     }
                     extract_subrecords(&decompressed_data)
+                        .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))?
                 }
             } else {
                 extract_subrecords(raw_payload)
+                    .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))?
             };
 
             records.push(RawRecord {
@@ -260,6 +262,20 @@ pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
     let header_payload = header.data_size as usize;
     if header_payload > after_header.len() {
         return Err(eyre!("truncated TES4 payload"));
+    }
+    let payload = &after_header[..header_payload];
+    if header.flags & FLAG_COMPRESSED != 0 {
+        if payload.len() < 4 {
+            return Err(eyre!("truncated compressed TES4 record"));
+        }
+        let expected = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+        let decoded = read_bounded(&payload[4..], expected)?;
+        if decoded.len() != expected {
+            return Err(eyre!("TES4 decompressed size mismatch"));
+        }
+        extract_subrecords(&decoded)?;
+    } else {
+        extract_subrecords(payload)?;
     }
     parse_group(&after_header[header_payload..], None, None, &mut records)?;
 
@@ -360,6 +376,49 @@ mod tests {
         }
         let mut records = Vec::new();
         parse_group(&rest[header.data_size as usize..], None, None, &mut records)
+    }
+
+    #[test]
+    fn record_parser_rejects_partial_subrecords_and_compressed_headers() {
+        for compressed in [false, true] {
+            let payload = b"EDID\x02\x00x\x00DATA\x04\x00x";
+            let bytes = if compressed {
+                let mut encoder =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                std::io::Write::write_all(&mut encoder, payload).unwrap();
+                [
+                    (payload.len() as u32).to_le_bytes().as_slice(),
+                    &encoder.finish().unwrap(),
+                ]
+                .concat()
+            } else {
+                payload.to_vec()
+            };
+            let flags = if compressed { FLAG_COMPRESSED } else { 0 };
+            let record = [
+                b"STAT".as_slice(),
+                &(bytes.len() as u32).to_le_bytes(),
+                &flags.to_le_bytes(),
+                &0x123u32.to_le_bytes(),
+                &[0; 8],
+                &bytes,
+            ]
+            .concat();
+            let mut records = Vec::new();
+            let error = parse_group(&record, None, None, &mut records).unwrap_err();
+            assert!(error.to_string().contains("00000123"));
+            assert!(records.is_empty());
+        }
+        let record = [
+            b"STAT".as_slice(),
+            &3u32.to_le_bytes(),
+            &FLAG_COMPRESSED.to_le_bytes(),
+            &0x123u32.to_le_bytes(),
+            &[0; 8],
+            &[0; 3],
+        ]
+        .concat();
+        assert!(parse_group(&record, None, None, &mut Vec::new()).is_err());
     }
 
     #[test]
@@ -476,6 +535,7 @@ mod tests {
             std::fs::write(&path, compressed_record(b"TES4", declared, &master)).unwrap();
             let metadata = parse_plugin_metadata(&path);
             assert_eq!(metadata.is_ok(), valid, "declared size {declared}");
+            assert_eq!(parse_plugin_file(&path).is_ok(), valid);
             if valid {
                 assert_eq!(metadata.unwrap().masters, ["Base.esm"]);
             }
