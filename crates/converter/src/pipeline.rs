@@ -1720,12 +1720,27 @@ fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest)
 }
 
 fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
+    // Checked again here, not only before the run: the old output is deleted
+    // below, so a folder that became unsafe during the run must stop it.
+    crate::config::check_output_dir(output)?;
     let backup = output.with_extension(format!("backup-{}", std::process::id()));
     if backup.exists() {
         bail!("refusing to overwrite stale backup {}", backup.display());
     }
     if output.exists() {
         fs::rename(output, &backup).wrap_err("failed to preserve previous asset output")?;
+        // The folder is checked once more under its backup name: something written into it
+        // between the check above and the rename would otherwise be deleted with it below.
+        if let Err(error) = crate::config::check_output_dir(&backup) {
+            if let Err(restore) = fs::rename(&backup, output) {
+                bail!(
+                    "{error}; the previous output could not be moved back from {} to {}: {restore}",
+                    backup.display(),
+                    output.display()
+                );
+            }
+            return Err(error.into());
+        }
     }
     if let Err(error) = fs::rename(staging, output) {
         if backup.exists() {
@@ -2179,6 +2194,11 @@ mod tests {
     }
 
     fn staging_entries(parent: &Path) -> Vec<PathBuf> {
+        staging_entries_named(parent, "modern")
+    }
+
+    fn staging_entries_named(parent: &Path, output_name: &str) -> Vec<PathBuf> {
+        let prefix = format!("{output_name}.staging-");
         fs::read_dir(parent)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -2186,7 +2206,7 @@ mod tests {
                 path.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("modern.staging-")
+                    .starts_with(&prefix)
             })
             .collect()
     }
@@ -2222,6 +2242,52 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert!(!output.exists());
         assert_eq!(staging_entries(temp.path()), Vec::<PathBuf>::new());
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_is_not_an_earlier_output_is_refused_and_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("Games");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/One.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(output.join("Skyrim")).unwrap();
+        fs::write(output.join("Skyrim/save.ess"), b"keep me").unwrap();
+
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:?}").contains("conversion-manifest.json"));
+        assert_eq!(
+            fs::read(output.join("Skyrim/save.ess")).unwrap(),
+            b"keep me"
+        );
+        assert_eq!(
+            staging_entries_named(temp.path(), "Games"),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn publishing_refuses_to_replace_a_folder_that_is_not_an_earlier_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("pack");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("conversion-manifest.json"), b"{}").unwrap();
+        let output = temp.path().join("Games");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("keep.txt"), b"keep me").unwrap();
+
+        assert!(publish_directory(&staging, &output).is_err());
+        assert_eq!(fs::read(output.join("keep.txt")).unwrap(), b"keep me");
+        assert!(staging.join("conversion-manifest.json").is_file());
     }
 
     #[tokio::test]
