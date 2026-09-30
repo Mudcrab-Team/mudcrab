@@ -1051,6 +1051,9 @@ fn spawn_cell(
                         form_id: reference.form_id,
                         cell_id: reference.cell_id,
                     },
+                    // Not the reference's propagated placed-object layer: a light keeps
+                    // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
+                    crate::render::light_render_layers(),
                 ));
             }
             if let Some(path) = reference.model_path.and_then(converted_model_path) {
@@ -6074,6 +6077,17 @@ mod tests {
             light.intensity
         );
         assert!(!light.shadow_maps_enabled);
+        // The light opts out of its reference's propagated placed-object layer; see
+        // `render::a_light_below_a_reference_keeps_the_light_layers`.
+        assert_eq!(
+            app.world().entity(light_entity).get::<RenderLayers>(),
+            Some(&RenderLayers::from_layers(crate::render::LIGHT_LAYERS))
+        );
+        assert!(
+            app.world()
+                .entity(light_entity)
+                .contains::<bevy::app::PropagateOver<RenderLayers>>()
+        );
 
         // The light has to be inside the cell root: that hierarchy is what a render-origin rebase
         // moves and what a cell unload despawns.

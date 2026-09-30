@@ -373,7 +373,14 @@ fn assemble_native_ktx2(
     zstd_level: i32,
 ) -> Result<Vec<u8>> {
     let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), dds.get_depth()) as usize;
-    let mip_count = (dds.get_num_mipmap_levels().max(1) as usize).min(max_levels);
+    let mip_count = dds.get_num_mipmap_levels().max(1) as usize;
+    ensure!(
+        mip_count <= max_levels,
+        "DDS declares {mip_count} mip levels, but its {}x{}x{} dimensions allow at most {max_levels}",
+        dds.get_width(),
+        dds.get_height(),
+        dds.get_depth()
+    );
     let depth = dds.get_depth().max(1);
     let faces = if is_cubemap { 6u32 } else { 1 };
     let block_bytes = block_byte_size(dds)?;
@@ -2089,6 +2096,30 @@ mod tests {
         let error = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap_err();
         let chain = format!("{error:#}");
         assert!(chain.contains("mip levels"), "{chain}");
+    }
+
+    #[test]
+    fn rejects_native_bc_mip_counts_larger_than_the_texture_dimensions() {
+        let dds = Dds::new_dxgi(NewDxgiParams {
+            height: 8,
+            width: 8,
+            depth: None,
+            format: DxgiFormat::BC1_UNorm,
+            mipmap_levels: Some(4),
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: D3D10ResourceDimension::Texture2D,
+            alpha_mode: AlphaMode::Straight,
+        })
+        .unwrap();
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        let bytes = with_declared_mip_count(bytes, 40);
+
+        let error = TextureConverter::convert(&bytes, TextureEncoding::DataLinear).unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("declares 40 mip levels"), "{chain}");
     }
 
     #[test]
