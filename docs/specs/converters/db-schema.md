@@ -1,6 +1,6 @@
-# Mudcrab SQLite 3 Database Schema (`skyrim_world.db`)
+# OpenSkyrim SQLite 3 Database Schema (`skyrim_world.db`)
 
-This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](file:///C:/Users/lucas.augusto/Documents/programs/Mudcrab/crates/converter/src/esm/exporter.rs).
+This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](file:///C:/Users/lucas.augusto/Documents/programs/OpenSkyrim/crates/converter/src/esm/exporter.rs).
 
 ---
 
@@ -129,7 +129,7 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 
 ### 6. Hybrid Spatial Indexing (`refs_rtree` & Interior `cell_id` Index)
 
-To prevent `float32` single-precision accuracy loss at large exterior coordinates (e.g. Tamriel bounds $\pm 200,000$) and avoid coordinate collisions between interior local origins $(0,0,0)$ and exterior global space, Mudcrab uses a **Two-Tier Hybrid Spatial Strategy**:
+To prevent `float32` single-precision accuracy loss at large exterior coordinates (e.g. Tamriel bounds $\pm 200,000$) and avoid coordinate collisions between interior local origins $(0,0,0)$ and exterior global space, OpenSkyrim uses a **Two-Tier Hybrid Spatial Strategy**:
 
 1. **Exterior Worldspace R-Tree (`refs_rtree`):** Coordinates inside the R-Tree virtual table are stored normalized relative to cell centers (values constrained between $-2048.0$ and $+2048.0$), keeping numbers small to guarantee high single-precision float accuracy.
 2. **Interior Cell Direct Lookup (`idx_references_cell_id`):** Interior dungeons and houses do not use R-Trees. All interior references are loaded directly by `cell_id` for instant $O(1)$ lookup upon entering interior doors.

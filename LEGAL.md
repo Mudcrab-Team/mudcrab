@@ -2,7 +2,7 @@
 
 ## 1. Independence and Non-Affiliation
 
-**Mudcrab** is an independent, community-driven, open-source game engine reimplementation.
+**Wah Krah Jol** is an independent, community-driven, open-source game engine reimplementation.
 
 This project is **not** affiliated with, endorsed by, sponsored by, or in any way associated with:
 - **Bethesda Softworks LLC**
@@ -22,7 +22,7 @@ This project is **not** affiliated with, endorsed by, sponsored by, or in any wa
 
 ## 3. Strict No-Asset Distribution Policy
 
-- **No Proprietary Game Assets:** Mudcrab does **not** include, ship, host, or distribute any proprietary or copyrighted assets from Bethesda Softworks or ZeniMax Media. This includes, without limitation:
+- **No Proprietary Game Assets:** Wah Krah Jol does **not** include, ship, host, or distribute any proprietary or copyrighted assets from Bethesda Softworks or ZeniMax Media. This includes, without limitation:
   - 3D models (`.nif`)
   - Textures and bitmaps (`.dds`)
   - Sound effects, music, and voice acting (`.xwm`, `.wav`, `.fuz`)
@@ -35,14 +35,14 @@ This project is **not** affiliated with, endorsed by, sponsored by, or in any wa
 
 ## 4. Legally Acquired Game Files Required
 
-- To run the game using Mudcrab with official content, users must supply their own legally purchased copy of *The Elder Scrolls V: Skyrim Special Edition* (via Steam, GOG, or another authorized vendor).
-- The Mudcrab conversion tools inspect and process local files on the user's personal machine for personal gameplay and interoperability.
+- To run the game using Wah Krah Jol with official content, users must supply their own legally purchased copy of *The Elder Scrolls V: Skyrim Special Edition* (via Steam, GOG, or another authorized vendor).
+- The Wah Krah Jol conversion tools inspect and process local files on the user's personal machine for personal gameplay and interoperability.
 
 ---
 
 ## 5. Software Interoperability
 
-Mudcrab is an original, clean-room software engine reimplementation engineered in Rust. Research, specifications, and format parsers are developed for the express purpose of achieving software and file format interoperability under applicable laws (including 17 U.S.C. § 1201(f) in the United States and Directive 2009/24/EC on the legal protection of computer programs in the European Union).
+Wah Krah Jol is an original, clean-room software engine reimplementation engineered in Rust. Research, specifications, and format parsers are developed for the express purpose of achieving software and file format interoperability under applicable laws (including 17 U.S.C. § 1201(f) in the United States and Directive 2009/24/EC on the legal protection of computer programs in the European Union).
 
 ---
 
@@ -52,4 +52,4 @@ Original code in this repository is dual-licensed under:
 - **MIT License** ([LICENSE-MIT](LICENSE-MIT))
 - **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
 
-This license applies **exclusively** to the original source code written by contributors to Mudcrab. It does not grant any rights to third-party assets, trademarks, or proprietary formats.
+This license applies **exclusively** to the original source code written by contributors to Wah Krah Jol. It does not grant any rights to third-party assets, trademarks, or proprietary formats.

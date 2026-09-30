@@ -11,7 +11,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["Mudcrab Team"]
+authors = ["OpenSkyrim Team"]
 
 [workspace.dependencies]
 # Engine & Rendering

@@ -14,7 +14,7 @@ of the retail formats.
 
 The canonical format reference is an unmodded Skyrim Special Edition installation. Modified or
 mod-managed copies are excluded from validation. Real samples are extracted to `/tmp` only and
-never committed. Opt-in tests use `MUDCRAB_SKYRIM_DATA` and `MUDCRAB_*_FIXTURE` and stay
+never committed. Opt-in tests use `OPENSKYRIM_SKYRIM_DATA` and `OPENSKYRIM_*_FIXTURE` and stay
 `#[ignore]`d so CI never needs proprietary data.
 
 ## Consequences

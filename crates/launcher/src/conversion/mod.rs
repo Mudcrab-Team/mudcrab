@@ -807,7 +807,7 @@ pub(crate) mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("mudcrab-launcher-{name}-{unique}"))
+        std::env::temp_dir().join(format!("openskyrim-launcher-{name}-{unique}"))
     }
 
     /// A converted output in miniature: one artifact, a world database and a manifest written by

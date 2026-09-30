@@ -16,7 +16,7 @@ pub const DEFAULT_SEED: u64 = 0x5EED_5EED;
 
 /// `TES4` author of the generated plugin, shared by [`generate`], the
 /// `dummy-content gen --with-interior` preset and the tests that read them back.
-pub const GENERATED_AUTHOR: &str = "Mudcrab dummy-content";
+pub const GENERATED_AUTHOR: &str = "OpenSkyrim dummy-content";
 /// Editor id of the generated worldspace.
 pub const GENERATED_WORLDSPACE: &str = "GeneratedWorld";
 /// `MODL` model path of the generated static, and the model both doors of

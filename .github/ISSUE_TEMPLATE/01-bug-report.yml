@@ -1,5 +1,5 @@
 name: '🐛 Bug Report'
-description: File a bug report to help us improve Mudcrab
+description: File a bug report to help us improve OpenSkyrim
 labels: [bug]
 body:
   - type: markdown
