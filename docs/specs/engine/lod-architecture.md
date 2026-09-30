@@ -11,7 +11,7 @@ Fixed spatial tiers past the full-detail grid: 4-, 8-, and 16-cell blocks
 policy, and variant stay separate dimensions (ARCH-03). Per-worldspace LOD
 origins anchor chunks; floor division rounds toward negative infinity so a
 position just west of zero lands in cell -1 (GEOM-02). `worldspaces` needs
-new origin columns; it holds only id/editor/parent/flags today.
+origin columns in world database schema 5.
 
 Selection is tier-based first. Projected-size selection is a later option,
 not the initial contract.
@@ -68,10 +68,19 @@ make geometry beyond that distance invisible. See the
 
 ## Delivery plan
 
-Each phase is planned, not accepted. A green build or completed task list does
-not open its dependents; the phase gate needs recorded evidence and review.
-The [Phase 0 evidence](../../research/lod-phase0-evidence.md) supplies the
-current findings. Skyrim-compatible asset output remains outside this plan.
+The initial terrain slice is implemented and delivered for scoped human
+testing. The [Fiji handoff](../../research/lod-rc-20260930.md) records source,
+asset validation, scripted captures, and unchanged performance gates. Terrain
+quality remains coarse; moving-camera, recovery, and long-session acceptance
+remain open. Launcher reporting is implemented separately from that candidate.
+
+The table below describes full phase acceptance, not implementation status.
+A green build or completed task list does not open its dependents; each gate
+needs recorded evidence and review. The
+[Phase 0 evidence](../../research/lod-phase0-evidence.md) is historical research
+context; its pre-implementation schema/metadata inventory is superseded by
+the [consolidation report](../../research/lod-consolidation-20260930.md).
+Skyrim-compatible asset output remains outside this plan.
 
 | Phase | Capability | Depends on | Acceptance gate |
 |-------|------------|------------|-----------------|
@@ -91,8 +100,10 @@ and appearance.
 
 ### Phase 0: finish the approved contracts
 
-The following policy choices are approved; none is implemented or visually
-accepted yet:
+The following policy choices are approved. The initial slice implements
+terrain node identity, settings resolution, build identity, asset locks, and
+reference-state metadata. Object-group readiness, complete recovery proof,
+and broader visual acceptance remain later gates:
 
 - Keep ADR-0010's file-backed GLB and R-tree direction. Use a stable
   source-cell node with separately hideable terrain and object groups,
