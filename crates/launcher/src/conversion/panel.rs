@@ -5,10 +5,16 @@
 
 use super::{
     ConversionStatus, CurrentConversion, GamePathConfig, MANIFEST_FILE, OutputHasManifest,
-    OutputReady, PendingInputs,
+    OutputReady, PendingInputs, output_is_safe_target,
     state::{self, Controls, Input},
 };
-use crate::{game_detection, handlers};
+use crate::{engine_process::EngineProcess, game_detection, handlers};
+
+/// Why Start, Start over and Resume are refused while the engine started by Play runs: publishing
+/// renames the Output folder, which fails on Windows while the game has its files open, and an
+/// hours-long run would fail at its last step.
+pub const GAME_RUNNING_NOTICE: &str =
+    "Close the running game first: publishing replaces files the game has open.";
 use bevy::prelude::*;
 use bevy::ui_widgets::ScrollArea;
 use converter::CheckMode;
@@ -53,18 +59,26 @@ impl ControlButton {
         matches!(self, ControlButton::Check | ControlButton::FullCheck)
     }
 
+    /// Whether a run would publish into the Output folder, which the running game holds open.
+    fn needs_game_closed(self) -> bool {
+        matches!(self, ControlButton::Start | ControlButton::Resume)
+    }
+
     /// Whether the button is drawn as available: its row of the table allows it, and the folders
     /// it works on are chosen. A check needs the Output folder to hold a manifest (`has_manifest`,
-    /// from [`OutputHasManifest`]): without one there is nothing to check against.
+    /// from [`OutputHasManifest`]): without one there is nothing to check against. Start (and
+    /// Start over) and Resume are off while the engine started by Play runs (`game_running`).
     pub fn available(
         self,
         controls: &Controls,
         paths: &GamePathConfig,
         has_manifest: bool,
+        game_running: bool,
     ) -> bool {
         self.enabled(controls)
             && (!self.needs_folders() || paths.ready())
             && (!self.needs_manifest() || has_manifest)
+            && !(game_running && self.needs_game_closed())
     }
 
     /// The check a check button asks for.
@@ -398,6 +412,7 @@ pub fn click_controls(
     buttons: Query<(&Interaction, &ControlButton), Changed<Interaction>>,
     state: Res<CurrentConversion>,
     has_manifest: Res<OutputHasManifest>,
+    engine: Option<Res<EngineProcess>>,
     mut paths: ResMut<GamePathConfig>,
     mut inputs: ResMut<PendingInputs>,
     mut status: ResMut<ConversionStatus>,
@@ -420,14 +435,20 @@ pub fn click_controls(
                     "Skyrim Special Edition was not found: drop its Data folder onto the launcher instead.",
                 ),
             },
+            ControlButton::Start | ControlButton::Resume if engine.is_some() => {
+                status.push_notice(GAME_RUNNING_NOTICE);
+            }
             ControlButton::Start | ControlButton::Resume => match paths.pair() {
-                Some((data, output)) => {
-                    inputs.push(if *control == ControlButton::Start {
+                // Looked at on the press, not only when the folder was dropped: files may have
+                // appeared in it since.
+                Some((data, output)) => match output_is_safe_target(&output) {
+                    Ok(()) => inputs.push(if *control == ControlButton::Start {
                         Input::Start { data, output }
                     } else {
                         Input::Resume { data, output }
-                    });
-                }
+                    }),
+                    Err(reason) => status.push_notice(&reason),
+                },
                 None => status.push_notice(
                     "Choose a Skyrim Data folder (one holding Skyrim.esm) and an output folder first.",
                 ),
@@ -486,8 +507,14 @@ pub fn accept_dropped_folder(
             status.push_notice(&format!("Data folder: {}", data.display()));
             paths.skyrim_data_path = Some(data);
         } else {
-            status.push_notice(&format!("Output folder: {}", path_buf.display()));
-            paths.converted_assets_path = path_buf.clone();
+            // Publishing replaces the Output folder, so a folder of other things is never taken.
+            match output_is_safe_target(path_buf) {
+                Ok(()) => {
+                    status.push_notice(&format!("Output folder: {}", path_buf.display()));
+                    paths.converted_assets_path = path_buf.clone();
+                }
+                Err(reason) => status.push_notice(&reason),
+            }
         }
     }
 }
@@ -576,12 +603,14 @@ pub fn draw_controls(
     paths: Res<GamePathConfig>,
     ready: Res<OutputReady>,
     has_manifest: Res<OutputHasManifest>,
+    engine: Option<Res<EngineProcess>>,
     mut buttons: Query<(&ControlButton, &Interaction, &mut BackgroundColor)>,
     mut labels: Query<(&ControlLabel, &mut Text, &mut TextColor)>,
 ) {
     let controls = state::controls(&state.0);
+    let game_running = engine.is_some();
     for (control, interaction, mut background) in &mut buttons {
-        let enabled = control.available(&controls, &paths, has_manifest.0);
+        let enabled = control.available(&controls, &paths, has_manifest.0, game_running);
         background.0 = match (enabled, *interaction) {
             (false, _) => BUTTON_OFF,
             (true, Interaction::Hovered) => BUTTON_ON_HOVER,
@@ -593,7 +622,9 @@ pub fn draw_controls(
         if text.0 != wanted {
             text.0 = wanted.to_owned();
         }
-        let enabled = label.0.available(&controls, &paths, has_manifest.0);
+        let enabled = label
+            .0
+            .available(&controls, &paths, has_manifest.0, game_running);
         let wanted_color = if enabled { TEXT_COLOR } else { BUTTON_OFF_TEXT };
         if color.0 != wanted_color {
             color.0 = wanted_color;
@@ -871,7 +902,9 @@ mod tests {
         let data = data_folder("drop-data");
         let output = temp_dir("drop-output");
         std::fs::create_dir_all(&output).unwrap();
-        let plugin = output.join("SomeMod.esp");
+        let mods = temp_dir("drop-mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        let plugin = mods.join("SomeMod.esp");
         std::fs::write(&plugin, []).unwrap();
 
         let mut app = App::new();
@@ -919,8 +952,229 @@ mod tests {
             app.world().resource::<ConversionStatus>().notice_text()
         );
 
-        for dir in [data, output, other] {
+        for dir in [data, output, mods, other] {
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// An app with the panel's input systems and the state machine, so a press can be followed to
+    /// the effect it asks for.
+    fn input_app(paths: GamePathConfig) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, super::super::ConversionLogicPlugin))
+            .add_message::<FileDragAndDrop>()
+            .insert_resource(paths)
+            .init_resource::<OutputHasManifest>()
+            .add_systems(
+                Update,
+                (click_controls, accept_dropped_folder).before(super::super::process_inputs),
+            );
+        app
+    }
+
+    /// Presses `control` once and returns the effects the press asked for.
+    fn press(app: &mut App, control: ControlButton) -> Vec<state::Effect> {
+        app.world_mut().spawn((control, Interaction::Pressed));
+        app.update();
+        app.world_mut()
+            .resource_mut::<super::super::PendingEffects>()
+            .drain()
+            .collect()
+    }
+
+    fn notices(app: &App) -> String {
+        app.world().resource::<ConversionStatus>().notice_text()
+    }
+
+    /// A folder that holds other things (a games folder, Documents) is never taken as the Output:
+    /// publishing would rename it aside and delete it.
+    #[test]
+    fn a_dropped_folder_of_other_things_is_not_taken_as_the_output() {
+        let data = data_folder("unsafe-drop-data");
+        let games = temp_dir("unsafe-drop-games");
+        std::fs::create_dir_all(games.join("SomeGame")).unwrap();
+        std::fs::write(games.join("save.dat"), b"precious").unwrap();
+        let before = PathBuf::from("modern_assets");
+        let mut app = input_app(GamePathConfig {
+            skyrim_data_path: Some(data.clone()),
+            converted_assets_path: before.clone(),
+        });
+
+        app.world_mut().write_message(FileDragAndDrop::DroppedFile {
+            window: Entity::PLACEHOLDER,
+            path_buf: games.clone(),
+        });
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<GamePathConfig>()
+                .converted_assets_path,
+            before,
+            "the Output row keeps its old value"
+        );
+        assert!(
+            notices(&app).contains(&format!(
+                "{} is not empty and is not a Mudcrab conversion; choose an empty or new folder.",
+                games.display()
+            )),
+            "{}",
+            notices(&app)
+        );
+        assert!(games.join("save.dat").is_file(), "nothing was touched");
+
+        for dir in [data, games] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// The states Start, Start over and Resume are pressed in by the tests below.
+    fn publishing_presses(staging: &Path) -> [(state::ConversionState, ControlButton); 3] {
+        let stopped = || state::ConversionState::Stopped {
+            staging: Some(staging.to_path_buf()),
+            cancelled: true,
+        };
+        [
+            (state::ConversionState::Idle, ControlButton::Start),
+            // Start over: Start with a stopped run's staging folder waiting.
+            (stopped(), ControlButton::Start),
+            (stopped(), ControlButton::Resume),
+        ]
+    }
+
+    /// The Output folder is looked at again on the press: one that was empty when it was chosen
+    /// and has filled up since is refused, by Start, Start over and Resume alike.
+    #[test]
+    fn start_and_resume_refuse_an_output_that_holds_other_things() {
+        let data = data_folder("unsafe-start-data");
+        let output = temp_dir("unsafe-start-output");
+        std::fs::create_dir_all(&output).unwrap();
+        let mut app = input_app(GamePathConfig {
+            skyrim_data_path: Some(data.clone()),
+            converted_assets_path: output.clone(),
+        });
+
+        // Empty: Start converts.
+        let effects = press(&mut app, ControlButton::Start);
+        assert!(
+            matches!(effects.as_slice(), [state::Effect::Begin(_)]),
+            "{effects:?}"
+        );
+
+        // Files appeared after the folder was chosen: no press asks for a run.
+        std::fs::write(output.join("notes.txt"), b"mine").unwrap();
+        for (state, control) in publishing_presses(&output.with_extension("staging-1")) {
+            app.world_mut().resource_mut::<CurrentConversion>().0 = state;
+            let effects = press(&mut app, control);
+            assert!(effects.is_empty(), "{control:?} asked for {effects:?}");
+        }
+        assert!(
+            notices(&app).contains("is not empty and is not a Mudcrab conversion"),
+            "{}",
+            notices(&app)
+        );
+        assert!(output.join("notes.txt").is_file());
+
+        // An earlier conversion is converted over.
+        std::fs::write(output.join(MANIFEST_FILE), b"{}").unwrap();
+        app.world_mut().resource_mut::<CurrentConversion>().0 = state::ConversionState::Idle;
+        let effects = press(&mut app, ControlButton::Start);
+        assert!(
+            matches!(effects.as_slice(), [state::Effect::Begin(_)]),
+            "{effects:?}"
+        );
+
+        for dir in [data, output] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// A real engine process, already exited: the launcher keeps its resource until the watcher
+    /// sees the exit, which these tests never run, so it stands for a running game.
+    fn engine_process(name: &str) -> (EngineProcess, PathBuf) {
+        let log = temp_dir(name).with_extension("log");
+        #[cfg(windows)]
+        let command = {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "exit 0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 0"]);
+            command
+        };
+        let mut engine = EngineProcess::spawn(command, &log).expect("spawn the shell");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while engine.poll().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never exited"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        (engine, log)
+    }
+
+    /// While the game started by Play runs, a run could not publish over the files it has open:
+    /// Start, Start over and Resume are drawn off and refused; the checks and Delete staging stay.
+    #[test]
+    fn start_and_resume_are_off_while_the_game_runs() {
+        let data = data_folder("engine-data");
+        let output = temp_dir("engine-output");
+        let staging = output.with_extension("staging-1");
+        let (engine, log) = engine_process("engine-log");
+        let mut app = input_app(GamePathConfig {
+            skyrim_data_path: Some(data.clone()),
+            converted_assets_path: output.clone(),
+        });
+        app.insert_resource(engine);
+
+        for (state, control) in publishing_presses(&staging) {
+            app.world_mut().resource_mut::<CurrentConversion>().0 = state;
+            let effects = press(&mut app, control);
+            assert!(effects.is_empty(), "{control:?} asked for {effects:?}");
+        }
+        assert!(
+            notices(&app).contains(GAME_RUNNING_NOTICE),
+            "{}",
+            notices(&app)
+        );
+
+        // Drawn off, while what does not publish stays on.
+        let mut panel = panel_app(&data);
+        let (engine, second_log) = engine_process("engine-log-2");
+        panel.insert_resource(engine);
+        assert_eq!(
+            drawn_available(&mut panel),
+            vec![
+                ControlButton::Detect,
+                ControlButton::Check,
+                ControlButton::FullCheck,
+            ],
+            "idle with the game running"
+        );
+        panel.world_mut().resource_mut::<CurrentConversion>().0 = state::ConversionState::Stopped {
+            staging: Some(staging),
+            cancelled: true,
+        };
+        assert_eq!(
+            drawn_available(&mut panel),
+            vec![
+                ControlButton::DeleteStaging,
+                ControlButton::Check,
+                ControlButton::FullCheck,
+            ],
+            "a stopped run with the game running"
+        );
+        // The game closed: Start is back.
+        panel.world_mut().remove_resource::<EngineProcess>();
+        assert!(drawn_available(&mut panel).contains(&ControlButton::Start));
+
+        std::fs::remove_dir_all(&data).unwrap();
+        for file in [log, second_log] {
+            let _ = std::fs::remove_file(file);
         }
     }
 }

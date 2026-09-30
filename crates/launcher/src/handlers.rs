@@ -169,7 +169,7 @@ pub fn launch_engine(
     match EngineProcess::spawn(command, &stderr_log_path()) {
         Ok(engine) => {
             status.push_notice(&format!(
-                "Mudcrab engine running (process {}).",
+                "Mudcrab engine running (process {}). Start and Resume are off until it closes.",
                 engine.id()
             ));
             commands.insert_resource(engine);

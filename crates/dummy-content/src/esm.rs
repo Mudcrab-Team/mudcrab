@@ -33,7 +33,30 @@ const EXTERIOR_DOOR_FORM_ID: u32 = 0x0000_0005;
 /// The `DOOR` base record the interior door of an [`Interior`] places.
 const INTERIOR_DOOR_FORM_ID: u32 = 0x0000_0006;
 /// The `LIGH` base record a [`Light`]'s reference places.
-const LIGHT_FORM_ID: u32 = 0x0000_0007;
+const LIGHT_FORM_ID: u32 = 0x0000_0009;
+/// The player `NPC_`, at the FormID `Skyrim.esm` gives it. The engine reads
+/// its `RNAM` to find the race whose movement it uses.
+const PLAYER_FORM_ID: u32 = 0x0000_0007;
+/// The `RACE` the player's `RNAM` names. It carries no `WKMV`/`RNMV`, like the
+/// player's race in `Skyrim.esm`, so the default movement type applies.
+const PLAYER_RACE_FORM_ID: u32 = 0x0000_000A;
+/// `NPC_Default_MT`, the `MOVT` the engine selects for an unset race link.
+const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
+/// `NPC_Default_MT`'s `SPED` speeds (left, right, forward and back; walk and
+/// run each), the values `Skyrim.esm` carries, plus the three rotation rates.
+const NPC_DEFAULT_MOVT_SPEEDS: [f32; 11] = [
+    80.09,
+    370.0,
+    79.75,
+    370.0,
+    80.1,
+    370.0,
+    71.93,
+    205.25,
+    std::f32::consts::PI,
+    std::f32::consts::PI,
+    std::f32::consts::PI,
+];
 const CELL_BASE_FORM_ID: u32 = 0x0000_0010;
 const CELL_FORM_STRIDE: u32 = 0x10;
 /// A door reference's offset inside its cell's block of [`CELL_FORM_STRIDE`]
@@ -244,6 +267,9 @@ fn write_plugin(
     let mut bytes = header_record(spec)?;
     bytes.extend_from_slice(&texture_set_record(spec)?);
     bytes.extend_from_slice(&static_record(spec)?);
+    bytes.extend_from_slice(&movement_type_record()?);
+    bytes.extend_from_slice(&player_race_record()?);
+    bytes.extend_from_slice(&player_record()?);
     bytes.extend_from_slice(&landscape_texture_record()?);
     bytes.extend_from_slice(&worldspace_record(spec)?);
 
@@ -443,6 +469,40 @@ fn static_record(spec: &Plugin<'_>) -> Result<Vec<u8>> {
         &[
             (*b"EDID", cstring("GeneratedStatic")),
             (*b"MODL", cstring(spec.model_path)),
+        ],
+    )
+}
+
+/// The `MOVT` the engine's default movement selection reads.
+fn movement_type_record() -> Result<Vec<u8>> {
+    let speeds = NPC_DEFAULT_MOVT_SPEEDS
+        .iter()
+        .flat_map(|speed| speed.to_le_bytes())
+        .collect();
+    record(
+        *b"MOVT",
+        NPC_DEFAULT_MOVT_FORM_ID,
+        &[(*b"EDID", cstring("NPC_Default_MT")), (*b"SPED", speeds)],
+    )
+}
+
+/// The player's `RACE`, with no movement links.
+fn player_race_record() -> Result<Vec<u8>> {
+    record(
+        *b"RACE",
+        PLAYER_RACE_FORM_ID,
+        &[(*b"EDID", cstring("NordRace"))],
+    )
+}
+
+/// The player `NPC_`: its race is the only field the engine needs.
+fn player_record() -> Result<Vec<u8>> {
+    record(
+        *b"NPC_",
+        PLAYER_FORM_ID,
+        &[
+            (*b"EDID", cstring("Player")),
+            (*b"RNAM", PLAYER_RACE_FORM_ID.to_le_bytes().to_vec()),
         ],
     )
 }
@@ -910,7 +970,7 @@ mod tests {
     /// gone, and this constant stands in for it. A deliberate change to the
     /// exterior bytes refreshes it in the same commit, which is what keeps the
     /// change visible.
-    const EXTERIOR_ONLY_HASH: u64 = 0x8B0B_15E7_FE99_B505;
+    const EXTERIOR_ONLY_HASH: u64 = 0x390C_B14F_65BA_916F;
 
     /// FNV-1a over every byte of `bytes`.
     fn fnv1a(bytes: &[u8]) -> u64 {
