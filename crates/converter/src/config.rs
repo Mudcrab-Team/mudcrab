@@ -128,8 +128,43 @@ impl PipelineConfig {
                 staging.display(),
                 self.data_dir.display()
             );
+            // The persistent cache is written after publishing, just before staging is removed,
+            // so a cache folder inside the resume folder would be deleted with it.
+            let cache = self.ingestion_cache_dir();
+            color_eyre::eyre::ensure!(
+                !resolve_existing_prefix(&cache)?.starts_with(std::fs::canonicalize(staging)?),
+                "ingestion cache directory {} must not be inside the resume staging directory {}",
+                cache.display(),
+                staging.display()
+            );
         }
         Ok(())
+    }
+}
+
+/// `path` made absolute and canonicalised as far as it exists: the nearest
+/// existing ancestor is resolved and the rest appended, so a folder that has
+/// not been created yet still compares with the folder it would sit in.
+fn resolve_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    let mut existing = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::canonicalize(existing) {
+            Ok(resolved) => {
+                return Ok(missing
+                    .iter()
+                    .rev()
+                    .fold(resolved, |resolved, part| resolved.join(part)));
+            }
+            Err(error) => match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name.to_owned());
+                    existing = parent;
+                }
+                _ => return Err(error),
+            },
+        }
     }
 }
 
@@ -196,6 +231,35 @@ mod tests {
             find_resumable_staging(&output),
             Some((directory.path().join("modern_assets.staging-9-300"), 2))
         );
+    }
+
+    #[test]
+    fn a_cache_folder_inside_the_resume_staging_folder_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        let output = directory.path().join("modern");
+        let staging = directory.path().join("modern.staging-1-1");
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging.clone());
+        // The default cache sits beside the output, outside staging.
+        config.validate().unwrap();
+
+        // A cache folder that does not exist yet, inside the resume folder.
+        config.cache_dir = Some(staging.join("cache"));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("must not be inside the resume staging"),
+            "{error}"
+        );
+        // The resume folder itself.
+        config.cache_dir = Some(staging.clone());
+        assert!(config.validate().is_err());
+        // Beside it is fine.
+        config.cache_dir = Some(directory.path().join("cache"));
+        config.validate().unwrap();
     }
 
     #[test]
