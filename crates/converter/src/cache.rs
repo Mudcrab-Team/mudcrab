@@ -255,6 +255,8 @@ pub fn configuration_hash_for_schema(
 ) -> Result<String> {
     let mut relevant = serde_json::json!({
         "schema": schema,
+        "landscape_geometry_validation_revision": 1,
+        "landscape_fallback_normals_revision": 1,
         "texture_etc1s_quality": config.texture_fallback_quality,
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,

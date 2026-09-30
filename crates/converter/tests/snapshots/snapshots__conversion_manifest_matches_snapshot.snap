@@ -62,7 +62,7 @@ expression: manifest
     }
   },
   "complete": true,
-  "configuration_hash": "ebc4fe2f7d531e796e6a5e22b70a1f6a877c01e963b54b416b789d0f64312427",
+  "configuration_hash": "f9425dc345a0055c17a136b1b183a4597fba09bc6450c833e8a6fdcd75dc3757",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",

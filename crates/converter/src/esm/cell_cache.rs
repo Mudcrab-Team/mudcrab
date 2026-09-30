@@ -18,6 +18,10 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
         let (water_height, water_type_form_id) =
             water_by_cell.get(&cell_id).copied().unwrap_or((None, None));
         let heights = decode_vhgt(heightmap);
+        color_eyre::eyre::ensure!(
+            heights.iter().all(|height| height.is_finite()),
+            "LAND {cell_id:08X} contains a non-finite VHGT height"
+        );
         let normals = decode_normals(view.find(b"VNML").unwrap_or_default(), &heights);
         let vertex_colors = view.find(b"VCLR").unwrap_or_default().to_vec();
         let mut layers = extract_texture_layers(&record.subrecords)
@@ -31,6 +35,14 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
         color_eyre::eyre::ensure!(
             normals.len() == vertex_count * 3,
             "LAND {cell_id:08X} has an incomplete VNML normal field"
+        );
+        color_eyre::eyre::ensure!(
+            normals
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|normal| normal != &[0, 0, 0]),
+            "LAND {cell_id:08X} contains a zero-length VNML normal"
         );
         color_eyre::eyre::ensure!(
             vertex_colors.is_empty() || vertex_colors.len() == vertex_count * 3,
@@ -173,23 +185,37 @@ fn decode_vhgt(bytes: &[u8]) -> Vec<f32> {
     heights
 }
 
+/// Preserve valid authored VNML samples; reconstruct missing or zero vectors from terrain heights.
 fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
     let side = usize::from(LAND_SIDE);
     let count = side * side;
-    if bytes.len() == count * 3 {
+    if bytes.len() == count * 3
+        && bytes
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|normal| normal != &[0, 0, 0])
+    {
         return bytes.iter().map(|value| *value as i8).collect();
     }
-    if !bytes.is_empty() || heights.len() != count {
+    if (!bytes.is_empty() && bytes.len() != count * 3) || heights.len() != count {
         return Vec::new();
     }
     let mut normals = Vec::with_capacity(count * 3);
     for y in 0..side {
         for x in 0..side {
-            let left = heights[y * side + x.saturating_sub(1)];
-            let right = heights[y * side + (x + 1).min(side - 1)];
-            let down = heights[y.saturating_sub(1) * side + x];
-            let up = heights[(y + 1).min(side - 1) * side + x];
-            let normal = [left - right, down - up, 256.0];
+            let west = x.saturating_sub(1);
+            let east = (x + 1).min(side - 1);
+            let south = y.saturating_sub(1);
+            let north = (y + 1).min(side - 1);
+            // At a border the stencil spans one 128-unit interval, not two.
+            // Divide each axis by its actual distance so a planar slope keeps
+            // the same normal at edges/corners. f64 avoids squared overflow.
+            let dx = (f64::from(heights[y * side + east]) - f64::from(heights[y * side + west]))
+                / ((east - west) as f64 * 128.0);
+            let dy = (f64::from(heights[north * side + x]) - f64::from(heights[south * side + x]))
+                / ((north - south) as f64 * 128.0);
+            let normal = [-dx, -dy, 1.0];
             let length =
                 (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
             normals.extend([
@@ -197,6 +223,18 @@ fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
                 (normal[1] / length * 127.0).round() as i8,
                 (normal[2] / length * 127.0).round() as i8,
             ]);
+        }
+    }
+    // Some shipped LAND records contain zero vectors. Reconstruct only those
+    // invalid vertices from the height field; preserve every valid authored byte.
+    for (normal, authored) in normals
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(bytes.as_chunks::<3>().0)
+    {
+        if authored != &[0, 0, 0] {
+            *normal = authored.map(|value| value as i8);
         }
     }
     normals
@@ -278,6 +316,14 @@ fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<Terra
         );
     }
     for quadrant in 0..4 {
+        let mut indices = std::collections::HashSet::new();
+        color_eyre::eyre::ensure!(
+            layers
+                .iter()
+                .filter(|layer| layer.quadrant == quadrant && !layer.is_base)
+                .all(|layer| indices.insert(layer.layer)),
+            "quadrant {quadrant} repeats an ATXT layer index"
+        );
         let bases = layers
             .iter()
             .filter(|layer| layer.quadrant == quadrant && layer.is_base)
@@ -361,6 +407,22 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    #[ignore = "requires explicit MUDCRAB_GRASS_DATA and MUDCRAB_GRASS_PLUGINS paths"]
+    fn local_load_order_terrain_cache_passes_validation() {
+        let data = std::path::PathBuf::from(std::env::var_os("MUDCRAB_GRASS_DATA").unwrap());
+        let list = std::path::PathBuf::from(std::env::var_os("MUDCRAB_GRASS_PLUGINS").unwrap());
+        let paths = crate::esm::read_plugins_txt(&list, &data).unwrap();
+        let records = crate::esm::EsmParser::merge_plugins(&paths).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let count = write_cell_cache(&records, &output.path().join("cell_cache.rkyv")).unwrap();
+        assert!(count > 0);
+        eprintln!(
+            "Validated {count} terrain cells from {} plugins",
+            paths.len()
+        );
+    }
+
+    #[test]
     fn decodes_vhgt_deltas_into_absolute_heights() {
         let count = usize::from(LAND_SIDE) * usize::from(LAND_SIDE);
         let mut bytes = 2.0f32.to_le_bytes().to_vec();
@@ -393,6 +455,88 @@ mod tests {
         let heights = vec![0.0; usize::from(LAND_SIDE).pow(2)];
         assert!(decode_vhgt(&[0; 16]).is_empty());
         assert!(decode_normals(&[0; 16], &heights).is_empty());
+    }
+
+    #[test]
+    fn generated_normals_preserve_planar_slopes_at_edges_and_corners() {
+        for (dx, dy) in [(64.0, 0.0), (0.0, -32.0), (64.0, -32.0)] {
+            let heights: Vec<_> = (0..33)
+                .flat_map(|y| (0..33).map(move |x| x as f32 * dx + y as f32 * dy))
+                .collect();
+            let normals = decode_normals(&[], &heights);
+            let interior = &normals[(16 * 33 + 16) * 3..(16 * 33 + 16) * 3 + 3];
+            assert!(
+                normals
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .all(|normal| normal == interior)
+            );
+            assert!(interior[2] > 0);
+            // Authored VNML must not be regenerated or normalized.
+            let authored = vec![42; 33 * 33 * 3];
+            assert_eq!(decode_normals(&authored, &heights), vec![42i8; 33 * 33 * 3]);
+        }
+    }
+
+    #[test]
+    fn invalid_land_fails_before_replacing_an_existing_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        let valid = record(0x1234, b"LAND", None, &[]);
+        let mut records = HashMap::from([(valid.form_id, valid)]);
+        write_cell_cache(&records, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut bad_fields = Vec::new();
+        for offset in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
+            let mut height = offset.to_le_bytes().to_vec();
+            height.extend(vec![0; 33 * 33]);
+            bad_fields.push((b"VHGT", height));
+        }
+        bad_fields.push((b"VNML", vec![127; 33 * 33 * 3 - 1]));
+        for (tag, bytes) in bad_fields {
+            records.get_mut(&0x1234).unwrap().subrecords = vec![(tag.to_vec(), bytes)];
+            let error = write_cell_cache(&records, &path).unwrap_err().to_string();
+            assert!(error.contains("00001234"), "{error}");
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn overlay_indices_are_unique_within_each_quadrant() {
+        let overlay = |texture: u32, quadrant: u8| {
+            let mut bytes = texture.to_le_bytes().to_vec();
+            bytes.extend([quadrant, 0, 2, 0]);
+            (b"ATXT".to_vec(), bytes)
+        };
+        assert!(extract_texture_layers(&[overlay(1, 0), overlay(2, 0)]).is_err());
+        assert!(extract_texture_layers(&[overlay(1, 0), overlay(1, 1)]).is_ok());
+        // Null texture references must still obey the structural contract.
+        assert!(extract_texture_layers(&[overlay(0, 0), overlay(1, 0)]).is_err());
+    }
+
+    #[test]
+    fn zero_authored_normals_are_repaired_without_changing_valid_neighbors() {
+        let heights = vec![0.0; 33 * 33];
+        let mut authored = vec![42; 33 * 33 * 3];
+        authored[300..303].fill(0);
+        let repaired = decode_normals(&authored, &heights);
+        assert_eq!(&repaired[300..303], &[0, 0, 127]);
+        for (index, &normal) in repaired.iter().enumerate() {
+            if !(300..303).contains(&index) {
+                assert_eq!(normal, 42);
+            }
+        }
+        let output = tempfile::tempdir().unwrap();
+        let land = record(0x1234, b"LAND", None, &[(b"VNML", authored)]);
+        assert_eq!(
+            write_cell_cache(
+                &HashMap::from([(land.form_id, land)]),
+                &output.path().join("cache.rkyv")
+            )
+            .unwrap(),
+            1
+        );
     }
 
     fn record(
