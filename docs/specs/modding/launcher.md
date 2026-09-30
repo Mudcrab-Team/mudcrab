@@ -152,7 +152,7 @@ offered for **Resume** (see below).
 | | |
 | :--- | :--- |
 | **Skyrim Data** | Where the game's assets are. Filled at start-up by game detection, or set by dropping a folder. A folder with a `Skyrim.esm` in it, case-insensitively, is a `Data` folder; dropping an installation root uses its `Data` subfolder. **Detect** looks again. |
-| **Output** | Where the converted tree is written, and what the engine is started on. Defaults to `modern_assets`, which is what the engine's `--assets` expects. Drop any other folder to change it. |
+| **Output** | Where the converted tree is written, and what the engine is started on. Defaults to `modern_assets`, which is what the engine's `--assets` expects. Drop another folder to change it: an empty one or an earlier conversion (see "The Output folder is replaced"). The default may not exist yet; the first conversion creates it. |
 | **Bar** | Whole-run completion, from the same `converter::ProgressEstimate` the command line's status line prints, so it never moves backwards even when a stage finishes short of its total. |
 | **Stage line** | The stage, its own completion, and the item and byte rates once the run is moving fast enough to measure them. |
 | **Clock line** | Elapsed time, and the estimated time left once three samples and five seconds have passed. |
@@ -178,6 +178,22 @@ the notice pane instead.
 
 Check and Full check are drawn as available only when the Output folder also holds a
 `conversion-manifest.json`; without one there is nothing to check against.
+
+While the engine started by Play is running, Start (and "Start over") and Resume are drawn off as
+well, and a press says `Close the running game first: publishing replaces files the game has
+open.`: publishing renames the Output folder, which fails on Windows while the game has
+`skyrim_world.db` open, so a long run would fail at its last step. Stop, Delete staging (which
+touches only the staging folder), Check and Full check stay as the table says.
+
+**The Output folder is replaced.** A run that succeeds publishes by renaming the old Output folder
+aside and deleting it, so the launcher only converts into a folder that is safe to lose: one that
+does not exist yet, an empty one, or one that holds a `conversion-manifest.json` (an earlier
+conversion). Anything else (a file, a folder it cannot read, a folder of other things such as a
+games or documents folder) is refused with `<path> is not empty and is not a Mudcrab conversion;
+choose an empty or new folder.` (or why it is not a folder). The rule lives in one function,
+`output_is_safe_target`, which the Output drop and every Start, Start over and Resume press ask; the
+press asks again, so a folder that has filled up since it was chosen, or the default
+`modern_assets`, is refused at the press, not only at the drop.
 
 - **Start** always converts from scratch into a fresh staging folder. In `Finished` or `Stopped` it
   means "convert again", and any staging folder from the last run stays until it is deleted.
@@ -231,7 +247,9 @@ world-database schema. It does not look at every artifact; Check and Full check 
 ### Dropping things onto the launcher
 
 - A **folder** goes to the conversion panel: a Skyrim `Data` folder or installation root fills the
-  Data row, any other folder the Output row. Folders are taken only while the path rows are on (see
+  Data row, any other folder the Output row, if it is safe to convert into (new, empty, or an
+  earlier conversion; see "The Output folder is replaced"). A folder that is not keeps the Output
+  row as it was, and the pane says why. Folders are taken only while the path rows are on (see
   the table): not while a conversion or a check runs, and not while a staging folder is waiting.
 - A **file** with a mod's extension (`.zip`, `.7z`, `.esp`, `.esm`, `.esl`) goes to the mod
   manager, which only logs it for now. Any other file is refused with a notice.

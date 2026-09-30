@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,10 +90,27 @@ impl PipelineConfig {
             (0..=22).contains(&self.texture_zstd_level),
             "texture_zstd_level must be between 0 and 22"
         );
-        color_eyre::eyre::ensure!(
-            self.data_dir != self.output_dir,
-            "output directory must not be the Skyrim Data directory"
-        );
+        // Compared as resolved folders, not as spelled: the output is replaced
+        // on publish, staging is deleted after it, and the cache is pruned, so
+        // none of them may be, hold, or sit inside the game data.
+        let data = std::fs::canonicalize(&self.data_dir)?;
+        let mut written = vec![
+            ("output directory", self.output_dir.clone()),
+            ("ingestion cache directory", self.ingestion_cache_dir()),
+        ];
+        if let Some(staging) = &self.resume_staging {
+            written.push(("resume staging directory", staging.clone()));
+        }
+        for (role, path) in written {
+            let resolved = resolve_path(&path)?;
+            color_eyre::eyre::ensure!(
+                !(resolved.starts_with(&data) || data.starts_with(&resolved)),
+                "the {role} {} overlaps the Skyrim Data directory {}; choose a folder outside it that does not contain it",
+                path.display(),
+                self.data_dir.display()
+            );
+        }
+        check_output_dir(&self.output_dir)?;
         if let Some(staging) = &self.resume_staging {
             color_eyre::eyre::ensure!(
                 staging.is_dir(),
@@ -119,20 +137,11 @@ impl PipelineConfig {
                 std::fs::canonicalize(output_parent)? == std::fs::canonicalize(staging_parent)?,
                 "resume directory must share the output directory parent"
             );
-            // A successful run removes its staging folder, so a resume folder that is or holds
-            // the Skyrim Data folder would take the game data with it.
-            let data = std::fs::canonicalize(&self.data_dir)?;
-            color_eyre::eyre::ensure!(
-                !data.starts_with(std::fs::canonicalize(staging)?),
-                "resume staging directory {} must not be or contain the Skyrim Data directory {}",
-                staging.display(),
-                self.data_dir.display()
-            );
             // The persistent cache is written after publishing, just before staging is removed,
             // so a cache folder inside the resume folder would be deleted with it.
             let cache = self.ingestion_cache_dir();
             color_eyre::eyre::ensure!(
-                !resolve_existing_prefix(&cache)?.starts_with(std::fs::canonicalize(staging)?),
+                !resolve_path(&cache)?.starts_with(std::fs::canonicalize(staging)?),
                 "ingestion cache directory {} must not be inside the resume staging directory {}",
                 cache.display(),
                 staging.display()
@@ -142,11 +151,98 @@ impl PipelineConfig {
     }
 }
 
-/// `path` made absolute and canonicalised as far as it exists: the nearest
-/// existing ancestor is resolved and the rest appended, so a folder that has
-/// not been created yet still compares with the folder it would sit in.
-fn resolve_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
-    let absolute = std::path::absolute(path)?;
+/// Why [`check_output_dir`] refused a folder.
+#[derive(Debug)]
+pub enum OutputDirError {
+    /// The path exists but is not a directory.
+    NotADirectory(PathBuf),
+    /// The directory has files in it but no `conversion-manifest.json`, so it
+    /// is not an earlier conversion. Publishing replaces the whole folder, so
+    /// converting into it would delete what is there.
+    NotConverterOutput(PathBuf),
+    /// The path could not be inspected.
+    Unreadable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl fmt::Display for OutputDirError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotADirectory(path) => {
+                write!(f, "output path is not a directory: {}", path.display())
+            }
+            Self::NotConverterOutput(path) => write!(
+                f,
+                "output directory {} is not empty and is not an earlier conversion (no \
+                 conversion-manifest.json); converting into it would delete its contents, \
+                 so choose an empty or new folder",
+                path.display()
+            ),
+            Self::Unreadable { path, source } => {
+                write!(
+                    f,
+                    "cannot read output directory {}: {source}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OutputDirError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unreadable { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `output` is safe to convert into. Publishing replaces the output
+/// folder as a whole, so only a folder that does not exist yet, an empty one,
+/// or an earlier conversion (it has `conversion-manifest.json`) is accepted.
+/// The pipeline checks this before it starts and again just before it
+/// publishes; front ends can call it to warn before a run.
+pub fn check_output_dir(output: &Path) -> Result<(), OutputDirError> {
+    let unreadable = |source| OutputDirError::Unreadable {
+        path: output.to_path_buf(),
+        source,
+    };
+    let metadata = match std::fs::metadata(output) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(unreadable(error)),
+    };
+    if !metadata.is_dir() {
+        return Err(OutputDirError::NotADirectory(output.to_path_buf()));
+    }
+    // Listed first, even when a manifest is there: publishing moves and then
+    // deletes the whole folder, so a folder that cannot be listed cannot be
+    // checked or safely replaced.
+    let mut entries = std::fs::read_dir(output).map_err(unreadable)?;
+    match entries.next() {
+        None => return Ok(()),
+        Some(Err(error)) => return Err(unreadable(error)),
+        Some(Ok(_)) => {}
+    }
+    if output.join("conversion-manifest.json").is_file() {
+        return Ok(());
+    }
+    Err(OutputDirError::NotConverterOutput(output.to_path_buf()))
+}
+
+/// `path` made absolute with its symbolic links and junctions resolved, as far
+/// as it exists: the nearest existing ancestor is canonicalised and the rest
+/// appended, so a folder that has not been created yet still compares with
+/// the folders it would sit in or hold.
+fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
     let mut existing = absolute.as_path();
     let mut missing = Vec::new();
     loop {
@@ -274,7 +370,10 @@ mod tests {
         let mut config = PipelineConfig::new(&data, &output);
         config.resume_staging = Some(staging.clone());
         let error = config.validate().unwrap_err().to_string();
-        assert!(error.contains("must not be or contain"), "{error}");
+        assert!(
+            error.contains("overlaps the Skyrim Data directory"),
+            "{error}"
+        );
 
         // The same folder is refused when it is the data folder itself.
         let mut config = PipelineConfig::new(&staging, &output);
@@ -293,6 +392,117 @@ mod tests {
         let mut config = PipelineConfig::new(&other_data, &output);
         config.resume_staging = Some(staging);
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn output_dir_check_accepts_new_empty_and_earlier_output_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        assert!(check_output_dir(&missing).is_ok());
+
+        let empty = directory.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(check_output_dir(&empty).is_ok());
+
+        let earlier = directory.path().join("earlier");
+        std::fs::create_dir(&earlier).unwrap();
+        std::fs::write(earlier.join("conversion-manifest.json"), b"{}").unwrap();
+        std::fs::write(earlier.join("skyrim_world.db"), b"").unwrap();
+        assert!(check_output_dir(&earlier).is_ok());
+
+        let foreign = directory.path().join("Games");
+        std::fs::create_dir_all(foreign.join("Skyrim")).unwrap();
+        assert!(matches!(
+            check_output_dir(&foreign),
+            Err(OutputDirError::NotConverterOutput(_))
+        ));
+        // A folder named like the manifest is not a manifest.
+        let dir_manifest = directory.path().join("dir-manifest");
+        std::fs::create_dir_all(dir_manifest.join("conversion-manifest.json")).unwrap();
+        assert!(matches!(
+            check_output_dir(&dir_manifest),
+            Err(OutputDirError::NotConverterOutput(_))
+        ));
+
+        let file = directory.path().join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(matches!(
+            check_output_dir(&file),
+            Err(OutputDirError::NotADirectory(_))
+        ));
+    }
+
+    /// A config with an existing Data folder, for the overlap checks.
+    fn config_with_data(root: &Path) -> (PathBuf, PipelineConfig) {
+        let data = root.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), b"keep me").unwrap();
+        let config = PipelineConfig::new(&data, root.join("modern"));
+        (data, config)
+    }
+
+    #[test]
+    fn folders_the_run_writes_must_not_overlap_the_data_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        let (data, config) = config_with_data(directory.path());
+        assert!(config.validate().is_ok(), "a sibling output is fine");
+
+        // An earlier conversion that holds the Data folder: publishing would
+        // move it aside and delete it, Data included.
+        let mut holding = config.clone();
+        holding.output_dir = directory.path().to_path_buf();
+        std::fs::write(directory.path().join("conversion-manifest.json"), b"{}").unwrap();
+        let error = holding.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("overlaps the Skyrim Data directory"),
+            "{error}"
+        );
+
+        // The Data folder spelled another way.
+        let mut same = config.clone();
+        same.output_dir = directory.path().join("Data").join("..").join("Data");
+        assert!(same.validate().is_err());
+
+        // Output, cache or resume staging inside the Data folder.
+        let mut inside = config.clone();
+        inside.output_dir = data.join("modern");
+        assert!(inside.validate().is_err());
+        let mut cache = config.clone();
+        cache.cache_dir = Some(data.join("cache"));
+        assert!(cache.validate().is_err());
+
+        // A resume staging folder that holds the Data folder: staging is
+        // deleted after a successful publish.
+        let staging = directory.path().join("modern.staging-1-1");
+        let nested = staging.join("Data");
+        std::fs::create_dir_all(&nested).unwrap();
+        let mut resume = PipelineConfig::new(&nested, directory.path().join("modern"));
+        resume.resume_staging = Some(staging);
+        let error = resume.validate().unwrap_err().to_string();
+        assert!(error.contains("resume staging directory"), "{error}");
+
+        assert_eq!(std::fs::read(data.join("Skyrim.esm")).unwrap(), b"keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_output_folder_that_cannot_be_listed_is_refused_even_with_a_manifest() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern");
+        std::fs::create_dir(&output).unwrap();
+        std::fs::write(output.join("conversion-manifest.json"), b"{}").unwrap();
+        // Search but no read permission: the manifest can be opened by name,
+        // the folder cannot be listed.
+        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let listable = std::fs::read_dir(&output).is_ok();
+        let result = check_output_dir(&output);
+        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if listable {
+            // Running as root: permissions are not enforced, nothing to check.
+            return;
+        }
+        assert!(matches!(result, Err(OutputDirError::Unreadable { .. })));
     }
 
     #[test]
