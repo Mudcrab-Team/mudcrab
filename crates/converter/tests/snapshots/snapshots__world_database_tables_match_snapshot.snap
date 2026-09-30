@@ -66,6 +66,18 @@ expression: snapshot
       "record_type": "DOOR"
     },
     {
+      "form_id": 7,
+      "internal_id": 7,
+      "plugin_name": "merged",
+      "record_type": "NPC_"
+    },
+    {
+      "form_id": 10,
+      "internal_id": 10,
+      "plugin_name": "merged",
+      "record_type": "RACE"
+    },
+    {
       "form_id": 16,
       "internal_id": 16,
       "plugin_name": "merged",
@@ -100,6 +112,12 @@ expression: snapshot
       "internal_id": 65537,
       "plugin_name": "merged",
       "record_type": "REFR"
+    },
+    {
+      "form_id": 219149,
+      "internal_id": 219149,
+      "plugin_name": "merged",
+      "record_type": "MOVT"
     }
   ],
   "land": [
