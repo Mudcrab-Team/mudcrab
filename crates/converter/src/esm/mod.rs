@@ -1,9 +1,9 @@
 use crate::esm::{
-    binary::{parse_plugin_file, parse_plugin_metadata},
+    binary::parse_plugin_file,
     exporter::{create_tables, export_to_db},
     records::RawRecord,
 };
-use color_eyre::Result;
+use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,6 +14,7 @@ pub mod binary;
 pub mod cell_cache;
 pub mod exporter;
 pub mod extractors;
+pub mod load_order;
 pub mod mmap_reader;
 pub mod records;
 pub mod types;
@@ -39,45 +40,37 @@ impl EsmParser {
     }
 
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
-        let names: Vec<String> = plugin_paths
-            .iter()
-            .map(|path| {
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-            })
-            .collect();
-        let mut normal_indices = HashMap::new();
-        let mut light_indices = HashMap::new();
-        let mut next_normal = 0u32;
-        let mut next_light = 0u32;
-        for (path, name) in plugin_paths.iter().zip(&names) {
-            let metadata = parse_plugin_metadata(path)?;
-            if path
-                .extension()
-                .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("esl"))
-                || metadata.flags & 0x0000_0200 != 0
-            {
-                light_indices.insert(name.clone(), next_light);
-                next_light += 1;
-            } else {
-                normal_indices.insert(name.clone(), next_normal);
-                next_normal += 1;
-            }
-        }
+        Self::merge_plugins_selected(plugin_paths, &[])
+    }
+
+    /// Empty types selects all records; otherwise retain only the requested record kinds.
+    pub fn merge_plugins_selected(
+        plugin_paths: &[PathBuf],
+        types: &[[u8; 4]],
+    ) -> Result<HashMap<u32, RawRecord>> {
+        let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut merged = HashMap::new();
         for (priority, path) in plugin_paths.iter().enumerate() {
-            let metadata = parse_plugin_metadata(path)?;
             for mut record in parse_plugin_file(path)? {
+                if !types.is_empty() && !types.contains(&record.record_type) {
+                    continue;
+                }
                 record.load_order = priority as u32;
                 remap_record_form_ids(
                     &mut record,
-                    &names[priority],
-                    &metadata.masters,
-                    &normal_indices,
-                    &light_indices,
-                )?;
+                    &order.names[priority],
+                    &order.metadata[priority].masters,
+                    &order.normal,
+                    &order.light,
+                )
+                .wrap_err_with(|| {
+                    format!(
+                        "{} record {} {:08X}",
+                        order.names[priority],
+                        String::from_utf8_lossy(&record.record_type),
+                        record.form_id
+                    )
+                })?;
                 if record.is_deleted() {
                     merged.remove(&record.form_id);
                 } else {
@@ -150,6 +143,9 @@ fn is_form_id_subrecord(record_type: &[u8; 4], tag: &[u8], len: usize) -> bool {
         (b"TES4" | b"CLFM" | b"AACT", _) => false,
         (b"TREE", b"CNAM") => false,
         (b"TREE", b"SNAM" | b"PFIG") if len == 4 => true,
+        (b"LTEX", b"TNAM" | b"GNAM" | b"MNAM") => true,
+        (b"CELL", b"XCWT") => true,
+        (b"WRLD", b"NAM2" | b"NAM3") => true,
         (b"WRLD", b"WNAM" | b"CNAM" | b"RNAM" | b"TNAM") if len == 4 => true,
         (b"CELL", b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") if len == 4 => true,
         (b"NPC_", b"RNAM" | b"CNAM" | b"INAM") if len == 4 => true,
@@ -173,17 +169,32 @@ fn remap_record_form_ids(
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
 ) -> Result<()> {
+    // Enforce strict reference validation for the grass preparation record kinds.
+    // Preserve legacy handling elsewhere until their record-specific exceptions
+    // (including shipped GMST IDs outside the master table) have been audited.
+    let strict = matches!(
+        &record.record_type,
+        b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
+    );
     let remap = |form_id: u32| -> Result<u32> {
         if form_id == 0 {
             return Ok(0);
         }
         let local_index = (form_id >> 24) as usize;
+        color_eyre::eyre::ensure!(
+            !strict || local_index <= masters.len(),
+            "{plugin_name}: {form_id:08X} has invalid master index {local_index}"
+        );
         let owner = if local_index < masters.len() {
             masters[local_index].to_ascii_lowercase()
         } else {
             plugin_name.to_owned()
         };
         if let Some(index) = light_indices.get(&owner) {
+            color_eyre::eyre::ensure!(
+                !strict || form_id & 0x00ff_ffff <= 0xfff,
+                "{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"
+            );
             return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));
         }
         let index = normal_indices.get(&owner).ok_or_else(|| {
@@ -195,13 +206,55 @@ fn remap_record_form_ids(
     record.cell_form_id = record.cell_form_id.map(&remap).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap).transpose()?;
     for (tag, data) in &mut record.subrecords {
+        if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
+            color_eyre::eyre::ensure!(data.len() >= 4, "truncated GRAS alternate textures");
+            let count = u32::from_le_bytes(data[..4].try_into().unwrap());
+            let mut offset = 4usize;
+            for _ in 0..count {
+                color_eyre::eyre::ensure!(
+                    data.len().saturating_sub(offset) >= 4,
+                    "truncated MODS name length"
+                );
+                let length =
+                    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+                offset += 4;
+                color_eyre::eyre::ensure!(
+                    data.len().saturating_sub(offset) >= length.saturating_add(8),
+                    "truncated MODS entry"
+                );
+                offset += length;
+                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                data[offset..offset + 4].copy_from_slice(&remap(value)?.to_le_bytes());
+                offset += 8;
+            }
+            color_eyre::eyre::ensure!(offset == data.len(), "trailing bytes in GRAS MODS");
+            continue;
+        }
+        if record.record_type == *b"LAND" && matches!(tag.as_slice(), b"BTXT" | b"ATXT") {
+            color_eyre::eyre::ensure!(data.len() == 8, "invalid LAND texture reference length");
+            let value = u32::from_le_bytes(data[..4].try_into().unwrap());
+            data[..4].copy_from_slice(&remap(value)?.to_le_bytes());
+            continue;
+        }
+        if record.record_type == *b"LAND" && tag.as_slice() == b"VTEX" {
+            color_eyre::eyre::ensure!(data.len().is_multiple_of(4), "invalid LAND VTEX length");
+            for value in data.as_chunks_mut::<4>().0 {
+                *value = remap(u32::from_le_bytes(*value))?.to_le_bytes();
+            }
+            continue;
+        }
         if tag.as_slice() == b"VMAD" {
-            records::record_type::vmad::remap_primary_form_ids(data, &remap)?;
+            records::record_type::vmad::remap_primary_form_ids(data, &remap)
+                .wrap_err("VMAD references")?;
             continue;
         }
         if is_form_id_subrecord(&record.record_type, tag, data.len()) {
             let value = u32::from_le_bytes(data[..4].try_into().unwrap());
-            data[..4].copy_from_slice(&remap(value)?.to_le_bytes());
+            data[..4].copy_from_slice(
+                &remap(value)
+                    .wrap_err_with(|| format!("{} reference", String::from_utf8_lossy(tag)))?
+                    .to_le_bytes(),
+            );
         }
     }
     Ok(())
