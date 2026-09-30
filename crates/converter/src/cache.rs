@@ -255,6 +255,7 @@ pub fn configuration_hash_for_schema(
 ) -> Result<String> {
     let mut relevant = serde_json::json!({
         "schema": schema,
+        "game_setting_override_revision": 1,
         "stable_record_identity_revision": 1,
         "subrecord_validation_revision": 1,
         "plugin_reference_remapping_revision": 1,

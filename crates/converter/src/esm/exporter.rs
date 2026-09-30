@@ -370,10 +370,12 @@ fn export_records(
             }
             "GMST" => {
                 let editor_id = view.get_string(b"EDID");
-                if matches!(
-                    editor_id.as_deref(),
-                    Some("fMoveCharWalkBase" | "fJumpHeightMin")
-                ) {
+                let movement_name = editor_id.as_deref().and_then(|name| {
+                    ["fMoveCharWalkBase", "fJumpHeightMin"]
+                        .into_iter()
+                        .find(|known| known.eq_ignore_ascii_case(name))
+                });
+                if let Some(editor_id) = movement_name {
                     let value = decode_movement_setting(&view, form_id)?;
                     tx.execute(
                         "INSERT OR REPLACE INTO movement_game_settings(id, editor_id, value, load_order) VALUES (?1, ?2, ?3, ?4)",

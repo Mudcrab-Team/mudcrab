@@ -109,3 +109,110 @@ fn database_identities_survive_slot_changes_and_keep_override_provenance() {
         assert_eq!(read(full_id), ("base.esm".into(), 0x800, priority));
     }
 }
+
+fn setting(id: u32, name: &str, value: f32, flags: u32) -> Vec<u8> {
+    record(
+        b"GMST",
+        id,
+        flags,
+        [
+            sub(b"EDID", format!("{name}\0").as_bytes()),
+            sub(b"DATA", &value.to_le_bytes()),
+        ]
+        .concat(),
+    )
+}
+
+#[test]
+fn game_settings_override_by_editor_id_with_deletion_restoration_and_null_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    // The shipped GMST convention can use a high byte beyond the master table.
+    let base = plugin(
+        dir.path(),
+        "Base.esm",
+        &[],
+        0,
+        setting(0x0123c00e, "fJumpHeightMin", 76.0, 0),
+    );
+    let patch = plugin(
+        dir.path(),
+        "Patch.esp",
+        &["Base.esm"],
+        0,
+        setting(0x01000810, "FJUMPHEIGHTMIN", 90.0, 0),
+    );
+    let delete = plugin(
+        dir.path(),
+        "Delete.esp",
+        &["Base.esm"],
+        0,
+        setting(0x01000811, "fJumpHeightMin", 0.0, 0x20),
+    );
+    let restore = plugin(
+        dir.path(),
+        "Restore.esl",
+        &["Base.esm"],
+        0x200,
+        setting(0, "fJumpHeightMin", 120.0, 0),
+    );
+    let mut paths = vec![base, patch];
+    for (stage, expected) in [(0, Some(90.0)), (1, None), (2, Some(120.0))] {
+        if stage == 1 {
+            paths.push(delete.clone());
+        }
+        if stage == 2 {
+            paths.push(restore.clone());
+        }
+        let merged = EsmParser::merge_plugins(&paths).unwrap();
+        assert_eq!(merged.len(), usize::from(expected.is_some()));
+        let db = dir.path().join(format!("gmst{stage}.db"));
+        EsmParser::convert_plugins(&paths, &db).unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(merged[&0x23c00e].load_order, paths.len() as u32 - 1);
+            let (id, value): (u32, f64) = conn
+                .query_row(
+                    "SELECT id,value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(id, 0x23c00e);
+            assert_eq!(value, expected);
+            assert_eq!(
+                conn.query_row(
+                    "SELECT plugin_name FROM formid_map WHERE form_id=?1",
+                    [id],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+                "base.esm"
+            );
+        } else {
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM movement_game_settings", [], |row| row
+                    .get::<_, u32>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn ambiguous_new_game_setting_ids_fail_instead_of_overwriting_another_record() {
+    for bytes in [
+        [
+            setting(0x800, "fFirst", 1.0, 0),
+            setting(0x800, "fSecond", 2.0, 0),
+        ]
+        .concat(),
+        [grass(0x800, 1), setting(0x800, "fFirst", 1.0, 0)].concat(),
+        [setting(0x800, "fFirst", 1.0, 0), grass(0x800, 1)].concat(),
+        setting(0, "fUnknown", 1.0, 0),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = plugin(dir.path(), "Base.esm", &[], 0, bytes);
+        assert!(EsmParser::merge_plugins(&[base]).is_err());
+    }
+}

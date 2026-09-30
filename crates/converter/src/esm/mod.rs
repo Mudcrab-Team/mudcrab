@@ -7,7 +7,7 @@ use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 pub mod binary;
@@ -51,6 +51,11 @@ impl EsmParser {
     ) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut merged = HashMap::new();
+        // Unlike ordinary forms, game settings override by EditorID. Retain
+        // the first definition's key/owner while taking the last setting value.
+        // Keep keys through deletions so a later restoration has the same ID.
+        let mut game_setting_ids = HashMap::<String, u32>::new();
+        let mut game_setting_keys = HashSet::new();
         for (priority, path) in plugin_paths.iter().enumerate() {
             for mut record in parse_plugin_file(path)? {
                 if !types.is_empty() && !types.contains(&record.record_type) {
@@ -72,6 +77,41 @@ impl EsmParser {
                         record.form_id
                     )
                 })?;
+                if record.record_type == *b"GMST" {
+                    let editor_id = extractors::SubrecordView::new(&record.subrecords)
+                        .get_string(b"EDID")
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!(
+                                "{} GMST {:08X} has no EditorID",
+                                order.names[priority],
+                                record.form_id
+                            )
+                        })?
+                        .to_ascii_lowercase();
+                    if let Some(&canonical) = game_setting_ids.get(&editor_id) {
+                        record.form_id = canonical;
+                    } else {
+                        color_eyre::eyre::ensure!(
+                            record.form_id != 0,
+                            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"
+                        );
+                        color_eyre::eyre::ensure!(
+                            !game_setting_keys.contains(&record.form_id)
+                                && !merged.contains_key(&record.form_id),
+                            "GMST {editor_id} collides with another record at {:08X}",
+                            record.form_id
+                        );
+                        game_setting_ids.insert(editor_id, record.form_id);
+                        game_setting_keys.insert(record.form_id);
+                    }
+                } else {
+                    color_eyre::eyre::ensure!(
+                        !game_setting_keys.contains(&record.form_id),
+                        "record {:08X} collides with a GMST identity",
+                        record.form_id
+                    );
+                }
                 if record.is_deleted() {
                     merged.remove(&record.form_id);
                 } else {
