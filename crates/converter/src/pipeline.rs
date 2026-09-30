@@ -3,13 +3,25 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        configuration_hash, configuration_hash_for_schema, hash_file, link_or_copy,
+        configuration_hash, configuration_hash_for_schema, hash_bytes, hash_file, link_or_copy,
         load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
-    esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
+    esm::{
+        EsmParser,
+        cell_cache::write_cell_cache,
+        exporter::validate_database,
+        lodsettings::{LodSettings, sidecar_path},
+        read_plugins_txt,
+    },
     integration::{IntegrationReport, finalize_world_database},
-    mesh::MeshConverter,
+    lod::{
+        albedo::TerrainTextures,
+        terrain::{
+            compile_world_terrain, exterior_terrain_cells, publish_chunks, read_cached_heights,
+        },
+    },
+    mesh::{MeshConverter, nif_source_hash},
     progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic, publish_ktx2_file},
@@ -21,6 +33,7 @@ use color_eyre::{
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use shared::{asset_lock::AssetLock, lod::LodOrigin};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
@@ -50,6 +63,12 @@ pub struct PipelineReport {
     /// separately from `skipped` and `warnings`: nothing failed to convert, so a
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
+    /// Terrain LOD chunks compiled this run. Zero when no worldspace had a
+    /// valid origin; a world without one is recorded as an LOD omission, never
+    /// given an assumed origin (GEOM-02).
+    pub lod_chunks: u64,
+    #[serde(default)]
+    pub lod_warnings: Vec<String>,
     pub warnings: Vec<String>,
     /// advisory messages that do not affect completeness
     #[serde(default)]
@@ -212,6 +231,7 @@ impl AssetPipeline {
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
         config.validate()?;
+        recover_published_output_if_missing(&config.output_dir)?;
         let started = Instant::now();
         send(
             &progress_tx,
@@ -228,11 +248,29 @@ impl AssetPipeline {
             ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))?
         };
         let expected_configuration = configuration_hash(&config)?;
-        let configuration_is_compatible = loaded_manifest.configuration_hash
+        let metadata_configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
-            || (matches!(loaded_manifest.schema_version, 12..=15)
+            || (matches!(loaded_manifest.schema_version, 12..=16)
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
+        let retained_configuration_is_compatible =
+            match &loaded_manifest.retained_asset_configuration_hash {
+                Some(recorded) => {
+                    recorded
+                        == &configuration_hash_for_schema(
+                            &config,
+                            loaded_manifest
+                                .retained_mesh_schema_version
+                                .unwrap_or(loaded_manifest.schema_version),
+                        )?
+                }
+                None => {
+                    loaded_manifest.retained_mesh_schema_version.is_none()
+                        && !config.output_dir.join("metadata-rebuild.json").exists()
+                }
+            };
+        let configuration_is_compatible =
+            metadata_configuration_is_compatible && retained_configuration_is_compatible;
         let previous_manifest = if configuration_is_compatible {
             loaded_manifest
         } else {
@@ -282,6 +320,7 @@ impl AssetPipeline {
                 }
             }
             invalidate_staged_mesh_outputs(&staging, &verified)?;
+            invalidate_staged_generated_outputs(&staging)?;
         }
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
@@ -371,6 +410,8 @@ impl AssetPipeline {
         let mut journal = StagingJournal::open(staging)?;
         let mut manifest = ConversionManifest {
             schema_version: CONVERTER_SCHEMA_VERSION,
+            retained_mesh_schema_version: None,
+            retained_asset_configuration_hash: None,
             complete: false,
             configuration_hash: expected_configuration.clone(),
             inputs_by_kind: Default::default(),
@@ -393,6 +434,10 @@ impl AssetPipeline {
             )
             .await;
         }
+        let plugin_hashes = plugins
+            .iter()
+            .map(|plugin| hash_file(plugin))
+            .collect::<Result<Vec<_>>>()?;
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -416,6 +461,9 @@ impl AssetPipeline {
         }
 
         let vfs_dir = staging.join("vfs");
+        // Reconstruct the effective input set; removed archives or loose files
+        // must not survive from an interrupted run's VFS.
+        fs::remove_dir_all(&vfs_dir)?;
         fs::create_dir_all(&vfs_dir)?;
 
         // Bytes already extracted, so each archive reports progress against the whole run instead
@@ -592,6 +640,7 @@ impl AssetPipeline {
         // and to detect a pruned texture whose source is back in the installed data.
         let source_textures = texture_source_keys(staging, &vfs_files);
         let restored_meshes = restored_mesh_outputs(previous, &source_textures);
+        remove_orphan_staged_assets(staging, &vfs_files)?;
         {
             let mut batch = ConversionBatch {
                 config,
@@ -685,6 +734,7 @@ impl AssetPipeline {
                 .sum();
             let mut pruned_completed = 0;
             for file in &pruned {
+                batch.refresh_pruned_output(&file.glb)?;
                 for uri in &file.removed_uris {
                     pruned_completed += 1;
                     // The warning goes out as a notice on the progress channel rather than to
@@ -771,6 +821,16 @@ impl AssetPipeline {
                 )
                 .await?;
         }
+        compile_lod_chunks_with_cancel(
+            config,
+            staging,
+            &plugins,
+            &plugin_hashes,
+            progress_tx,
+            cancellation,
+            &mut report,
+        )
+        .await?;
         interrupt(cancellation)?;
         if let Some(integration) = finalize_world_database(staging)? {
             if !integration.passed {
@@ -1062,7 +1122,7 @@ impl ConversionBatch<'_> {
                         let result = result
                             .wrap_err_with(|| format!("failed to convert {}", relative.display()));
                         let _ = gpu_outcomes
-                            .send((index, key, hash, target_rel, relative, result, target));
+                            .send((index, key, hash, target_rel, relative, result, target, false));
                     };
                     let stats = texture_gpu::run_batcher(&gpu, receiver, cpu_jobs, stopped, finish);
                     eprintln!(
@@ -1097,9 +1157,18 @@ impl ConversionBatch<'_> {
                             force_reconvert.contains(target_rel.to_string_lossy().as_ref());
                         let target = staging_root.join(&target_rel);
 
-                        let mut hash = match hash_file(&source) {
+                        let source_hash = if source_kind == "nif" {
+                            nif_source_hash(&source)
+                        } else {
+                            hash_file(&source)
+                        };
+                        let mut hash = match source_hash {
                             Ok(h) => h,
                             Err(err) => {
+                                let (err, fatal) = match remove_invalid_staged_output(&target) {
+                                    Ok(()) => (err, false),
+                                    Err(remove_error) => (remove_error, true),
+                                };
                                 let _ = outcome_tx.send((
                                     index,
                                     key,
@@ -1108,6 +1177,7 @@ impl ConversionBatch<'_> {
                                     relative.clone(),
                                     Err(err),
                                     target,
+                                    fatal,
                                 ));
                                 return;
                             }
@@ -1124,29 +1194,6 @@ impl ConversionBatch<'_> {
                                 && texture_gpu::takes(&source, encoding)
                             {
                                 hash.push_str(label);
-                            }
-                        }
-
-                        if source_kind == "nif" {
-                            for dependency in MeshConverter::dependency_paths(&source) {
-                                match hash_file(&dependency) {
-                                    Ok(dep_hash) => {
-                                        hash.push(':');
-                                        hash.push_str(&dep_hash);
-                                    }
-                                    Err(err) => {
-                                        let _ = outcome_tx.send((
-                                            index,
-                                            key,
-                                            hash,
-                                            target_rel,
-                                            relative.clone(),
-                                            Err(err),
-                                            target,
-                                        ));
-                                        return;
-                                    }
-                                }
                             }
                         }
 
@@ -1177,6 +1224,7 @@ impl ConversionBatch<'_> {
                                         relative.clone(),
                                         Ok(Produced::CacheHit),
                                         target,
+                                        false,
                                     ));
                                     return;
                                 };
@@ -1252,22 +1300,35 @@ impl ConversionBatch<'_> {
                             hash.truncate(hash.len() - label.len());
                         }
 
-                        let result = if existing_is_valid {
-                            Ok(())
+                        let (result, fatal) = if existing_is_valid {
+                            (Ok(()), false)
                         } else {
-                            match source_kind.as_str() {
-                                "dds" => TextureConverter::convert_dds_to_ktx2_with_options(
-                                    &source,
-                                    &target,
-                                    encoding.expect("DDS conversion requires an encoding"),
-                                    etc1s_quality,
-                                    uastc_level,
-                                    zstd_level,
-                                )
-                                .map(|_| ()),
-                                "nif" => MeshConverter::convert_nif_to_glb(&source, &target),
-                                "pex" => ScriptConverter::convert_pex_to_luau(&source, &target),
-                                _ => unreachable!(),
+                            match remove_invalid_staged_output(&target) {
+                                Err(error) => (Err(error), true),
+                                Ok(()) => {
+                                    let conversion = match source_kind.as_str() {
+                                        "dds" => {
+                                            TextureConverter::convert_dds_to_ktx2_with_options(
+                                                &source,
+                                                &target,
+                                                encoding
+                                                    .expect("DDS conversion requires an encoding"),
+                                                etc1s_quality,
+                                                uastc_level,
+                                                zstd_level,
+                                            )
+                                            .map(|_| ())
+                                        }
+                                        "nif" => {
+                                            MeshConverter::convert_nif_to_glb(&source, &target)
+                                        }
+                                        "pex" => {
+                                            ScriptConverter::convert_pex_to_luau(&source, &target)
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                    remove_partial_output_after_failure(&target, conversion)
+                                }
                             }
                         };
 
@@ -1282,6 +1343,7 @@ impl ConversionBatch<'_> {
                             relative.to_path_buf(),
                             result,
                             target,
+                            fatal,
                         ));
                     },
                 );
@@ -1299,7 +1361,7 @@ impl ConversionBatch<'_> {
         let mut first_error = None;
         let fail_fast = self.config.fail_fast;
         let mut bytes_completed = 0u64;
-        while let Some((_, key, hash, target_rel, relative, conversion, target)) =
+        while let Some((_, key, hash, target_rel, relative, conversion, target, fatal)) =
             outcome_rx.recv().await
         {
             completed += 1;
@@ -1420,7 +1482,7 @@ impl ConversionBatch<'_> {
                     self.report.artifacts.push(target_rel);
                 }
                 Err(error) => {
-                    if fail_fast {
+                    if fail_fast || fatal {
                         if first_error.is_none() {
                             cancelled.store(true, Ordering::Relaxed);
                             let _ = progress_tx
@@ -1497,6 +1559,18 @@ impl ConversionBatch<'_> {
             .entry(glb.to_owned())
             .or_default()
             .insert(reference.to_owned())
+    }
+
+    fn refresh_pruned_output(&mut self, glb: &str) -> Result<()> {
+        let key = canonical_asset_path(glb, AssetKind::Mesh, "nif")?;
+        let entry = self.manifest.entries.get_mut(&key).ok_or_else(|| {
+            color_eyre::eyre::eyre!("pruned GLB has no conversion provenance: {glb}")
+        })?;
+        let path = self.staging.join(glb);
+        entry.output_size = fs::metadata(&path)?.len();
+        entry.output_hash = hash_file(&path)?;
+        self.journal
+            .record(&key, &staged_output(entry, self.expected_configuration))
     }
 }
 
@@ -1686,7 +1760,7 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
     Ok(published)
 }
 
-fn discover(root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn discover(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files: Vec<_> = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -1721,7 +1795,7 @@ fn files_are_identical(left: &Path, right: &Path) -> bool {
 ///
 /// The failure of the lowest artifact index is returned, so the reported error does not depend on
 /// which thread finished first.
-fn validate_artifacts(
+pub(crate) fn validate_artifacts(
     staging: &Path,
     artifacts: &[PathBuf],
     texture_semantics: &BTreeMap<String, BTreeSet<TextureSemantic>>,
@@ -1821,19 +1895,21 @@ fn validate_artifact(
     Ok(())
 }
 
-fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()> {
+pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()> {
     let mut seen = BTreeMap::<String, PathBuf>::new();
     for source in files
         .iter()
-        .filter(|path| extension(path, &["dds", "nif", "pex"]))
+        .filter(|path| extension(path, &["dds", "nif", "pex", "lod"]))
     {
         let relative = source.strip_prefix(data)?;
         let (kind, extension) = if extension(source, &["dds"]) {
             (AssetKind::Texture, "dds")
         } else if extension(source, &["nif"]) {
             (AssetKind::Mesh, "nif")
-        } else {
+        } else if extension(source, &["pex"]) {
             (AssetKind::Script, "pex")
+        } else {
+            (AssetKind::LodSettings, "lod")
         };
         let canonical = canonical_asset_path(&relative.to_string_lossy(), kind, extension)?;
         if let Some(previous) = seen.insert(canonical.clone(), source.to_owned()) {
@@ -1913,7 +1989,7 @@ fn plugin_paths(
     crate::esm::load_order::order_discovered_plugins(plugins)
 }
 
-fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
+pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     let plugin_stems = plugins
         .iter()
         .filter_map(|path| path.file_stem())
@@ -1987,6 +2063,76 @@ fn invalidate_staged_mesh_outputs(staging: &Path, verified: &BTreeSet<String>) -
     Ok(())
 }
 
+fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
+    // Rebuild from current inputs so removed sources cannot leave orphaned
+    // metadata. Keep partial assets until the effective VFS is rebuilt: the
+    // journal still proves which current outputs a resume can reuse.
+    for relative in [
+        "skyrim_world.db",
+        "skyrim_world.db-wal",
+        "skyrim_world.db-shm",
+        "cell_cache.rkyv",
+        "integration-report.json",
+        "lod-manifest.json",
+        "metadata-rebuild.json",
+        "metadata-source-conversion-manifest.json",
+    ] {
+        let path = staging.join(relative);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to invalidate {}", path.display()));
+            }
+        }
+    }
+    let lod_dir = staging.join("lod");
+    if lod_dir.exists() {
+        fs::remove_dir_all(&lod_dir)?;
+    }
+    Ok(())
+}
+
+fn remove_orphan_staged_assets(staging: &Path, sources: &[PathBuf]) -> Result<()> {
+    let vfs = staging.join("vfs");
+    let mut expected = BTreeSet::new();
+    for source in sources {
+        let (kind, output_extension) = if extension(source, &["nif"]) {
+            (AssetKind::Mesh, "glb")
+        } else if extension(source, &["dds"]) {
+            (AssetKind::Texture, "ktx2")
+        } else if extension(source, &["pex"]) {
+            (AssetKind::Script, "luau")
+        } else {
+            continue;
+        };
+        expected.insert(PathBuf::from(canonical_asset_path(
+            &source.strip_prefix(&vfs)?.to_string_lossy(),
+            kind,
+            output_extension,
+        )?));
+    }
+    for entry in WalkDir::new(staging)
+        .into_iter()
+        .filter_entry(|entry| entry.path() != vfs.as_path())
+    {
+        let entry = entry?;
+        if entry.file_type().is_file()
+            && extension(entry.path(), &["glb", "ktx2", "luau"])
+            && !expected.contains(entry.path().strip_prefix(staging)?)
+        {
+            fs::remove_file(entry.path()).wrap_err_with(|| {
+                format!(
+                    "failed to remove orphaned staged asset {}",
+                    entry.path().display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Removes a staging folder after a successful publish, unless it is or holds the Skyrim Data
 /// folder: a `--resume-staging` folder is named by the user, and removing it must never take the
 /// game data with it. A folder that is kept, or fails to go, is reported on stderr and left behind;
@@ -2023,13 +2169,39 @@ fn remove_staging(staging: &Path, data_dir: &Path) -> bool {
     }
 }
 
+fn remove_invalid_staged_output(target: &Path) -> Result<()> {
+    match fs::remove_file(target) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).wrap_err_with(|| {
+            format!(
+                "failed to remove invalid staged output {}",
+                target.display()
+            )
+        }),
+    }
+}
+
+fn remove_partial_output_after_failure(
+    target: &Path,
+    conversion: Result<()>,
+) -> (Result<()>, bool) {
+    match conversion {
+        Ok(()) => (Ok(()), false),
+        Err(error) => match remove_invalid_staged_output(target) {
+            Ok(()) => (Err(error), false),
+            Err(remove_error) => (Err(remove_error), true),
+        },
+    }
+}
+
 /// Strips the leading asset kind folder (e.g., "textures", "meshes", "scripts")
 /// from a relative path in a case-insensitive manner.
 ///
 /// This avoids creating double-nested output directory structures when processing
 /// assets extracted from BSA archives or loose mod folders with mixed-case naming
 /// (such as `Textures\actors\dragon.dds` or `Meshes\armor\iron.nif`).
-fn staging_path(output: &Path) -> PathBuf {
+pub(crate) fn staging_path(output: &Path) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -2162,6 +2334,243 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
     Ok(())
 }
 
+/// Compiles Phase 1 terrain LOD chunks for every worldspace with a valid
+/// origin, after the world database and cell cache exist and before
+/// integration validation reads them.
+///
+/// Settings resolution per worldspace: an explicit `lod_origins` entry wins
+/// (custom worlds), otherwise the `lodsettings/<WorldspaceEDID>.lod` sidecar
+/// supplies its origin and Skyrim grid metadata (installed worlds). Missing or invalid
+/// settings omit only that world's LOD; full-detail conversion remains usable.
+///
+/// The build identity is one hash over the ordered plugin bytes, every
+/// compiled chunk's content hash, the configuration hash, and the converter
+/// schema (BUILD-01/02). It is written to `lod_build` and to the published
+/// manifest; the runtime refuses chunks whose manifest identity differs.
+pub(crate) async fn compile_lod_chunks(
+    config: &PipelineConfig,
+    staging: &Path,
+    plugins: &[PathBuf],
+    plugin_hashes: &[String],
+    progress_tx: &Sender<ProgressEvent>,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    compile_lod_chunks_with_cancel(
+        config,
+        staging,
+        plugins,
+        plugin_hashes,
+        progress_tx,
+        &Cancellation::new(),
+        report,
+    )
+    .await
+}
+
+async fn compile_lod_chunks_with_cancel(
+    config: &PipelineConfig,
+    staging: &Path,
+    plugins: &[PathBuf],
+    plugin_hashes: &[String],
+    progress_tx: &Sender<ProgressEvent>,
+    cancellation: &Cancellation,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    let db_path = staging.join("skyrim_world.db");
+    if plugins.is_empty() || !db_path.is_file() {
+        return Ok(());
+    }
+    let connection = Connection::open(&db_path)?;
+    let mut worlds: Vec<(u32, String)> = connection
+        .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Deterministic order regardless of rowid layout.
+    worlds.sort();
+    send(
+        progress_tx,
+        ProgressStage::LodChunks,
+        0,
+        worlds.len() as u64,
+        None,
+        "Compiling terrain LOD chunks",
+    )
+    .await;
+    let mut chunk_hashes: Vec<String> = Vec::new();
+    let mut world_settings = Vec::with_capacity(worlds.len());
+    let mut compiled_worlds = 0u64;
+    let mut terrain_sources = BTreeMap::new();
+    let compiler_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.cpu_jobs)
+        .build()
+        .wrap_err("failed to create terrain LOD compiler pool")?;
+    for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
+        interrupt(cancellation)?;
+        let settings = match resolve_lod_settings(config, &staging.join("vfs"), editor_id) {
+            Ok(Some(settings)) => settings,
+            Ok(None) => {
+                let message = format!(
+                    "worldspace {editor_id} ({worldspace_id:08X}) has no LOD origin: no lod_origins entry and no lodsettings/{editor_id}.lod; its terrain LOD is skipped"
+                );
+                report.lod_warnings.push(message);
+                world_settings.push(serde_json::json!({
+                    "worldspace_id": worldspace_id,
+                    "editor_id": editor_id,
+                    "status": "missing",
+                }));
+                send(
+                    progress_tx,
+                    ProgressStage::LodChunks,
+                    (index + 1) as u64,
+                    worlds.len() as u64,
+                    None,
+                    "Compiling terrain LOD chunks",
+                )
+                .await;
+                continue;
+            }
+            Err(error) => {
+                report.lod_warnings.push(format!(
+                    "worldspace {editor_id} ({worldspace_id:08X}) has invalid LOD settings: {error:#}; its terrain LOD is skipped"
+                ));
+                world_settings.push(serde_json::json!({
+                    "worldspace_id": worldspace_id,
+                    "editor_id": editor_id,
+                    "status": "invalid",
+                }));
+                send(
+                    progress_tx,
+                    ProgressStage::LodChunks,
+                    (index + 1) as u64,
+                    worlds.len() as u64,
+                    None,
+                    "Compiling terrain LOD chunks",
+                )
+                .await;
+                continue;
+            }
+        };
+        let origin = settings.origin;
+        world_settings.push(serde_json::json!({
+            "worldspace_id": worldspace_id,
+            "editor_id": editor_id,
+            "status": "ready",
+            "origin": [origin.grid_x, origin.grid_y],
+            "sidecar": settings.sidecar.map(|sidecar| serde_json::json!({
+                "stride": sidecar.stride,
+                "min_level": sidecar.min_level,
+                "max_level": sidecar.max_level,
+            })),
+        }));
+        connection.execute(
+            "UPDATE worldspaces SET lod_origin_x = ?1, lod_origin_y = ?2 WHERE id = ?3",
+            rusqlite::params![origin.grid_x, origin.grid_y, worldspace_id],
+        )?;
+        let cells = exterior_terrain_cells(&connection, *worldspace_id)?;
+        if cells.is_empty() {
+            send(
+                progress_tx,
+                ProgressStage::LodChunks,
+                (index + 1) as u64,
+                worlds.len() as u64,
+                None,
+                "Compiling terrain LOD chunks",
+            )
+            .await;
+            continue;
+        }
+        let lookup: std::collections::HashMap<u32, (i32, i32)> = cells
+            .iter()
+            .map(|(grid_x, grid_y, cell_id)| (*cell_id, (*grid_x, *grid_y)))
+            .collect();
+        let inputs = read_cached_heights(&staging.join("cell_cache.rkyv"), &lookup)?;
+        let textures = match TerrainTextures::load(&connection, &staging.join("vfs"), &inputs) {
+            Ok(textures) => textures,
+            Err(error) => {
+                report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid material inputs: {error:#}"));
+                if let Some(settings) = world_settings.last_mut() {
+                    settings["status"] = serde_json::json!("invalid_material");
+                    settings["material_error"] = serde_json::json!(format!("{error:#}"));
+                }
+                send(
+                    progress_tx,
+                    ProgressStage::LodChunks,
+                    (index + 1) as u64,
+                    worlds.len() as u64,
+                    None,
+                    "Compiling terrain LOD chunks",
+                )
+                .await;
+                continue;
+            }
+        };
+        let chunks = compiler_pool
+            .install(|| compile_world_terrain(*worldspace_id, origin, &inputs, &textures))?;
+        interrupt(cancellation)?;
+        textures.verify_sources(&staging.join("vfs"))?;
+        terrain_sources.extend(textures.source_hashes);
+        for chunk in &chunks {
+            chunk_hashes.push(format!(
+                "{}:{}",
+                shared::lod::chunk_payload_path(chunk.key),
+                hash_bytes(&chunk.glb)
+            ));
+        }
+        // Payloads and their index rows now; the single `lod_build` row
+        // after every world is compiled, once the identity is final.
+        publish_chunks(&connection, staging, None, &chunks)?;
+        report.lod_chunks += chunks.len() as u64;
+        report.artifacts.extend(
+            chunks
+                .iter()
+                .map(|chunk| PathBuf::from(shared::lod::chunk_payload_path(chunk.key))),
+        );
+        compiled_worlds += 1;
+        send(
+            progress_tx,
+            ProgressStage::LodChunks,
+            (index + 1) as u64,
+            worlds.len() as u64,
+            None,
+            "Compiling terrain LOD chunks",
+        )
+        .await;
+    }
+    chunk_hashes.sort();
+    let current_plugin_hashes = plugins
+        .iter()
+        .map(|plugin| hash_file(plugin))
+        .collect::<Result<Vec<_>>>()?;
+    color_eyre::eyre::ensure!(
+        current_plugin_hashes == plugin_hashes,
+        "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation"
+    );
+    let identity = build_identity(
+        plugin_hashes,
+        &chunk_hashes,
+        &configuration_hash(config)?,
+        &world_settings,
+        &terrain_sources,
+    )?;
+    connection.execute(
+        "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
+        rusqlite::params![identity],
+    )?;
+    if compiled_worlds > 0 {
+        report.artifacts.push(PathBuf::from("lod-manifest.json"));
+        let manifest = LodManifest {
+            build_identity: identity,
+            converter_schema: CONVERTER_SCHEMA_VERSION,
+            world_database_schema: shared::WORLD_DATABASE_SCHEMA_VERSION,
+            chunks: report.lod_chunks,
+            terrain_sources,
+        };
+        let bytes = serde_json::to_vec_pretty(&manifest)?;
+        fs::write(staging.join("lod-manifest.json"), &bytes)?;
+    }
+    Ok(())
+}
+
 /// Whether a cache file name is a spill copy of a blob: 64 hex digits, a dot and a number.
 fn is_spill_copy(name: &str) -> bool {
     name.split_once('.').is_some_and(|(hash, index)| {
@@ -2203,10 +2612,100 @@ fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest)
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedLodSettings {
+    origin: LodOrigin,
+    sidecar: Option<LodSettings>,
+}
+
+/// Resolve against the effective staged VFS, after archive and loose overlays.
+fn resolve_lod_settings(
+    config: &PipelineConfig,
+    vfs: &Path,
+    editor_id: &str,
+) -> Result<Option<ResolvedLodSettings>> {
+    if let Some([x, y]) = config.lod_origins.get(editor_id) {
+        return Ok(Some(ResolvedLodSettings {
+            origin: LodOrigin::new(*x, *y),
+            sidecar: None,
+        }));
+    }
+    let path = sidecar_path(vfs, editor_id)?;
+    match fs::metadata(&path) {
+        Ok(_) => {
+            let settings = LodSettings::read(&path)?;
+            Ok(Some(ResolvedLodSettings {
+                origin: settings.origin,
+                sidecar: Some(settings),
+            }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .wrap_err_with(|| format!("failed to inspect LOD settings {}", path.display())),
+    }
+}
+
+/// One build identity across ordered plugin bytes, compiled chunk payloads,
+/// configuration, and converter schema (BUILD-01/02).
+fn build_identity(
+    plugin_hashes: &[String],
+    chunk_hashes: &[String],
+    configuration_hash: &str,
+    world_settings: &[serde_json::Value],
+    terrain_sources: &BTreeMap<String, String>,
+) -> Result<String> {
+    let canonical = serde_json::json!({
+        "converter_schema": CONVERTER_SCHEMA_VERSION,
+        "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
+        "configuration": configuration_hash,
+        "plugins": plugin_hashes,
+        "chunks": chunk_hashes,
+        "world_settings": world_settings,
+        "terrain_sources": terrain_sources,
+    });
+    Ok(hash_bytes(&serde_json::to_vec(&canonical)?))
+}
+
+/// The published `lod-manifest.json`: the identity the runtime checks before
+/// trusting any chunk row or payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LodManifest {
+    build_identity: String,
+    converter_schema: u32,
+    world_database_schema: u32,
+    chunks: u64,
+    terrain_sources: BTreeMap<String, String>,
+}
+
 fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
-    // Checked again here, not only before the run: the old output is deleted
-    // below, so a folder that became unsafe during the run must stop it.
+    publish_directory_with_policy(staging, output, true)
+}
+
+pub(crate) fn publish_new_directory(staging: &Path, output: &Path) -> Result<()> {
+    publish_directory_with_policy(staging, output, false)
+}
+
+fn publish_directory_with_policy(staging: &Path, output: &Path, replace: bool) -> Result<()> {
+    let _asset_lock = AssetLock::acquire_exclusive(output).wrap_err_with(|| {
+        format!(
+            "failed to lock asset directory {} for publication",
+            output.display()
+        )
+    })?;
+    // Checked again under the publication lock before the old output is moved.
     crate::config::check_output_dir(output)?;
+    ensure!(
+        replace
+            || output
+                .symlink_metadata()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "metadata rebuild requires a new output directory: {}",
+        output.display()
+    );
+    if !replace {
+        return fs::rename(staging, output).wrap_err("failed to publish new metadata output");
+    }
+    recover_interrupted_publication(output)?;
     let backup = output.with_extension(format!("backup-{}", std::process::id()));
     if backup.exists() {
         bail!("refusing to overwrite stale backup {}", backup.display());
@@ -2227,13 +2726,88 @@ fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
         }
     }
     if let Err(error) = fs::rename(staging, output) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, output);
+        if backup.exists()
+            && let Err(restore_error) = fs::rename(&backup, output)
+        {
+            return Err(error).wrap_err_with(|| {
+                format!(
+                    "failed to publish converted assets and failed to restore last-good output from {}: {restore_error}",
+                    backup.display()
+                )
+            });
         }
         return Err(error).wrap_err("failed to publish converted assets");
     }
     if backup.exists() {
         fs::remove_dir_all(backup)?;
+    }
+    Ok(())
+}
+
+/// Restores a last-good directory before reading manifests or building if a
+/// previous process died during the two-rename publication window.
+fn recover_published_output_if_missing(output: &Path) -> Result<()> {
+    if output.exists() {
+        return Ok(());
+    }
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Ok(());
+    }
+    let _asset_lock = AssetLock::acquire_exclusive(output).wrap_err_with(|| {
+        format!(
+            "failed to lock asset directory {} for recovery",
+            output.display()
+        )
+    })?;
+    recover_interrupted_publication(output)
+}
+
+/// Restores the newest previous output if a process crashed after moving it
+/// aside but before moving the staged tree into place. The caller holds the
+/// exclusive asset-directory lock throughout recovery and publication.
+fn recover_interrupted_publication(output: &Path) -> Result<()> {
+    if output.exists() {
+        return Ok(());
+    }
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let Some(stem) = output.file_stem().or_else(|| output.file_name()) else {
+        return Ok(());
+    };
+    let prefix = format!("{}.backup-", stem.to_string_lossy());
+    let entries = fs::read_dir(parent)
+        .wrap_err_with(|| {
+            format!(
+                "failed to inspect publication backups in {}",
+                parent.display()
+            )
+        })?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut backups = entries
+        .into_iter()
+        .filter(|entry| {
+            entry.file_name().to_string_lossy().starts_with(&prefix) && entry.path().is_dir()
+        })
+        .collect::<Vec<_>>();
+    backups.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    if let Some(backup) = backups.pop() {
+        fs::rename(backup.path(), output).wrap_err_with(|| {
+            format!(
+                "failed to restore last-good assets from {}",
+                backup.path().display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -2363,6 +2937,94 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[test]
+    fn lod_settings_change_lod_identity_without_invalidating_asset_cache() {
+        let config = PipelineConfig::new("/data", "/output");
+        let cache_identity = configuration_hash(&config).unwrap();
+        let mut changed = config;
+        changed.lod_origins.insert("Tamriel".to_owned(), [-64, 32]);
+        assert_eq!(configuration_hash(&changed).unwrap(), cache_identity);
+
+        let first = build_identity(&[], &[], &cache_identity, &[], &BTreeMap::new()).unwrap();
+        let second = build_identity(
+            &[],
+            &[],
+            &cache_identity,
+            &[serde_json::json!({
+                "worldspace_id": 1,
+                "editor_id": "Tamriel",
+                "status": "ready",
+                "origin": [-64, 32],
+                "sidecar": null,
+            })],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn explicit_lod_origin_precedes_invalid_staged_sidecar() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(vfs.join("lodsettings")).unwrap();
+        fs::write(vfs.join("lodsettings/tamriel.lod"), b"invalid").unwrap();
+        let mut config = PipelineConfig::new("/data", "/output");
+        assert!(resolve_lod_settings(&config, &vfs, "Tamriel").is_err());
+        config.lod_origins.insert("Tamriel".into(), [-2, 4]);
+        assert_eq!(
+            resolve_lod_settings(&config, &vfs, "Tamriel").unwrap(),
+            Some(ResolvedLodSettings {
+                origin: LodOrigin::new(-2, 4),
+                sidecar: None,
+            })
+        );
+    }
+
+    #[test]
+    fn lod_only_omissions_do_not_mark_full_detail_conversion_incomplete() {
+        let report = PipelineReport {
+            lod_warnings: vec!["worldspace without sidecar".to_owned()],
+            ..Default::default()
+        };
+        assert!(conversion_is_complete(&report));
+    }
+
+    #[test]
+    fn restores_last_good_output_after_interrupted_directory_swap() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern_assets");
+        let backup = output.with_extension("backup-12345");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("sentinel"), b"last good").unwrap();
+
+        recover_interrupted_publication(&output).unwrap();
+
+        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn publication_refuses_to_swap_assets_held_by_a_runtime_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern_assets");
+        let staging = directory.path().join("staging");
+        fs::create_dir_all(&output).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(output.join("sentinel"), b"last good").unwrap();
+        fs::write(staging.join("sentinel"), b"new build").unwrap();
+        let _reader = AssetLock::acquire_shared(&output).unwrap();
+
+        let error = publish_directory(&staging, &output).unwrap_err();
+
+        assert!(
+            format!("{error:?}").contains("another process holds an incompatible lock"),
+            "unexpected publish error: {error:?}"
+        );
+        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
+        assert_eq!(fs::read(staging.join("sentinel")).unwrap(), b"new build");
+    }
+
+    #[test]
     fn maps_srgb_runtime_aliases_back_to_their_converted_source() {
         assert_eq!(
             source_texture_key("textures/effects/fire.opensky-srgb.ktx2").unwrap(),
@@ -2375,7 +3037,7 @@ mod tests {
     }
 
     #[test]
-    fn invalidates_unversioned_staged_meshes_but_preserves_vfs() {
+    fn preserves_staged_meshes_and_vfs_during_generated_output_invalidation() {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path();
         fs::create_dir_all(staging.join("meshes")).unwrap();
@@ -2383,9 +3045,24 @@ mod tests {
         fs::write(staging.join("meshes/resumable.glb"), b"mesh").unwrap();
         fs::write(staging.join("vfs/meshes/source.glb"), b"source").unwrap();
 
-        invalidate_staged_mesh_outputs(staging, &BTreeSet::new()).unwrap();
+        invalidate_staged_generated_outputs(staging).unwrap();
 
-        assert!(!staging.join("meshes/resumable.glb").exists());
+        assert!(staging.join("meshes/resumable.glb").is_file());
+        assert!(staging.join("vfs/meshes/source.glb").is_file());
+    }
+
+    #[test]
+    fn removes_staged_assets_without_current_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        fs::create_dir_all(staging.join("meshes")).unwrap();
+        fs::create_dir_all(staging.join("vfs/meshes")).unwrap();
+        fs::write(staging.join("meshes/orphan.glb"), b"mesh").unwrap();
+        fs::write(staging.join("vfs/meshes/source.glb"), b"source").unwrap();
+
+        remove_orphan_staged_assets(staging, &[]).unwrap();
+
+        assert!(!staging.join("meshes/orphan.glb").exists());
         assert!(staging.join("vfs/meshes/source.glb").is_file());
     }
 
@@ -2405,6 +3082,23 @@ mod tests {
 
         assert!(staging.join("meshes/verified.glb").is_file());
         assert!(!staging.join("meshes/stale.glb").exists());
+    }
+
+    #[test]
+    fn removes_partial_asset_output_after_conversion_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("scripts/partial.luau");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"partial output").unwrap();
+
+        let (result, fatal) = remove_partial_output_after_failure(
+            &target,
+            Err(color_eyre::eyre::eyre!("conversion failed after writing")),
+        );
+
+        assert!(result.is_err());
+        assert!(!fatal);
+        assert!(!target.exists());
     }
 
     #[test]
@@ -2785,7 +3479,10 @@ mod tests {
             dummy_content::pex::minimal("One").unwrap(),
         )
         .unwrap();
-        // A stale backup makes `publish_directory` refuse to publish.
+        // A stale backup alongside a live output makes `publish_directory`
+        // refuse to publish: without the output dir, a lone backup reads as
+        // an interrupted swap and is restored instead.
+        fs::create_dir_all(&output).unwrap();
         let backup = output.with_extension(format!("backup-{}", std::process::id()));
         fs::create_dir_all(&backup).unwrap();
 
@@ -3037,6 +3734,13 @@ mod tests {
             ("meshes/missing_diffuse.glb", "present_n"),
             ("meshes/missing_normal.glb", "present.opensky-srgb"),
         ] {
+            let source_key = canonical_asset_path(glb, AssetKind::Mesh, "nif").unwrap();
+            let entry = &manifest.entries[&source_key];
+            assert_eq!(entry.output_hash, hash_file(&output.join(glb)).unwrap());
+            assert_eq!(
+                entry.output_size,
+                fs::metadata(output.join(glb)).unwrap().len()
+            );
             let uris = MeshConverter::glb_texture_uris(&output.join(glb)).unwrap();
             assert!(
                 !uris.iter().any(|uri| uri.contains("absent")),
@@ -3149,12 +3853,18 @@ mod tests {
             0,
             "the resumed run reused the pruned mesh instead of pruning it again"
         );
+        assert!(resumed.cache_hits > 0);
         assert_eq!(
             resumed.pruned_texture_references, 1,
             "the prune record of the reused mesh is carried forward"
         );
         let manifest = published_manifest(&output);
         assert!(manifest.complete);
+        let entry = &manifest.entries["meshes/dangling_normal.nif"];
+        assert_eq!(
+            entry.output_hash,
+            hash_file(&output.join(PRUNED_MESH)).unwrap()
+        );
         assert_eq!(
             manifest.pruned_texture_references.get(PRUNED_MESH),
             Some(&BTreeSet::from([PRUNED_REFERENCE.to_owned()]))

@@ -32,8 +32,10 @@ fn run_gen(arguments: &[String]) -> Result<()> {
     let mut formats = options.formats;
     if options.with_interior || options.with_lights {
         // A preset writes the plugin itself, so the default one is not
-        // generated: each preset replaces `Skyrim.esm`.
+        // generated: each preset replaces `Skyrim.esm`, and the sidecar
+        // requires the stock plugin.
         formats.esm = false;
+        formats.lodsettings = false;
     }
     layout::prepare_directory(&options.output, options.force)?;
     let mut written = layout::generate(&options.output, options.seed, formats)?;

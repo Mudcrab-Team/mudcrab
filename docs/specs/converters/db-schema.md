@@ -27,7 +27,7 @@ launcher's "ready to play" check accepts the same range.
 │  │   (Cell Grid & Names)    │   (3D World Placements)│ (3D Spatial R-Tree) │  │
 │  ├──────────────────────────┼──────────────────────┼─────────────────────┤  │
 │  │   `land`                 │   `lod`              │ `scripts`           │  │
-│  │   (Terrain Heightmaps)   │   (Mesh LOD Levels)  │ (Papyrus Bytecode)  │  │
+│  │   (Terrain Heightmaps)   │  (Unused LOD Table)  │ (Papyrus Bytecode)  │  │
 │  ├──────────────────────────┴──────────────────────┴─────────────────────┤  │
 │  │   `formid_map` & `conversion_cache`                                   │  │
 │  │   (32-bit to 64-bit ID Bridge & Cache Hashes)                        │  │
@@ -167,9 +167,10 @@ CREATE TABLE IF NOT EXISTS land (
 
 ---
 
-### 8. Mesh Level of Detail (`lod`)
+### 8. Mesh Level of Detail (`lod`) - current placeholder
 
-Stores terrain and mesh Level of Detail (LOD) geometry chunks.
+The current schema has this blob table, but the converter and runtime have no
+LOD readers or writers. Do not treat it as the selected chunk format.
 
 ```sql
 CREATE TABLE IF NOT EXISTS lod (
@@ -179,6 +180,10 @@ CREATE TABLE IF NOT EXISTS lod (
     PRIMARY KEY (cell_id, lod_level)
 );
 ```
+
+The native LOD proposal replaces this shape with spatial chunk metadata and
+file-backed GLB payloads. See [ADR-0010](../../adr/0010-lod-chunk-payload-format.md).
+That schema change requires a world database version bump.
 
 ---
 

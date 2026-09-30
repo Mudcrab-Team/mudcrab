@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 /// Which encoder turns DDS textures into UASTC KTX2.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +33,11 @@ pub struct PipelineConfig {
     #[serde(skip)]
     pub cache_dir: Option<PathBuf>,
     pub plugins_file: Option<PathBuf>,
+    /// Explicit per-worldspace LOD origins for custom worlds, keyed by
+    /// worldspace editor id: `[grid_x, grid_y]`. Installed worlds read
+    /// `lodsettings/<WorldspaceEDID>.lod` instead; a world with neither gets
+    /// no LOD, never an assumed origin of zero (GEOM-02).
+    pub lod_origins: BTreeMap<String, [i32; 2]>,
     pub cpu_jobs: usize,
     pub io_jobs: usize,
     pub enable_ba2: bool,
@@ -63,6 +71,7 @@ impl PipelineConfig {
             resume_staging: None,
             cache_dir: None,
             plugins_file: None,
+            lod_origins: BTreeMap::new(),
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
             io_jobs: 2,
             enable_ba2: true,

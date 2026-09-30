@@ -23,6 +23,7 @@ struct Cli {
     data: PathBuf,
     output: PathBuf,
     resume_staging: Option<PathBuf>,
+    reuse_assets: Option<PathBuf>,
     report_json: Option<PathBuf>,
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
@@ -151,6 +152,7 @@ async fn main() -> Result<()> {
         Command::Convert(cli) => cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
     };
+    validate_metadata_report_path(&cli)?;
     let mut config = PipelineConfig::new(cli.data.clone(), cli.output.clone());
     config.resume_staging = cli.resume_staging.clone();
     config.fail_fast = cli.fail_fast;
@@ -201,7 +203,6 @@ async fn main() -> Result<()> {
         }
         watch
     });
-
     // Ctrl+C stops the run at the next safe point and keeps the staging folder; a second one ends
     // the process where it stands.
     let cancellation = Cancellation::new();
@@ -222,8 +223,13 @@ async fn main() -> Result<()> {
         }
     });
 
-    let pipeline_result =
-        AssetPipeline::run_async_with_cancel(config, tx, cancellation.clone()).await;
+    let pipeline_result = if let Some(source) = &cli.reuse_assets {
+        AssetPipeline::rebuild_metadata_async(config, source, tx)
+            .await
+            .map_err(converter::PipelineFailure::from)
+    } else {
+        AssetPipeline::run_async_with_cancel(config, tx, cancellation.clone()).await
+    };
     let watch = printer.await?;
     let report = match pipeline_result {
         Ok(report) => report,
@@ -494,6 +500,40 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn validate_metadata_report_path(cli: &Cli) -> Result<()> {
+    let (Some(source), Some(report)) = (&cli.reuse_assets, &cli.report_json) else {
+        return Ok(());
+    };
+    let parent = report
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let report = fs::canonicalize(parent)?.join(
+        report
+            .file_name()
+            .ok_or_else(|| color_eyre::eyre::eyre!("report has no file name"))?,
+    );
+    for root in [source, &cli.data, &cli.output] {
+        let root = if root.exists() {
+            fs::canonicalize(root)?
+        } else {
+            let parent = root
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            fs::canonicalize(parent)?.join(
+                root.file_name()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("output has no directory name"))?,
+            )
+        };
+        color_eyre::eyre::ensure!(
+            !report.starts_with(root),
+            "metadata report must be outside source, Data, and output directories"
+        );
+    }
+    Ok(())
+}
+
 fn suppress_caught_nif_parser_panics() {
     let report_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -615,6 +655,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut positional = Vec::new();
     let mut report_json = None;
     let mut resume_staging = None;
+    let mut reuse_assets = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
@@ -632,6 +673,9 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             }
             Some("--resume-staging") => {
                 resume_staging = Some(PathBuf::from(next_value(&mut args, "--resume-staging")?))
+            }
+            Some("--reuse-assets") => {
+                reuse_assets = Some(PathBuf::from(next_value(&mut args, "--reuse-assets")?))
             }
             Some("--cpu-jobs") => {
                 cpu_jobs = Some(parse_jobs(
@@ -694,6 +738,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             .pop()
             .unwrap_or_else(|| PathBuf::from("modern_assets")),
         resume_staging,
+        reuse_assets,
         report_json,
         cpu_jobs,
         io_jobs,
@@ -741,7 +786,7 @@ fn usage() -> &'static str {
     "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
-                 [--report-json FILE] [--verbose]
+                 [--report-json FILE] [--verbose] [--reuse-assets DIR]
        converter check <output directory> [--full]
 
 Converts a Skyrim Data directory into runtime assets.
@@ -758,12 +803,58 @@ resumes where it stopped is printed when the run stops. A second Ctrl+C exits im
 
 converter check compares a converted output with its conversion-manifest.json without converting:
 the existence and size of every file, and with --full their hashes too. Exit code 0: all good,
-1: problems found, 2: no readable manifest."
+1: problems found, 2: no readable manifest. --reuse-assets rebuilds metadata from an existing asset tree."
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_metadata_rebuild_source() {
+        let cli = parse_cli(
+            ["Data", "derived", "--reuse-assets", "original"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(cli.reuse_assets, Some(PathBuf::from("original")));
+    }
+
+    #[test]
+    fn metadata_reports_cannot_overwrite_source_data_or_generated_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        let output = directory.path().join("derived");
+        for path in [&data, &source, &output] {
+            fs::create_dir(path).unwrap();
+        }
+        for root in [&source, &data, &output] {
+            let cli = parse_cli(vec![
+                data.clone().into_os_string(),
+                output.clone().into_os_string(),
+                OsString::from("--reuse-assets"),
+                source.clone().into_os_string(),
+                OsString::from("--report-json"),
+                root.join("metadata.json").into_os_string(),
+            ])
+            .unwrap();
+            assert!(validate_metadata_report_path(&cli).is_err());
+        }
+    }
+
+    #[test]
+    fn formats_elapsed_time_for_log_lines() {
+        assert_eq!(format_elapsed(0.0), "0:00:00.0");
+        assert_eq!(format_elapsed(62.25), "0:01:02.3");
+        assert_eq!(
+            format_elapsed(5.0 * 3600.0 + 7.0 * 60.0 + 9.94),
+            "5:07:09.9"
+        );
+        assert_eq!(format_elapsed(59.96), "0:01:00.0");
+    }
 
     #[test]
     fn stage_clock_keeps_first_and_last_event_of_overlapping_stages() {
@@ -912,6 +1003,7 @@ mod tests {
             data: PathBuf::from("C:/Games/Skyrim/Data"),
             output: PathBuf::from("C:/Modding/SkyrimConverted"),
             resume_staging: None,
+            reuse_assets: None,
             report_json: None,
             cpu_jobs: None,
             io_jobs: None,

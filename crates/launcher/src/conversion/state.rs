@@ -1318,6 +1318,8 @@ mod tests {
             artifacts: vec![PathBuf::from("a.glb"), PathBuf::from("b.ktx2")],
             inputs_by_kind: Default::default(),
             pruned_texture_references: 0,
+            lod_chunks: 0,
+            lod_warnings: Vec::new(),
             elapsed_ms: 18_450_000,
             integration: None,
         };
