@@ -1,4 +1,4 @@
-# Mudcrab Point Lights from `LIGH` References
+# OpenSkyrim Point Lights from `LIGH` References
 
 How the runtime turns a streamed Skyrim light reference into a Bevy point light, how bright it is, and
 how many of them are enabled at once. The code is `crates/engine/src/lights.rs` (the conversion, the

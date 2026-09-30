@@ -63,7 +63,7 @@ This document details the technical specification for converting Bethesda NetImm
 
 ## 4. Material Parameter Conversion Matrix
 
-Before glTF publication, Mudcrab builds a validated material contract for every reachable shape.
+Before glTF publication, OpenSkyrim builds a validated material contract for every reachable shape.
 The contract follows the shape's explicit shader, texture-set and alpha-property block references;
 block order and filename suffixes are not used to associate or classify materials. Unsupported
 properties are recorded as explicit exclusions, while invalid references and non-finite values fail

@@ -14,7 +14,7 @@ This document outlines the conversion pipeline to ingest legacy Skyrim formats (
                 │
                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       Mudcrab Converter Pipeline                         │
+│                       OpenSkyrim Converter Pipeline                         │
 │                                                                             │
 │   ┌────────────────-┐     ┌────────────────┐     ┌──────────────────────┐   │
 │   │ Archive Unpacker│ ──► │ Mesh & Texture │ ──► │ Record / World Data  │   │
