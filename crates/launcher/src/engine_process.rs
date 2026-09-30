@@ -11,7 +11,6 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-/// The engine's log (stdout and stderr), truncated at each launch.
 /// The engine's log (stdout and stderr) is `<prefix><launcher pid>.log` in the temp directory,
 /// truncated at each launch. The launcher's own id keeps two launchers from sharing one log.
 pub const STDERR_LOG_PREFIX: &str = "openskyrim-engine-";
