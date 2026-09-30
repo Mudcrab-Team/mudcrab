@@ -229,9 +229,10 @@ fn upload_budget(config: &EngineConfig) -> RenderAssetBytesPerFrame {
     }
 }
 
+/// Matches LAND's sampler for shared repeating images before either loader caches them.
+/// Bevy retains authored U/V wrapping and requires linear filters for anisotropy.
 fn world_gltf_plugin() -> bevy::gltf::GltfPlugin {
     bevy::gltf::GltfPlugin {
-        // Shared external normals must agree with LAND before either loader caches them.
         default_sampler: terrain_layer_sampler(),
         ..default()
     }
@@ -2022,6 +2023,7 @@ mod tests {
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
 
+    /// Uses real loaders with a generated external normal image, without game assets or a GPU.
     fn world_normal_loader_fixture(wrap_s: u32, wrap_t: u32) -> (tempfile::TempDir, App) {
         use bevy::{
             image::{CompressedImageFormats, ImageLoader, ImagePlugin},
@@ -2078,6 +2080,7 @@ mod tests {
         (directory, app)
     }
 
+    /// Waits for dependencies too, so each test controls which consumer finishes loading first.
     fn wait_for_world_asset<A: Asset>(app: &mut App, handle: &Handle<A>) {
         use bevy::asset::LoadState;
 
