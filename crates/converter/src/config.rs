@@ -119,6 +119,15 @@ impl PipelineConfig {
                 std::fs::canonicalize(output_parent)? == std::fs::canonicalize(staging_parent)?,
                 "resume directory must share the output directory parent"
             );
+            // A successful run removes its staging folder, so a resume folder that is or holds
+            // the Skyrim Data folder would take the game data with it.
+            let data = std::fs::canonicalize(&self.data_dir)?;
+            color_eyre::eyre::ensure!(
+                !data.starts_with(std::fs::canonicalize(staging)?),
+                "resume staging directory {} must not be or contain the Skyrim Data directory {}",
+                staging.display(),
+                self.data_dir.display()
+            );
         }
         Ok(())
     }
@@ -187,6 +196,39 @@ mod tests {
             find_resumable_staging(&output),
             Some((directory.path().join("modern_assets.staging-9-300"), 2))
         );
+    }
+
+    #[test]
+    fn a_resume_staging_folder_holding_the_data_folder_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern");
+        let staging = directory.path().join("modern.staging-1-1");
+        let data = staging.join("Data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("Skyrim.esm"), b"game data").unwrap();
+
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging.clone());
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("must not be or contain"), "{error}");
+
+        // The same folder is refused when it is the data folder itself.
+        let mut config = PipelineConfig::new(&staging, &output);
+        config.resume_staging = Some(staging.clone());
+        assert!(config.validate().is_err());
+
+        assert_eq!(
+            std::fs::read(data.join("Skyrim.esm")).unwrap(),
+            b"game data"
+        );
+        assert!(!output.exists());
+
+        // A staging folder beside the data folder still passes.
+        let other_data = directory.path().join("Data");
+        std::fs::create_dir_all(&other_data).unwrap();
+        let mut config = PipelineConfig::new(&other_data, &output);
+        config.resume_staging = Some(staging);
+        config.validate().unwrap();
     }
 
     #[test]
