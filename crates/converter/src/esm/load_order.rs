@@ -10,20 +10,26 @@ pub struct StableId {
     pub local_id: u32,
 }
 
+/// Validated plugin order with forward mappings and constant-time ownership lookup.
 pub struct LoadOrder {
     pub names: Vec<String>,
     pub metadata: Vec<PluginMetadata>,
     pub normal: HashMap<String, u32>,
     pub light: HashMap<String, u32>,
+    normal_by_slot: Vec<String>,
+    light_by_slot: Vec<String>,
 }
 
 impl LoadOrder {
+    /// Read plugin headers, validating master order and assigning full and light slots.
     pub fn read(paths: &[PathBuf]) -> Result<Self> {
         let mut result = Self {
             names: Vec::new(),
             metadata: Vec::new(),
             normal: HashMap::new(),
             light: HashMap::new(),
+            normal_by_slot: Vec::new(),
+            light_by_slot: Vec::new(),
         };
         for path in paths {
             let name = path
@@ -44,10 +50,12 @@ impl LoadOrder {
                 let slot = result.light.len() as u32;
                 ensure!(slot < 4096, "too many light plugins");
                 result.light.insert(name.clone(), slot);
+                result.light_by_slot.push(name.clone());
             } else {
                 let slot = result.normal.len() as u32;
                 ensure!(slot < 254, "too many full plugins");
                 result.normal.insert(name.clone(), slot);
+                result.normal_by_slot.push(name.clone());
             }
             result.names.push(name);
             result.metadata.push(metadata);
@@ -55,17 +63,29 @@ impl LoadOrder {
         Ok(result)
     }
 
+    /// Resolve the original owning plugin, rejecting null, absent, or inconsistent slots.
     pub fn identity(&self, form_id: u32) -> Result<StableId> {
         ensure!(form_id != 0, "null reference has no stable identity");
-        let (slots, slot, local_id) = if form_id >> 24 == 0xfe {
-            (&self.light, (form_id >> 12) & 0xfff, form_id & 0xfff)
+        let (slots, forward, slot, local_id) = if form_id >> 24 == 0xfe {
+            (
+                &self.light_by_slot,
+                &self.light,
+                (form_id >> 12) & 0xfff,
+                form_id & 0xfff,
+            )
         } else {
-            (&self.normal, form_id >> 24, form_id & 0xffffff)
+            (
+                &self.normal_by_slot,
+                &self.normal,
+                form_id >> 24,
+                form_id & 0xffffff,
+            )
         };
         let plugin = slots
-            .iter()
-            .find(|(_, value)| **value == slot)
-            .map(|(name, _)| name.clone())
+            .get(slot as usize)
+            // Forward maps are public; fail rather than return stale ownership if mutated.
+            .filter(|name| forward.get(*name) == Some(&slot))
+            .cloned()
             .ok_or_else(|| color_eyre::eyre::eyre!("unresolved slot for {form_id:08X}"))?;
         Ok(StableId { plugin, local_id })
     }

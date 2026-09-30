@@ -320,3 +320,46 @@ fn full_local_load_order_merges() {
         records.len()
     );
 }
+
+#[test]
+fn stable_identity_uses_independent_full_and_light_slot_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = vec![
+        plugin(dir.path(), "Base.esm", &[], 0, Vec::new()),
+        plugin(dir.path(), "Light.esl", &[], 0x200, Vec::new()),
+        plugin(dir.path(), "Patch.esp", &[], 0, Vec::new()),
+        plugin(dir.path(), "Flagged.esp", &[], 0x200, Vec::new()),
+    ];
+    let mut order = LoadOrder::read(&paths).unwrap();
+    for (form_id, name, local_id) in [
+        (0x00000800, "base.esm", 0x800),
+        (0x01000801, "patch.esp", 0x801),
+        (0xfe000802, "light.esl", 0x802),
+        (0xfe001803, "flagged.esp", 0x803),
+    ] {
+        let identity = order.identity(form_id).unwrap();
+        assert_eq!(identity.plugin, name);
+        assert_eq!(identity.local_id, local_id);
+    }
+    assert!(
+        order
+            .identity(0)
+            .unwrap_err()
+            .to_string()
+            .contains("null reference")
+    );
+    for form_id in [0x02000800, 0xfe002800, 0xff000800] {
+        assert!(
+            order
+                .identity(form_id)
+                .unwrap_err()
+                .to_string()
+                .contains("unresolved slot")
+        );
+    }
+    // Public forward maps must not silently invalidate the cached reverse ownership.
+    order.normal.insert("base.esm".into(), 1);
+    assert!(order.identity(0x800).is_err());
+    order.light.remove("light.esl");
+    assert!(order.identity(0xfe000800).is_err());
+}
