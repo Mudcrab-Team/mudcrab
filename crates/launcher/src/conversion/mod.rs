@@ -247,9 +247,7 @@ pub fn drain_run_messages(
                 transition(&mut state, &mut effects, Input::Progress);
             }
             RunMessage::Finished(report) => {
-                status.stop_clock();
-                status.push_notice(&report.headline());
-                status.push_notice(&report.artifacts_line());
+                status.finish_run(&report.lines());
                 transition(&mut state, &mut effects, Input::Finished(report));
             }
             RunMessage::Failed(failure) => {
@@ -795,6 +793,8 @@ pub(crate) mod tests {
             cache_hits: 3,
             skipped: 0,
             warnings: Vec::new(),
+            lod_chunks: 1693,
+            lod_warnings: (0..12).map(|i| format!("Skipped world {i}")).collect(),
             artifacts: 15,
             elapsed: Duration::from_secs(754),
         };
@@ -812,6 +812,15 @@ pub(crate) mod tests {
             "{:?}",
             status.notice_text()
         );
+        assert!(
+            status
+                .notice_text()
+                .contains("Terrain LOD: 1693 chunks; 12 worldspace warning(s).")
+        );
+        assert!(status.notice_text().contains("LOD: Skipped world 0"));
+        assert!(status.notice_text().contains("LOD: Skipped world 11"));
+        assert_eq!(status.notices.len(), 15);
+        assert!(status.run_finished);
     }
 
     /// The folders a run needs: a Data folder with a `Skyrim.esm` in it, and an output that is set.

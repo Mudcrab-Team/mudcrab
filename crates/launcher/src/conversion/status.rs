@@ -33,10 +33,12 @@ pub struct ConversionStatus {
     pub estimate: ProgressEstimate,
     pub stage: Option<ProgressStage>,
     pub stage_fraction: f32,
+    pub stage_completed: u64,
+    pub stage_total: u64,
+    pub run_finished: bool,
     pub current_file: Option<String>,
     pub message: String,
-    /// What the run had to say, oldest first, with the summary at the end of a run. The pane shows
-    /// the last [`ConversionStatus::NOTICE_LINES`] of them.
+    /// Active notices are bounded; completed results retain all lines, summary first.
     pub notices: VecDeque<String>,
     /// Set while the bar and the lines show a check of the output folder rather than a run.
     pub check: Option<CheckProgress>,
@@ -52,6 +54,9 @@ impl Default for ConversionStatus {
             estimate: ProgressEstimate::new(),
             stage: None,
             stage_fraction: 0.0,
+            stage_completed: 0,
+            stage_total: 0,
+            run_finished: false,
             current_file: None,
             message: String::new(),
             notices: VecDeque::new(),
@@ -64,7 +69,7 @@ impl Default for ConversionStatus {
 }
 
 impl ConversionStatus {
-    /// How many lines of notices the pane shows.
+    /// How many active-run notices the pane keeps.
     pub const NOTICE_LINES: usize = 5;
 
     /// Clears for a new run: the bar goes back to zero, the clock starts again, and the notices
@@ -73,6 +78,9 @@ impl ConversionStatus {
         self.estimate = ProgressEstimate::new();
         self.stage = None;
         self.stage_fraction = 0.0;
+        self.stage_completed = 0;
+        self.stage_total = 0;
+        self.run_finished = false;
         self.current_file = None;
         self.message.clear();
         self.notices.clear();
@@ -159,6 +167,12 @@ impl ConversionStatus {
         self.started = None;
     }
 
+    pub fn finish_run(&mut self, lines: &[String]) {
+        self.stop_clock();
+        self.run_finished = true;
+        self.notices = lines.iter().cloned().collect();
+    }
+
     /// Folds one event from a running conversion into what the window shows. The estimate never
     /// moves the bar backwards, whatever the stages report.
     pub fn observe(&mut self, event: &ProgressEvent) {
@@ -171,6 +185,8 @@ impl ConversionStatus {
         self.estimate.observe(event, self.elapsed);
         self.stage = Some(event.stage);
         self.stage_fraction = event.progress_fraction();
+        self.stage_completed = event.completed;
+        self.stage_total = event.total;
         self.current_file = event
             .current_file
             .as_ref()
@@ -186,9 +202,9 @@ impl ConversionStatus {
         }
     }
 
-    /// Adds a line to the notice pane, dropping the oldest once the pane is full. A check's result
-    /// can be longer than that; the first notice after it trims the pane back.
+    /// Adds a notice, returning a completed result to the bounded live-notice view.
     pub fn push_notice(&mut self, line: &str) {
+        self.run_finished = false;
         while self.notices.len() >= Self::NOTICE_LINES {
             self.notices.pop_front();
         }
@@ -229,6 +245,16 @@ impl ConversionStatus {
                 format!("{mode}   {}/{} files", check.done, check.total)
             };
         }
+        if self.stage == Some(ProgressStage::LodChunks) {
+            return if self.stage_total == 0 {
+                "Building terrain LOD".to_owned()
+            } else {
+                format!(
+                    "Building terrain LOD   {}/{} worldspaces",
+                    self.stage_completed, self.stage_total
+                )
+            };
+        }
         let mut line = match self.stage {
             Some(stage) => format!(
                 "{:<11} {:>3.0}%",
@@ -266,7 +292,9 @@ impl ConversionStatus {
             }
             return line;
         }
-        if let Some(left) = self.estimate.time_left(self.elapsed) {
+        if self.stage != Some(ProgressStage::LodChunks)
+            && let Some(left) = self.estimate.time_left(self.elapsed)
+        {
             let _ = write!(
                 line,
                 "   ~{} left",
@@ -285,7 +313,7 @@ impl ConversionStatus {
         }
     }
 
-    /// The notice pane: the last few things the run said, oldest first.
+    /// The notice pane: active notices or the full completed result.
     pub fn notice_text(&self) -> String {
         self.notices.iter().cloned().collect::<Vec<_>>().join("\n")
     }
@@ -294,6 +322,70 @@ impl ConversionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lod_progress_shows_world_counts_without_rates_or_eta() {
+        let mut status = ConversionStatus::default();
+        status.begin_run();
+        status.observe(&ProgressEvent::new(
+            ProgressStage::Textures,
+            1,
+            10,
+            None,
+            "textures",
+        ));
+        let previous = status.overall_percent();
+        status.observe(&ProgressEvent::new(
+            ProgressStage::LodChunks,
+            0,
+            50,
+            None,
+            "LOD",
+        ));
+        status.elapsed = Duration::from_secs(120);
+        assert_eq!(
+            status.stage_line(),
+            "Building terrain LOD   0/50 worldspaces"
+        );
+        assert_eq!(status.clock_line(), "00:02:00 elapsed");
+        assert!(status.overall_percent() >= previous);
+        status.observe(&ProgressEvent::notice(
+            ProgressStage::LodChunks,
+            None,
+            "world skipped",
+        ));
+        assert_eq!(
+            status.stage_line(),
+            "Building terrain LOD   0/50 worldspaces"
+        );
+        status.observe(&ProgressEvent::new(
+            ProgressStage::LodChunks,
+            3,
+            50,
+            None,
+            "LOD",
+        ));
+        assert_eq!(
+            status.stage_line(),
+            "Building terrain LOD   3/50 worldspaces"
+        );
+    }
+
+    #[test]
+    fn finished_run_keeps_all_result_lines_and_resets_for_next_run() {
+        let mut status = ConversionStatus::default();
+        status.begin_run();
+        status.push_notice("old progress");
+        let lines: Vec<_> = (0..12).map(|i| format!("result {i}")).collect();
+        status.finish_run(&lines);
+        assert_eq!(status.notices.iter().cloned().collect::<Vec<_>>(), lines);
+        assert!(status.run_finished);
+        assert!(status.started.is_none());
+        status.begin_run();
+        assert!(!status.run_finished);
+        assert!(status.notices.is_empty());
+        assert_eq!(status.stage_total, 0);
+    }
 
     /// The status shows the numbers the estimate holds, through the converter's own formatters.
     #[test]

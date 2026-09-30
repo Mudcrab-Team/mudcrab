@@ -44,6 +44,7 @@ P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passe
 
 ## §I INTERFACES
 
+- I.launcher_lod: planned launcher LOD reporting and existing-assets build action; contract and gates in `docs/specs/modding/launcher-lod.md`. Current Fiji RC excludes this follow-up.
 - cmd: `--physics-fixture` → interactive primitive hill/wall arena, WALK/NOCLIP toggle, auto-spawned debug tankards; no Skyrim asset install required.
 - runtime: P1+ interactive exterior → first-person NOCLIP at start-cell view; fixture supports both modes from P1. P2 enables WALK over streamed terrain.
 - key: NOCLIP `W/A/S/D` fly relative to view; `Space` rise; `Ctrl` descend; `Shift` accelerate.
@@ -181,6 +182,11 @@ V69: Active airborne WALK with no downward collision ray continues descending ac
 V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
 V71: Runtime accepts passed integration report & world database schema 3 or additive schema 4; rejects older/newer schemas; schema 4 Riverwood package reaches world loading without `--allow-incomplete-assets`.
 
+V72: Launcher conversion runs existing terrain LOD stage exactly once before final validation/publication; LOD failure cannot report successful conversion. No second compiler or duplicate post-publication job.
+V73: Launcher retains LOD chunk count & LOD warnings; zero chunks, partial world coverage & compiler failure remain distinct. LOD stage label/count accurate; no invented ETA or benchmark acceptance.
+V74: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-17/5 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
+V75: Existing-assets LOD build unavailable until cancellable metadata API & worker/state tests pass; cancellation checked between retained files & worlds and before publication; in-flight file/world allowed to finish; never reports resumable staging without journal support. Engine-running/path/asset-lock guards retained.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -218,6 +224,10 @@ T31|.|Deferred Q5: bind relevant Papyrus native controls and script records to e
 T32|.|Deferred Q6: resolve state-specific records and implement mount/furniture/transformation/bleedout/dragon paths; report scoped parity|V55,R12,R13
 T33|x|Latch provisional unlimited WALK sprint on `Alt` press until movement stops; reset on focus loss and mode switch; test key edge and gait changes|V10,V14,V57
 T34|~|Make sprint perceptible; display actual speed and latch; ease controlled camera FOV; package laptop and verify manual launch|V10,V57,V60,V61
+T35|x|Launcher LOD A: retain chunk count/warnings in `RunReport`; label LOD world progress; preserve final summary & warning visibility; document automatic conversion-stage build|V72,V73,I.launcher_lod
+T36|~|Launcher LOD A: focused report/status/worker tests; tiny conversion verifies payload/DB/manifest identities; stop/failure never enables new incomplete output; scripted launcher capture|V72,V73,I.launcher_lod
+T37|.|Launcher LOD B: add cooperative metadata cancellation with typed failure & no-resume contract; tests cover preflight, retained-file copy, world boundary, pre-publication, source preservation|V74,V75,I.launcher_lod
+T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source & new destination; reuse worker/messages/state ownership; verify reuse hashes, plugin mismatch, busy/engine/path guards & publication|V74,V75,I.launcher_lod
 
 ## §B BUGS
 
@@ -264,3 +274,4 @@ B39|2026-09-29|NOCLIP→WALK rejected free high-altitude capsule because ground 
 B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; report & database gates rejected valid package|V71
 B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings failed unchanged workspace under `-D warnings`|§C fixed Rust toolchain; restore 1.98.1
 B42|2026-10-01|PR #102 merge retained local LAND tiling constant alongside shared import; engine failed E0255|reuse shared constant; workspace compile + Clippy gates
+B43|2026-09-30|launcher LOD report fields omitted from Play-availability fixture outside conversion module|migrate fixture; launcher compile/test gate
