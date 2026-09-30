@@ -281,7 +281,7 @@ impl AssetPipeline {
         }
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
-        // resumes from it. Only a fresh run that publishes removes it, once the pack is out.
+        // resumes from it. Only a successful publish removes it, once the runtime pack is out.
         let run_result = Self::run_into(
             &config,
             &staging,
@@ -321,9 +321,11 @@ impl AssetPipeline {
                 .map_err(|error| failure(error, &staging, &cancellation))?;
         prune_stale_ingestion_blobs(&cache_root, &manifest)
             .map_err(|error| failure(error, &staging, &cancellation))?;
-        if !resumed {
-            let _ = fs::remove_dir_all(&staging);
-        }
+        // Resumed or not, the staging folder has done its job: the pack links the published files,
+        // so removing it frees only names. Kept, a resumed folder would be offered for resume
+        // again (`find_resumable_staging`) while holding a full copy's worth of disk. The output is
+        // already published, so a folder that cannot or must not be removed is only a warning.
+        remove_staging(&staging, &config.data_dir);
         report.elapsed_ms = started.elapsed().as_millis();
         if report.complete {
             send(
@@ -1653,6 +1655,42 @@ fn invalidate_staged_mesh_outputs(staging: &Path, verified: &BTreeSet<String>) -
     Ok(())
 }
 
+/// Removes a staging folder after a successful publish, unless it is or holds the Skyrim Data
+/// folder: a `--resume-staging` folder is named by the user, and removing it must never take the
+/// game data with it. A folder that is kept, or fails to go, is reported on stderr and left behind;
+/// the run has already published, so neither fails it. Returns whether the folder was removed.
+fn remove_staging(staging: &Path, data_dir: &Path) -> bool {
+    match (fs::canonicalize(staging), fs::canonicalize(data_dir)) {
+        (Ok(staging_path), Ok(data_path)) if !data_path.starts_with(&staging_path) => {}
+        (Ok(_), Ok(_)) => {
+            eprintln!(
+                "warning: kept the staging folder {} because it holds the Skyrim Data folder {}",
+                staging.display(),
+                data_dir.display()
+            );
+            return false;
+        }
+        _ => {
+            eprintln!(
+                "warning: kept the staging folder {}: could not compare it with the Skyrim Data folder {}",
+                staging.display(),
+                data_dir.display()
+            );
+            return false;
+        }
+    }
+    match fs::remove_dir_all(staging) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "warning: could not remove the staging folder {}: {error}",
+                staging.display()
+            );
+            false
+        }
+    }
+}
+
 /// Strips the leading asset kind folder (e.g., "textures", "meshes", "scripts")
 /// from a relative path in a case-insensitive manner.
 ///
@@ -2422,7 +2460,7 @@ mod tests {
         AssetPipeline::run_async(config, tx).await.unwrap();
         assert!(output.join("conversion-manifest.json").is_file());
         assert!(!StagingJournal::path_in(&output).exists());
-        assert_eq!(staging_entries(temp.path()), vec![staging[0].clone()]);
+        assert_eq!(staging_entries(temp.path()), Vec::<PathBuf>::new());
     }
 
     #[tokio::test]
@@ -3392,7 +3430,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumed_reconversion_does_not_write_through_pack_links() {
+    async fn a_resumed_publish_removes_its_staging_and_keeps_the_output() {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
@@ -3402,26 +3440,43 @@ mod tests {
             dummy_content::pex::minimal("One").unwrap(),
         )
         .unwrap();
+        run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let expected = fs::read(output.join("scripts/one.luau")).unwrap();
 
-        // First conversion publishes the pack; pack files may share inodes
-        // with whatever staging survives publication.
+        // The published pack shares files with staging through hard links, so removing the
+        // resumed staging folder must leave every published file in place.
         let staging = temp.path().join("modern.staging-resume-links");
         fs::create_dir_all(&staging).unwrap();
         let mut config = PipelineConfig::new(&data, &output);
         config.resume_staging = Some(staging.clone());
-        let first = run_without_progress(config.clone()).await;
-        assert!(first.complete);
-        let first_bytes = fs::read(output.join("scripts/one.luau")).unwrap();
+        let resumed = run_without_progress(config).await;
 
-        // A resumed reconversion rewrites staged artifacts in place of the
-        // same paths. If any writer truncates through a hard link instead of
-        // replacing the path, the published pack changes under it.
-        let second = run_without_progress(config.clone()).await;
-        assert!(second.complete);
-        assert_eq!(
-            fs::read(output.join("scripts/one.luau")).unwrap(),
-            first_bytes,
-            "the resumed run wrote through a pack link into the previous output"
+        assert!(resumed.complete);
+        assert!(
+            !staging.exists(),
+            "a resumed publish kept its staging folder, which would be offered for resume again"
         );
+        assert_eq!(fs::read(output.join("scripts/one.luau")).unwrap(), expected);
+        assert_eq!(crate::find_resumable_staging(&output), None);
+    }
+
+    #[test]
+    fn staging_that_holds_the_data_folder_is_kept_after_publishing() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join("modern.staging-1-1");
+        let data = staging.join("Data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("Skyrim.esm"), b"game data").unwrap();
+
+        assert!(!remove_staging(&staging, &data));
+        assert!(!remove_staging(&staging, &staging));
+        assert_eq!(fs::read(data.join("Skyrim.esm")).unwrap(), b"game data");
+
+        // A staging folder beside the data, the normal case, is removed.
+        let beside = temp.path().join("modern.staging-2-2");
+        fs::create_dir_all(beside.join("vfs")).unwrap();
+        assert!(remove_staging(&beside, &data));
+        assert!(!beside.exists());
+        assert!(data.join("Skyrim.esm").is_file());
     }
 }
