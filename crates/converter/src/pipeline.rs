@@ -562,9 +562,8 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            EsmParser::convert_plugins(&plugins, &db_path)?;
+            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
             validate_database(&Connection::open(&db_path)?)?;
-            let merged = EsmParser::merge_plugins(&plugins)?;
             write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),

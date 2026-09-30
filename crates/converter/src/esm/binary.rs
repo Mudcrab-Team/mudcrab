@@ -5,13 +5,13 @@ use crate::esm::{
     types::{GroupHeader, RecordHeader, WorldReference},
 };
 use color_eyre::{Result, eyre::eyre};
-use flate2::read::ZlibDecoder;
+use flate2::{Decompress, FlushDecompress, Status};
 use nom::{
     IResult,
     bytes::complete::take,
     number::complete::{le_f32, le_i32, le_u16, le_u32},
 };
-use std::{io::Read, path::Path};
+use std::path::Path;
 
 const FLAG_COMPRESSED: u32 = 0x00040000;
 
@@ -59,8 +59,7 @@ pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
     })
 }
 
-/// Decompressed output is reserved up to this size; anything larger grows as
-/// it is read, so a corrupt declared size cannot reserve gigabytes up front.
+/// Cap decompressed output so a corrupt size cannot reserve gigabytes up front.
 const MAX_RESERVATION: usize = 64 * 1024 * 1024;
 
 /// The most a record may inflate to: deflate's best case is about 1032:1, plus
@@ -73,12 +72,10 @@ fn max_inflated_size(compressed_len: usize) -> usize {
         .min(MAX_RESERVATION)
 }
 
-/// Inflates `compressed`, reading at most one byte past `expected` so a stream
-/// longer than declared shows up as a size mismatch instead of being read to
-/// its end. A declared size no zlib stream of this length could reach is
-/// refused before anything is read: the size is the record's own claim, and
-/// every record's payload is kept, so an unbounded claim would let a damaged
-/// plugin exhaust memory.
+/// Inflate into a bounded buffer and require zlib's completed-stream status.
+/// Producing the declared bytes alone does not validate a truncated checksum
+/// trailer. Reserve one extra byte to detect output longer than declared, and
+/// refuse impossible declared sizes before allocating.
 fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> {
     if expected > max_inflated_size(compressed.len()) {
         return Err(std::io::Error::new(
@@ -89,10 +86,25 @@ fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> 
             ),
         ));
     }
-    let mut output = Vec::with_capacity(expected.min(MAX_RESERVATION));
-    ZlibDecoder::new(compressed)
-        .take((expected as u64).saturating_add(1))
-        .read_to_end(&mut output)?;
+    let mut output = Vec::with_capacity(expected + 1);
+    let status = Decompress::new(true)
+        .decompress_vec(compressed, &mut output, FlushDecompress::Finish)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if output.len() != expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "decompressed size mismatch: expected {expected}, got {}",
+                output.len()
+            ),
+        ));
+    }
+    if status != Status::StreamEnd {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "incomplete zlib stream",
+        ));
+    }
     Ok(output)
 }
 
@@ -147,6 +159,8 @@ pub fn parse_group_header(input: &[u8]) -> IResult<&[u8], GroupHeader> {
     ))
 }
 
+/// Parse nested groups in file order using an explicit stack, so malformed
+/// nesting cannot overflow the call stack. Group context is restored for siblings.
 pub fn parse_group(
     input: &[u8],
     current_cell: Option<u32>,
@@ -154,8 +168,23 @@ pub fn parse_group(
     records: &mut Vec<RawRecord>,
 ) -> Result<()> {
     let mut curr = input;
+    let mut current_cell = current_cell;
+    let mut current_worldspace = current_worldspace;
+    let mut parents = Vec::new();
 
-    while curr.len() >= 24 {
+    loop {
+        if curr.is_empty() {
+            let Some((rest, cell, worldspace)) = parents.pop() else {
+                return Ok(());
+            };
+            curr = rest;
+            current_cell = cell;
+            current_worldspace = worldspace;
+            continue;
+        }
+        if curr.len() < 24 {
+            return Err(eyre!("trailing {} bytes after plugin records", curr.len()));
+        }
         let peek_tag = &curr[..4];
         if peek_tag == b"GRUP" {
             let (rest, group) =
@@ -182,9 +211,10 @@ pub fn parse_group(
                 _ => current_worldspace,
             };
 
-            parse_group(group_content, next_cell, next_worldspace, records)?;
-
-            curr = &rest[content_size..];
+            parents.push((&rest[content_size..], current_cell, current_worldspace));
+            curr = group_content;
+            current_cell = next_cell;
+            current_worldspace = next_worldspace;
         } else {
             let (rest, header) = parse_record_header(curr)
                 .map_err(|e| eyre!("Failed to parse record header: {e}"))?;
@@ -244,8 +274,6 @@ pub fn parse_group(
             curr = &rest[record_len..];
         }
     }
-
-    Ok(())
 }
 
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
@@ -499,6 +527,41 @@ mod tests {
         bytes.extend_from_slice(&[0; 12]);
         bytes.extend_from_slice(&payload);
         bytes
+    }
+
+    #[test]
+    fn compressed_records_require_a_complete_zlib_stream_even_when_output_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        for data in [
+            Vec::new(),
+            [b"EDID".as_slice(), &4u16.to_le_bytes(), b"Test"].concat(),
+        ] {
+            let valid = compressed_record(b"STAT", data.len() as u32, &data);
+            parse_group(&valid, None, None, &mut Vec::new()).unwrap();
+            let path = directory.path().join("valid.esp");
+            std::fs::write(&path, compressed_record(b"TES4", data.len() as u32, &data)).unwrap();
+            parse_plugin_metadata(&path).unwrap();
+            parse_plugin_file(&path).unwrap();
+            for missing in 1..=4 {
+                // The subrecords can inflate completely before the zlib
+                // checksum trailer arrives. Matching output length is not
+                // sufficient evidence that the compressed record is intact.
+                let mut bytes = compressed_record(b"STAT", data.len() as u32, &data);
+                bytes.truncate(bytes.len() - missing);
+                let payload_length = (bytes.len() - 24) as u32;
+                bytes[4..8].copy_from_slice(&payload_length.to_le_bytes());
+                assert!(
+                    parse_group(&bytes, None, None, &mut Vec::new()).is_err(),
+                    "accepted a stream missing {missing} trailer bytes"
+                );
+
+                bytes[..4].copy_from_slice(b"TES4");
+                let path = directory.path().join("truncated.esp");
+                std::fs::write(&path, &bytes).unwrap();
+                assert!(parse_plugin_metadata(&path).is_err());
+                assert!(parse_plugin_file(&path).is_err());
+            }
+        }
     }
 
     #[test]

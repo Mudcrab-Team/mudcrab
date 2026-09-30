@@ -216,3 +216,160 @@ fn ambiguous_new_game_setting_ids_fail_instead_of_overwriting_another_record() {
         assert!(EsmParser::merge_plugins(&[base]).is_err());
     }
 }
+
+#[test]
+fn header_only_setting_deletions_resolve_original_override_and_light_aliases() {
+    for delete_override in [false, true] {
+        for light in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = plugin(
+                dir.path(),
+                "Base.esm",
+                &[],
+                0,
+                setting(0x800, "fJumpHeightMin", 76.0, 0),
+            );
+            let patch_name = if light { "Patch.esl" } else { "Patch.esp" };
+            let patch = plugin(
+                dir.path(),
+                patch_name,
+                &["Base.esm"],
+                if light { 0x200 } else { 0 },
+                setting(0x01000810, "FJUMPHEIGHTMIN", 90.0, 0),
+            );
+            let delete = plugin(
+                dir.path(),
+                "Delete.esp",
+                &["Base.esm", patch_name],
+                0,
+                record(
+                    b"GMST",
+                    if delete_override { 0x01000810 } else { 0x800 },
+                    0x20,
+                    Vec::new(),
+                ),
+            );
+            // Deleting an already deleted alias is harmless; restoration by
+            // EditorID still retains the base setting's ID and ownership.
+            let delete_again = plugin(
+                dir.path(),
+                "DeleteAgain.esp",
+                &["Base.esm", patch_name],
+                0,
+                record(b"GMST", 0x01000810, 0x20, sub(b"EDID", b"\0")),
+            );
+            let restore = plugin(
+                dir.path(),
+                "Restore.esp",
+                &["Base.esm"],
+                0,
+                setting(0, "fJumpHeightMin", 120.0, 0),
+            );
+            let mut paths = vec![base, patch, delete, delete_again];
+            assert!(EsmParser::merge_plugins(&paths).unwrap().is_empty());
+            let deleted_db = dir.path().join("deleted.db");
+            EsmParser::convert_plugins(&paths, &deleted_db).unwrap();
+            let conn = rusqlite::Connection::open(deleted_db).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM movement_game_settings", [], |row| row
+                    .get::<_, u32>(0))
+                    .unwrap(),
+                0
+            );
+            paths.push(restore);
+            let restored = EsmParser::merge_plugins(&paths).unwrap();
+            assert_eq!(restored.len(), 1);
+            assert_eq!(restored[&0x800].load_order, 4);
+            let restored_db = dir.path().join("restored.db");
+            EsmParser::convert_plugins(&paths, &restored_db).unwrap();
+            let conn = rusqlite::Connection::open(restored_db).unwrap();
+            let value: (String, u32, f64) = conn.query_row(
+                "SELECT plugin_name,internal_id,value FROM formid_map JOIN movement_game_settings ON formid_map.form_id=movement_game_settings.id", [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            assert_eq!(value, ("base.esm".into(), 0x800, 120.0));
+        }
+    }
+}
+
+#[test]
+fn unknown_header_only_deletions_do_not_delete_unrelated_forms_or_fail_conversion() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(
+        dir.path(),
+        "Base.esm",
+        &[],
+        0,
+        [
+            grass(0x800, 35),
+            record(b"GMST", 0x800, 0x20, Vec::new()),
+            record(b"GMST", 0, 0x20, Vec::new()),
+            record(b"GMST", 0x900, 0x20, Vec::new()),
+            setting(0x901, "fJumpHeightMin", 76.0, 0),
+        ]
+        .concat(),
+    );
+    let merged = EsmParser::merge_plugins(std::slice::from_ref(&base)).unwrap();
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[&0x800].record_type, *b"GRAS");
+    EsmParser::convert_plugins(&[base], &dir.path().join("world.db")).unwrap();
+}
+
+#[test]
+fn live_game_settings_still_require_editor_ids() {
+    for payload in [Vec::new(), sub(b"EDID", b"\0")] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = plugin(
+            dir.path(),
+            "Base.esm",
+            &[],
+            0,
+            record(b"GMST", 0x800, 0, payload),
+        );
+        assert!(
+            EsmParser::merge_plugins(&[base])
+                .unwrap_err()
+                .to_string()
+                .contains("has no EditorID")
+        );
+    }
+}
+
+#[test]
+fn setting_alias_collisions_fail_in_both_record_orders_and_after_deletion() {
+    for bytes in [
+        [
+            setting(0x800, "fFirst", 1.0, 0),
+            grass(0x801, 1),
+            setting(0x801, "fFirst", 2.0, 0),
+        ]
+        .concat(),
+        [
+            setting(0x800, "fFirst", 1.0, 0),
+            setting(0x801, "fFirst", 2.0, 0),
+            grass(0x801, 1),
+        ]
+        .concat(),
+        [
+            setting(0x800, "fFirst", 1.0, 0),
+            setting(0x801, "fSecond", 2.0, 0),
+            setting(0x801, "fFirst", 3.0, 0),
+        ]
+        .concat(),
+        [
+            setting(0x800, "fFirst", 1.0, 0),
+            setting(0x801, "fFirst", 2.0, 0),
+            record(b"GMST", 0x801, 0x20, Vec::new()),
+            setting(0x801, "fSecond", 3.0, 0),
+        ]
+        .concat(),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = plugin(dir.path(), "Base.esm", &[], 0, bytes);
+        assert!(
+            EsmParser::merge_plugins(&[base])
+                .unwrap_err()
+                .to_string()
+                .contains("collides")
+        );
+    }
+}

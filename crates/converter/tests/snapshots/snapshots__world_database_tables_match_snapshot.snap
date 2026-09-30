@@ -68,13 +68,13 @@ expression: snapshot
     {
       "form_id": 7,
       "internal_id": 7,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "NPC_"
     },
     {
       "form_id": 10,
       "internal_id": 10,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "RACE"
     },
     {
@@ -116,7 +116,7 @@ expression: snapshot
     {
       "form_id": 219149,
       "internal_id": 219149,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "MOVT"
     }
   ],

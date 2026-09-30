@@ -242,6 +242,99 @@ fn rejects_malformed_land_and_alternate_texture_references() {
 }
 
 #[test]
+fn remaps_every_vtex_entry_without_layer_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let filler = plugin(dir.path(), "Filler.esm", &[], 0, Vec::new());
+    let base = plugin(dir.path(), "Base.esm", &[], 0, Vec::new());
+    let land = record(
+        b"LAND",
+        0x01000900,
+        0,
+        sub(
+            b"VTEX",
+            &[
+                0x800u32.to_le_bytes(),
+                0x801u32.to_le_bytes(),
+                0u32.to_le_bytes(),
+                0x01000802u32.to_le_bytes(),
+            ]
+            .concat(),
+        ),
+    );
+    let patch = plugin(dir.path(), "Patch.esp", &["Base.esm"], 0, land);
+    let merged = EsmParser::merge_plugins(&[filler, base, patch]).unwrap();
+    assert_eq!(
+        SubrecordView::new(&merged[&0x02000900].subrecords)
+            .find(b"VTEX")
+            .unwrap(),
+        &[
+            0x01000800u32.to_le_bytes(),
+            0x01000801u32.to_le_bytes(),
+            0u32.to_le_bytes(),
+            0x02000802u32.to_le_bytes(),
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn group_parser_handles_deep_nesting_and_restores_sibling_context_in_file_order() {
+    let mut payload = record(b"STAT", 1, 0, Vec::new());
+    // Well beyond a recursive parser's practical call-stack depth. Building
+    // headers in one pass keeps the fixture linear in size and construction time.
+    let depth = 10_000usize;
+    let mut nested = Vec::with_capacity(depth * 24 + payload.len());
+    for remaining in (1..=depth).rev() {
+        nested.extend(b"GRUP");
+        nested.extend(((remaining * 24 + payload.len()) as u32).to_le_bytes());
+        nested.extend([0; 16]);
+    }
+    nested.append(&mut payload);
+    let input = [
+        group(1, 0x900, group(6, 0x901, nested)),
+        group(1, 0xa00, group(6, 0xa01, record(b"STAT", 2, 0, Vec::new()))),
+        record(b"STAT", 3, 0, Vec::new()),
+    ]
+    .concat();
+    let mut records = Vec::new();
+    converter::esm::binary::parse_group(&input, None, None, &mut records).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| (
+                record.form_id,
+                record.cell_form_id,
+                record.worldspace_form_id
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (1, Some(0x901), Some(0x900)),
+            (2, Some(0xa01), Some(0xa00)),
+            (3, None, None)
+        ]
+    );
+}
+
+#[test]
+fn group_parser_rejects_partial_headers_in_nested_payloads_and_after_siblings() {
+    for length in 1..24 {
+        let partial = vec![0; length];
+        for input in [
+            partial.clone(),
+            group(0, 0, partial.clone()),
+            [
+                group(0, 0, record(b"STAT", 1, 0, Vec::new())),
+                partial.clone(),
+            ]
+            .concat(),
+        ] {
+            let result = converter::esm::binary::parse_group(&input, None, None, &mut Vec::new());
+            assert!(result.unwrap_err().to_string().contains("trailing"));
+        }
+    }
+}
+
+#[test]
 fn overrides_replace_grass_and_deletions_do_not_resurrect_it() {
     let dir = tempfile::tempdir().unwrap();
     let a = plugin(dir.path(), "Base.esm", &[], 0, grass(0x800, 35));

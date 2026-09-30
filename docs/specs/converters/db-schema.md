@@ -198,15 +198,26 @@ CREATE TABLE IF NOT EXISTS scripts (
 
 ### 10. FormID Translation Map (`formid_map`)
 
-Bridges 32-bit Skyrim FormIDs to 64-bit internal database row IDs across merged plugins.
+Maps each resolved 32-bit FormID to its stable owning plugin and plugin-local
+ID. `plugin_name` is the lowercase owning filename, such as `skyrim.esm`;
+`internal_id` is the low 24 bits for full plugins or the low 12 bits for light
+plugins. Full and light slots are assigned independently. The pair
+`(plugin_name, internal_id)` survives changes to the load-order slots.
+
+Ownership differs from override provenance: `records.load_order` identifies
+the winning plugin's priority. Game settings override by case-insensitive
+EditorID and retain the first definition's identity. A deletion with no EDID
+resolves through any previously encountered non-null FormID alias; an unknown
+header-only deletion is skipped with a warning. Later restorations keep the
+original identity. Ambiguous aliases and live settings without an EDID are
+errors, rather than silently replacing or dropping another record.
 
 ```sql
 CREATE TABLE IF NOT EXISTS formid_map (
-    form_id INTEGER NOT NULL,           -- 32-bit Skyrim FormID
-    plugin_name TEXT NOT NULL,          -- Plugin origin (e.g. 'merged')
-    internal_id INTEGER NOT NULL,       -- Internal database row ID
-    record_type TEXT NOT NULL,          -- Record type ('REFR', 'NPC_', etc.)
-    PRIMARY KEY (form_id, plugin_name)
+    form_id INTEGER PRIMARY KEY,       -- Resolved 32-bit Skyrim FormID
+    plugin_name TEXT NOT NULL,          -- Owning plugin filename
+    internal_id INTEGER NOT NULL,       -- Plugin-local ID (24 or 12 bits)
+    record_type TEXT NOT NULL           -- Record type ('REFR', 'NPC_', etc.)
 );
 ```
 

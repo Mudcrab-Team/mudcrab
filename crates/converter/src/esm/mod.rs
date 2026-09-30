@@ -7,7 +7,7 @@ use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 pub mod binary;
@@ -24,6 +24,17 @@ pub struct EsmParser;
 impl EsmParser {
     /// Parses .esm files and exports world data to skyrim_world.db
     pub fn convert_plugins(plugin_paths: &[PathBuf], db_path: &Path) -> Result<()> {
+        Self::convert_plugins_with_records(plugin_paths, db_path).map(|_| ())
+    }
+
+    /// Export and return the same merged records used for the database, so the
+    /// terrain cache cannot observe a second merge with a different load order.
+    pub(crate) fn convert_plugins_with_records(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+    ) -> Result<HashMap<u32, RawRecord>> {
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
         for (priority, path) in plugin_paths.iter().enumerate() {
@@ -33,21 +44,27 @@ impl EsmParser {
                 params![priority as i64, path.file_name().unwrap_or_default().to_string_lossy(), priority as i64, checksum.as_slice()],
             )?;
         }
-        let master = Self::merge_plugins(plugin_paths)?;
-        let order = load_order::LoadOrder::read(plugin_paths)?;
         export_to_db_with_load_order(&conn, &master, &order)?;
 
-        Ok(())
+        Ok(master)
     }
 
+    /// Merge plugin records with validated slots and EditorID-based game settings.
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::merge_plugins_with_load_order(plugin_paths, &order)
+    }
+
+    /// Use one load-order mapping for both merging and ownership export.
+    fn merge_plugins_with_load_order(
+        plugin_paths: &[PathBuf],
+        order: &load_order::LoadOrder,
+    ) -> Result<HashMap<u32, RawRecord>> {
         let mut merged = HashMap::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
-        let mut game_setting_ids = HashMap::<String, u32>::new();
-        let mut game_setting_keys = HashSet::new();
+        let mut game_settings = GameSettingIdentities::default();
         for (priority, path) in plugin_paths.iter().enumerate() {
             for mut record in parse_plugin_file(path)? {
                 record.load_order = priority as u32;
@@ -67,36 +84,15 @@ impl EsmParser {
                     )
                 })?;
                 if record.record_type == *b"GMST" {
-                    let editor_id = extractors::SubrecordView::new(&record.subrecords)
-                        .get_string(b"EDID")
-                        .filter(|name| !name.is_empty())
-                        .ok_or_else(|| {
-                            color_eyre::eyre::eyre!(
-                                "{} GMST {:08X} has no EditorID",
-                                order.names[priority],
-                                record.form_id
-                            )
-                        })?
-                        .to_ascii_lowercase();
-                    if let Some(&canonical) = game_setting_ids.get(&editor_id) {
-                        record.form_id = canonical;
-                    } else {
-                        color_eyre::eyre::ensure!(
-                            record.form_id != 0,
-                            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"
-                        );
-                        color_eyre::eyre::ensure!(
-                            !game_setting_keys.contains(&record.form_id)
-                                && !merged.contains_key(&record.form_id),
-                            "GMST {editor_id} collides with another record at {:08X}",
-                            record.form_id
-                        );
-                        game_setting_ids.insert(editor_id, record.form_id);
-                        game_setting_keys.insert(record.form_id);
-                    }
+                    let Some(canonical) =
+                        game_settings.resolve(&record, &order.names[priority], &merged)?
+                    else {
+                        continue;
+                    };
+                    record.form_id = canonical;
                 } else {
                     color_eyre::eyre::ensure!(
-                        !game_setting_keys.contains(&record.form_id),
+                        !game_settings.aliases.contains_key(&record.form_id),
                         "record {:08X} collides with a GMST identity",
                         record.form_id
                     );
@@ -109,6 +105,62 @@ impl EsmParser {
             }
         }
         Ok(merged)
+    }
+}
+
+/// Game settings override by name, but header-only deletions refer to any
+/// earlier definition's FormID. Keep every non-null alias, even after deletion.
+#[derive(Default)]
+struct GameSettingIdentities {
+    canonical_ids: HashMap<String, u32>,
+    aliases: HashMap<u32, u32>,
+}
+
+impl GameSettingIdentities {
+    /// Resolve a setting's persistent ID without silently deleting unrelated forms.
+    fn resolve(
+        &mut self,
+        record: &RawRecord,
+        plugin: &str,
+        merged: &HashMap<u32, RawRecord>,
+    ) -> Result<Option<u32>> {
+        let source_id = record.form_id;
+        let editor_id = extractors::SubrecordView::new(&record.subrecords)
+            .get_string(b"EDID")
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_ascii_lowercase());
+        let Some(editor_id) = editor_id else {
+            if record.is_deleted() {
+                if let Some(&canonical) = self.aliases.get(&source_id) {
+                    return Ok(Some(canonical));
+                }
+                eprintln!(
+                    "warning: {plugin} deleted GMST {source_id:08X} has no EditorID or known setting identity; skipping"
+                );
+                return Ok(None);
+            }
+            color_eyre::eyre::bail!("{plugin} GMST {source_id:08X} has no EditorID");
+        };
+        let known = self.canonical_ids.get(&editor_id).copied();
+        let canonical = known.unwrap_or(source_id);
+        color_eyre::eyre::ensure!(
+            canonical != 0,
+            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"
+        );
+        if source_id != 0 {
+            color_eyre::eyre::ensure!(
+                self.aliases
+                    .get(&source_id)
+                    .is_none_or(|id| known == Some(*id))
+                    && merged
+                        .get(&source_id)
+                        .is_none_or(|previous| previous.record_type == *b"GMST"),
+                "GMST {editor_id} collides with another record at {source_id:08X}"
+            );
+            self.aliases.insert(source_id, canonical);
+        }
+        self.canonical_ids.insert(editor_id, canonical);
+        Ok(Some(canonical))
     }
 }
 
@@ -267,6 +319,9 @@ fn remap_record_form_ids(
             continue;
         }
         if record.record_type == *b"LAND" && tag.as_slice() == b"VTEX" {
+            // xEdit's TES5 LAND definition uses an array of wbFormIDCk(LTEX,
+            // NULL), unlike the 8-byte BTXT/ATXT layer structures above:
+            // https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas
             color_eyre::eyre::ensure!(data.len().is_multiple_of(4), "invalid LAND VTEX length");
             for value in data.as_chunks_mut::<4>().0 {
                 *value = remap(u32::from_le_bytes(*value))?.to_le_bytes();
