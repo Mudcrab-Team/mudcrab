@@ -1,6 +1,6 @@
 use crate::esm::{
     binary::parse_plugin_file,
-    exporter::{create_tables, export_to_db},
+    exporter::{create_tables, export_to_db_with_load_order},
     records::RawRecord,
 };
 use color_eyre::{Result, eyre::WrapErr};
@@ -34,7 +34,8 @@ impl EsmParser {
             )?;
         }
         let master = Self::merge_plugins(plugin_paths)?;
-        export_to_db(&conn, &master)?;
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        export_to_db_with_load_order(&conn, &master, &order)?;
 
         Ok(())
     }
