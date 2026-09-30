@@ -275,3 +275,4 @@ B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; re
 B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings failed unchanged workspace under `-D warnings`|§C fixed Rust toolchain; restore 1.98.1
 B42|2026-10-01|PR #102 merge retained local LAND tiling constant alongside shared import; engine failed E0255|reuse shared constant; workspace compile + Clippy gates
 B43|2026-09-30|launcher LOD report fields omitted from Play-availability fixture outside conversion module|migrate fixture; launcher compile/test gate
+B44|2026-09-30|ignored layout performance test retained 12-file count after LOD sidecar addition|migrate count; assert sidecar output; preserve 10-second budget; no new invariant
