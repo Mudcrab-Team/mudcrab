@@ -41,14 +41,6 @@ impl EsmParser {
     }
 
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
-        Self::merge_plugins_selected(plugin_paths, &[])
-    }
-
-    /// Empty types selects all records; otherwise retain only the requested record kinds.
-    pub fn merge_plugins_selected(
-        plugin_paths: &[PathBuf],
-        types: &[[u8; 4]],
-    ) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut merged = HashMap::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
@@ -58,9 +50,6 @@ impl EsmParser {
         let mut game_setting_keys = HashSet::new();
         for (priority, path) in plugin_paths.iter().enumerate() {
             for mut record in parse_plugin_file(path)? {
-                if !types.is_empty() && !types.contains(&record.record_type) {
-                    continue;
-                }
                 record.load_order = priority as u32;
                 remap_record_form_ids(
                     &mut record,
@@ -210,7 +199,7 @@ fn remap_record_form_ids(
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
 ) -> Result<()> {
-    // Enforce strict reference validation for the grass preparation record kinds.
+    // Enforce strict reference validation for landscape and grass record kinds.
     // Preserve legacy handling elsewhere until their record-specific exceptions
     // (including shipped GMST IDs outside the master table) have been audited.
     let strict = matches!(

@@ -1,6 +1,9 @@
 //! Synthetic plugins only: no game data or copied assets.
 use converter::esm::{EsmParser, extractors::SubrecordView, load_order::LoadOrder};
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
     [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
@@ -178,6 +181,67 @@ fn remaps_reordered_masters_light_plugins_terrain_and_alternate_textures() {
 }
 
 #[test]
+fn remaps_cell_and_world_water_references_and_preserves_nulls() {
+    let dir = tempfile::tempdir().unwrap();
+    let filler = plugin(dir.path(), "Filler.esm", &[], 0, Vec::new());
+    let base = plugin(dir.path(), "Base.esm", &[], 0, Vec::new());
+    let patch = plugin(
+        dir.path(),
+        "Patch.esp",
+        &["Base.esm"],
+        0,
+        [
+            record(
+                b"CELL",
+                0x01000800,
+                0,
+                sub(b"XCWT", &0x900u32.to_le_bytes()),
+            ),
+            record(
+                b"WRLD",
+                0x01000801,
+                0,
+                [
+                    sub(b"NAM2", &0x901u32.to_le_bytes()),
+                    sub(b"NAM3", &0u32.to_le_bytes()),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let merged = EsmParser::merge_plugins(&[filler, base, patch]).unwrap();
+    assert_eq!(
+        SubrecordView::new(&merged[&0x02000800].subrecords).get_form_id(b"XCWT"),
+        Some(0x01000900)
+    );
+    let world = SubrecordView::new(&merged[&0x02000801].subrecords);
+    assert_eq!(world.get_form_id(b"NAM2"), Some(0x01000901));
+    assert_eq!(world.get_form_id(b"NAM3"), Some(0));
+}
+
+#[test]
+fn rejects_malformed_land_and_alternate_texture_references() {
+    for (kind, payload) in [
+        (b"LAND", sub(b"BTXT", &[0; 7])),
+        (b"LAND", sub(b"ATXT", &[0; 9])),
+        (b"LAND", sub(b"VTEX", &[0; 3])),
+        (b"GRAS", sub(b"MODS", &1u32.to_le_bytes())),
+        (b"GRAS", sub(b"MODS", &[0; 5])),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let base = plugin(
+            dir.path(),
+            "Base.esm",
+            &[],
+            0,
+            record(kind, 0x800, 0, payload),
+        );
+        assert!(EsmParser::merge_plugins(&[base]).is_err());
+    }
+}
+
+#[test]
 fn overrides_replace_grass_and_deletions_do_not_resurrect_it() {
     let dir = tempfile::tempdir().unwrap();
     let a = plugin(dir.path(), "Base.esm", &[], 0, grass(0x800, 35));
@@ -256,4 +320,3 @@ fn full_local_load_order_merges() {
         records.len()
     );
 }
-

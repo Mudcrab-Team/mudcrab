@@ -32,73 +32,73 @@ expression: snapshot
     {
       "form_id": 1,
       "internal_id": 1,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "WRLD"
     },
     {
       "form_id": 2,
       "internal_id": 2,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "TXST"
     },
     {
       "form_id": 3,
       "internal_id": 3,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "STAT"
     },
     {
       "form_id": 4,
       "internal_id": 4,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "LTEX"
     },
     {
       "form_id": 5,
       "internal_id": 5,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "DOOR"
     },
     {
       "form_id": 6,
       "internal_id": 6,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "DOOR"
     },
     {
       "form_id": 16,
       "internal_id": 16,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "CELL"
     },
     {
       "form_id": 17,
       "internal_id": 17,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "LAND"
     },
     {
       "form_id": 18,
       "internal_id": 18,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "REFR"
     },
     {
       "form_id": 19,
       "internal_id": 19,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "REFR"
     },
     {
       "form_id": 65536,
       "internal_id": 65536,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "CELL"
     },
     {
       "form_id": 65537,
       "internal_id": 65537,
-      "plugin_name": "merged",
+      "plugin_name": "skyrim.esm",
       "record_type": "REFR"
     }
   ],
