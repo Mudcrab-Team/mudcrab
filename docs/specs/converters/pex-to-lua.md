@@ -1,6 +1,6 @@
 # Papyrus (.pex/.psc) to Luau Transpilation Specification
 
-This document details the technical specification for transpiling Bethesda Papyrus compiled bytecode (`.pex`) and source scripts (`.psc`) into modern, high-performance **Luau** scripts for Mudcrab.
+This document details the technical specification for transpiling Bethesda Papyrus compiled bytecode (`.pex`) and source scripts (`.psc`) into modern, high-performance **Luau** scripts for OpenSkyrim.
 
 ---
 
@@ -16,9 +16,9 @@ This document details the technical specification for transpiling Bethesda Papyr
 
 The `mlua` crate supports multiple Lua backends via Cargo feature flags:
 
-| `mlua` Feature Flag      | Backend Engine           | Performance & Suitability for Mudcrab                                                                                                                                                                         |
+| `mlua` Feature Flag      | Backend Engine           | Performance & Suitability for OpenSkyrim                                                                                                                                                                         |
 | :----------------------- | :----------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`luau` / `luau-jit`**  | **Luau (Roblox)**        | ⭐ **Mandatory Engine for Mudcrab.** Built specifically for AAA game engines. Has a JIT compiler, built-in sandboxing (prevents malicious mod scripts), optional static typing, and ultra-fast C/Rust FFI bridges. |
+| **`luau` / `luau-jit`**  | **Luau (Roblox)**        | ⭐ **Mandatory Engine for OpenSkyrim.** Built specifically for AAA game engines. Has a JIT compiler, built-in sandboxing (prevents malicious mod scripts), optional static typing, and ultra-fast C/Rust FFI bridges. |
 | **`luajit`**             | **LuaJIT 2.1**           | 🔥 **Fast raw compute execution.** Ideal for complex math, but lacks Luau's modern sandboxing and static typing features.                                                                                      |
 | **`lua54` / `vendored`** | **Standard PUC Lua 5.4** | Highly portable & compliant interpreter, but lacks JIT compilation (5x-7x slower than LuaJIT/Luau) and sandboxing.                                                                                              |
 
@@ -93,7 +93,7 @@ State Active
 EndState
 ```
 
-### Transpiled Mudcrab Luau Output (`QF_MQ101_0003372B.lua`):
+### Transpiled OpenSkyrim Luau Output (`QF_MQ101_0003372B.lua`):
 
 ```lua
 local QF_MQ101_0003372B = Class("QF_MQ101_0003372B", Quest)
@@ -133,7 +133,7 @@ return QF_MQ101_0003372B
 
 ## 5. Runtime Architecture (`crates/scripting`)
 
-Inside Mudcrab, the **`scripting` crate (`crates/scripting`)** encapsulates the `mlua` JIT VM, isolates script execution from main engine recompilations, and generates IDE type annotations:
+Inside OpenSkyrim, the **`scripting` crate (`crates/scripting`)** encapsulates the `mlua` JIT VM, isolates script execution from main engine recompilations, and generates IDE type annotations:
 
 ```rust
 // Inside crates/scripting/src/engine.rs
@@ -170,8 +170,8 @@ impl LuauScriptEngine {
 
 ### 6. Modder Intellisense & Type Safety (`.d.lua` Generator)
 
-`crates/scripting` includes an automated type definition exporter (`mudcrab_scripting::generate_typedefs()`):
+`crates/scripting` includes an automated type definition exporter (`openskyrim_scripting::generate_typedefs()`):
 
-- Exposes all `Engine.*` API methods as EmmyLua / LuaLS type definitions (`mudcrab.d.lua`).
-- Distributable via **Luarocks** for one-command mod developer setup (`luarocks install mudcrab-types`).
+- Exposes all `Engine.*` API methods as EmmyLua / LuaLS type definitions (`openskyrim.d.lua`).
+- Distributable via **Luarocks** for one-command mod developer setup (`luarocks install openskyrim-types`).
 - Gives mod developers instant autocompletion, inline documentation, and static type checking in VS Code, Zed, Neovim, and Cursor.

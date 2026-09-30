@@ -1,8 +1,8 @@
-# Mudcrab Architecture & Roadmap
+# OpenSkyrim Architecture & Roadmap
 
 An open-source engine reimplementation for **The Elder Scrolls V: Skyrim (Special Edition)** (and extensible for Creation Engine / Gamebryo titles like Morrowind / Oblivion) built in **Rust** using the **Bevy Engine**.
 
-Inspired by project initiatives like OpenMW (OpenMorrowind), Mudcrab aims to provide a modern, multithreaded, high-performance runtime for Bethesda engine assets.
+Inspired by project initiatives like OpenMW (OpenMorrowind), OpenSkyrim aims to provide a modern, multithreaded, high-performance runtime for Bethesda engine assets.
 
 ---
 
@@ -25,7 +25,7 @@ Inspired by project initiatives like OpenMW (OpenMorrowind), Mudcrab aims to pro
                                          │ (Instant Memory Mapped / Multi-threaded Streaming)
                                          ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Mudcrab Bevy Engine Runtime (ECS)                     │
+│                    OpenSkyrim Bevy Engine Runtime (ECS)                     │
 │  ┌──────────────────────────┬──────────────────────┬─────────────────────┐  │
 │  │   Vercidium Instanced    │   WebGPU / Vulkan    │   Luau (mlua) JIT   │  │
 │  │   Indirect Render Pool   │   Bevy 0.19 bsn! UI  │  (Web API + Sandbox)│  │
@@ -37,10 +37,10 @@ Inspired by project initiatives like OpenMW (OpenMorrowind), Mudcrab aims to pro
 
 ## 2. Workspace Crate Architecture
 
-During Phase 2, Mudcrab is organized into a **4-crate Cargo Workspace**. Phase 3 adds the isolated `scripting` crate as a fifth member:
+During Phase 2, OpenSkyrim is organized into a **4-crate Cargo Workspace**. Phase 3 adds the isolated `scripting` crate as a fifth member:
 
 ```
-Mudcrab/
+OpenSkyrim/
 ├── Cargo.toml                  # Workspace Root Manifest
 ├── crates/
 │   ├── launcher/    # UI App (Setup Wizard, Mod Manager, Launcher)
@@ -60,7 +60,7 @@ Mudcrab/
 
 ## 3. Modder Developer Experience (DX) & Type Safety
 
-Mudcrab prioritizes a modern, developer-friendly modding ecosystem:
+OpenSkyrim prioritizes a modern, developer-friendly modding ecosystem:
 
 - **Isolated Scripting Crate (`crates/scripting`):** Prevents script runtime changes from forcing full game engine recompilations.
 - **Phase boundary:** `crates/scripting` is introduced in Phase 3; the Phase 2 Papyrus compatibility module remains inside `engine` until that migration.

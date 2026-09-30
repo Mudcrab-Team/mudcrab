@@ -271,7 +271,7 @@ fn generated_esm_plugin_exports_world_database() {
         },
     ];
     let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
-        author: "Mudcrab dummy-content",
+        author: "OpenSkyrim dummy-content",
         worldspace: "GeneratedWorld",
         cells: &cells,
         model_path: "meshes/generated.nif",
@@ -310,14 +310,13 @@ fn generated_esm_plugin_exports_world_database() {
 }
 
 #[test]
-#[ignore = "requires MUDCRAB_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
+#[ignore = "requires OPENSKYRIM_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
 fn real_static_nif_matches_writer_version_assumptions() {
     use converter::mesh::MeshConverter;
 
-    let path = std::env::var_os("MUDCRAB_STATIC_NIF_FIXTURE")
-        .or_else(|| std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE"))
+    let path = std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE")
         .map(std::path::PathBuf::from)
-        .expect("set MUDCRAB_STATIC_NIF_FIXTURE to a static Skyrim NIF");
+        .expect("set OPENSKYRIM_STATIC_NIF_FIXTURE to a static Skyrim NIF");
     let bytes = fs::read(&path).unwrap();
     let line = b"Gamebryo File Format, Version 20.2.0.7\n";
     assert!(bytes.starts_with(line), "unexpected NIF signature");

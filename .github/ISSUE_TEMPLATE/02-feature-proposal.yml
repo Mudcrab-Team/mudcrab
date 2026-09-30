@@ -1,5 +1,5 @@
 name: '💡 Feature Request'
-description: Request a new Mudcrab feature or enhancement
+description: Request a new OpenSkyrim feature or enhancement
 labels: [enhancement]
 body:
   - type: markdown
@@ -30,6 +30,6 @@ body:
       options:
         - nice to have
         - would make my life easier
-        - i cannot use mudcrab without it
+        - i cannot use openskyrim without it
     validations:
       required: true

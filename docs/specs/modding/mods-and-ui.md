@@ -1,6 +1,6 @@
-# Mudcrab Modding Architecture & Compatibility Strategy
+# OpenSkyrim Modding Architecture & Compatibility Strategy
 
-Skyrim has the largest modding ecosystem in PC gaming. This document outlines how Mudcrab handles legacy Skyrim mods (`.esp`, `.esm`, `.esl`, `.bsa`, mesh/texture overrides, Papyrus scripts) while introducing modern, native Lua modding.
+Skyrim has the largest modding ecosystem in PC gaming. This document outlines how OpenSkyrim handles legacy Skyrim mods (`.esp`, `.esm`, `.esl`, `.bsa`, mesh/texture overrides, Papyrus scripts) while introducing modern, native Lua modding.
 
 ---
 
@@ -14,7 +14,7 @@ Skyrim has the largest modding ecosystem in PC gaming. This document outlines ho
                                                │
                                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Mudcrab Mod Ingestion & Sandbox                       │
+│                    OpenSkyrim Mod Ingestion & Sandbox                       │
 │                                                                             │
 │   ┌─────────────────────────────────┐   ┌───────────────────────────────┐   │
 │   │  Tier 1: Legacy Compatibility   │   │  Tier 2: Native Modern Mods   │   │
@@ -26,7 +26,7 @@ Skyrim has the largest modding ecosystem in PC gaming. This document outlines ho
                                                │
                                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Unified Mudcrab Engine Runtime                        │
+│                    Unified OpenSkyrim Engine Runtime                        │
 │                 (Virtual Filesystem + SQLite Mod Layering)                  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -40,7 +40,7 @@ Skyrim has the largest modding ecosystem in PC gaming. This document outlines ho
 In original Skyrim, `.esp` files override records from `Skyrim.esm` based on load order (e.g. `plugins.txt`).
 
 - **SQLite Mod Layering:**
-  - Mudcrab stores base game data in `skyrim_world.db`.
+  - OpenSkyrim stores base game data in `skyrim_world.db`.
   - When a user adds an `.esp` mod, the converter imports the plugin's records into a mod table with a higher **load order priority weight**.
   - Database query:
     ```sql
@@ -56,16 +56,16 @@ In original Skyrim, `.esp` files override records from `Skyrim.esm` based on loa
 ### C. Legacy Papyrus Scripts (`.pex` Mods)
 
 - `.pex` bytecode contained within mod `.bsa` archives or `Scripts/` folders is run through the **Papyrus-to-Lua AST Transpiler**.
-- Mod functions call the unified Mudcrab Lua API bindings seamlessly.
+- Mod functions call the unified OpenSkyrim Lua API bindings seamlessly.
 
 ## 3. Integrated Launcher Mod Manager & Storage Structure
 
-Instead of relying solely on external tools, Mudcrab includes a **Built-in Mod Manager** inside the Launcher.
+Instead of relying solely on external tools, OpenSkyrim includes a **Built-in Mod Manager** inside the Launcher.
 
-### Storage Hierarchy (`Mudcrab/`)
+### Storage Hierarchy (`OpenSkyrim/`)
 
 ```
-Mudcrab/
+OpenSkyrim/
 ├── game_data/               # Unpacked base game & DLC assets
 ├── transformed_data/        # Transformed base game (glTF, KTX2, SQLite)
 ├── mods/                    # User installed raw mod folders (installed via Launcher)
@@ -89,9 +89,9 @@ Mudcrab/
 
 Original Skyrim uses **Autodesk Scaleform**, which executes Adobe Flash (`.swf` / `.gfx` files with ActionScript 2.0). Flash is obsolete, insecure, and heavily limits UI customization and performance.
 
-### The Mudcrab Native Bevy UI Architecture (`bsn!`):
+### The OpenSkyrim Native Bevy UI Architecture (`bsn!`):
 
-Mudcrab completely eliminates webviews, embedded browser engines, and Flash runtimes. All UI elements (hud, menus, inventory, dialogue choices) are transpiled directly into native **Bevy 0.19 `bsn!` (Bevy Scene Notation)** declarative widget trees for pure zero-overhead GPU execution.
+OpenSkyrim completely eliminates webviews, embedded browser engines, and Flash runtimes. All UI elements (hud, menus, inventory, dialogue choices) are transpiled directly into native **Bevy 0.19 `bsn!` (Bevy Scene Notation)** declarative widget trees for pure zero-overhead GPU execution.
 
 ```
 ┌───────────────────────────┐
@@ -125,8 +125,8 @@ Mudcrab completely eliminates webviews, embedded browser engines, and Flash runt
 #### How it works step-by-step:
 
 1. **Flash Extraction & AST Transpilation (Offline Phase):**
-   - **Flash Layouts ➔ `bsn!` Widgets:** Vector shapes, buttons, text fields, and container layouts inside `.swf`/`.gfx` are exported (via AST extraction in `mudcrab_converter`) and transpiled into native Bevy UI nodes using `bsn!` declarative syntax.
-   - **ActionScript 2.0 ➔ Unified Luau Handlers:** ActionScript UI scripts (e.g. inventory filtering, stats calculations, menu navigation) are transpiled into standard **Luau** functions. Mudcrab uses Luau as the **single, unified scripting engine** for both UI handlers and quest/game logic—eliminating secondary UI scripting runtimes.
+   - **Flash Layouts ➔ `bsn!` Widgets:** Vector shapes, buttons, text fields, and container layouts inside `.swf`/`.gfx` are exported (via AST extraction in `openskyrim_converter`) and transpiled into native Bevy UI nodes using `bsn!` declarative syntax.
+   - **ActionScript 2.0 ➔ Unified Luau Handlers:** ActionScript UI scripts (e.g. inventory filtering, stats calculations, menu navigation) are transpiled into standard **Luau** functions. OpenSkyrim uses Luau as the **single, unified scripting engine** for both UI handlers and quest/game logic—eliminating secondary UI scripting runtimes.
 
 2. **Rendering & Execution inside Bevy (Runtime Phase):**
    - **Bevy 0.19 `bsn!` Native UI:**

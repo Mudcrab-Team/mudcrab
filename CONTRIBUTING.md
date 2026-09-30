@@ -1,6 +1,6 @@
-# Contributing to Mudcrab
+# Contributing to OpenSkyrim
 
-Thank you for your interest in contributing to **Mudcrab**! We welcome contributions from developers, reverse engineers, 3D graphics enthusiasts, modders, and documentation writers of all experience levels.
+Thank you for your interest in contributing to **OpenSkyrim**! We welcome contributions from developers, reverse engineers, 3D graphics enthusiasts, modders, and documentation writers of all experience levels.
 
 ---
 
@@ -44,11 +44,11 @@ Ensure you have the following installed:
 * **CMake** & **Ninja** / **GCC** (required for compiling native `libSQL` / `sqlite3` dependencies)
 
 ### 2. Fork and Clone
-Fork [realfakenerd/mudcrab](https://github.com/realfakenerd/mudcrab) on GitHub, then clone
+Fork [realfakenerd/wah-krah-jol](https://github.com/realfakenerd/wah-krah-jol) on GitHub, then clone
 your fork:
 ```bash
-git clone https://github.com/<your-username>/mudcrab.git
-cd mudcrab
+git clone https://github.com/<your-username>/wah-krah-jol.git
+cd wah-krah-jol
 ```
 
 ### 3. Check Workspace Compilation
@@ -114,7 +114,7 @@ acceptance runs), since `quick` frame times are not comparable.
 
 ## ⚖️ License & Legal
 
-By contributing to Mudcrab, you agree that your contributions will be dual-licensed under the **MIT License** and **Apache License (Version 2.0)**.
+By contributing to OpenSkyrim, you agree that your contributions will be dual-licensed under the **MIT License** and **Apache License (Version 2.0)**.
 
 ### Legal Disclaimer
-Mudcrab is a clean-room engine reimplementation. **Do NOT upload, distribute, or submit copyrighted game assets** (`.bsa`, `.esm`, `.nif`, `.dds`, etc.) owned by Bethesda Softworks / ZeniMax Media in PRs or issues. All test fixtures must be generated procedurally or extracted dynamically at runtime from the user's legally owned game files.
+OpenSkyrim is a clean-room engine reimplementation. **Do NOT upload, distribute, or submit copyrighted game assets** (`.bsa`, `.esm`, `.nif`, `.dds`, etc.) owned by Bethesda Softworks / ZeniMax Media in PRs or issues. All test fixtures must be generated procedurally or extracted dynamically at runtime from the user's legally owned game files.

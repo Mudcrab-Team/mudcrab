@@ -206,7 +206,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("mudcrab-steam-detection-{unique}"));
+        let root = std::env::temp_dir().join(format!("openskyrim-steam-detection-{unique}"));
         let steamapps = root.join("steamapps");
         let data_dir = steamapps.join("common").join("Skyrim SSE").join("Data");
         fs::create_dir_all(&data_dir).unwrap();
@@ -228,7 +228,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("mudcrab-case-detection-{unique}"));
+        let root = std::env::temp_dir().join(format!("openskyrim-case-detection-{unique}"));
         let data_dir = root.join("Data");
         fs::create_dir_all(&data_dir).unwrap();
         fs::write(data_dir.join("skyrim.esm"), []).unwrap();
@@ -244,7 +244,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("mudcrab-drop-detection-{unique}"));
+        let root = std::env::temp_dir().join(format!("openskyrim-drop-detection-{unique}"));
         let install = root.join("Skyrim Special Edition");
         let data = install.join("Data");
         fs::create_dir_all(&data).unwrap();

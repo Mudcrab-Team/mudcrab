@@ -1,4 +1,4 @@
-//! Offline conversion of Skyrim assets into runtime-ready Mudcrab assets.
+//! Offline conversion of Skyrim assets into runtime-ready OpenSkyrim assets.
 
 pub mod archive;
 pub mod asset_path;
