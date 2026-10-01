@@ -30,7 +30,11 @@ fn notices_are_printed_on_complete_and_incomplete_runs() {
         let stderr = String::from_utf8_lossy(&run.stderr);
         assert_eq!(run.status.success(), !incomplete, "{stdout}\n{stderr}");
         assert!(stdout.contains("  note: found 1 plugin files"), "{stdout}");
-        assert!(stderr.contains("warning: found 1 plugin files"), "{stderr}");
+        assert!(stderr.contains("note: found 1 plugin files"), "{stderr}");
+        assert!(
+            !stderr.contains("warning: found 1 plugin files"),
+            "{stderr}"
+        );
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
         assert_eq!(report["notices"].as_array().unwrap().len(), 1);

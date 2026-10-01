@@ -247,17 +247,22 @@ async fn main() -> Result<()> {
         );
     }
     if !report.complete {
-        let skipped = report.skipped;
-        eprintln!(
-            "Conversion incomplete: {skipped} input(s) were skipped. The output was published anyway; the manifest lists what is missing: {}",
-            cli.output.join("conversion-manifest.json").display()
-        );
+        eprintln!("{}", incomplete_summary(&report, &cli.output));
         for warning in report.warnings.iter().take(RunWatch::NAMED_FAILURES) {
             eprintln!("    {warning}");
         }
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Count failure warnings, including integration failures that do not increment skipped.
+fn incomplete_summary(report: &PipelineReport, output: &Path) -> String {
+    let skipped = report.warnings.len();
+    format!(
+        "Conversion incomplete: {skipped} input(s) were skipped. The output was published anyway; the manifest lists what is missing: {}",
+        output.join("conversion-manifest.json").display()
+    )
 }
 
 /// The summary a finished run prints: what it produced, how long it took, and where to look.
@@ -843,6 +848,21 @@ mod tests {
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
+    }
+
+    /// Integration failures count even without skipped assets; advisory notices do not.
+    #[test]
+    fn incomplete_summary_counts_integration_warnings_but_not_notices() {
+        let report = PipelineReport {
+            warnings: vec!["asset integration failed: 1 missing models".into()],
+            notices: vec!["nested plugins ignored".into(), "another advisory".into()],
+            ..PipelineReport::default()
+        };
+        assert_eq!(report.skipped, 0);
+        assert!(
+            incomplete_summary(&report, Path::new("modern"))
+                .starts_with("Conversion incomplete: 1 input(s) were skipped.")
+        );
     }
 
     #[test]

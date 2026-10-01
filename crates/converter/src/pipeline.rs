@@ -1583,7 +1583,7 @@ fn plugin_paths(
             discovered.len(),
             config.data_dir.display()
         );
-        eprintln!("warning: {warning}");
+        eprintln!("note: {warning}");
         notices.push(warning);
     }
     plugins.sort_by_key(|path| {
