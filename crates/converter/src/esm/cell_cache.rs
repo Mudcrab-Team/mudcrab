@@ -5,6 +5,7 @@ use rkyv::rancor::Error;
 use shared::{CELL_CACHE_VERSION, CachedLand, CellCache, LAND_SIDE, TerrainLayer, TerrainWeight};
 use std::{collections::HashMap, fs::File, io::Write, path::Path};
 
+/// Validate and serialize merged LAND records, rejecting invalid terrain before replacing a cache.
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
     let water_by_cell = water_by_cell(records);
     let mut cells_by_id = HashMap::new();
@@ -240,6 +241,7 @@ fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
     normals
 }
 
+/// Decode LAND assignments and validate payloads and non-null overlay index uniqueness.
 fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<TerrainLayer>> {
     let mut layers = Vec::new();
     let mut active: Option<usize> = None;
@@ -320,7 +322,10 @@ fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<Terra
         color_eyre::eyre::ensure!(
             layers
                 .iter()
-                .filter(|layer| layer.quadrant == quadrant && !layer.is_base)
+                // Null assignments are discarded by normalization and cannot conflict at runtime.
+                .filter(|layer| {
+                    layer.quadrant == quadrant && !layer.is_base && layer.texture_form_id != 0
+                })
                 .all(|layer| indices.insert(layer.layer)),
             "quadrant {quadrant} repeats an ATXT layer index"
         );
@@ -406,6 +411,7 @@ mod tests {
     use crate::test_strategies::{arbitrary_bytes, config};
     use proptest::prelude::*;
 
+    /// Validate an explicitly supplied local plugin set without publishing into its asset pack.
     #[test]
     #[ignore = "requires explicit MUDCRAB_GRASS_DATA and MUDCRAB_GRASS_PLUGINS paths"]
     fn local_load_order_terrain_cache_passes_validation() {
@@ -457,6 +463,7 @@ mod tests {
         assert!(decode_normals(&[0; 16], &heights).is_empty());
     }
 
+    /// Reconstructed border normals must match the plane, while authored samples stay untouched.
     #[test]
     fn generated_normals_preserve_planar_slopes_at_edges_and_corners() {
         for (dx, dy) in [(64.0, 0.0), (0.0, -32.0), (64.0, -32.0)] {
@@ -479,6 +486,7 @@ mod tests {
         }
     }
 
+    /// Invalid geometry must fail before any bytes of a previous valid cache are replaced.
     #[test]
     fn invalid_land_fails_before_replacing_an_existing_cache() {
         let dir = tempfile::tempdir().unwrap();
@@ -502,6 +510,7 @@ mod tests {
         }
     }
 
+    /// Assigned overlay indices are unique within a quadrant, not across the entire cell.
     #[test]
     fn overlay_indices_are_unique_within_each_quadrant() {
         let overlay = |texture: u32, quadrant: u8| {
@@ -511,10 +520,47 @@ mod tests {
         };
         assert!(extract_texture_layers(&[overlay(1, 0), overlay(2, 0)]).is_err());
         assert!(extract_texture_layers(&[overlay(1, 0), overlay(1, 1)]).is_ok());
-        // Null texture references must still obey the structural contract.
-        assert!(extract_texture_layers(&[overlay(0, 0), overlay(1, 0)]).is_err());
+        assert!(extract_texture_layers(&[overlay(0, 0), overlay(1, 0)]).is_ok());
     }
 
+    /// Null overlays may reuse an assigned layer index, but their payloads must still be valid.
+    #[test]
+    fn null_overlay_indices_are_ignored_when_publishing_the_cache() {
+        let overlay = |texture: u32| {
+            let mut bytes = texture.to_le_bytes().to_vec();
+            bytes.extend([0, 0, 2, 0]);
+            (b"ATXT".to_vec(), bytes)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        for textures in [[0, 1, 0], [1, 0, 0], [0, 0, 1]] {
+            let mut land = record(0x1234, b"LAND", None, &[]);
+            land.subrecords = textures.into_iter().map(overlay).collect();
+            write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).unwrap();
+            let mmap = validate_cell_cache(&path).unwrap();
+            let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+            let layers = &cache.cells[0].layers;
+            assert_eq!(layers.len(), 2, "implicit base plus the assigned overlay");
+            assert!(layers[0].is_base);
+            assert_eq!(layers[0].texture_form_id, 0);
+            assert!(!layers[1].is_base);
+            assert_eq!(layers[1].texture_form_id, 1);
+            assert_eq!(layers[1].layer, 2);
+        }
+        let original = std::fs::read(&path).unwrap();
+        // Reject both a retained-layer conflict and malformed data on a null assignment.
+        for subrecords in [
+            vec![overlay(1), overlay(2)],
+            vec![overlay(0), (b"VTXT".to_vec(), vec![0; 7])],
+        ] {
+            let mut land = record(0x1234, b"LAND", None, &[]);
+            land.subrecords = subrecords;
+            assert!(write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    /// Repair individual invalid normals without overwriting neighboring authored values.
     #[test]
     fn zero_authored_normals_are_repaired_without_changing_valid_neighbors() {
         let heights = vec![0.0; 33 * 33];
