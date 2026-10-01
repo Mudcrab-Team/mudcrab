@@ -7,7 +7,8 @@ use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
 };
 pub mod binary;
@@ -65,6 +66,7 @@ impl EsmParser {
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
         let mut game_settings = GameSettingIdentities::default();
+        let truncations = LightIdWarnings::default();
         for (priority, path) in plugin_paths.iter().enumerate() {
             for mut record in parse_plugin_file(path)? {
                 record.load_order = priority as u32;
@@ -74,6 +76,7 @@ impl EsmParser {
                     &order.metadata[priority].masters,
                     &order.normal,
                     &order.light,
+                    &truncations,
                 )
                 .wrap_err_with(|| {
                     format!(
@@ -104,7 +107,31 @@ impl EsmParser {
                 }
             }
         }
+        truncations.report();
         Ok(merged)
+    }
+}
+
+/// Count truncated ID occurrences (including references) by owning plugin.
+/// Retain one example, so memory and log volume scale with plugins, not records.
+#[derive(Default)]
+struct LightIdWarnings(RefCell<BTreeMap<String, (u64, u32)>>);
+
+impl LightIdWarnings {
+    /// Accumulate one truncation without emitting a per-reference diagnostic.
+    fn record(&self, owner: &str, form_id: u32) {
+        let mut counts = self.0.borrow_mut();
+        let entry = counts.entry(owner.to_owned()).or_insert((0, form_id));
+        entry.0 += 1;
+    }
+
+    /// Emit one deterministic summary per affected plugin after a successful merge.
+    fn report(&self) {
+        for (owner, (count, example)) in self.0.borrow().iter() {
+            eprintln!(
+                "warning: {owner}: {count} light-plugin ID occurrences exceeded 12 bits and were truncated (first: {example:08X}); compact the plugin's FormIDs before ESL-flagging it"
+            );
+        }
     }
 }
 
@@ -250,6 +277,7 @@ fn remap_record_form_ids(
     masters: &[String],
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
+    truncations: &LightIdWarnings,
 ) -> Result<()> {
     // Enforce strict reference validation for landscape and grass record kinds.
     // Preserve legacy handling elsewhere until their record-specific exceptions
@@ -278,9 +306,7 @@ fn remap_record_form_ids(
                     !strict,
                     "{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"
                 );
-                eprintln!(
-                    "warning: {owner}: light-plugin local ID {form_id:08X} exceeds 12 bits and was truncated; compact the plugin's FormIDs before ESL-flagging it"
-                );
+                truncations.record(&owner, form_id);
             }
             return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));
         }
@@ -375,6 +401,7 @@ mod tests {
             &["skyrim.esm".to_string()],
             &normal_indices,
             &HashMap::new(),
+            &LightIdWarnings::default(),
         )
         .unwrap();
         assert_eq!(race.form_id, 0x0301_3746);
@@ -407,6 +434,7 @@ mod tests {
             &[],
             &normal_indices,
             &light_indices,
+            &LightIdWarnings::default(),
         )
         .unwrap();
         assert_eq!(tes4.subrecords[0].1, b"Bethesda Game Studios\0");
@@ -427,6 +455,7 @@ mod tests {
             &[],
             &normal_indices,
             &light_indices,
+            &LightIdWarnings::default(),
         )
         .unwrap();
         assert_eq!(clfm.subrecords[0].1, vec![128, 64, 32, 255]);
@@ -456,6 +485,7 @@ mod tests {
             &["skyrim.esm".to_string()],
             &normal_indices,
             &light_indices,
+            &LightIdWarnings::default(),
         )
         .unwrap();
         assert_eq!(

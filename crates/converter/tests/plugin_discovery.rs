@@ -77,6 +77,9 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
     );
     // Header flags, not just the filename suffix, determine master priority.
     plugin(&data, "YMaster.esp", &["Skyrim.esm"], 1, None);
+    // Extensions imply early loading even without the ESM header bit.
+    plugin(&data, "WMaster.esm", &["Skyrim.esm"], 0, None);
+    plugin(&data, "VLight.esl", &["Skyrim.esm"], 0, None);
     plugin(&data, "XLight.esp", &["Skyrim.esm"], 0x200, None);
     plugin(&data, "BIndependent.esp", &["Skyrim.esm"], 0, None);
     fs::create_dir_all(data.join("Optional")).unwrap();
@@ -98,9 +101,11 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
         names,
         [
             "Skyrim.esm",
-            "XLight.esp",
+            "VLight.esl",
+            "WMaster.esm",
             "YMaster.esp",
             "BIndependent.esp",
+            "XLight.esp",
             "ZMod.esp",
             "APatch.esp"
         ]
@@ -122,6 +127,42 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
     assert!(second.complete);
     assert_eq!(second.converted, 0);
     assert!(second.cache_hits > 0);
+}
+
+#[tokio::test]
+async fn fallback_keeps_espfe_in_regular_order_without_changing_light_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    plugin(&data, "ARegular.esp", &["Skyrim.esm"], 0, Some(100.0));
+    plugin(&data, "ZLight.esp", &["Skyrim.esm"], 0x200, Some(222.0));
+    let output = dir.path().join("modern");
+    assert!(
+        run(PipelineConfig::new(&data, &output))
+            .await
+            .unwrap()
+            .complete
+    );
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get::<_, f64>(0)
+        )
+        .unwrap(),
+        222.0
+    );
+    let order = LoadOrder::read(&[
+        data.join("Skyrim.esm"),
+        data.join("ARegular.esp"),
+        data.join("ZLight.esp"),
+    ])
+    .unwrap();
+    assert_eq!(order.normal["aregular.esp"], 1);
+    assert_eq!(order.light["zlight.esp"], 0);
+    assert!(!order.normal.contains_key("zlight.esp"));
 }
 
 #[tokio::test]

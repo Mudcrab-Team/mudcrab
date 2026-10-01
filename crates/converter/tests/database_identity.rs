@@ -42,24 +42,38 @@ fn grass(id: u32, density: u8) -> Vec<u8> {
 fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
     const CHILD_PLUGIN: &str = "MUDCRAB_LIGHT_ID_WARNING_TEST_PLUGIN";
     if let Some(path) = std::env::var_os(CHILD_PLUGIN) {
-        let merged = EsmParser::merge_plugins(&[PathBuf::from(path)]).unwrap();
+        let path = PathBuf::from(path);
+        let other = path.parent().unwrap().join("Other.esp");
+        let merged = EsmParser::merge_plugins(&[path, other]).unwrap();
         // Compatibility is unchanged: warning does not prevent the two IDs
         // from colliding, and the last record still wins.
-        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.len(), 2);
         assert_eq!(merged[&0xFE00_0800].subrecords[0].1, b"Winner\0");
+        assert_eq!(merged[&0xFE00_1800].subrecords[0].1, b"Other\0");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let path = plugin(
+    let mut records = Vec::new();
+    for _ in 0..1000 {
+        records.extend(record(
+            b"REFR",
+            0x1800,
+            0,
+            [
+                sub(b"EDID", b"TooWide\0"),
+                sub(b"NAME", &0x1800u32.to_le_bytes()),
+            ]
+            .concat(),
+        ));
+    }
+    records.extend(record(b"REFR", 0x0800, 0, sub(b"EDID", b"Winner\0")));
+    let path = plugin(dir.path(), "Uncompacted.esp", &[], 0x200, records);
+    plugin(
         dir.path(),
-        "Uncompacted.esp",
+        "Other.esp",
         &[],
         0x200,
-        [
-            record(b"REFR", 0x1800, 0, sub(b"EDID", b"TooWide\0")),
-            record(b"REFR", 0x0800, 0, sub(b"EDID", b"Winner\0")),
-        ]
-        .concat(),
+        record(b"REFR", 0x1800, 0, sub(b"EDID", b"Other\0")),
     );
     // A separate test process captures real stderr without global logger or
     // file-descriptor changes that could interfere with parallel tests.
@@ -79,12 +93,15 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert_eq!(
-        stderr.matches("exceeds 12 bits and was truncated").count(),
-        1,
+        stderr
+            .matches("light-plugin ID occurrences exceeded 12 bits")
+            .count(),
+        2,
         "{stderr}"
     );
     assert!(
-        stderr.contains("uncompacted.esp")
+        stderr.contains("uncompacted.esp: 2000 light-plugin ID occurrences")
+            && stderr.contains("other.esp: 1 light-plugin ID occurrences")
             && stderr.contains("00001800")
             && stderr.contains("compact the plugin's FormIDs"),
         "{stderr}"

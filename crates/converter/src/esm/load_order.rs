@@ -7,8 +7,9 @@ use std::{
     path::PathBuf,
 };
 
-/// Order automatically discovered plugins by dependency, preferring master/light
-/// files among ready nodes, then their existing deterministic filename order.
+/// Order automatically discovered plugins by dependency, preferring ESM-flagged
+/// plugins and .esm/.esl files among ready nodes, then deterministic filename order.
+/// The ESL header flag alone controls slot width, not early-load priority.
 /// This fallback cannot infer user-selected override priorities from plugins.txt.
 pub(crate) fn order_discovered_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     let mut indices = HashMap::new();
@@ -43,13 +44,10 @@ pub(crate) fn order_discovered_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBu
         }
     }
     let priority = |index: usize| {
-        let is_light_file = paths[index]
+        let is_master_file = paths[index]
             .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("esl"));
-        (
-            !(metadata[index].flags & 0x201 != 0 || is_light_file),
-            index,
-        )
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("esm") || ext.eq_ignore_ascii_case("esl"));
+        (!(metadata[index].flags & 0x1 != 0 || is_master_file), index)
     };
     let mut ready = BTreeSet::new();
     for (index, count) in remaining.iter().enumerate() {
