@@ -27,25 +27,25 @@ async fn staged_vfs_entries_are_one_file_with_their_cache_blobs() {
     .unwrap();
 
     let output = directory.path().join("modern");
-    // Resumed staging survives publication, so the workspace links stay inspectable.
-    let staging = directory.path().join("modern.staging-linked");
-    std::fs::create_dir_all(&staging).unwrap();
-    let mut config = PipelineConfig::new(&data, &output);
-    config.resume_staging = Some(staging.clone());
+    // A stale backup makes publishing refuse, so the run stops with its staging folder kept and
+    // the workspace links stay inspectable.
+    let backup = output.with_extension(format!("backup-{}", std::process::id()));
+    std::fs::create_dir_all(&backup).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = converter::AssetPipeline::run_async(config, tx)
+    let failure = converter::AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
         .await
-        .unwrap();
+        .unwrap_err();
     drain.await.unwrap();
-    assert!(report.complete, "the fixture conversion did not complete");
+    assert!(format!("{:?}", failure.error).contains("stale backup"));
+    let staging = failure.staging.expect("the staging folder was kept");
 
     let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+        serde_json::from_slice(&fs::read(staging.join("conversion-manifest.json")).unwrap())
             .unwrap();
     // On a filesystem without hard links the converter copies by design (`link_or_copy`), so only
     // equal bytes can be asked of the two names there.
-    let links = hard_links_supported(&output);
+    let links = hard_links_supported(&staging);
     let mut entries = 0;
     for archive in manifest["archives"].as_object().unwrap().values() {
         for file in archive["files"].as_array().unwrap() {
