@@ -48,6 +48,7 @@ expression: report
     "unbounded_model_count": 0,
     "waters_with_flow_normal": 0
   },
+  "notices": [],
   "pruned_texture_references": 0,
   "skipped": 0,
   "warnings": []

@@ -247,7 +247,7 @@ async fn main() -> Result<()> {
         );
     }
     if !report.complete {
-        let skipped = report.warnings.len();
+        let skipped = report.skipped;
         eprintln!(
             "Conversion incomplete: {skipped} input(s) were skipped. The output was published anyway; the manifest lists what is missing: {}",
             cli.output.join("conversion-manifest.json").display()
@@ -263,6 +263,9 @@ async fn main() -> Result<()> {
 /// The summary a finished run prints: what it produced, how long it took, and where to look.
 fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
     println!("{}", summary_headline(report));
+    for notice in &report.notices {
+        println!("  note: {notice}");
+    }
     let (bytes, files) = artifact_size(&cli.output, &report.artifacts);
     println!(
         "  output: {} in {} artifacts ({})",

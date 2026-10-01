@@ -1314,6 +1314,7 @@ mod tests {
             cache_hits: 1_204,
             skipped: 3,
             warnings: vec!["a.nif".into()],
+            notices: Vec::new(),
             artifacts: vec![PathBuf::from("a.glb"), PathBuf::from("b.ktx2")],
             inputs_by_kind: Default::default(),
             pruned_texture_references: 0,

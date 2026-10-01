@@ -146,12 +146,13 @@ async fn nested_only_plugins_warn_but_asset_conversion_completes_without_databas
     assert!(report.converted > 0);
     assert_eq!(report.skipped, 0);
     assert_eq!(
-        report.warnings,
+        report.notices,
         [format!(
             "found 2 plugin files, but none directly in {}; plugins in subfolders are ignored",
             data.display()
         )]
     );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert!(!output.join("skyrim_world.db").exists());
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
@@ -180,6 +181,7 @@ async fn no_plugins_converts_assets_without_warning_or_database() {
     assert!(report.converted > 0);
     assert_eq!(report.skipped, 0);
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(report.notices.is_empty(), "{:?}", report.notices);
     assert!(!output.join("skyrim_world.db").exists());
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())

@@ -5,6 +5,50 @@ use converter::progress::ProgressRenderer;
 use std::{fs, process::Command, time::Instant};
 use tokio::sync::mpsc;
 
+/// Both successful and incomplete CLI runs print advisories without counting them as failures.
+#[test]
+fn notices_are_printed_on_complete_and_incomplete_runs() {
+    for incomplete in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        fs::create_dir_all(data.join("Optional")).unwrap();
+        fs::write(data.join("Optional/Unused.esp"), b"ignored plugin").unwrap();
+        if incomplete {
+            fs::create_dir(data.join("textures")).unwrap();
+            fs::write(data.join("textures/bad.dds"), b"not a DDS").unwrap();
+        }
+        let output = directory.path().join("modern");
+        let report_path = directory.path().join("report.json");
+        let run = Command::new(env!("CARGO_BIN_EXE_converter"))
+            .arg(&data)
+            .arg(&output)
+            .arg("--report-json")
+            .arg(&report_path)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert_eq!(run.status.success(), !incomplete, "{stdout}\n{stderr}");
+        assert!(stdout.contains("  note: found 1 plugin files"), "{stdout}");
+        assert!(stderr.contains("warning: found 1 plugin files"), "{stderr}");
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+        assert_eq!(report["notices"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            report["warnings"].as_array().unwrap().len(),
+            usize::from(incomplete)
+        );
+        if incomplete {
+            assert!(
+                stderr.contains("Conversion incomplete: 1 input(s) were skipped"),
+                "{stderr}"
+            );
+        } else {
+            assert!(stdout.contains("Conversion complete in"), "{stdout}");
+        }
+    }
+}
+
 /// Generates the synthetic `Data` directory the converter tests convert.
 fn fixture_data(directory: &std::path::Path) -> std::path::PathBuf {
     let data = directory.join("Data");

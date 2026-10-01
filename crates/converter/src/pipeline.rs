@@ -49,17 +49,17 @@ pub struct PipelineReport {
     /// separately from `skipped` and `warnings`: nothing failed to convert, so a
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
-    /// Conversion failures and advisory discovery messages. An ignored nested
-    /// plugin is advisory and does not make an asset-only conversion incomplete.
     pub warnings: Vec<String>,
+    /// advisory messages that do not affect completeness
+    #[serde(default)]
+    pub notices: Vec<String>,
     pub artifacts: Vec<PathBuf>,
     pub inputs_by_kind: BTreeMap<String, u64>,
     pub elapsed_ms: u128,
     pub integration: Option<IntegrationReport>,
 }
 
-/// Evaluate conversion failures before advisory discovery warnings are appended.
-/// A run is complete when nothing was skipped and no conversion warned. Pruned dangling
+/// A run is complete when nothing was skipped and nothing warned. Pruned dangling
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
@@ -379,8 +379,7 @@ impl AssetPipeline {
             entries: Default::default(),
         };
         let files = discover(&config.data_dir)?;
-        let mut discovery_warnings = Vec::new();
-        let plugins = plugin_paths(config, &files, &mut discovery_warnings)?;
+        let plugins = plugin_paths(config, &files, &mut report.notices)?;
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -786,8 +785,6 @@ impl AssetPipeline {
         interrupt(cancellation)?;
         manifest.complete = conversion_is_complete(&report);
         report.complete = manifest.complete;
-        // Ignoring nested plugins is intentional; asset-only runs still complete.
-        report.warnings.extend(discovery_warnings);
         report.inputs_by_kind = manifest.inputs_by_kind.clone();
         manifest.save(&staging.join("conversion-manifest.json"))?;
         report
@@ -1562,7 +1559,7 @@ fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()
 fn plugin_paths(
     config: &PipelineConfig,
     files: &[PathBuf],
-    warnings: &mut Vec<String>,
+    notices: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
     if let Some(path) = &config.plugins_file {
         return read_plugins_txt(path, &config.data_dir);
@@ -1587,7 +1584,7 @@ fn plugin_paths(
             config.data_dir.display()
         );
         eprintln!("warning: {warning}");
-        warnings.push(warning);
+        notices.push(warning);
     }
     plugins.sort_by_key(|path| {
         let name = path
@@ -2592,6 +2589,21 @@ mod tests {
             ..PipelineReport::default()
         };
         assert!(!conversion_is_complete(&warned));
+    }
+
+    /// Notices never hide failures or affect completeness, regardless of insertion order.
+    #[test]
+    fn notices_do_not_affect_completeness() {
+        let mut report = PipelineReport::default();
+        report.notices.push("nested plugins ignored".into());
+        assert!(conversion_is_complete(&report));
+        report.warnings.push("conversion failed".into());
+        assert!(!conversion_is_complete(&report));
+        report.notices.push("another advisory".into());
+        assert!(!conversion_is_complete(&report));
+        report.warnings.clear();
+        report.skipped = 1;
+        assert!(!conversion_is_complete(&report));
     }
 
     #[tokio::test]
