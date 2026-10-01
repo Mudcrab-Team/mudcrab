@@ -3031,7 +3031,7 @@ fn points_and_neighbours(terrain: &TerrainSnapshot, points: &[usize]) -> Vec<usi
 
 /// Recomputes packed `VNML` bytes from the welded height field, normalized and scaled to `i8`.
 /// The converter now divides by the actual stencil span at borders; this welded-seam path
-/// still uses `(h(left) - h(right), h(down) - h(up), 2 * step)`, tracked in issue #<follow-up>.
+/// still uses `(h(left) - h(right), h(down) - h(up), 2 * step)` and is not yet tracked.
 /// `points` index a complete `width * height` field.
 fn recompute_packed_normals(terrain: &mut TerrainSnapshot, points: &[usize]) {
     let width = usize::from(terrain.width);
