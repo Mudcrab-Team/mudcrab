@@ -129,6 +129,64 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
     assert!(second.cache_hits > 0);
 }
 
+/// Nested plugins are not conversion inputs; their advisory must not block assets.
+#[tokio::test]
+async fn nested_only_plugins_warn_but_asset_conversion_completes_without_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    let nested = data.join("Optional");
+    fs::create_dir(&nested).unwrap();
+    fs::rename(data.join("Skyrim.esm"), nested.join("Skyrim.esm")).unwrap();
+    fs::write(nested.join("Backup.esp"), b"invalid ignored plugin").unwrap();
+    let output = dir.path().join("modern");
+    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    assert!(report.complete, "{report:?}");
+    assert!(report.converted > 0);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(
+        report.warnings,
+        [format!(
+            "found 2 plugin files, but none directly in {}; plugins in subfolders are ignored",
+            data.display()
+        )]
+    );
+    assert!(!output.join("skyrim_world.db").exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["complete"], true);
+}
+
+/// A deliberately asset-only input needs neither a plugin warning nor a database.
+#[tokio::test]
+async fn no_plugins_converts_assets_without_warning_or_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(
+        &data,
+        layout::DEFAULT_SEED,
+        layout::Formats {
+            esm: false,
+            ..layout::Formats::all()
+        },
+    )
+    .unwrap();
+    let output = dir.path().join("modern");
+    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    assert!(report.complete, "{report:?}");
+    assert!(report.converted > 0);
+    assert_eq!(report.skipped, 0);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(!output.join("skyrim_world.db").exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["complete"], true);
+}
+
 #[tokio::test]
 async fn fallback_keeps_espfe_in_regular_order_without_changing_light_slots() {
     let dir = tempfile::tempdir().unwrap();
