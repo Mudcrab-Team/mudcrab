@@ -3002,10 +3002,6 @@ fn validate_and_register_terrain_edges(
     Ok(())
 }
 
-/// Recomputes the packed `VNML` bytes of the listed height-field points from the heights around
-/// them, in the converter's own encoding (`crates/converter/src/esm/cell_cache.rs`,
-/// `decode_normals`): `(h(left) - h(right), h(down) - h(up), 2 * step)`, normalized and scaled to
-/// the `i8` range. `points` index a complete `width * height` field.
 /// The given sample indices and their in-bounds cardinal neighbours, sorted and without
 /// duplicates: every sample whose normal reads the height of a given one.
 fn points_and_neighbours(terrain: &TerrainSnapshot, points: &[usize]) -> Vec<usize> {
@@ -3033,6 +3029,10 @@ fn points_and_neighbours(terrain: &TerrainSnapshot, points: &[usize]) -> Vec<usi
     all
 }
 
+/// Recomputes packed `VNML` bytes from the welded height field, normalized and scaled to `i8`.
+/// The converter now divides by the actual stencil span at borders; this welded-seam path
+/// still uses `(h(left) - h(right), h(down) - h(up), 2 * step)`, tracked in issue #<follow-up>.
+/// `points` index a complete `width * height` field.
 fn recompute_packed_normals(terrain: &mut TerrainSnapshot, points: &[usize]) {
     let width = usize::from(terrain.width);
     let height = usize::from(terrain.height);
