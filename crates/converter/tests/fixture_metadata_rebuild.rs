@@ -314,19 +314,11 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
-                meshes
-            } else {
-                0
-            },
-            "metadata-only upgrades must not promote old GLB cache provenance"
+            if source_schema >= 16 { meshes } else { 0 },
+            "metadata-only upgrades preserve compatible mesh producer provenance"
         );
         let report = convert(&data, &repeated).await;
-        let regenerated = if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
-            0
-        } else {
-            meshes
-        };
+        let regenerated = if source_schema >= 16 { 0 } else { meshes };
         let current: ConversionManifest =
             serde_json::from_slice(&fs::read(repeated.join("conversion-manifest.json")).unwrap())
                 .unwrap();

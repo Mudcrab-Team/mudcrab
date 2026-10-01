@@ -274,7 +274,10 @@ impl<'a> QuadrantBlend<'a> {
                             layer.texture_form_id
                         )
                     })?[tier]
-                    .sample(cell_uv[0] * 8.0, cell_uv[1] * 8.0)
+                    .sample(
+                        cell_uv[0] * shared::LAND_TEXTURE_REPEATS_PER_CELL,
+                        cell_uv[1] * shared::LAND_TEXTURE_REPEATS_PER_CELL,
+                    )
             };
             for channel in 0..3 {
                 color[channel] += sample[channel] * weight;

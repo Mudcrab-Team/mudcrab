@@ -202,7 +202,7 @@ pub mod nodes {
 }
 
 /// Canonical chunk payload path inside the published asset set, relative to
-/// the assets root: `lod/<worldspace-id>/<tier>/<ax>_<ay>.glb`. Lowercase hex
+/// the assets root: `lod/<worldspace-id>/<tier>/cell_<ax>_<ay>.glb`. Lowercase hex
 /// worldspace id, decimal anchors (which may be negative). Both the compiler
 /// that writes the file and the runtime that loads it derive this path from
 /// the same [`ChunkKey`], so a chunk is never found by directory scan.

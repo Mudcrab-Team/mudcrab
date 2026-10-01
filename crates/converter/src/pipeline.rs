@@ -33,7 +33,10 @@ use color_eyre::{
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use shared::{asset_lock::AssetLock, lod::LodOrigin};
+use shared::{
+    asset_lock::{AssetLock, AssetLockMode, resolve_asset_path},
+    lod::LodOrigin,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
@@ -226,12 +229,36 @@ impl AssetPipeline {
     }
 
     pub async fn run_async_with_cancel(
-        config: PipelineConfig,
+        mut config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
         config.validate()?;
-        recover_published_output_if_missing(&config.output_dir)?;
+        reject_symlink_output(&config.output_dir)?;
+        config.output_dir =
+            resolve_asset_path(&config.output_dir).wrap_err("failed to resolve asset output")?;
+        fs::create_dir_all(
+            config
+                .output_dir
+                .parent()
+                .ok_or_else(|| color_eyre::eyre::eyre!("output has no parent"))?,
+        )
+        .wrap_err("failed to create asset output parent")?;
+        let output_lock = AssetLock::acquire_exclusive(&config.output_dir).map_err(|error| {
+            let message = if error.is_held() {
+                format!(
+                    "asset output {} is in use; close its engine or inspector before conversion",
+                    config.output_dir.display()
+                )
+            } else {
+                format!(
+                    "failed to lock asset output {} before conversion",
+                    config.output_dir.display()
+                )
+            };
+            color_eyre::Report::from(error).wrap_err(message)
+        })?;
+        recover_interrupted_publication(&config.output_dir)?;
         let started = Instant::now();
         send(
             &progress_tx,
@@ -352,7 +379,7 @@ impl AssetPipeline {
         if cancellation.is_cancelled() {
             return Err(failure(Interrupted::new().into(), &staging, &cancellation));
         }
-        publish_runtime_pack(&staging, &config.output_dir, &report)
+        publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
             .map_err(|error| failure(error, &staging, &cancellation))?;
         let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
         if staging.join(".ingestion-cache").is_dir() {
@@ -2266,7 +2293,12 @@ fn staged_output(entry: &CacheEntry, configuration_hash: &str) -> StagedOutput {
 
 /// Publishes only runtime artifacts. Staging keeps `vfs/` and
 /// `.ingestion-cache/` as build workspace; those never land in `output`.
-fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) -> Result<()> {
+fn publish_runtime_pack(
+    staging: &Path,
+    output: &Path,
+    report: &PipelineReport,
+    lock: &AssetLock,
+) -> Result<()> {
     // Beside staging, not inside it: a resumed staging dir keeps the
     // previous pack's linked files, so the new pack must not share inodes
     // with anything a resumed run will later unlink and rewrite.
@@ -2304,7 +2336,7 @@ fn publish_runtime_pack(staging: &Path, output: &Path, report: &PipelineReport) 
             pack_staging.join("conversion-manifest.json").is_file(),
             "runtime pack is missing conversion-manifest.json"
         );
-        publish_directory(&pack_staging, output)
+        publish_directory_locked(&pack_staging, output, true, lock)
     })();
     if published.is_err() {
         let _ = fs::remove_dir_all(&pack_staging);
@@ -2513,10 +2545,30 @@ async fn compile_lod_chunks_with_cancel(
                 continue;
             }
         };
-        let chunks = compiler_pool
-            .install(|| compile_world_terrain(*worldspace_id, origin, &inputs, &textures))?;
+        let compiled = compiler_pool
+            .install(|| compile_world_terrain(*worldspace_id, origin, &inputs, &textures));
         interrupt(cancellation)?;
         textures.verify_sources(&staging.join("vfs"))?;
+        let chunks = match compiled {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid compiler content: {error:#}"));
+                if let Some(settings) = world_settings.last_mut() {
+                    settings["status"] = serde_json::json!("invalid_content");
+                    settings["compiler_error"] = serde_json::json!(format!("{error:#}"));
+                }
+                send(
+                    progress_tx,
+                    ProgressStage::LodChunks,
+                    (index + 1) as u64,
+                    worlds.len() as u64,
+                    None,
+                    "Compiling terrain LOD chunks",
+                )
+                .await;
+                continue;
+            }
+        };
         terrain_sources.extend(textures.source_hashes);
         for chunk in &chunks {
             chunk_hashes.push(format!(
@@ -2572,6 +2624,7 @@ async fn compile_lod_chunks_with_cancel(
             converter_schema: CONVERTER_SCHEMA_VERSION,
             world_database_schema: shared::WORLD_DATABASE_SCHEMA_VERSION,
             chunks: report.lod_chunks,
+            land_texture_repeats_per_cell: shared::LAND_TEXTURE_REPEATS_PER_CELL,
             terrain_sources,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
@@ -2667,6 +2720,7 @@ fn build_identity(
         "converter_schema": CONVERTER_SCHEMA_VERSION,
         "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
         "configuration": configuration_hash,
+        "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
         "plugins": plugin_hashes,
         "chunks": chunk_hashes,
         "world_settings": world_settings,
@@ -2683,24 +2737,57 @@ struct LodManifest {
     converter_schema: u32,
     world_database_schema: u32,
     chunks: u64,
+    #[serde(default)]
+    land_texture_repeats_per_cell: f32,
     terrain_sources: BTreeMap<String, String>,
 }
 
+#[cfg(test)]
 fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
     publish_directory_with_policy(staging, output, true)
 }
 
-pub(crate) fn publish_new_directory(staging: &Path, output: &Path) -> Result<()> {
-    publish_directory_with_policy(staging, output, false)
+pub(crate) fn publish_new_directory(staging: &Path, output: &Path, lock: &AssetLock) -> Result<()> {
+    publish_directory_locked(staging, output, false, lock)
 }
 
+#[cfg(test)]
 fn publish_directory_with_policy(staging: &Path, output: &Path, replace: bool) -> Result<()> {
-    let _asset_lock = AssetLock::acquire_exclusive(output).wrap_err_with(|| {
+    reject_symlink_output(output)?;
+    let output = resolve_asset_path(output)?;
+    let asset_lock = AssetLock::acquire_exclusive(&output).wrap_err_with(|| {
         format!(
             "failed to lock asset directory {} for publication",
             output.display()
         )
     })?;
+    publish_directory_locked(staging, &output, replace, &asset_lock)
+}
+
+fn reject_symlink_output(output: &Path) -> Result<()> {
+    match output.symlink_metadata() {
+        Ok(metadata) => ensure!(
+            !metadata.file_type().is_symlink(),
+            "refusing symlinked asset output {}; use its real directory",
+            output.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn publish_directory_locked(
+    staging: &Path,
+    output: &Path,
+    replace: bool,
+    lock: &AssetLock,
+) -> Result<()> {
+    reject_symlink_output(output)?;
+    ensure!(
+        lock.mode() == AssetLockMode::Exclusive && lock.asset_dir() == resolve_asset_path(output)?,
+        "publication requires the exclusive destination lock"
+    );
     // Checked again under the publication lock before the old output is moved.
     crate::config::check_output_dir(output)?;
     ensure!(
@@ -2723,7 +2810,10 @@ fn publish_directory_with_policy(staging: &Path, output: &Path, replace: bool) -
     if backup.exists() {
         bail!("refusing to overwrite stale backup {}", backup.display());
     }
+    let _backup_lock = AssetLock::acquire_exclusive(&backup)?;
+    let record_path = publication_record_path(output)?;
     if output.exists() {
+        write_publication_record(output, &backup, staging)?;
         fs::rename(output, &backup).wrap_err("failed to preserve previous asset output")?;
         // The folder is checked once more under its backup name: something written into it
         // between the check above and the rename would otherwise be deleted with it below.
@@ -2735,6 +2825,7 @@ fn publish_directory_with_policy(staging: &Path, output: &Path, replace: bool) -
                     output.display()
                 );
             }
+            fs::remove_file(&record_path)?;
             return Err(error.into());
         }
     }
@@ -2749,91 +2840,230 @@ fn publish_directory_with_policy(staging: &Path, output: &Path, replace: bool) -
                 )
             });
         }
+        if record_path.is_file() {
+            fs::remove_file(&record_path)?;
+        }
         return Err(error).wrap_err("failed to publish converted assets");
     }
     if backup.exists() {
         fs::remove_dir_all(backup)?;
     }
+    if record_path.is_file() {
+        fs::remove_file(record_path)?;
+    }
     Ok(())
 }
 
-/// Restores a last-good directory before reading manifests or building if a
-/// previous process died during the two-rename publication window.
-fn recover_published_output_if_missing(output: &Path) -> Result<()> {
-    if output.exists() {
-        return Ok(());
-    }
-    let parent = output
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if !parent.is_dir() {
-        return Ok(());
-    }
-    let _asset_lock = AssetLock::acquire_exclusive(output).wrap_err_with(|| {
-        format!(
-            "failed to lock asset directory {} for recovery",
-            output.display()
-        )
-    })?;
-    recover_interrupted_publication(output)
+#[derive(Debug, Serialize, Deserialize)]
+struct PublicationRecord {
+    destination: PathBuf,
+    backup_name: String,
+    previous_manifest_hash: Option<String>,
+    next_manifest_hash: Option<String>,
+    generated_artifacts: BTreeMap<String, ArtifactSeal>,
+    next_generated_artifacts: BTreeMap<String, ArtifactSeal>,
 }
 
-/// Restores the newest verified complete output if a process crashed after moving it
-/// aside but before moving the staged tree into place. The caller holds the
-/// exclusive asset-directory lock throughout recovery and publication.
-fn recover_interrupted_publication(output: &Path) -> Result<()> {
-    if output.exists() {
-        return Ok(());
+#[derive(Debug, Serialize, Deserialize)]
+struct ArtifactSeal {
+    size: u64,
+    sha256: String,
+}
+
+fn publication_record_path(output: &Path) -> Result<PathBuf> {
+    let name = output
+        .file_name()
+        .ok_or_else(|| color_eyre::eyre::eyre!("output has no name"))?;
+    Ok(output.with_file_name(format!(".{}.publication.json", name.to_string_lossy())))
+}
+
+fn manifest_hash(root: &Path) -> Result<Option<String>> {
+    let path = root.join("conversion-manifest.json");
+    if path.is_file() {
+        Ok(Some(hash_file(&path)?))
+    } else {
+        Ok(None)
     }
+}
+
+// Seal only generated files here; converted outputs already have manifest hashes.
+fn seal_generated_artifacts(output: &Path) -> Result<BTreeMap<String, ArtifactSeal>> {
+    let manifest_path = output.join("conversion-manifest.json");
+    let converted: BTreeSet<String> = if manifest_path.is_file() {
+        let manifest: ConversionManifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+        manifest
+            .entries
+            .values()
+            .map(|entry| entry.output.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let mut generated_artifacts = BTreeMap::new();
+    for entry in WalkDir::new(output)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !matches!(entry.file_name().to_str(), Some("vfs" | ".ingestion-cache"))
+        })
+    {
+        let entry = entry?;
+        ensure!(
+            !entry.file_type().is_symlink(),
+            "refusing symlink in publication backup: {}",
+            entry.path().display()
+        );
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(output)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if converted.contains(&relative) || relative == "conversion-manifest.json" {
+            continue;
+        }
+        generated_artifacts.insert(
+            relative,
+            ArtifactSeal {
+                size: entry.metadata()?.len(),
+                sha256: hash_file(entry.path())?,
+            },
+        );
+    }
+    Ok(generated_artifacts)
+}
+
+fn write_publication_record(output: &Path, backup: &Path, staging: &Path) -> Result<()> {
+    use std::io::Write;
+    let record = PublicationRecord {
+        destination: resolve_asset_path(output)?,
+        backup_name: backup
+            .file_name()
+            .ok_or_else(|| color_eyre::eyre::eyre!("backup has no name"))?
+            .to_string_lossy()
+            .into_owned(),
+        previous_manifest_hash: manifest_hash(output)?,
+        next_manifest_hash: manifest_hash(staging)?,
+        generated_artifacts: seal_generated_artifacts(output)?,
+        next_generated_artifacts: seal_generated_artifacts(staging)?,
+    };
+    let record_path = publication_record_path(output)?;
+    let mut file = tempfile::NamedTempFile::new_in(record_path.parent().unwrap())?;
+    file.write_all(&serde_json::to_vec_pretty(&record)?)?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(record_path)?;
+    Ok(())
+}
+
+/// The caller holds the destination's exclusive lock. Unowned backups are never adopted.
+fn recover_interrupted_publication(output: &Path) -> Result<()> {
     let parent = output
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let prefix = publication_backup_prefix(output)?;
-    let entries = fs::read_dir(parent)
-        .wrap_err_with(|| {
-            format!(
-                "failed to inspect publication backups in {}",
-                parent.display()
-            )
-        })?
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let mut backups = entries
-        .into_iter()
-        .filter(|entry| {
-            entry.file_name().to_string_lossy().starts_with(&prefix)
-                && entry.file_type().is_ok_and(|kind| kind.is_dir())
-        })
-        .collect::<Vec<_>>();
-    backups.sort_by_key(|entry| {
-        entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-    });
-    let had_backups = !backups.is_empty();
-    while let Some(backup) = backups.pop() {
-        if let Err(error) = validate_publication_backup(&backup.path()) {
-            eprintln!(
-                "leaving invalid publication backup {} untouched: {error}",
-                backup.path().display()
+    let record_path = publication_record_path(output)?;
+    let record = match record_path.symlink_metadata() {
+        Ok(metadata) => {
+            ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "invalid publication ownership record"
             );
-            continue;
+            serde_json::from_slice::<PublicationRecord>(&fs::read(&record_path)?)?
         }
-        fs::rename(backup.path(), output).wrap_err_with(|| {
-            format!(
-                "failed to restore last-good assets from {}",
-                backup.path().display()
-            )
-        })?;
-        return Ok(());
-    }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !output.exists() {
+                let prefix = publication_backup_prefix(output)?;
+                for entry in fs::read_dir(parent)? {
+                    let entry = entry?;
+                    let kind = entry.file_type()?;
+                    ensure!(
+                        !(kind.is_dir() || kind.is_symlink())
+                            || !entry.file_name().to_string_lossy().starts_with(&prefix),
+                        "unowned publication backup {}; manual recovery required",
+                        entry.path().display()
+                    );
+                }
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     ensure!(
-        !had_backups,
-        "no complete verified publication backup for {}; inspect the untouched backup directories before rebuilding",
-        output.display()
+        record.destination == resolve_asset_path(output)?,
+        "publication record belongs to another destination"
     );
+    ensure!(
+        Path::new(&record.backup_name).components().count() == 1
+            && !record.backup_name.contains(['/', '\\', ':'])
+            && record
+                .backup_name
+                .starts_with(&publication_backup_prefix(output)?),
+        "invalid owned backup name"
+    );
+    let backup = parent.join(&record.backup_name);
+    let _backup_lock = AssetLock::acquire_exclusive(&backup)?;
+    if output.exists() {
+        let current = manifest_hash(output)?;
+        if current == record.next_manifest_hash {
+            if backup.exists() {
+                verify_package_seal(
+                    output,
+                    &record.next_manifest_hash,
+                    &record.next_generated_artifacts,
+                )?;
+                validate_publication_backup(output)?;
+                verify_publication_seal(&backup, &record)?;
+                crate::config::check_output_dir(&backup)?;
+                fs::remove_dir_all(&backup)?;
+            }
+        } else {
+            ensure!(
+                !backup.exists() && current == record.previous_manifest_hash,
+                "ambiguous interrupted publication; outputs left untouched"
+            );
+        }
+    } else {
+        verify_publication_seal(&backup, &record)?;
+        validate_publication_backup(&backup)?;
+        fs::rename(&backup, output).wrap_err("failed to restore owned last-good assets")?;
+    }
+    fs::remove_file(record_path)?;
+    Ok(())
+}
+
+fn verify_publication_seal(backup: &Path, record: &PublicationRecord) -> Result<()> {
+    verify_package_seal(
+        backup,
+        &record.previous_manifest_hash,
+        &record.generated_artifacts,
+    )
+}
+
+fn verify_package_seal(
+    backup: &Path,
+    expected_manifest_hash: &Option<String>,
+    generated_artifacts: &BTreeMap<String, ArtifactSeal>,
+) -> Result<()> {
+    ensure!(
+        backup.symlink_metadata()?.is_dir() && !backup.symlink_metadata()?.file_type().is_symlink(),
+        "owned backup is not a real directory"
+    );
+    ensure!(
+        manifest_hash(backup)? == *expected_manifest_hash,
+        "backup manifest changed since publication began"
+    );
+    for (relative, seal) in generated_artifacts {
+        let path = resolve_asset_uri(backup, &backup.join("conversion-manifest.json"), relative)?;
+        ensure!(
+            path.is_file()
+                && fs::metadata(&path)?.len() == seal.size
+                && hash_file(&path)? == seal.sha256,
+            "generated backup artifact is missing or changed: {relative}"
+        );
+    }
     Ok(())
 }
 
@@ -2857,8 +3087,13 @@ fn validate_publication_backup(backup: &Path) -> Result<()> {
     ensure!(
         manifest.complete
             && manifest.failures.is_empty()
-            && (1..=CONVERTER_SCHEMA_VERSION).contains(&manifest.schema_version),
+            && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION..=CONVERTER_SCHEMA_VERSION)
+                .contains(&manifest.schema_version),
         "backup has an incomplete or unsupported conversion manifest"
+    );
+    ensure!(
+        !manifest.entries.is_empty() || root.join("scripts/papyrus_runtime.luau").is_file(),
+        "backup has no converted or generated runtime artifacts"
     );
     for entry in manifest.entries.values() {
         let path = resolve_asset_uri(&root, &root.join("conversion-manifest.json"), &entry.output)?;
@@ -2869,6 +3104,78 @@ fn validate_publication_backup(backup: &Path) -> Result<()> {
             "backup output does not match its manifest: {}",
             entry.output
         );
+    }
+    let has_world = manifest.inputs_by_kind.get("esm").copied().unwrap_or(0) > 0
+        || [
+            "skyrim_world.db",
+            "cell_cache.rkyv",
+            "integration-report.json",
+            "lod-manifest.json",
+        ]
+        .iter()
+        .any(|name| root.join(name).exists());
+    if has_world {
+        let database = Connection::open_with_flags(
+            root.join("skyrim_world.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let integrity: String =
+            database.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        ensure!(integrity == "ok", "backup database integrity failed");
+        let version: u32 =
+            database.query_row("SELECT version FROM schema_info", [], |row| row.get(0))?;
+        ensure!(
+            shared::supports_runtime_world_database_schema(version),
+            "backup database schema {version} is unsupported"
+        );
+        ensure!(
+            version >= 5 || !root.join("lod-manifest.json").exists(),
+            "legacy backup database cannot advertise LOD"
+        );
+        read_cached_heights(
+            &root.join("cell_cache.rkyv"),
+            &std::collections::HashMap::new(),
+        )?;
+        let integration: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("integration-report.json"))?)?;
+        ensure!(
+            integration["passed"] == true && integration["schema_version"] == version,
+            "backup integration report is invalid"
+        );
+        if version >= 5 {
+            let count: u64 =
+                database.query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))?;
+            if count > 0 || root.join("lod-manifest.json").exists() {
+                let lod: LodManifest =
+                    serde_json::from_slice(&fs::read(root.join("lod-manifest.json"))?)?;
+                let identity: String = database.query_row(
+                    "SELECT build_identity FROM lod_build WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                ensure!(
+                    identity == lod.build_identity
+                        && lod.chunks == count
+                        && lod.world_database_schema == version
+                        && lod.converter_schema == manifest.schema_version,
+                    "backup LOD identity/count/schema mismatch"
+                );
+                let rows = database
+                    .prepare("SELECT payload_path, content_hash FROM lod_chunks")?
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                for (relative, expected) in rows {
+                    let path =
+                        resolve_asset_uri(&root, &root.join("lod-manifest.json"), &relative)?;
+                    ensure!(
+                        hash_file(&path)? == expected,
+                        "backup LOD payload hash mismatch: {relative}"
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -3074,11 +3381,421 @@ mod tests {
         manifest
             .save(&backup.join("conversion-manifest.json"))
             .unwrap();
+        seal_test_backup(&output, &backup);
 
         recover_interrupted_publication(&output).unwrap();
 
         assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
         assert!(!backup.exists());
+    }
+
+    fn seal_test_backup(output: &Path, backup: &Path) {
+        fs::rename(backup, output).unwrap();
+        write_publication_record(output, backup, output).unwrap();
+        fs::rename(output, backup).unwrap();
+    }
+
+    fn write_test_runtime_pack(root: &Path, configuration: &str) {
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/papyrus_runtime.luau"), b"return {}").unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash: configuration.to_owned(),
+            complete: true,
+            ..Default::default()
+        }
+        .save(&root.join("conversion-manifest.json"))
+        .unwrap();
+    }
+
+    #[test]
+    fn recovery_handles_each_owned_publication_boundary() {
+        for boundary in 0..=3 {
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("assets");
+            let backup = directory.path().join("assets.backup-123");
+            let staging = directory.path().join("staging");
+            write_test_runtime_pack(&output, "previous");
+            write_test_runtime_pack(&staging, "next");
+            write_publication_record(&output, &backup, &staging).unwrap();
+            if boundary >= 1 {
+                fs::rename(&output, &backup).unwrap();
+            }
+            if boundary >= 2 {
+                fs::rename(&staging, &output).unwrap();
+            }
+            if boundary >= 3 {
+                fs::remove_dir_all(&backup).unwrap();
+            }
+            recover_interrupted_publication(&output).unwrap();
+            assert!(!backup.exists());
+            assert!(!publication_record_path(&output).unwrap().exists());
+            assert_eq!(
+                published_manifest(&output).configuration_hash,
+                if boundary < 2 { "previous" } else { "next" }
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_v85_preserves_backup_when_replacement_generated_file_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        let staging = directory.path().join("staging");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        write_publication_record(&output, &backup, &staging).unwrap();
+        fs::rename(&output, &backup).unwrap();
+        fs::rename(&staging, &output).unwrap();
+        fs::remove_file(output.join("scripts/papyrus_runtime.luau")).unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert_eq!(published_manifest(&backup).configuration_hash, "previous");
+        assert!(publication_record_path(&output).unwrap().is_file());
+        fs::write(output.join("scripts/papyrus_runtime.luau"), b"return {}").unwrap();
+        recover_interrupted_publication(&output).unwrap();
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn recovery_rejects_record_copied_from_another_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        write_test_runtime_pack(&original, "original");
+        write_test_runtime_pack(&backup, "unrelated");
+        write_publication_record(&original, &backup, &original).unwrap();
+        fs::rename(
+            publication_record_path(&original).unwrap(),
+            publication_record_path(&output).unwrap(),
+        )
+        .unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert_eq!(published_manifest(&backup).configuration_hash, "unrelated");
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn complete_but_unowned_backup_is_never_adopted() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-other");
+        fs::create_dir_all(backup.join("scripts")).unwrap();
+        fs::write(backup.join("scripts/papyrus_runtime.luau"), b"return {}").unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            ..Default::default()
+        }
+        .save(&backup.join("conversion-manifest.json"))
+        .unwrap();
+        assert!(validate_publication_backup(&backup).is_ok());
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert!(backup.is_dir());
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn recovery_refuses_an_owned_backup_held_by_a_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        fs::create_dir_all(backup.join("scripts")).unwrap();
+        fs::write(backup.join("scripts/papyrus_runtime.luau"), b"return {}").unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            ..Default::default()
+        }
+        .save(&backup.join("conversion-manifest.json"))
+        .unwrap();
+        seal_test_backup(&output, &backup);
+        let reader = AssetLock::acquire_shared(&backup).unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert!(backup.is_dir());
+        drop(reader);
+        recover_interrupted_publication(&output).unwrap();
+        assert!(output.is_dir());
+    }
+
+    #[tokio::test]
+    async fn recovery_verifies_generated_database_cache_manifest_and_chunk_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("assets");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.cpu_jobs = 2;
+        let report = run_without_progress(config).await;
+        assert!(report.complete);
+        assert!(report.lod_chunks > 0);
+        let chunk = report
+            .artifacts
+            .iter()
+            .find(|path| path.starts_with("lod"))
+            .unwrap()
+            .clone();
+        let backup = directory.path().join("assets.backup-123");
+        fs::rename(&output, &backup).unwrap();
+        seal_test_backup(&output, &backup);
+        for relative in [
+            PathBuf::from("skyrim_world.db"),
+            PathBuf::from("cell_cache.rkyv"),
+            PathBuf::from("integration-report.json"),
+            PathBuf::from("lod-manifest.json"),
+            chunk,
+        ] {
+            let path = backup.join(&relative);
+            let bytes = fs::read(&path).unwrap();
+            fs::remove_file(&path).unwrap();
+            assert!(
+                recover_interrupted_publication(&output).is_err(),
+                "accepted missing {}",
+                relative.display()
+            );
+            assert!(!output.exists());
+            let mut corrupt = bytes.clone();
+            corrupt[0] ^= 1;
+            fs::write(&path, &corrupt).unwrap();
+            assert!(
+                recover_interrupted_publication(&output).is_err(),
+                "accepted changed {}",
+                relative.display()
+            );
+            assert!(!output.exists());
+            fs::write(&path, bytes).unwrap();
+        }
+        recover_interrupted_publication(&output).unwrap();
+        assert!(output.join("skyrim_world.db").is_file());
+        assert!(!backup.exists());
+
+        // Supported schema-16/world-3 packs retain full-detail recovery.
+        fs::remove_dir_all(output.join("lod")).unwrap();
+        fs::remove_file(output.join("lod-manifest.json")).unwrap();
+        let mut legacy = published_manifest(&output);
+        legacy.schema_version = 16;
+        legacy
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        database.execute_batch("UPDATE schema_info SET version=3; DELETE FROM lod_chunks; DELETE FROM lod_chunks_spatial; DELETE FROM lod_build;").unwrap();
+        drop(database);
+        let integration_path = output.join("integration-report.json");
+        let mut integration: serde_json::Value =
+            serde_json::from_slice(&fs::read(&integration_path).unwrap()).unwrap();
+        integration["schema_version"] = serde_json::json!(3);
+        fs::write(integration_path, serde_json::to_vec(&integration).unwrap()).unwrap();
+        fs::rename(&output, &backup).unwrap();
+        seal_test_backup(&output, &backup);
+        recover_interrupted_publication(&output).unwrap();
+        assert_eq!(published_manifest(&output).schema_version, 16);
+        assert!(!output.join("lod-manifest.json").exists());
+    }
+
+    #[tokio::test]
+    async fn schema16_meshes_reuse_but_changed_mesh_source_reconverts() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("assets");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.cpu_jobs = 2;
+        run_without_progress(config.clone()).await;
+        let path = output.join("conversion-manifest.json");
+        let mut old: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old.schema_version = 16;
+        old.configuration_hash = configuration_hash_for_schema(&config, 16).unwrap();
+        old.save(&path).unwrap();
+        let meshes: BTreeMap<_, _> = old
+            .entries
+            .values()
+            .filter(|entry| entry.output.ends_with(".glb"))
+            .map(|entry| {
+                (
+                    entry.output.clone(),
+                    fs::read(output.join(&entry.output)).unwrap(),
+                )
+            })
+            .collect();
+        assert!(!meshes.is_empty());
+        let reused = run_without_progress(config.clone()).await;
+        assert_eq!(reused.converted, 0);
+        for (relative, bytes) in &meshes {
+            assert_eq!(fs::read(output.join(relative)).unwrap(), *bytes);
+        }
+        fs::write(
+            data.join("meshes/generated.nif"),
+            dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
+                name: "changed",
+                positions: &[[0.0, 0.0, 0.0], [128.0, 0.0, 0.0], [0.0, 128.0, 0.0]],
+                normals: &[[0.0, 0.0, 1.0]; 3],
+                uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                indices: &[[0, 1, 2]],
+                diffuse: "textures/generated_color.dds",
+                normal_texture: "textures/generated_normal.dds",
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let changed = run_without_progress(config).await;
+        assert!(changed.converted > 0);
+        assert_ne!(
+            fs::read(output.join("meshes/generated.glb")).unwrap(),
+            meshes["meshes/generated.glb"]
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_world_compiler_content_is_omitted_without_partial_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let staging = directory.path().join("staging");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(staging.join("vfs")).unwrap();
+        overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
+        let plugins = vec![data.join("Skyrim.esm")];
+        let records = EsmParser::merge_plugins(&plugins).unwrap();
+        EsmParser::export_plugins(&plugins, &staging.join("skyrim_world.db"), &records).unwrap();
+        write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
+        let bytes = fs::read(staging.join("cell_cache.rkyv")).unwrap();
+        let mut cache = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(&bytes).unwrap();
+        let mut good_cell = cache.cells[0].clone();
+        cache.cells[0].heights[0] = f32::NAN;
+        fs::write(
+            staging.join("cell_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        let mut config = PipelineConfig::new(&data, directory.path().join("output"));
+        config.cpu_jobs = 2;
+        let (tx, _rx) = mpsc::channel(64);
+        let mut report = PipelineReport::default();
+        let hashes = plugins
+            .iter()
+            .map(|path| hash_file(path).unwrap())
+            .collect::<Vec<_>>();
+        compile_lod_chunks(&config, &staging, &plugins, &hashes, &tx, &mut report)
+            .await
+            .unwrap();
+        assert_eq!(report.lod_chunks, 0);
+        assert!(
+            report
+                .lod_warnings
+                .iter()
+                .any(|warning| warning.contains("invalid compiler content"))
+        );
+        assert!(!staging.join("lod-manifest.json").exists());
+        assert!(!staging.join("lod").exists());
+        let conn = Connection::open(staging.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM lod_chunks", [], |row| row
+                .get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+
+        let old_cell_id = good_cell.cell_id;
+        good_cell.cell_id = 0x00ff0001;
+        conn.execute(
+            "INSERT INTO worldspaces(id,editor_id,flags) VALUES(2,'ValidWorld',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cells(id,worldspace_id,grid_x,grid_y,flags) SELECT ?1,2,grid_x,grid_y,flags FROM cells WHERE id=?2",
+            rusqlite::params![good_cell.cell_id, old_cell_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO land(cell_id,heightmap,vtex,vclr,normals) SELECT ?1,heightmap,vtex,vclr,normals FROM land WHERE cell_id=?2",
+            rusqlite::params![good_cell.cell_id, old_cell_id],
+        ).unwrap();
+        cache.cells.push(good_cell);
+        fs::write(
+            staging.join("cell_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        config.lod_origins.insert("ValidWorld".into(), [0, 0]);
+        let mut mixed = PipelineReport::default();
+        compile_lod_chunks(&config, &staging, &plugins, &hashes, &tx, &mut mixed)
+            .await
+            .unwrap();
+        assert!(mixed.lod_chunks > 0);
+        assert!(
+            mixed
+                .lod_warnings
+                .iter()
+                .any(|warning| warning.contains("invalid compiler content"))
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM lod_chunks WHERE worldspace_id != 2",
+                [],
+                |row| row.get::<_, u64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert!(staging.join("lod-manifest.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn conversion_fails_before_staging_when_output_has_a_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("assets");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&output).unwrap();
+        let _reader = AssetLock::acquire_shared(&output).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:?}").contains("before conversion"));
+        assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("staging")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_rejects_symlink_output_without_changing_its_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real");
+        let alias = directory.path().join("alias");
+        let staging = directory.path().join("staging");
+        fs::create_dir(&real).unwrap();
+        fs::create_dir(&staging).unwrap();
+        fs::write(real.join("sentinel"), b"original").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        assert!(publish_directory(&staging, &alias).is_err());
+        assert!(alias.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(real.join("sentinel")).unwrap(), b"original");
+        assert!(staging.is_dir());
     }
 
     #[test]

@@ -22,12 +22,15 @@ Chunk rows are additionally indexed in an R-tree over world bounds so
 range queries stay spatial; key lookup alone would force the runtime to
 enumerate candidate anchors per tier.
 
-The initial terrain payload uses Bevy-native embedded KTX2 images with
-RGBA sRGB mip data. This is a native runtime contract, not portable glTF
-texture conformance. `KHR_texture_basisu` is not declared because these
-atlases are not ETC1S/UASTC Basis textures. A portable texture route needs
-an explicitly tested encoding and loader contract, not an extension label
-on the existing bytes.
+The initial terrain payload encodes RGBA sRGB mip inputs as UASTC Basis KTX2.
+It declares `KHR_texture_basisu` in `extensionsUsed` and supplies its image
+source on the texture. Bevy 0.19's glTF dependency does not support this
+extension as required; its loader reads the ordinary texture source and
+decodes KTX2 through Bevy's image loader. The ordinary source therefore
+also points to the same KTX2 image. This remains a native runtime contract,
+not portable core-glTF texture conformance: a portable fallback must use
+PNG/JPEG, or a loader must support a required Basis extension. No portable
+glTF or other-loader acceptance is claimed.
 
 ## Consequences
 
@@ -38,5 +41,6 @@ on the existing bytes.
 - The `lod` table reshape ships with a world DB version bump, together
   with the LOD-origin columns. Unlike the additive `waters` columns, LOD
   changes query shape and streaming behavior at a scale where silent
-  mixed-version operation is not acceptable: an old database must fail
-  fast, not stream a half-indexed far field.
+  mixed-version LOD operation is not acceptable: a package advertising LOD
+  with an old database fails fast. Supported schema-3/4 packages remain
+  full-detail-only and do not query the new tables.

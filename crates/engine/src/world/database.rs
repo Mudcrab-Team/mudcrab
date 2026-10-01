@@ -136,11 +136,37 @@ pub struct LodChunkMetadata {
 pub struct LodChunkResponse {
     pub generation: u64,
     pub query: LodChunkQuery,
-    pub result: std::result::Result<Vec<LodChunkMetadata>, String>,
+    pub result: std::result::Result<Vec<LodChunkMetadata>, LodQueryFailure>,
     pub query_micros: u64,
     pub queue_wait_micros: u64,
     pub total_request_micros: u64,
     pub chunk_count: usize,
+}
+
+/// Whether an asynchronous query failed temporarily or rejected invalid metadata.
+#[derive(Debug)]
+pub struct LodQueryFailure {
+    pub transient: bool,
+    pub reason: String,
+}
+
+impl LodQueryFailure {
+    fn from_error(error: color_eyre::Report) -> Self {
+        let transient = error.downcast_ref::<rusqlite::Error>().is_some_and(|error| {
+            matches!(error, rusqlite::Error::SqliteFailure(code, _) if matches!(code.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked | rusqlite::ErrorCode::SystemIoFailure))
+        });
+        Self {
+            transient,
+            reason: format!("{error:#}"),
+        }
+    }
+}
+
+impl std::fmt::Display for LodQueryFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
 }
 
 #[derive(Resource)]
@@ -440,6 +466,11 @@ pub(crate) fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u
     let manifest: LodBuildManifest =
         serde_json::from_slice(&bytes).wrap_err("invalid LOD build manifest")?;
     color_eyre::eyre::ensure!(
+        manifest.land_texture_repeats_per_cell == shared::LAND_TEXTURE_REPEATS_PER_CELL,
+        "LOD terrain texture scale is stale; rebuild LOD metadata for {} repeats per cell",
+        shared::LAND_TEXTURE_REPEATS_PER_CELL
+    );
+    color_eyre::eyre::ensure!(
         manifest.converter_schema == converter_schema
             && manifest.world_database_schema == shared::WORLD_DATABASE_SCHEMA_VERSION,
         "LOD manifest schema is stale; reconvert assets with converter schema {converter_schema} and world database schema {}",
@@ -474,6 +505,8 @@ struct LodBuildManifest {
     converter_schema: u32,
     world_database_schema: u32,
     chunks: u64,
+    #[serde(default)]
+    land_texture_repeats_per_cell: f32,
 }
 
 fn worker(
@@ -539,9 +572,12 @@ fn worker(
                 let started = Instant::now();
                 let result = match &setup {
                     Ok((connection, _)) => {
-                        load_lod_chunks(connection, query).map_err(|error| format!("{error:#}"))
+                        load_lod_chunks(connection, query).map_err(LodQueryFailure::from_error)
                     }
-                    Err(error) => Err(error.clone()),
+                    Err(error) => Err(LodQueryFailure {
+                        transient: false,
+                        reason: error.clone(),
+                    }),
                 };
                 let query_micros = elapsed_micros(started);
                 let chunk_count = result.as_ref().map_or(0, Vec::len);
@@ -970,6 +1006,23 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn lod_query_classification_preserves_transient_sqlite_causes_through_context() {
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_IOERR,
+        ] {
+            let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            let wrapped = color_eyre::Report::from(error).wrap_err("query context");
+            assert!(LodQueryFailure::from_error(wrapped).transient);
+        }
+        assert!(
+            !LodQueryFailure::from_error(color_eyre::eyre::eyre!("invalid LOD path")).transient
+        );
+        assert!(!LodQueryFailure::from_error(rusqlite::Error::InvalidQuery.into()).transient);
+    }
+
     /// `load_cell` with the reference query built for `connection` as it is now, the way the
     /// worker builds it when it opens a database.
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
@@ -1154,6 +1207,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "build_identity": identity,
                 "converter_schema": 16,
+                "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
                 "world_database_schema": 5,
                 "chunks": 1,
             }))
@@ -1161,6 +1215,18 @@ mod tests {
         )
         .unwrap();
         validate_lod_build_contract(directory.path(), 16).unwrap();
+        let current: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        let mut stale = current.clone();
+        stale["land_texture_repeats_per_cell"] = serde_json::json!(8.0);
+        std::fs::write(&manifest_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert!(
+            validate_lod_build_contract(directory.path(), 16)
+                .unwrap_err()
+                .to_string()
+                .contains("texture scale is stale")
+        );
+        std::fs::write(&manifest_path, serde_json::to_vec(&current).unwrap()).unwrap();
 
         let connection = Connection::open(&database).unwrap();
         connection

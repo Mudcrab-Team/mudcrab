@@ -409,6 +409,7 @@ fn emit_chunk_glb(
     }
     let json = serde_json::json!({
         "asset": { "version": "2.0", "generator": "OpenSkyrim LOD terrain compiler" },
+        "extensionsUsed": ["KHR_texture_basisu"],
         "scene": 0,
         "scenes": [{ "name": chunk_name, "nodes": [0] }],
         "nodes": nodes_json,
@@ -425,7 +426,7 @@ fn emit_chunk_glb(
         "buffers": [{ "byteLength": binary.len() }],
         "images": [{ "bufferView": 5, "mimeType": "image/ktx2" }],
         "samplers": [{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }],
-        "textures": [{ "source": 0, "sampler": 0 }],
+        "textures": [{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }],
         "materials": [{
             "name": "lod_terrain",
             "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": { "index": 0 }, "metallicFactor": 0.0, "roughnessFactor": 0.92 },
@@ -629,7 +630,10 @@ fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
     );
     color_eyre::eyre::ensure!(
         json["images"] == serde_json::json!([{ "bufferView": 5, "mimeType": "image/ktx2" }])
-            && json["textures"] == serde_json::json!([{ "source": 0, "sampler": 0 }])
+            && json["textures"]
+                == serde_json::json!([{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }])
+            && json["extensionsUsed"] == serde_json::json!(["KHR_texture_basisu"])
+            && json.get("extensionsRequired").is_none()
             && json["samplers"]
                 == serde_json::json!([{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }]),
         "terrain GLB embedded albedo contract is invalid"

@@ -190,6 +190,12 @@ V76: Publication backups identified by full output name; recovery restores only 
 V77: Equivalent existing asset paths share one canonical lock; acquisition fails on resolution errors; missing-tail paths normalized before report containment checks.
 V78: LOD readiness counts unique queued, loading & scheduled retry work; current unrecovered failures block screenshot; recovered failures retain cumulative diagnostics; smoke capture still rejects historical failures.
 V79: Shared commit cap unchanged; continuous near-cell work cannot starve queued LOD & LOD cannot starve near cells; center changes retain only in-world/in-range immutable metadata; queries retry at most three times with 1/2/4-second backoff.
+V80: Publication recovery ! recorded destination/backup ownership, unchanged manifest & sealed generated artifacts; ambiguous legacy backups untouched. Missing/corrupt DB/cache/LOD prevents recovery. Symlink output rejected; one exclusive output guard spans prior-pack reads through publication.
+V81: Shared lock opens existing read-only descriptor; missing lock on read-only parent fails closed. Terminal metadata errors never retry; transient SQLite busy/locked/IO errors retain bounded retries.
+V82: Schema-16 compatible mesh producers reused with verified source/output/configuration; schema 12-15 collision producers invalidated. Tier residency bounded by tier distance + margin across query/admission/queue/unload; coarse inner fallback retained.
+V83: Near/baked terrain use shared repeats-per-cell; tiling change participates in LOD build identity. World-local compiler content failure skips world with explicit warning; input mutation/cancellation/publication/DB errors fatal.
+V84: Completed launcher summary & bounded conversion notices survive; post-run notices bounded separately. Generic smoke rejects historical query failures & pending queries. Atlas documentation states actual UASTC encoding & native loader limits.
+V85: Interrupted publication cleanup ! validated replacement plus sealed generated files before deleting owned prior package; ownership record atomically published before directory rename.
 
 ## §T TASKS
 
@@ -232,6 +238,8 @@ T35|x|Launcher LOD A: retain chunk count/warnings in `RunReport`; label LOD worl
 T36|~|Launcher LOD A: focused report/status/worker tests; tiny conversion verifies payload/DB/manifest identities; stop/failure never enables new incomplete output; scripted launcher capture|V72,V73,I.launcher_lod
 T37|.|Launcher LOD B: add cooperative metadata cancellation with typed failure & no-resume contract; tests cover preflight, retained-file copy, world boundary, pre-publication, source preservation|V74,V75,I.launcher_lod
 T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source & new destination; reuse worker/messages/state ownership; verify reuse hashes, plugin mismatch, busy/engine/path guards & publication|V74,V75,I.launcher_lod
+T39|x|PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V73,V76,V77,V78,V79,V80,V81,V82,V83,V84,V85
+T40|.|PR105 final-head Fiji scripted stationary/moving/recovery/launcher captures & schema-range integration with PR95; report native limits before merge|V73,V78,V79,V80,V82,V83,V84
 
 ## §B BUGS
 
@@ -287,3 +295,8 @@ B48|2026-10-01|near cells exhausted shared budget; center changes dropped releva
 B49|2026-10-01|metadata LOD extraction let unmatched archives override package-matched plugin sources|filter unmatched archives before settings/diffuse extraction; record omission; preserve loose precedence
 B50|2026-10-01|screenshot readiness treated recovered LOD failures as current errors|V78
 B51|2026-10-01|first fair-budget draft derived reservation from shrinking remainder and released it after a near commit|V79; reserve from frame limit before collectors
+B52|2026-10-01|backup validation omitted generated artifacts & destination ownership; output alias changed lock identity; publication lock checked too late|V80,V81
+B53|2026-10-01|schema17 invalidated unchanged schema16 GLBs; all tiers loaded largest radius; deterministic metadata errors retried|V81,V82
+B54|2026-10-01|generic capture omitted query failures; launcher replaced progress notices then allowed unbounded post-run growth; ADR misstated UASTC encoding; PR91 tiling diverged|V83,V84
+B55|2026-10-01|new preflight IO used `?` across `PipelineFailure` boundary without `Report` conversion|named `WrapErr` context; compile oracle catches mechanical error; no new invariant
+B56|2026-10-01|interrupted replacement cleanup trusted next manifest alone; missing generated files could discard last-good backup|V85

@@ -21,7 +21,7 @@ trap cleanup EXIT
 data="$scratch/Data"
 assets="$scratch/Assets"
 mkdir -p "$data"
-export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/openskyrim-lod-target}
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}
 export TMPDIR=${TMPDIR:-$HOME/.cache/openskyrim-lod-tmp}
 mkdir -p "$TMPDIR"
 # winit dlopens libxkbcommon-x11 at window creation and wgpu dlopens
@@ -133,6 +133,8 @@ required = {
     "visible_lod_terrain_patches": lambda value: value > 0,
     "failed_lod_chunks": lambda value: value == 0,
     "pending_lod_chunks": lambda value: value == 0,
+    "failed_lod_queries": lambda value: value == 0,
+    "pending_lod_queries": lambda value: value == 0,
 }
 for key, predicate in required.items():
     value = metrics.get(key)

@@ -219,15 +219,15 @@ impl ConversionManifest {
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
         let retained_meshes_are_stale = manifest.schema_version == CONVERTER_SCHEMA_VERSION
             && match manifest.retained_mesh_schema_version {
-                Some(schema) => schema != CONVERTER_SCHEMA_VERSION,
+                Some(schema) => !(16..=CONVERTER_SCHEMA_VERSION).contains(&schema),
                 None => path
                     .parent()
                     .is_some_and(|root| root.join("metadata-rebuild.json").exists()),
             };
-        if (matches!(manifest.schema_version, 12..=16) && CONVERTER_SCHEMA_VERSION == 17)
+        if (matches!(manifest.schema_version, 12..=15) && CONVERTER_SCHEMA_VERSION == 17)
             || retained_meshes_are_stale
         {
-            // Schema 16 adds authored collision; 17 adds native LOD metadata.
+            // Schema 16 adds authored collision; schema 17 does not change mesh output.
             // Preserve verified non-mesh assets, but rebuild GLBs and world data.
             manifest.complete = false;
             manifest
@@ -235,7 +235,7 @@ impl ConversionManifest {
                 .retain(|_, entry| !entry.output.to_ascii_lowercase().ends_with(".glb"));
             return Ok(manifest);
         }
-        if manifest.schema_version != CONVERTER_SCHEMA_VERSION {
+        if manifest.schema_version != CONVERTER_SCHEMA_VERSION && manifest.schema_version != 16 {
             return Ok(Self {
                 schema_version: CONVERTER_SCHEMA_VERSION,
                 ..Self::default()
@@ -649,8 +649,11 @@ mod tests {
             let migrated = ConversionManifest::load(&path).unwrap();
 
             assert_eq!(migrated.schema_version, schema_version);
-            assert!(!migrated.complete);
-            assert!(!migrated.entries.contains_key("meshes/a.glb"));
+            assert_eq!(migrated.complete, schema_version == 16);
+            assert_eq!(
+                migrated.entries.contains_key("meshes/a.glb"),
+                schema_version == 16
+            );
             assert!(migrated.entries.contains_key("textures/a.ktx2"));
             assert!(migrated.entries.contains_key("scripts/a.luau"));
         }
@@ -658,7 +661,7 @@ mod tests {
 
     #[test]
     fn current_metadata_never_promotes_an_older_or_unknown_mesh_contract() {
-        for mesh_schema in [15, 16, 18] {
+        for mesh_schema in [15, 18] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {

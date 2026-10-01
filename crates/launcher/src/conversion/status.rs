@@ -38,8 +38,9 @@ pub struct ConversionStatus {
     pub run_finished: bool,
     pub current_file: Option<String>,
     pub message: String,
-    /// Active notices are bounded; completed results retain all lines, summary first.
+    /// Completed results retain all lines; active and post-run notices are bounded.
     pub notices: VecDeque<String>,
+    completed_notice_lines: usize,
     /// Set while the bar and the lines show a check of the output folder rather than a run.
     pub check: Option<CheckProgress>,
     /// The staging folder Delete staging is removing, while it does.
@@ -60,6 +61,7 @@ impl Default for ConversionStatus {
             current_file: None,
             message: String::new(),
             notices: VecDeque::new(),
+            completed_notice_lines: 0,
             check: None,
             deleting: None,
             started: None,
@@ -84,6 +86,7 @@ impl ConversionStatus {
         self.current_file = None;
         self.message.clear();
         self.notices.clear();
+        self.completed_notice_lines = 0;
         self.check = None;
         self.started = Some(Instant::now());
         self.elapsed = Duration::ZERO;
@@ -170,7 +173,14 @@ impl ConversionStatus {
     pub fn finish_run(&mut self, lines: &[String]) {
         self.stop_clock();
         self.run_finished = true;
+        let progress = std::mem::take(&mut self.notices);
         self.notices = lines.iter().cloned().collect();
+        self.notices.extend(
+            progress
+                .into_iter()
+                .filter(|notice| !lines.iter().any(|line| line.contains(notice))),
+        );
+        self.completed_notice_lines = self.notices.len();
     }
 
     /// Folds one event from a running conversion into what the window shows. The estimate never
@@ -204,10 +214,13 @@ impl ConversionStatus {
 
     /// Adds a notice without discarding a completed result.
     pub fn push_notice(&mut self, line: &str) {
-        if !self.run_finished {
-            while self.notices.len() >= Self::NOTICE_LINES {
-                self.notices.pop_front();
-            }
+        let retained = if self.run_finished {
+            self.completed_notice_lines
+        } else {
+            0
+        };
+        while self.notices.len() >= retained + Self::NOTICE_LINES {
+            self.notices.remove(retained);
         }
         self.notices.push_back(line.to_owned());
     }
@@ -379,17 +392,38 @@ mod tests {
         status.push_notice("old progress");
         let lines: Vec<_> = (0..12).map(|i| format!("result {i}")).collect();
         status.finish_run(&lines);
-        assert_eq!(status.notices.iter().cloned().collect::<Vec<_>>(), lines);
+        assert_eq!(
+            status
+                .notices
+                .iter()
+                .take(lines.len())
+                .cloned()
+                .collect::<Vec<_>>(),
+            lines
+        );
+        assert_eq!(
+            status.notices.back().map(String::as_str),
+            Some("old progress")
+        );
         assert!(status.run_finished);
         assert!(status.started.is_none());
         status.push_notice("Asset readiness checked.");
         assert!(status.run_finished);
-        assert_eq!(status.notices.len(), lines.len() + 1);
+        assert_eq!(status.notices.len(), lines.len() + 2);
         assert_eq!(status.notices.front(), lines.first());
         assert_eq!(
             status.notices.back().map(String::as_str),
             Some("Asset readiness checked.")
         );
+        for i in 0..100 {
+            status.push_notice(&format!("readiness notice {i}"));
+        }
+        assert_eq!(
+            status.notices.len(),
+            lines.len() + 1 + ConversionStatus::NOTICE_LINES
+        );
+        assert_eq!(status.notices[lines.len()], "old progress");
+        assert_eq!(status.notices.front(), lines.first());
         status.begin_run();
         assert!(!status.run_finished);
         assert!(status.notices.is_empty());

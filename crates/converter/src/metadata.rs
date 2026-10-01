@@ -69,6 +69,7 @@ impl AssetPipeline {
         config.data_dir = fs::canonicalize(&config.data_dir)?;
         config.output_dir = new_output_path(&config.output_dir, &source, &config.data_dir)?;
         let _source_lock = AssetLock::acquire_shared(&source)?;
+        let output_lock = AssetLock::acquire_exclusive(&config.output_dir)?;
         let source_manifest = fs::read(source.join("conversion-manifest.json"))?;
         // Read the original version; normal cache loading deliberately invalidates
         // GLBs during schema migration, which this explicit route verifies instead.
@@ -132,7 +133,7 @@ impl AssetPipeline {
                 return Err(error);
             }
         };
-        if let Err(error) = publish_new_directory(&staging, &config.output_dir) {
+        if let Err(error) = publish_new_directory(&staging, &config.output_dir, &output_lock) {
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }
@@ -302,9 +303,9 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    EsmParser::convert_plugins(plugins, &database)?;
-    validate_database(&Connection::open(&database)?)?;
     let merged = EsmParser::merge_plugins(plugins)?;
+    EsmParser::export_plugins(plugins, &database, &merged)?;
+    validate_database(&Connection::open(&database)?)?;
     write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
     drop(merged);
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;

@@ -25,6 +25,9 @@ stale discard and a default of one commit per frame
 so fast travel cannot strand half-loaded chunks. Unload uses hysteresis:
 drop a tier only when the camera leaves tier range plus a margin ring, so
 boundary oscillation does not thrash loads.
+Each tier queries, admits, retains and unloads at its own outer distance plus
+two cells: 6/10/18 cells for tiers 4/8/16. Coarse tiers retain inner coverage
+for fallback while finer data is pending or unavailable.
 
 Handoff: each GLB chunk has a stable source-cell node with separately
 hideable terrain and object groups, and compatible material batches beneath
@@ -57,8 +60,9 @@ The shared commit cap is unchanged. Pending LOD work reserves one commit
 when the cap exceeds one; at cap one, near cells and LOD alternate priority.
 Cell crossings retain immutable queued chunk metadata only if it belongs to
 the current worldspace and remains in range. Old query responses are still
-discarded by generation. Failed queries retry at most three times after
-1/2/4 seconds in the same generation; persistent failures remain visible in
+discarded by generation. Only transient SQLite busy/locked/IO failures retry
+at most three times after 1/2/4 seconds in the same generation. Invalid
+metadata is terminal and remains fail-closed; persistent failures remain visible in
 cumulative diagnostics and the unrecovered gauge.
 
 ## Camera, shadows, fog

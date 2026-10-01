@@ -72,11 +72,11 @@ impl LodStreaming {
         }
     }
 
-    fn query_failed(&mut self, tier: LodTier, now: Instant) {
+    fn query_failed(&mut self, tier: LodTier, class: LodChunkFailureClass, now: Instant) {
         self.requested_queries.remove(&tier);
         self.pending_queries.remove(&tier);
         let count = self.query_retries.get(&tier).map_or(0, |(count, _)| *count);
-        let retry_at = lod_retry_deadline(LodChunkFailureClass::Transient, count, now);
+        let retry_at = lod_retry_deadline(class, count, now);
         self.query_retries.insert(tier, (count, retry_at));
     }
 
@@ -101,7 +101,7 @@ impl LodStreaming {
                     metadata.key,
                     metadata.origin,
                     (i64::from(center.x), i64::from(center.y)),
-                    query_unload_radius(),
+                    query_unload_radius(metadata.key.tier),
                 );
             if keep {
                 *generation = self.generation;
@@ -259,12 +259,16 @@ pub(super) fn plan_lod_chunks(
         streaming.move_center(center, config.worldspace_id);
     }
     let generation = streaming.generation;
-    let query_radius = LOD_MAX_DISTANCE_CELLS + LOD_UNLOAD_MARGIN_CELLS;
     for tier in LodTier::ALL {
         if !streaming.query_ready(tier, Instant::now()) {
             continue;
         }
-        let query = query_for(config.worldspace_id, tier, center, query_radius);
+        let query = query_for(
+            config.worldspace_id,
+            tier,
+            center,
+            query_unload_radius(tier),
+        );
         match database.request_lod_chunks(generation, query) {
             Ok(()) => {
                 streaming.query_submitted(tier);
@@ -283,7 +287,12 @@ pub(super) fn plan_lod_chunks(
     let center64 = (i64::from(center.x), i64::from(center.y));
     let previous_chunks = streaming.chunks.len();
     streaming.chunks.retain(|key, status| {
-        let keep = chunk_within_radius(*key, status.origin(), center64, query_unload_radius());
+        let keep = chunk_within_radius(
+            *key,
+            status.origin(),
+            center64,
+            query_unload_radius(key.tier),
+        );
         if !keep {
             if let Some(root) = status.root() {
                 commands.entity(root).try_despawn();
@@ -350,7 +359,12 @@ pub(super) fn collect_lod_chunks(
         match response.result {
             Err(error) => {
                 metrics.failed_lod_queries = metrics.failed_lod_queries.saturating_add(1);
-                streaming.query_failed(response.query.tier, Instant::now());
+                let class = if error.transient {
+                    LodChunkFailureClass::Transient
+                } else {
+                    LodChunkFailureClass::Terminal
+                };
+                streaming.query_failed(response.query.tier, class, Instant::now());
                 warn!(?response.query.tier, %error, "terrain LOD query failed");
             }
             Ok(chunks) => {
@@ -387,7 +401,7 @@ pub(super) fn collect_lod_chunks(
             metadata.key,
             metadata.origin,
             (i64::from(center.x), i64::from(center.y)),
-            query_unload_radius(),
+            query_unload_radius(metadata.key.tier),
         ) {
             continue;
         }
@@ -1001,8 +1015,8 @@ fn is_current_query(streaming: &LodStreaming, generation: u64) -> bool {
     streaming.center.is_some() && generation == streaming.generation
 }
 
-fn query_unload_radius() -> i32 {
-    LOD_MAX_DISTANCE_CELLS + LOD_UNLOAD_MARGIN_CELLS
+fn query_unload_radius(tier: LodTier) -> i32 {
+    tier.side_cells() + LOD_UNLOAD_MARGIN_CELLS
 }
 
 fn chunk_min_grid(key: ChunkKey, origin: LodOrigin) -> (i64, i64) {
@@ -1200,17 +1214,113 @@ mod tests {
         for delay in [1, 2, 4] {
             streaming.query_submitted(tier);
             assert!(!streaming.query_ready(tier, now));
-            streaming.query_failed(tier, now);
+            streaming.query_failed(tier, LodChunkFailureClass::Transient, now);
             assert!(!streaming.query_ready(tier, now));
             now += Duration::from_secs(delay);
             assert!(streaming.query_ready(tier, now));
         }
         streaming.query_submitted(tier);
-        streaming.query_failed(tier, now);
+        streaming.query_failed(tier, LodChunkFailureClass::Transient, now);
         assert!(!streaming.query_ready(tier, now + Duration::from_secs(100)));
         assert!(streaming.pending_queries.is_empty());
         streaming.move_center(IVec2::ZERO, 1);
         assert!(streaming.query_ready(tier, now));
+    }
+
+    #[test]
+    fn terminal_query_failure_never_schedules_a_retry() {
+        let mut streaming = LodStreaming::default();
+        let now = Instant::now();
+        streaming.query_submitted(LodTier::Tier4);
+        streaming.query_failed(LodTier::Tier4, LodChunkFailureClass::Terminal, now);
+        assert!(!streaming.query_ready(LodTier::Tier4, now + Duration::from_secs(100)));
+        assert!(streaming.pending_queries.is_empty());
+        assert_eq!(streaming.query_retries[&LodTier::Tier4].1, None);
+    }
+
+    #[test]
+    fn tier_residency_bounds_near_chunks_and_preserves_coarse_inner_fallback() {
+        assert_eq!(LodTier::ALL.map(query_unload_radius), [6, 10, 18]);
+        for tier in LodTier::ALL {
+            let origin = LodOrigin::new(-4, -4);
+            let inner = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, -1, -1));
+            assert!(chunk_within_radius(
+                inner,
+                origin,
+                (-1, -1),
+                query_unload_radius(tier)
+            ));
+            let outer = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, 30, 30));
+            assert!(!chunk_within_radius(
+                outer,
+                origin,
+                (-1, -1),
+                query_unload_radius(tier)
+            ));
+        }
+    }
+
+    #[test]
+    fn tier_residency_covers_moving_positive_and_negative_boundaries_with_less_work() {
+        let origin = LodOrigin::new(-4, 3);
+        for x in [-33, -17, -16, -5, -4, -1, 0, 3, 4, 15, 16, 31, 32] {
+            let center = IVec2::new(x, -x);
+            for tier in LodTier::ALL {
+                let radius = query_unload_radius(tier);
+                let query = query_for(1, tier, center, radius);
+                let mut bounded = 0;
+                let mut previous = 0;
+                for ax in -20..=20 {
+                    for ay in -20..=20 {
+                        let key = ChunkKey::new(1, tier, shared::lod::ChunkAnchor::new(ax, ay));
+                        let within = chunk_within_radius(
+                            key,
+                            origin,
+                            (i64::from(center.x), i64::from(center.y)),
+                            radius,
+                        );
+                        bounded += usize::from(within);
+                        previous += usize::from(chunk_within_radius(
+                            key,
+                            origin,
+                            (i64::from(center.x), i64::from(center.y)),
+                            18,
+                        ));
+                        if within {
+                            let min = chunk_min_grid(key, origin);
+                            let side = i64::from(tier.side_cells());
+                            assert!((min.0 as f64 * f64::from(CELL_SIZE)) < query.bounds_max[0]);
+                            assert!(
+                                ((min.0 + side) as f64 * f64::from(CELL_SIZE))
+                                    > query.bounds_min[0]
+                            );
+                            assert!((min.1 as f64 * f64::from(CELL_SIZE)) < query.bounds_max[1]);
+                            assert!(
+                                ((min.1 + side) as f64 * f64::from(CELL_SIZE))
+                                    > query.bounds_min[1]
+                            );
+                        }
+                    }
+                }
+                if tier != LodTier::Tier16 {
+                    assert!(bounded < previous);
+                }
+                for dx in -tier.side_cells()..=tier.side_cells() {
+                    for dy in -tier.side_cells()..=tier.side_cells() {
+                        let cell = center + IVec2::new(dx, dy);
+                        let key =
+                            ChunkKey::new(1, tier, origin.chunk_for_cell(tier, cell.x, cell.y));
+                        assert!(chunk_contains_cell(key, origin, cell));
+                        assert!(chunk_within_radius(
+                            key,
+                            origin,
+                            (i64::from(center.x), i64::from(center.y)),
+                            radius
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1262,7 +1372,11 @@ mod tests {
         update_counts(&streaming, &mut metrics, &mut profiler);
         assert_eq!(metrics.pending_lod_chunks, 1);
         streaming.pending_chunks.clear();
-        streaming.query_failed(LodTier::Tier4, Instant::now());
+        streaming.query_failed(
+            LodTier::Tier4,
+            LodChunkFailureClass::Transient,
+            Instant::now(),
+        );
         update_counts(&streaming, &mut metrics, &mut profiler);
         assert_eq!(metrics.pending_lod_queries, 1);
         assert_eq!(metrics.pending_lod_chunks, 1);

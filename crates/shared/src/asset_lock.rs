@@ -93,13 +93,26 @@ impl AssetLock {
             AssetLockError::io(asset_dir, &asset_lock_path(asset_dir), mode, source)
         })?;
         let lock_path = asset_lock_path(&resolved);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|source| AssetLockError::io(asset_dir, &lock_path, mode, source))?;
+        let file = match mode {
+            AssetLockMode::Shared => File::open(&lock_path).or_else(|error| {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error);
+                }
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(&lock_path)
+            }),
+            AssetLockMode::Exclusive => OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path),
+        }
+        .map_err(|source| AssetLockError::io(asset_dir, &lock_path, mode, source))?;
         let result = match mode {
             AssetLockMode::Shared => file.try_lock_shared(),
             AssetLockMode::Exclusive => file.try_lock(),
@@ -107,7 +120,7 @@ impl AssetLock {
         match result {
             Ok(()) => Ok(AssetLock {
                 _file: file,
-                asset_dir: asset_dir.to_owned(),
+                asset_dir: resolved,
                 lock_path,
                 mode,
             }),
@@ -315,6 +328,51 @@ mod tests {
         drop(first);
         drop(second);
         remove_lock_file(&asset_dir);
+    }
+
+    #[test]
+    fn existing_shared_lock_uses_a_read_only_descriptor() {
+        use std::fs;
+        use std::io::Write;
+        let asset_dir = scratch_asset_dir("read-only");
+        drop(AssetLock::acquire_exclusive(&asset_dir).unwrap());
+        let path = asset_lock_path(&asset_dir);
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        let mut shared = AssetLock::acquire_shared(&asset_dir).unwrap();
+        assert!(shared._file.write_all(b"must not write").is_err());
+        assert!(AssetLock::acquire_shared(&asset_dir).is_ok());
+        drop(shared);
+        remove_lock_file(&asset_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_parent_allows_provisioned_readers_but_missing_lock_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = scratch_asset_dir("read-only-parent");
+        std::fs::create_dir(&parent).unwrap();
+        let assets = parent.join("assets");
+        drop(AssetLock::acquire_exclusive(&assets).unwrap());
+        std::fs::set_permissions(
+            asset_lock_path(&assets),
+            std::fs::Permissions::from_mode(0o444),
+        )
+        .unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let reader = AssetLock::acquire_shared(&assets).unwrap();
+        let missing = AssetLock::acquire_shared(parent.join("missing"));
+        let writer = AssetLock::acquire_exclusive(&assets);
+        // Root bypasses mode bits; the descriptor-level test still covers it.
+        let can_write = File::create(parent.join("permission-probe")).is_ok();
+        drop(reader);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&parent).unwrap();
+        if !can_write {
+            assert!(matches!(missing, Err(AssetLockError::Io { .. })));
+            assert!(matches!(writer, Err(AssetLockError::Io { .. })));
+        }
     }
 
     #[test]

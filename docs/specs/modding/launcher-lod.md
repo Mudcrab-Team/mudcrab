@@ -33,7 +33,10 @@ unhelpful. Do not invent timing estimates to hide this.
   Retain full warnings in `RunReport`; reuse scrolling whole-result notice
   treatment used by checks rather than truncating through `push_notice`.
 - Preserve Start/Stop/Resume, check actions, locks, engine-running guards,
-  and final validation/publication. LOD failure follows ordinary failure path.
+  and final validation/publication. World-local unsupported/invalid compiler
+  content omits that world's LOD with a warning; full-detail output remains
+  usable. Cancellation, changed sources, database and publication failures
+  follow the ordinary failure path.
 
 Acceptance: report projection covers nonzero/zero chunks and warnings;
 status tests cover LOD stage and unknown ETA; tiny conversion produces matching

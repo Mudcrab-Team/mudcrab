@@ -4,10 +4,14 @@ Offline compiler turning `references` + `statics` + cell cache into
 spatial LOD chunks. Uses canonical paths, an immutable input boundary,
 staged outputs, a validated build identity, content-hash invalidation, and
 schema-versioned manifests. The runtime holds a shared sibling lock while it
-reads an asset directory; publication takes a nonblocking exclusive lock for
-the final swap and refuses to proceed while a reader is active. An interrupted
-swap restores the last-good backup before the next build. Validation errors
-identify file, block, and shape.
+reads an asset directory. Conversion takes a nonblocking exclusive lock before
+reading the prior package and holds it through publication; an active reader
+rejects the build before conversion work. Symlinked output directories are
+rejected. An interrupted swap restores only a destination-owned, verified
+backup. The sibling publication record seals manifests and generated files;
+ambiguous legacy backups require manual recovery. Cleanup validates the new
+package before deleting its owned predecessor. Validation errors identify file,
+block, and shape.
 
 ## Inputs
 
@@ -137,7 +141,8 @@ settings cannot survive in staged metadata or payloads.
   Preserve `retained_asset_configuration_hash` independently of rebuilt
   metadata settings. Explicit reuse accepts the native schema-16 projection
   with fixed `texture_zstd_level=6` only when every other setting matches;
-  normal conversion rejects that producer's cache entries. Equal schema
+  normal conversion reuses schema-16 meshes when source, bytes and actual
+  configuration match; schema 12-15 mesh contracts still invalidate. Equal schema
   numbers do not establish equal producer contracts. Repeated rebuilds keep
   the original retained configuration hash and verify it again. Missing
   producer configuration in metadata-only output rejects metadata reuse and
@@ -153,7 +158,7 @@ settings cannot survive in staged metadata or payloads.
   Failed removal aborts publication even without fail-fast.
 - LOD-V9: terrain LOD carries baked diffuse albedo from winning LAND
   BTXT/ATXT/VTXT layers and current canonical DDS inputs. Match near terrain's
-  eight repeats/cell, ordered six-layer limit, bilinear opacity grids,
+  shared `LAND_TEXTURE_REPEATS_PER_CELL` (24), ordered six-layer limit, bilinear opacity grids,
   normalized overlay sum, linear-light diffuse blending and linear VCLR tint.
   Bake tint once; embedded sRGB KTX2 atlas, mip chain and padded quadrant UVs
   belong to payload checksum. Missing/invalid material inputs skip world's

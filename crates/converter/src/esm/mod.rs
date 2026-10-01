@@ -37,6 +37,27 @@ impl EsmParser {
     ) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        Self::export_plugins_with_load_order(plugin_paths, db_path, &master, &order)?;
+
+        Ok(master)
+    }
+
+    /// Export an already resolved generation with validated plugin ownership.
+    pub fn export_plugins(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        master: &HashMap<u32, RawRecord>,
+    ) -> Result<()> {
+        let order = load_order::LoadOrder::read(plugin_paths)?;
+        Self::export_plugins_with_load_order(plugin_paths, db_path, master, &order)
+    }
+
+    fn export_plugins_with_load_order(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        master: &HashMap<u32, RawRecord>,
+        order: &load_order::LoadOrder,
+    ) -> Result<()> {
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
         for (priority, path) in plugin_paths.iter().enumerate() {
@@ -46,9 +67,9 @@ impl EsmParser {
                 params![priority as i64, path.file_name().unwrap_or_default().to_string_lossy(), priority as i64, checksum.as_slice()],
             )?;
         }
-        export_to_db_with_load_order(&conn, &master, &order)?;
+        export_to_db_with_load_order(&conn, master, order)?;
 
-        Ok(master)
+        Ok(())
     }
 
     /// Merge plugin records with validated slots and EditorID-based game settings.
