@@ -256,13 +256,26 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Count failure warnings, including integration failures that do not increment skipped.
+/// Reports failures and skipped inputs separately: an asset-integration failure is a failure
+/// without a skipped input, and its details live in `integration-report.json`, not the manifest.
 fn incomplete_summary(report: &PipelineReport, output: &Path) -> String {
-    let skipped = report.warnings.len();
-    format!(
-        "Conversion incomplete: {skipped} input(s) were skipped. The output was published anyway; the manifest lists what is missing: {}",
+    let mut summary = format!(
+        "Conversion incomplete: {} failure(s), {} input(s) skipped. The output was published anyway; the manifest lists what is missing: {}",
+        report.warnings.len(),
+        report.skipped,
         output.join("conversion-manifest.json").display()
-    )
+    );
+    if report
+        .integration
+        .as_ref()
+        .is_some_and(|integration| !integration.passed)
+    {
+        summary.push_str(&format!(
+            "; asset integration details: {}",
+            output.join("integration-report.json").display()
+        ));
+    }
+    summary
 }
 
 /// The summary a finished run prints: what it produced, how long it took, and where to look.
@@ -850,19 +863,40 @@ mod tests {
         assert!(!program_name().is_empty());
     }
 
-    /// Integration failures count even without skipped assets; advisory notices do not.
+    /// Integration failures count as failures without skipped inputs and point to the
+    /// integration report; advisory notices are never counted.
     #[test]
     fn incomplete_summary_counts_integration_warnings_but_not_notices() {
-        let report = PipelineReport {
+        let mut report = PipelineReport {
             warnings: vec!["asset integration failed: 1 missing models".into()],
             notices: vec!["nested plugins ignored".into(), "another advisory".into()],
+            integration: Some(converter::IntegrationReport {
+                passed: false,
+                ..Default::default()
+            }),
             ..PipelineReport::default()
         };
         assert_eq!(report.skipped, 0);
+        let summary = incomplete_summary(&report, Path::new("modern"));
         assert!(
-            incomplete_summary(&report, Path::new("modern"))
-                .starts_with("Conversion incomplete: 1 input(s) were skipped.")
+            summary.starts_with("Conversion incomplete: 1 failure(s), 0 input(s) skipped."),
+            "{summary}"
         );
+        assert!(summary.contains("integration-report.json"), "{summary}");
+
+        // A skipped input with a passing integration does not mention the integration report.
+        report.integration = Some(converter::IntegrationReport {
+            passed: true,
+            ..Default::default()
+        });
+        report.warnings = vec!["textures/bad.dds: not a DDS".into()];
+        report.skipped = 1;
+        let summary = incomplete_summary(&report, Path::new("modern"));
+        assert!(
+            summary.starts_with("Conversion incomplete: 1 failure(s), 1 input(s) skipped."),
+            "{summary}"
+        );
+        assert!(!summary.contains("integration-report.json"), "{summary}");
     }
 
     #[test]

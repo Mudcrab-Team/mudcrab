@@ -380,6 +380,18 @@ impl AssetPipeline {
         };
         let files = discover(&config.data_dir)?;
         let plugins = plugin_paths(config, &files, &mut report.notices)?;
+        // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
+        // prints them without splicing into its status line and the launcher shows them in its
+        // notice pane. They stay in `report.notices` for the summary and the JSON report.
+        for notice in &report.notices {
+            send_notice(
+                progress_tx,
+                ProgressStage::Discovering,
+                None,
+                &format!("note: {notice}"),
+            )
+            .await;
+        }
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -1578,13 +1590,13 @@ fn plugin_paths(
         .cloned()
         .collect();
     if !discovered.is_empty() && plugins.is_empty() {
-        let warning = format!(
+        // The caller forwards notices on the progress channel; printing here would splice
+        // into the CLI's status line.
+        notices.push(format!(
             "found {} plugin files, but none directly in {}; plugins in subfolders are ignored",
             discovered.len(),
             config.data_dir.display()
-        );
-        eprintln!("note: {warning}");
-        notices.push(warning);
+        ));
     }
     plugins.sort_by_key(|path| {
         let name = path

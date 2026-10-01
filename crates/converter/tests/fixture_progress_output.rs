@@ -44,7 +44,7 @@ fn notices_are_printed_on_complete_and_incomplete_runs() {
         );
         if incomplete {
             assert!(
-                stderr.contains("Conversion incomplete: 1 input(s) were skipped"),
+                stderr.contains("Conversion incomplete: 1 failure(s), 1 input(s) skipped"),
                 "{stderr}"
             );
         } else {

@@ -160,6 +160,48 @@ async fn nested_only_plugins_warn_but_asset_conversion_completes_without_databas
     assert_eq!(manifest["complete"], true);
 }
 
+/// The launcher only sees progress events, so the nested-plugins notice must arrive there too,
+/// marked as a notice rather than a status update.
+#[tokio::test]
+async fn nested_only_plugin_notice_reaches_the_progress_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    let nested = data.join("Optional");
+    fs::create_dir(&nested).unwrap();
+    fs::rename(data.join("Skyrim.esm"), nested.join("Skyrim.esm")).unwrap();
+    let output = dir.path().join("modern");
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::progress::ProgressEvent>(64);
+    let collect = tokio::spawn(async move {
+        let mut notices = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if event.notice {
+                notices.push(event.message);
+            }
+        }
+        notices
+    });
+    let report = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        .await
+        .map_err(|error| format!("{error:?}"))
+        .unwrap();
+    let notices = collect.await.unwrap();
+    assert!(report.complete, "{report:?}");
+    let expected = format!(
+        "note: found 1 plugin files, but none directly in {}; plugins in subfolders are ignored",
+        data.display()
+    );
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|message| **message == expected)
+            .count(),
+        1,
+        "{notices:?}"
+    );
+}
+
 /// A deliberately asset-only input needs neither a plugin warning nor a database.
 #[tokio::test]
 async fn no_plugins_converts_assets_without_warning_or_database() {
