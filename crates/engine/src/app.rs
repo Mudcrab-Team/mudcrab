@@ -634,7 +634,7 @@ fn fixture_image(data: Vec<u8>, srgb: bool) -> Image {
 }
 
 /// A terrain layer image of the synthetic fixture: one flat colour, carried by a sampler that
-/// repeats like the one a streamed layer gets, since the shader tiles every layer `8` times across a
+/// repeats like the one a streamed layer gets, since the shader tiles every layer across a
 /// cell. Bevy's default sampler clamps to the edge, which stretches the outermost texels over the
 /// rest of the tiles.
 fn terrain_fixture_image(pixel: [u8; 4]) -> Image {
@@ -2966,7 +2966,7 @@ mod tests {
         }
     }
 
-    /// The shader tiles every terrain layer `8` times across a cell, so the fixture's layer images
+    /// The shader tiles every terrain layer across a cell, so the fixture's layer images
     /// need the sampler a streamed layer is loaded with. Bevy's default clamps to the edge, which
     /// stretches the outermost texels over the rest of the tiles.
     #[test]

@@ -33,8 +33,10 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
-// Skyrim's base LAND UV frequency is eight repeats per cell, multiplied by
-// fLandTextureTilingMult:Landscape (vanilla default 3). Cell UVs here span 0..1.
+// Skyrim advances LAND texture UVs by fLandTextureTilingMult / 4 per sample interval.
+// The vanilla default is 3, giving 32 intervals * (3 / 4) = 24 repeats per cell.
+// See docs/specs/rendering/landscape-texture-scale.md for sources and verification.
+// Cell UVs here span 0..1.
 // Apply this only to texture sampling, never to the LAND blend-weight grid.
 const LAND_TEXTURE_REPEATS_PER_CELL: f32 = 8.0 * 3.0;
 
@@ -1483,7 +1485,7 @@ mod tests {
         );
     }
 
-    /// The shader tiles every layer `tiling` times across a cell (`uv * 8`), so the layer textures
+    /// The shader tiles every layer `tiling` times across a cell, so the layer textures
     /// must be sampled with a repeating address mode. Bevy's default clamps to the edge, which
     /// stretched the textures in the frames: everything past the first tile read the edge texels.
     #[test]
