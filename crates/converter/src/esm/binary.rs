@@ -4,7 +4,10 @@ use crate::esm::{
     records::RawRecord,
     types::{GroupHeader, RecordHeader, WorldReference},
 };
-use color_eyre::{Result, eyre::eyre};
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, eyre},
+};
 use flate2::{Decompress, FlushDecompress, Status};
 use nom::{
     IResult,
@@ -22,6 +25,11 @@ pub struct PluginMetadata {
 }
 
 pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
+    parse_plugin_metadata_inner(path)
+        .wrap_err_with(|| format!("failed to read plugin header {}", path.display()))
+}
+
+fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
     let (rest, header) =
@@ -277,6 +285,11 @@ pub fn parse_group(
 }
 
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
+    parse_plugin_file_inner(path)
+        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
+}
+
+fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
 

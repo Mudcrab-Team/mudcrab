@@ -2,7 +2,84 @@
 use super::binary::{PluginMetadata, parse_plugin_metadata};
 use color_eyre::{Result, eyre::ensure};
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+};
+
+/// Order automatically discovered plugins by dependency, preferring master/light
+/// files among ready nodes, then their existing deterministic filename order.
+/// This fallback cannot infer user-selected override priorities from plugins.txt.
+pub(crate) fn order_discovered_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    let mut indices = HashMap::new();
+    let mut metadata = Vec::with_capacity(paths.len());
+    for (index, path) in paths.iter().enumerate() {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        ensure!(
+            indices.insert(name.clone(), index).is_none(),
+            "duplicate plugin {name}"
+        );
+        metadata.push(parse_plugin_metadata(path)?);
+    }
+    let mut remaining = vec![0usize; paths.len()];
+    let mut dependents = vec![Vec::new(); paths.len()];
+    for (index, header) in metadata.iter().enumerate() {
+        let mut unique = BTreeSet::new();
+        for master in &header.masters {
+            let dependency = *indices.get(&master.to_ascii_lowercase()).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "{}: required master {master} is missing",
+                    paths[index].display()
+                )
+            })?;
+            if unique.insert(dependency) {
+                remaining[index] += 1;
+                dependents[dependency].push(index);
+            }
+        }
+    }
+    let priority = |index: usize| {
+        let is_light_file = paths[index]
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("esl"));
+        (
+            !(metadata[index].flags & 0x201 != 0 || is_light_file),
+            index,
+        )
+    };
+    let mut ready = BTreeSet::new();
+    for (index, count) in remaining.iter().enumerate() {
+        if *count == 0 {
+            ready.insert(priority(index));
+        }
+    }
+    let mut ordered = Vec::with_capacity(paths.len());
+    while let Some((_, index)) = ready.pop_first() {
+        ordered.push(paths[index].clone());
+        for &dependent in &dependents[index] {
+            remaining[dependent] -= 1;
+            if remaining[dependent] == 0 {
+                ready.insert(priority(dependent));
+            }
+        }
+    }
+    ensure!(
+        ordered.len() == paths.len(),
+        "cyclic plugin dependencies; blocked plugins: {}",
+        paths
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| remaining[*index] != 0)
+            .map(|(_, path)| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(ordered)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct StableId {

@@ -1,0 +1,200 @@
+//! Exercise automatic plugin discovery through the production conversion path.
+use converter::{
+    AssetPipeline, PipelineConfig,
+    esm::{EsmParser, load_order::LoadOrder},
+};
+use dummy_content::layout;
+use rusqlite::Connection;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
+    [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
+}
+
+fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u32).to_le_bytes(),
+        &flags.to_le_bytes(),
+        &id.to_le_bytes(),
+        &[0; 8],
+        &payload,
+    ]
+    .concat()
+}
+
+fn plugin(root: &Path, name: &str, masters: &[&str], flags: u32, value: Option<f32>) -> PathBuf {
+    let mut header = Vec::new();
+    for master in masters {
+        header.extend(sub(b"MAST", format!("{master}\0").as_bytes()));
+        header.extend(sub(b"DATA", &[0; 8]));
+    }
+    let mut bytes = record(b"TES4", 0, flags, header);
+    if let Some(value) = value {
+        let payload = [
+            sub(b"EDID", b"fJumpHeightMin\0"),
+            sub(b"DATA", &value.to_le_bytes()),
+        ]
+        .concat();
+        bytes.extend(record(
+            b"GMST",
+            ((masters.len() as u32) << 24) | 0x800,
+            0,
+            payload,
+        ));
+    }
+    let path = root.join(name);
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+async fn run(config: PipelineConfig) -> Result<converter::PipelineReport, String> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let result = AssetPipeline::run_async(config, tx)
+        .await
+        .map_err(|error| format!("{error:?}"));
+    drain.await.unwrap();
+    result
+}
+
+#[tokio::test]
+async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_assets() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    plugin(&data, "ZMod.esp", &["Skyrim.esm"], 0, Some(100.0));
+    plugin(
+        &data,
+        "APatch.esp",
+        &["Skyrim.esm", "zMOD.esp"],
+        0,
+        Some(222.0),
+    );
+    // Header flags, not just the filename suffix, determine master priority.
+    plugin(&data, "YMaster.esp", &["Skyrim.esm"], 1, None);
+    plugin(&data, "XLight.esp", &["Skyrim.esm"], 0x200, None);
+    plugin(&data, "BIndependent.esp", &["Skyrim.esm"], 0, None);
+    fs::create_dir_all(data.join("Optional")).unwrap();
+    fs::write(data.join("Optional/ZMod.esp"), b"invalid duplicate backup").unwrap();
+    fs::write(data.join("Optional/Unused.esp"), b"invalid optional plugin").unwrap();
+    let output = dir.path().join("modern");
+    let config = PipelineConfig::new(&data, &output);
+    assert!(config.plugins_file.is_none());
+    assert!(run(config.clone()).await.unwrap().complete);
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Skyrim.esm",
+            "XLight.esp",
+            "YMaster.esp",
+            "BIndependent.esp",
+            "ZMod.esp",
+            "APatch.esp"
+        ]
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get::<_, f64>(0)
+        )
+        .unwrap(),
+        222.0
+    );
+    assert!(output.join("meshes/generated.glb").is_file());
+    assert!(output.join("textures/generated_color.ktx2").is_file());
+    drop(conn);
+    // Identical fallback ordering on resume keeps asset reuse intact.
+    let second = run(config).await.unwrap();
+    assert!(second.complete);
+    assert_eq!(second.converted, 0);
+    assert!(second.cache_hits > 0);
+}
+
+#[tokio::test]
+async fn fallback_reports_missing_masters_and_cycles_with_plugin_names() {
+    for cycle in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        plugin(&data, "A.esp", &["B.esp"], 0, None);
+        if cycle {
+            plugin(&data, "B.esp", &["A.esp"], 0, None);
+        }
+        let error = run(PipelineConfig::new(&data, dir.path().join("modern")))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("A.esp") && error.contains("B.esp"),
+            "{error}"
+        );
+        assert!(
+            error.contains(if cycle {
+                "cyclic plugin dependencies"
+            } else {
+                "required master"
+            }),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_plugin_order_is_preserved_and_not_silently_repaired() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    plugin(&data, "Z.esp", &["Skyrim.esm"], 0, Some(100.0));
+    plugin(&data, "A.esp", &["Skyrim.esm"], 0, Some(222.0));
+    let list = dir.path().join("plugins.txt");
+    fs::write(&list, "Skyrim.esm\n*Z.esp\n*A.esp\n").unwrap();
+    let output = dir.path().join("modern");
+    let mut config = PipelineConfig::new(&data, &output);
+    config.plugins_file = Some(list.clone());
+    assert!(run(config.clone()).await.unwrap().complete);
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get::<_, f64>(0)
+        )
+        .unwrap(),
+        222.0
+    );
+    drop(conn);
+    fs::write(&list, "*A.esp\nSkyrim.esm\n*Z.esp\n").unwrap();
+    let error = run(config).await.unwrap_err();
+    assert!(error.contains("must precede"), "{error}");
+}
+
+#[test]
+fn header_and_record_errors_include_the_plugin_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Broken.esp");
+    fs::write(&path, b"TES4").unwrap();
+    let error = LoadOrder::read(std::slice::from_ref(&path)).err().unwrap();
+    assert!(format!("{error:?}").contains(path.to_str().unwrap()));
+    let malformed = record(b"STAT", 0x800, 0, b"DATA\x04\x00\x01".to_vec());
+    fs::write(&path, [record(b"TES4", 0, 0, vec![]), malformed].concat()).unwrap();
+    let error = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains(path.to_str().unwrap()) && message.contains("truncated DATA"),
+        "{message}"
+    );
+}

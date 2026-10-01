@@ -1559,6 +1559,7 @@ fn plugin_paths(config: &PipelineConfig, files: &[PathBuf]) -> Result<Vec<PathBu
     let mut plugins: Vec<_> = files
         .iter()
         .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .filter(|path| path.parent() == Some(config.data_dir.as_path()))
         .cloned()
         .collect();
     plugins.sort_by_key(|path| {
@@ -1577,7 +1578,7 @@ fn plugin_paths(config: &PipelineConfig, files: &[PathBuf]) -> Result<Vec<PathBu
         };
         (rank, name)
     });
-    Ok(plugins)
+    crate::esm::load_order::order_discovered_plugins(plugins)
 }
 
 fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
