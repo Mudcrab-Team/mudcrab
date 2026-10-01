@@ -3,7 +3,7 @@ use crate::{
     world::{cache::TerrainSnapshot, database::AssetCatalog},
 };
 use bevy::{
-    app::{HierarchyPropagatePlugin, PropagateSet},
+    app::{HierarchyPropagatePlugin, PropagateOver, PropagateSet},
     asset::embedded_asset,
     camera::{
         RenderTarget,
@@ -82,6 +82,19 @@ pub const REFLECTION_VIEW_LAYERS: &[Layer] = &[WORLD_LAYER];
 /// `bevy_light-0.19.0/src/lib.rs:423`). Dropping the placed-object layer would light the objects
 /// while silently removing them from the sun's shadow cascades.
 pub const LIGHT_LAYERS: &[Layer] = &[WORLD_LAYER, PLACED_OBJECT_LAYER];
+
+/// The render layers for a light spawned below a placed-object reference.
+///
+/// The reference's [`Propagate`](bevy::app::Propagate) would otherwise copy
+/// [`PLACED_OBJECT_RENDER_LAYERS`] onto the light and drop it from [`WORLD_LAYER`], breaking the
+/// [`LIGHT_LAYERS`] contract. [`PropagateOver`] keeps the propagated value off this entity only
+/// (`PropagateStop` would still write it here and just stop the walk below).
+pub fn light_render_layers() -> (RenderLayers, PropagateOver<RenderLayers>) {
+    (
+        RenderLayers::from_layers(LIGHT_LAYERS),
+        PropagateOver::default(),
+    )
+}
 
 /// The value [`Propagate`](bevy::app::Propagate) copies onto the meshes below a placed-object
 /// reference, which is what keeps those meshes out of the reflection pass.
@@ -1396,6 +1409,34 @@ mod tests {
             );
         }
         assert!(light.intersects(&PLACED_OBJECT_RENDER_LAYERS));
+    }
+
+    /// A point light is a child of its placed-object reference, whose layer propagates down the
+    /// hierarchy; the light must keep [`LIGHT_LAYERS`] anyway, or it stops lighting the terrain
+    /// and the reflection view.
+    #[test]
+    fn a_light_below_a_reference_keeps_the_light_layers() {
+        let mut app = App::new();
+        add_placed_object_layer_propagation(&mut app);
+        let reference = app
+            .world_mut()
+            .spawn(Propagate(PLACED_OBJECT_RENDER_LAYERS))
+            .id();
+        let light = app
+            .world_mut()
+            .spawn((light_render_layers(), ChildOf(reference)))
+            .id();
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world().entity(reference).get::<RenderLayers>(),
+            Some(&PLACED_OBJECT_RENDER_LAYERS)
+        );
+        assert_eq!(
+            app.world().entity(light).get::<RenderLayers>(),
+            Some(&RenderLayers::from_layers(LIGHT_LAYERS)),
+            "the propagated placed-object layer must not replace the light's layers"
+        );
     }
 
     /// The propagation has to be in place before visibility compares layers, and the meshes it

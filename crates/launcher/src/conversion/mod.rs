@@ -343,6 +343,35 @@ pub fn actuate_effects(
     }
 }
 
+/// Whether a conversion may publish into `output`, or why not, as a line for the notice pane.
+///
+/// Publishing replaces the whole Output folder: the old folder is renamed aside and then deleted.
+/// So the launcher only ever converts into a folder that is safe to lose: one that does not exist
+/// yet, an empty one, or one that holds a [`MANIFEST_FILE`] (an earlier conversion). Anything else,
+/// such as a games or documents folder dropped by mistake, is refused, as is a file or a path that
+/// cannot be read. The drop into the Output row and every Start, Start over and Resume press ask
+/// this, so a folder that filled up after it was chosen is refused at the press.
+///
+/// The rule is the converter's own ([`converter::check_output_dir`], which the pipeline also
+/// applies before it starts and before it publishes); this only words its answer for the pane.
+pub fn output_is_safe_target(output: &Path) -> Result<(), String> {
+    use converter::OutputDirError;
+    converter::check_output_dir(output).map_err(|error| match error {
+        OutputDirError::NotConverterOutput(path) => format!(
+            "{} is not empty and is not a Mudcrab conversion; choose an empty or new folder.",
+            path.display()
+        ),
+        OutputDirError::NotADirectory(path) => format!(
+            "{} is not a folder; choose an empty or new folder.",
+            path.display()
+        ),
+        OutputDirError::Unreadable { path, source } => format!(
+            "{} cannot be read ({source}); choose an empty or new folder.",
+            path.display()
+        ),
+    })
+}
+
 /// Whether `output` holds a complete conversion the engine can start on: a manifest that says it is
 /// complete and of this converter's schema, the world database and cell cache beside it, and an
 /// integration report that passed for this world-database schema.
@@ -799,6 +828,55 @@ pub(crate) mod tests {
         assert!(paths.output_label().contains("not chosen"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Publishing deletes what the Output folder held, so only a missing folder, an empty one or an
+    /// earlier conversion (a folder with a manifest) may be converted into.
+    #[test]
+    fn only_a_new_empty_or_converted_folder_is_a_safe_output() {
+        let root = temp_dir("safe-output");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let missing = root.join("not-there-yet");
+        assert_eq!(output_is_safe_target(&missing), Ok(()), "a new folder");
+
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(output_is_safe_target(&empty), Ok(()), "an empty folder");
+
+        let converted = root.join("converted");
+        std::fs::create_dir_all(converted.join("meshes")).unwrap();
+        std::fs::write(converted.join("meshes").join("a.glb"), b"glTF").unwrap();
+        std::fs::write(converted.join(MANIFEST_FILE), b"{}").unwrap();
+        assert_eq!(
+            output_is_safe_target(&converted),
+            Ok(()),
+            "an earlier conversion"
+        );
+
+        let games = root.join("Games");
+        std::fs::create_dir_all(games.join("SomeGame")).unwrap();
+        std::fs::write(games.join("save.dat"), b"precious").unwrap();
+        let refused = output_is_safe_target(&games).expect_err("a folder of other things");
+        assert_eq!(
+            refused,
+            format!(
+                "{} is not empty and is not a Mudcrab conversion; choose an empty or new folder.",
+                games.display()
+            )
+        );
+
+        // A manifest-named folder is not a manifest.
+        let odd = root.join("odd");
+        std::fs::create_dir_all(odd.join(MANIFEST_FILE)).unwrap();
+        assert!(output_is_safe_target(&odd).is_err());
+
+        let file = root.join("a-file.txt");
+        std::fs::write(&file, b"not a folder").unwrap();
+        let refused = output_is_safe_target(&file).expect_err("a file");
+        assert!(refused.contains("is not a folder"), "{refused}");
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// A unique folder under the system temporary directory, as the launcher's tests do.
