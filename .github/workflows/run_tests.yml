@@ -62,8 +62,10 @@ jobs:
           }
 
           check_pattern "check_rust" '^(Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
+          check_pattern "check_scripts" '\.ps1$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
+      check_scripts: ${{ steps.filter.outputs.check_scripts }}
 
   format:
     needs: [orchestrate]
@@ -83,6 +85,30 @@ jobs:
 
       - name: Format check
         run: cargo fmt --all -- --check
+
+  scripts:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_scripts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r file; do
+            if [ "$(LC_ALL=C tr -d '\0-\177' <"$file" | wc -c)" -gt 0 ] \
+              && [ "$(head -c 3 "$file" | od -An -tx1 | tr -d ' \n')" != "efbbbf" ]; then
+              echo "::error file=$file::$file contains non-ASCII text but no UTF-8 BOM; Windows PowerShell 5.1 would misread it"
+              failed=1
+            fi
+          done < <(git ls-files '*.ps1')
+          exit "$failed"
 
   clippy:
     needs: [orchestrate]
@@ -198,6 +224,7 @@ jobs:
     needs:
       - orchestrate
       - format
+      - scripts
       - clippy
       - test
       - security
@@ -220,6 +247,7 @@ jobs:
 
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
           check_result "format" "$RESULT_FORMAT"
+          check_result "scripts" "$RESULT_SCRIPTS"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -229,6 +257,7 @@ jobs:
         env:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
+          RESULT_SCRIPTS: ${{ needs.scripts.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
