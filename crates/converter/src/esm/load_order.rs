@@ -81,6 +81,7 @@ pub(crate) fn order_discovered_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBu
     Ok(ordered)
 }
 
+/// Original owning plugin filename and plugin-local ID, independent of its load-order slot.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct StableId {
     pub plugin: String,

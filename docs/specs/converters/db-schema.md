@@ -203,6 +203,8 @@ ID. `plugin_name` is the lowercase owning filename, such as `skyrim.esm`;
 `internal_id` is the low 24 bits for full plugins or the low 12 bits for light
 plugins. Full and light slots are assigned independently. The pair
 `(plugin_name, internal_id)` survives changes to the load-order slots.
+`plugin_name` is the lowercase filename; join to `plugins` with
+`lower(plugins.name) = formid_map.plugin_name`.
 
 Ownership differs from override provenance: `records.load_order` identifies
 the winning plugin's priority. Game settings override by case-insensitive

@@ -213,6 +213,8 @@ pub fn export_to_db_with_load_order(
     export_records(conn, master, Some(order))
 }
 
+/// Writes every merged record; with a load order, also records each record's
+/// owning plugin and plugin-local ID in `formid_map`.
 fn export_records(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,

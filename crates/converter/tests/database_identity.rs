@@ -39,6 +39,75 @@ fn grass(id: u32, density: u8) -> Vec<u8> {
 }
 
 #[test]
+fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
+    const CHILD_PLUGIN: &str = "MUDCRAB_LIGHT_ID_WARNING_TEST_PLUGIN";
+    if let Some(path) = std::env::var_os(CHILD_PLUGIN) {
+        let merged = EsmParser::merge_plugins(&[PathBuf::from(path)]).unwrap();
+        // Compatibility is unchanged: warning does not prevent the two IDs
+        // from colliding, and the last record still wins.
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[&0xFE00_0800].subrecords[0].1, b"Winner\0");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = plugin(
+        dir.path(),
+        "Uncompacted.esp",
+        &[],
+        0x200,
+        [
+            record(b"REFR", 0x1800, 0, sub(b"EDID", b"TooWide\0")),
+            record(b"REFR", 0x0800, 0, sub(b"EDID", b"Winner\0")),
+        ]
+        .concat(),
+    );
+    // A separate test process captures real stderr without global logger or
+    // file-descriptor changes that could interfere with parallel tests.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "oversized_light_ids_warn_for_references_but_reject_landscape_records",
+            "--nocapture",
+        ])
+        .env(CHILD_PLUGIN, path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{stderr}\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        stderr.matches("exceeds 12 bits and was truncated").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("uncompacted.esp")
+            && stderr.contains("00001800")
+            && stderr.contains("compact the plugin's FormIDs"),
+        "{stderr}"
+    );
+    for tag in [b"GRAS", b"LTEX", b"TXST", b"LAND", b"CELL", b"WRLD"] {
+        let path = plugin(
+            dir.path(),
+            "Strict.esp",
+            &[],
+            0x200,
+            record(tag, 0x1800, 0, vec![]),
+        );
+        let error = EsmParser::merge_plugins(&[path]).unwrap_err();
+        let message = format!("{error:?}");
+        assert!(
+            message.contains("light-plugin local ID exceeds 12 bits")
+                && message.contains("00001800"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
 fn database_identities_survive_slot_changes_and_keep_override_provenance() {
     use converter::esm::exporter::{export_to_db, export_to_db_with_load_order};
     use rusqlite::Connection;

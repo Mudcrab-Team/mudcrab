@@ -80,7 +80,7 @@ fn max_inflated_size(compressed_len: usize) -> usize {
         .min(MAX_RESERVATION)
 }
 
-/// Inflate into a bounded buffer and require zlib's completed-stream status.
+/// Inflate into a bounded buffer and require exactly one complete zlib stream.
 /// Producing the declared bytes alone does not validate a truncated checksum
 /// trailer. Reserve one extra byte to detect output longer than declared, and
 /// refuse impossible declared sizes before allocating.
@@ -95,7 +95,8 @@ fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> 
         ));
     }
     let mut output = Vec::with_capacity(expected + 1);
-    let status = Decompress::new(true)
+    let mut inflater = Decompress::new(true);
+    let status = inflater
         .decompress_vec(compressed, &mut output, FlushDecompress::Finish)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     if output.len() != expected {
@@ -111,6 +112,15 @@ fn read_bounded(compressed: &[u8], expected: usize) -> std::io::Result<Vec<u8>> 
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "incomplete zlib stream",
+        ));
+    }
+    if inflater.total_in() != compressed.len() as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} trailing bytes after zlib stream",
+                compressed.len() as u64 - inflater.total_in()
+            ),
         ));
     }
     Ok(output)
@@ -573,6 +583,41 @@ mod tests {
                 std::fs::write(&path, &bytes).unwrap();
                 assert!(parse_plugin_metadata(&path).is_err());
                 assert!(parse_plugin_file(&path).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn compressed_records_reject_trailing_junk_and_second_zlib_streams() {
+        let directory = tempfile::tempdir().unwrap();
+        for data in [
+            Vec::new(),
+            [b"EDID".as_slice(), &4u16.to_le_bytes(), b"Test"].concat(),
+        ] {
+            for suffix in [b"junk".to_vec(), zlib(b"second stream")] {
+                let mut bytes = compressed_record(b"STAT", data.len() as u32, &data);
+                parse_group(&bytes, None, None, &mut Vec::new()).unwrap();
+                bytes.extend_from_slice(&suffix);
+                let payload_length = (bytes.len() - 24) as u32;
+                bytes[4..8].copy_from_slice(&payload_length.to_le_bytes());
+                let error = parse_group(&bytes, None, None, &mut Vec::new()).unwrap_err();
+                assert!(format!("{error:?}").contains("trailing bytes after zlib stream"));
+
+                // Compressed TES4 headers use the same exact-input rule.
+                bytes[..4].copy_from_slice(b"TES4");
+                let path = directory.path().join("trailing.esp");
+                std::fs::write(&path, bytes).unwrap();
+                for error in [
+                    parse_plugin_metadata(&path).unwrap_err(),
+                    parse_plugin_file(&path).unwrap_err(),
+                ] {
+                    let message = format!("{error:?}");
+                    assert!(
+                        message.contains("trailing.esp")
+                            && message.contains("trailing bytes after zlib stream"),
+                        "{message}"
+                    );
+                }
             }
         }
     }

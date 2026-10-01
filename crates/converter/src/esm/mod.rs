@@ -273,10 +273,15 @@ fn remap_record_form_ids(
             plugin_name.to_owned()
         };
         if let Some(index) = light_indices.get(&owner) {
-            color_eyre::eyre::ensure!(
-                !strict || form_id & 0x00ff_ffff <= 0xfff,
-                "{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"
-            );
+            if form_id & 0x00ff_ffff > 0xfff {
+                color_eyre::eyre::ensure!(
+                    !strict,
+                    "{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"
+                );
+                eprintln!(
+                    "warning: {owner}: light-plugin local ID {form_id:08X} exceeds 12 bits and was truncated; compact the plugin's FormIDs before ESL-flagging it"
+                );
+            }
             return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));
         }
         let index = normal_indices.get(&owner).ok_or_else(|| {
