@@ -1,8 +1,9 @@
 # LOD review and Fiji delivery gate
 
-Historical record for the old LOD worktree. Current consolidation status and
-the latest failed native gate are in
-[lod-consolidation-20260930.md](lod-consolidation-20260930.md).
+Historical record for the old LOD worktree. The current human-testing candidate
+and fresh passing smoke captures are in [lod-rc-20260930.md](lod-rc-20260930.md).
+That report supersedes the delivery gates below; historical findings remain as
+an audit trail, not a current release decision. Broader visual acceptance remains open.
 
 Branch: `lod/phase1-terrain-build`, worktree `OpenSkyrim-lod`.
 Reviewed base: `beec66fa7e626d1977c2ff29d196efdd8bdce26f`.

@@ -468,6 +468,45 @@ async fn metadata_rebuild_requires_new_disjoint_output() {
 }
 
 #[tokio::test]
+async fn metadata_rebuild_preserves_package_snapshot_after_unrelated_data_asset_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    convert(&data, &source).await;
+    let manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(source.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    fs::write(
+        data.join(layout::GENERATED_MODEL_PATH),
+        b"changed NIF override",
+    )
+    .unwrap();
+    fs::write(
+        data.join(layout::GENERATED_NORMAL_PATH),
+        b"changed normal DDS override",
+    )
+    .unwrap();
+    fs::write(data.join("scripts/generated.pex"), b"changed PEX override").unwrap();
+    fs::write(data.join("meshes/new.nif"), b"new asset").unwrap();
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete);
+    assert_eq!(report.converted, 0);
+    for entry in manifest.entries.values() {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+        assert_eq!(
+            hash_file(&source.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    assert!(!output.join("meshes/new.glb").exists());
+}
+
+#[tokio::test]
 async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_payloads() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
@@ -476,9 +515,27 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
     generate(&data);
     convert(&data, &source).await;
     fs::remove_file(data.join("lodsettings/GeneratedWorld.lod")).unwrap();
+    fs::write(
+        data.join("Unmatched - Misc.bsa"),
+        bsa::v105(
+            &[Entry::new(
+                "LODSettings/GeneratedWorld.LOD",
+                b"invalid unmatched override",
+            )],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     fs::write(source.join("lod/stale.glb"), b"obsolete generation").unwrap();
     let report = rebuild(&data, &source, &output).await.unwrap();
     assert!(report.lod_chunks > 0);
+    assert!(
+        report
+            .lod_warnings
+            .iter()
+            .any(|warning| warning.contains("no matching source-package plugin"))
+    );
     assert!(!output.join("lod/stale.glb").exists());
     assert!(!output.join("vfs/misc/unrelated.txt").exists());
     let connection = Connection::open(output.join("skyrim_world.db")).unwrap();

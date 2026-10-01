@@ -22,6 +22,13 @@ Chunk rows are additionally indexed in an R-tree over world bounds so
 range queries stay spatial; key lookup alone would force the runtime to
 enumerate candidate anchors per tier.
 
+The initial terrain payload uses Bevy-native embedded KTX2 images with
+RGBA sRGB mip data. This is a native runtime contract, not portable glTF
+texture conformance. `KHR_texture_basisu` is not declared because these
+atlases are not ETC1S/UASTC Basis textures. A portable texture route needs
+an explicitly tested encoding and loader contract, not an extension label
+on the existing bytes.
+
 ## Consequences
 
 - Chunk loading reuses strict readiness, fallback diagnostics, and cache

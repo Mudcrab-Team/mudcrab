@@ -186,6 +186,10 @@ V72: Launcher conversion runs existing terrain LOD stage exactly once before fin
 V73: Launcher retains LOD chunk count & LOD warnings; zero chunks, partial world coverage & compiler failure remain distinct. LOD stage label/count accurate; no invented ETA or benchmark acceptance.
 V74: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-17/5 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
 V75: Existing-assets LOD build unavailable until cancellable metadata API & worker/state tests pass; cancellation checked between retained files & worlds and before publication; in-flight file/world allowed to finish; never reports resumable staging without journal support. Engine-running/path/asset-lock guards retained.
+V76: Publication backups identified by full output name; recovery restores only complete supported manifests with verified retained output sizes/hashes; invalid or symlink backups remain untouched.
+V77: Equivalent existing asset paths share one canonical lock; acquisition fails on resolution errors; missing-tail paths normalized before report containment checks.
+V78: LOD readiness counts unique queued, loading & scheduled retry work; current unrecovered failures block screenshot; recovered failures retain cumulative diagnostics; smoke capture still rejects historical failures.
+V79: Shared commit cap unchanged; continuous near-cell work cannot starve queued LOD & LOD cannot starve near cells; center changes retain only in-world/in-range immutable metadata; queries retry at most three times with 1/2/4-second backoff.
 
 ## §T TASKS
 
@@ -276,3 +280,10 @@ B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings
 B42|2026-10-01|PR #102 merge retained local LAND tiling constant alongside shared import; engine failed E0255|reuse shared constant; workspace compile + Clippy gates
 B43|2026-09-30|launcher LOD report fields omitted from Play-availability fixture outside conversion module|migrate fixture; launcher compile/test gate
 B44|2026-09-30|ignored layout performance test retained 12-file count after LOD sidecar addition|migrate count; assert sidecar output; preserve 10-second budget; no new invariant
+B45|2026-10-01|world-inspect queried absent legacy LOD table; capture scripts passed unsupported log flag|legacy table guard; preserve malformed-table errors; existing stdout/stderr redirection
+B46|2026-10-01|publication recovery adopted newest backup by name without validating completeness or outputs|V76
+B47|2026-10-01|dotted outputs shared backup namespace; raw path aliases bypassed asset locks; completed notices trimmed results|V76,V77,V73
+B48|2026-10-01|near cells exhausted shared budget; center changes dropped relevant LOD metadata; pending counts omitted queue/retry work; failed queries stayed requested|V78,V79
+B49|2026-10-01|metadata LOD extraction let unmatched archives override package-matched plugin sources|filter unmatched archives before settings/diffuse extraction; record omission; preserve loose precedence
+B50|2026-10-01|screenshot readiness treated recovered LOD failures as current errors|V78
+B51|2026-10-01|first fair-budget draft derived reservation from shrinking remainder and released it after a near commit|V79; reserve from frame limit before collectors

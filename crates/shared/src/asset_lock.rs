@@ -89,7 +89,10 @@ impl AssetLock {
     }
 
     fn acquire(asset_dir: &Path, mode: AssetLockMode) -> Result<Self, AssetLockError> {
-        let lock_path = asset_lock_path(asset_dir);
+        let resolved = resolve_asset_path(asset_dir).map_err(|source| {
+            AssetLockError::io(asset_dir, &asset_lock_path(asset_dir), mode, source)
+        })?;
+        let lock_path = asset_lock_path(&resolved);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -123,6 +126,8 @@ impl AssetLock {
 /// itself does not need to exist — only its parent must exist when the lock
 /// is acquired.
 pub fn asset_lock_path(asset_dir: &Path) -> PathBuf {
+    let resolved = resolve_asset_path(asset_dir).ok();
+    let asset_dir = resolved.as_deref().unwrap_or(asset_dir);
     match asset_dir.file_name() {
         Some(name) => {
             let mut lock_name = name.to_os_string();
@@ -135,6 +140,43 @@ pub fn asset_lock_path(asset_dir: &Path) -> PathBuf {
             PathBuf::from(lock)
         }
     }
+}
+
+/// Resolves existing symlinks and normalizes a path whose final components may
+/// not exist yet. Resolution errors other than missing components propagate.
+pub fn resolve_asset_path(path: &Path) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::Normal(name) => {
+                resolved.push(name);
+                match std::fs::canonicalize(&resolved) {
+                    Ok(path) => resolved = path,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if resolved
+                            .symlink_metadata()
+                            .is_ok_and(|metadata| metadata.is_symlink())
+                        {
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Failure to acquire an [`AssetLock`].
@@ -302,5 +344,33 @@ mod tests {
         assert_eq!(reacquired.lock_path(), lock_path);
         drop(reacquired);
         remove_lock_file(&asset_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_aliases_share_the_asset_lock() {
+        let root = scratch_asset_dir("aliases");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let held = AssetLock::acquire_shared(&real).unwrap();
+        assert!(AssetLock::acquire_exclusive(&alias).unwrap_err().is_held());
+        assert_eq!(asset_lock_path(&alias), held.lock_path());
+        drop(held);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unresolved_parent_components_cannot_hide_an_asset_path() {
+        let root = scratch_asset_dir("resolve");
+        std::fs::create_dir(&root).unwrap();
+        let resolved = resolve_asset_path(&root.join("new/../assets/report.json")).unwrap();
+        assert_eq!(
+            resolved,
+            root.canonicalize().unwrap().join("assets/report.json")
+        );
+        assert!(!root.join("new").exists());
+        std::fs::remove_dir(root).unwrap();
     }
 }

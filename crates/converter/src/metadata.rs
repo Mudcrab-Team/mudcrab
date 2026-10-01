@@ -1,4 +1,8 @@
 //! Rebuild world metadata from package-matched plugins without reconverting assets.
+//!
+//! Retained models, textures and scripts are verified against the source package's
+//! manifest, not refreshed from current Data. Data supplies checksum-matched plugins,
+//! LOD settings and terrain diffuse inputs. Use normal conversion after asset changes.
 
 use crate::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
@@ -13,8 +17,8 @@ use crate::{
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, prune_glb_texture_bytes},
     pipeline::{
-        compile_lod_chunks, discover, overlay_loose_assets, publish_new_directory,
-        sort_archives_by_load_order, staging_path, validate_artifacts,
+        archive_load_order_priority, compile_lod_chunks, discover, overlay_loose_assets,
+        publish_new_directory, sort_archives_by_load_order, staging_path, validate_artifacts,
     },
 };
 use color_eyre::{
@@ -264,6 +268,17 @@ async fn rebuild_into(
         })
         .cloned()
         .collect();
+    archives.retain(|archive| {
+        if archive_load_order_priority(archive, plugins).is_some() {
+            true
+        } else {
+            report.lod_warnings.push(format!(
+                "LOD extraction omitted archive {}: no matching source-package plugin",
+                archive.display()
+            ));
+            false
+        }
+    });
     sort_archives_by_load_order(&mut archives, plugins);
     let vfs = staging.join("vfs");
     fs::create_dir(&vfs)?;

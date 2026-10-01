@@ -46,6 +46,21 @@ Synthetic-clock scheduling and file hash fixtures cover classification,
 duplicate-queue prevention and retry bounds. End-to-end reader fault injection
 and target-hardware recovery captures remain acceptance work.
 
+Screenshot readiness waits for queued loads and retries and rejects current
+unrecovered chunk/query failures. Successful recovery does not block a PNG.
+The smoke-capture scripts still require zero cumulative LOD failures: they
+certify a fault-free run, not recovery. Recovery acceptance needs a separate fault-injection
+protocol that records the failure, verifies bounded retries and eventual
+drawable coverage, and does not erase the cumulative diagnostics.
+
+The shared commit cap is unchanged. Pending LOD work reserves one commit
+when the cap exceeds one; at cap one, near cells and LOD alternate priority.
+Cell crossings retain immutable queued chunk metadata only if it belongs to
+the current worldspace and remains in range. Old query responses are still
+discarded by generation. Failed queries retry at most three times after
+1/2/4 seconds in the same generation; persistent failures remain visible in
+cumulative diagnostics and the unrecovered gauge.
+
 ## Camera, shadows, fog
 
 Camera far is currently `CELL_SIZE * (stream_radius + 2) * 2` (`app.rs`),

@@ -88,7 +88,6 @@ capture() {
         --accept-min-fps 0 --accept-p95-ms 100000
         --accept-max-memory-growth-gib 1000
         --acceptance-screenshot "$screenshot"
-        --log-file "$output/$name-engine.log"
         --screenshot-camera-offset "0,6000,8000"
         --profile-output "$profile" --profile-scenario "$name"
         --profile-run-id capture-1 --profile-commit "$commit"

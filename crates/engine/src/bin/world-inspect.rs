@@ -442,6 +442,14 @@ fn load_lod_chunks(
     assets: &Path,
     worldspace: u32,
 ) -> Result<Vec<LodChunkReport>> {
+    let has_lod_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_lod_table {
+        return Ok(Vec::new());
+    }
     let mut statement = connection.prepare(
         "SELECT tier, anchor_x, anchor_y, payload_path, content_hash,
                 bounds_min_x, bounds_min_y, bounds_min_z,
@@ -871,6 +879,33 @@ fn parse_i32(value: Option<std::ffi::OsString>, name: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_database_without_lod_table_has_no_lod_chunks() {
+        let connection = Connection::open_in_memory().unwrap();
+        for schema in [3, 4] {
+            connection
+                .execute_batch(&format!(
+                    "DROP TABLE IF EXISTS schema_info; CREATE TABLE schema_info(version INTEGER);
+                     INSERT INTO schema_info VALUES ({schema});"
+                ))
+                .unwrap();
+            assert!(
+                load_lod_chunks(&connection, Path::new("unused"), 1)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_present_lod_table_is_not_treated_as_legacy() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE lod_chunks(worldspace_id INTEGER);")
+            .unwrap();
+        assert!(load_lod_chunks(&connection, Path::new("unused"), 1).is_err());
+    }
 
     fn glb(json: Value) -> Vec<u8> {
         let mut json = serde_json::to_vec(&json).unwrap();

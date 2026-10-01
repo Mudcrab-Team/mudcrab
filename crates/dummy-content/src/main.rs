@@ -185,7 +185,8 @@ COMMANDS:
 
 OPTIONS:
     --seed <n>        Seed for generated texture content
-    --formats <list>  Comma-separated subset of: dds, pex, nif, bsa, ba2, esm
+    --formats <list>  Comma-separated subset of: dds, pex, nif, bsa, ba2, esm,
+                      lodsettings (needs esm)
     --force           Overwrite generated files in a non-empty directory
     --with-interior   Write Skyrim.esm with one exterior cell, one interior
                       cell and a reciprocal pair of load doors (needs esm)

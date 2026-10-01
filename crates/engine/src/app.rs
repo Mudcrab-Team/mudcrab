@@ -2111,8 +2111,8 @@ fn screenshot_assets_ready(
         && metrics.pending_lod_queries == 0
         && metrics.pending_lod_chunks == 0
         && metrics.failed_cells == 0
-        && metrics.failed_lod_queries == 0
-        && metrics.failed_lod_chunks == 0
+        && metrics.unrecovered_lod_queries == 0
+        && metrics.unrecovered_lod_chunks == 0
         && (!world_streaming_active || metrics.resident_cells > 0)
         && metrics.asset_load_failures == 0
         && metrics.material_validation_failures == 0
@@ -2627,6 +2627,11 @@ mod tests {
 
         let mut failed_lod = settled_metrics;
         failed_lod.failed_lod_chunks = 1;
+        assert!(screenshot_assets_ready(&failed_lod, true, &config));
+        failed_lod.unrecovered_lod_chunks = 1;
+        assert!(!screenshot_assets_ready(&failed_lod, true, &config));
+        failed_lod.unrecovered_lod_chunks = 0;
+        failed_lod.unrecovered_lod_queries = 1;
         assert!(!screenshot_assets_ready(&failed_lod, true, &config));
     }
     /// The sun's shadows reach the grid the streamer draws, whichever way the camera faces, and the

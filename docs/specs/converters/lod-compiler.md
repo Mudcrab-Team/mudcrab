@@ -112,6 +112,8 @@ settings cannot survive in staged metadata or payloads.
 - LOD-V4: `--reuse-assets DIR` requires complete schema 15 through 17 source;
   retained bytes match manifest hashes; source DB plugin order/checksums
   match originals before rebuild. New disjoint output only; source unchanged.
+  Retained meshes/textures/scripts reflect source package, not later Data
+  asset replacements. Normal conversion required to refresh those assets.
   Rebuild schema-5 headers/enable state, cache, origins, chunks, R-tree,
   manifests and integration report; never default missing metadata or copy
   stale generated outputs. `metadata-rebuild.json` retains source schema,

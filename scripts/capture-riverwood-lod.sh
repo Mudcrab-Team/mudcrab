@@ -76,7 +76,6 @@ capture() {
         --benchmark-frame-times "$output/$name-frame-times.csv"
         --acceptance-screenshot "$output/$name.png"
         --screenshot-camera-offset "0,6000,8000"
-        --log-file "$output/$name-engine.log"
         --profile-output "$output/$name-profile" --profile-scenario "$name"
         --profile-run-id capture-1 --profile-commit "${provenance[0]}"
         --profile-hardware "$(cat "$output/hardware.txt")"

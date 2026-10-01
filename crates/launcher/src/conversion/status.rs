@@ -202,11 +202,12 @@ impl ConversionStatus {
         }
     }
 
-    /// Adds a notice, returning a completed result to the bounded live-notice view.
+    /// Adds a notice without discarding a completed result.
     pub fn push_notice(&mut self, line: &str) {
-        self.run_finished = false;
-        while self.notices.len() >= Self::NOTICE_LINES {
-            self.notices.pop_front();
+        if !self.run_finished {
+            while self.notices.len() >= Self::NOTICE_LINES {
+                self.notices.pop_front();
+            }
         }
         self.notices.push_back(line.to_owned());
     }
@@ -381,6 +382,14 @@ mod tests {
         assert_eq!(status.notices.iter().cloned().collect::<Vec<_>>(), lines);
         assert!(status.run_finished);
         assert!(status.started.is_none());
+        status.push_notice("Asset readiness checked.");
+        assert!(status.run_finished);
+        assert_eq!(status.notices.len(), lines.len() + 1);
+        assert_eq!(status.notices.front(), lines.first());
+        assert_eq!(
+            status.notices.back().map(String::as_str),
+            Some("Asset readiness checked.")
+        );
         status.begin_run();
         assert!(!status.run_finished);
         assert!(status.notices.is_empty());

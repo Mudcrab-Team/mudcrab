@@ -44,6 +44,7 @@ pub(super) struct LodStreaming {
     center: Option<IVec2>,
     requested_queries: HashSet<LodTier>,
     pending_queries: HashSet<LodTier>,
+    query_retries: HashMap<LodTier, (u8, Option<Instant>)>,
     chunks: HashMap<ChunkKey, LodChunkStatus>,
     pending_chunks: VecDeque<(u64, LodChunkMetadata, Option<u8>)>,
     queued_retry_chunks: HashSet<ChunkKey>,
@@ -51,6 +52,68 @@ pub(super) struct LodStreaming {
     pub(super) visibility_dirty: bool,
     visibility_camera_grid: Option<IVec2>,
     visibility_stream_radius: Option<i32>,
+}
+
+impl LodStreaming {
+    fn query_ready(&self, tier: LodTier, now: Instant) -> bool {
+        !self.requested_queries.contains(&tier)
+            && self
+                .query_retries
+                .get(&tier)
+                .is_none_or(|(_, retry_at)| retry_at.is_some_and(|deadline| now >= deadline))
+    }
+
+    fn query_submitted(&mut self, tier: LodTier) {
+        self.requested_queries.insert(tier);
+        self.pending_queries.insert(tier);
+        if let Some((count, retry_at)) = self.query_retries.get_mut(&tier) {
+            *count = count.saturating_add(1);
+            *retry_at = None;
+        }
+    }
+
+    fn query_failed(&mut self, tier: LodTier, now: Instant) {
+        self.requested_queries.remove(&tier);
+        self.pending_queries.remove(&tier);
+        let count = self.query_retries.get(&tier).map_or(0, |(count, _)| *count);
+        let retry_at = lod_retry_deadline(LodChunkFailureClass::Transient, count, now);
+        self.query_retries.insert(tier, (count, retry_at));
+    }
+
+    fn has_queued_chunks(&self) -> bool {
+        self.pending_chunks
+            .iter()
+            .any(|(generation, metadata, retry)| {
+                *generation == self.generation
+                    && (retry.is_some() || !self.chunks.contains_key(&metadata.key))
+            })
+    }
+
+    fn move_center(&mut self, center: IVec2, worldspace_id: u32) {
+        self.generation = self.generation.wrapping_add(1);
+        self.requested_queries.clear();
+        self.pending_queries.clear();
+        self.query_retries.clear();
+        self.center = Some(center);
+        self.pending_chunks.retain_mut(|(generation, metadata, _)| {
+            let keep = metadata.key.worldspace_id == worldspace_id
+                && chunk_within_radius(
+                    metadata.key,
+                    metadata.origin,
+                    (i64::from(center.x), i64::from(center.y)),
+                    query_unload_radius(),
+                );
+            if keep {
+                *generation = self.generation;
+            }
+            keep
+        });
+        self.queued_retry_chunks = self
+            .pending_chunks
+            .iter()
+            .filter_map(|(_, metadata, retry)| retry.map(|_| metadata.key))
+            .collect();
+    }
 }
 
 #[derive(Clone)]
@@ -158,6 +221,7 @@ pub(super) fn plan_lod_chunks(
     origin: Res<RenderOrigin>,
     camera: Query<&Transform, With<StreamingCamera>>,
     mut streaming: ResMut<LodStreaming>,
+    mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -171,6 +235,7 @@ pub(super) fn plan_lod_chunks(
         }
         streaming.requested_queries.clear();
         streaming.pending_queries.clear();
+        streaming.query_retries.clear();
         streaming.pending_chunks.clear();
         streaming.queued_retry_chunks.clear();
         let previous_chunks = streaming.chunks.len();
@@ -191,24 +256,18 @@ pub(super) fn plan_lod_chunks(
 
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     if streaming.center != Some(center) {
-        streaming.generation = streaming.generation.wrapping_add(1);
-        streaming.requested_queries.clear();
-        streaming.pending_queries.clear();
-        streaming.pending_chunks.clear();
-        streaming.queued_retry_chunks.clear();
-        streaming.center = Some(center);
+        streaming.move_center(center, config.worldspace_id);
     }
     let generation = streaming.generation;
     let query_radius = LOD_MAX_DISTANCE_CELLS + LOD_UNLOAD_MARGIN_CELLS;
     for tier in LodTier::ALL {
-        if streaming.requested_queries.contains(&tier) {
+        if !streaming.query_ready(tier, Instant::now()) {
             continue;
         }
         let query = query_for(config.worldspace_id, tier, center, query_radius);
         match database.request_lod_chunks(generation, query) {
             Ok(()) => {
-                streaming.requested_queries.insert(tier);
-                streaming.pending_queries.insert(tier);
+                streaming.query_submitted(tier);
                 metrics.lod_queries_submitted = metrics.lod_queries_submitted.saturating_add(1);
                 profiler.increment("lod/queries_submitted", 1);
             }
@@ -245,6 +304,10 @@ pub(super) fn plan_lod_chunks(
         .queued_retry_chunks
         .retain(|key| resident_keys.contains(key));
     enqueue_due_lod_retries(&mut streaming, Instant::now());
+    budget.reserve_for_lod(
+        streaming.has_queued_chunks(),
+        config.max_cell_commits_per_frame,
+    );
     update_counts(&streaming, &mut metrics, &mut profiler);
     profiler.record_elapsed("lod/plan", started);
 }
@@ -287,9 +350,11 @@ pub(super) fn collect_lod_chunks(
         match response.result {
             Err(error) => {
                 metrics.failed_lod_queries = metrics.failed_lod_queries.saturating_add(1);
+                streaming.query_failed(response.query.tier, Instant::now());
                 warn!(?response.query.tier, %error, "terrain LOD query failed");
             }
             Ok(chunks) => {
+                streaming.query_retries.remove(&response.query.tier);
                 if !chunks.is_empty()
                     && let Ok(mut projection) = camera_projection.single_mut()
                     && let Projection::Perspective(perspective) = &mut *projection
@@ -356,6 +421,15 @@ pub(super) fn collect_lod_chunks(
                     expected = identity,
                     actual = metadata.build_identity,
                     "terrain LOD chunk belongs to a different asset build"
+                );
+                streaming.chunks.insert(
+                    metadata.key,
+                    LodChunkStatus::Failed {
+                        origin: metadata.origin,
+                        metadata,
+                        retry_count: 0,
+                        retry_at: None,
+                    },
                 );
                 continue;
             }
@@ -1050,17 +1124,63 @@ fn update_counts(
     metrics: &mut StreamingMetrics,
     profiler: &mut ProfilingState,
 ) {
-    metrics.pending_lod_queries = streaming.pending_queries.len();
+    metrics.pending_lod_queries = streaming.pending_queries.len()
+        + if streaming.center.is_some() {
+            LodTier::ALL
+                .into_iter()
+                .filter(|tier| {
+                    !streaming.requested_queries.contains(tier)
+                        && streaming
+                            .query_retries
+                            .get(tier)
+                            .is_none_or(|(_, retry_at)| retry_at.is_some())
+                })
+                .count()
+        } else {
+            0
+        };
+    metrics.unrecovered_lod_queries = streaming
+        .query_retries
+        .iter()
+        .filter(|(tier, (_, retry_at))| {
+            retry_at.is_none() && !streaming.pending_queries.contains(tier)
+        })
+        .count();
+    metrics.unrecovered_lod_chunks = streaming
+        .chunks
+        .values()
+        .filter(|status| matches!(status, LodChunkStatus::Failed { retry_at: None, .. }))
+        .count();
     metrics.resident_lod_chunks = streaming
         .chunks
         .values()
         .filter(|status| matches!(status, LodChunkStatus::Ready { .. }))
         .count();
-    metrics.pending_lod_chunks = streaming
+    let mut pending_keys: HashSet<_> = streaming
         .chunks
-        .values()
-        .filter(|status| matches!(status, LodChunkStatus::Loading { .. }))
-        .count();
+        .iter()
+        .filter_map(|(key, status)| {
+            matches!(
+                status,
+                LodChunkStatus::Loading { .. }
+                    | LodChunkStatus::Failed {
+                        retry_at: Some(_),
+                        ..
+                    }
+            )
+            .then_some(*key)
+        })
+        .collect();
+    pending_keys.extend(
+        streaming
+            .pending_chunks
+            .iter()
+            .filter(|(generation, metadata, _)| {
+                *generation == streaming.generation && !streaming.chunks.contains_key(&metadata.key)
+            })
+            .map(|(_, metadata, _)| metadata.key),
+    );
+    metrics.pending_lod_chunks = pending_keys.len();
     profiler.set_gauge("lod/resident_chunks", metrics.resident_lod_chunks as f64);
     profiler.set_gauge("lod/pending_chunks", metrics.pending_lod_chunks as f64);
 }
@@ -1070,6 +1190,92 @@ mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn failed_queries_retry_with_bounded_backoff_in_the_same_generation() {
+        let mut streaming = LodStreaming::default();
+        let tier = LodTier::Tier4;
+        let mut now = Instant::now();
+        assert!(streaming.query_ready(tier, now));
+        for delay in [1, 2, 4] {
+            streaming.query_submitted(tier);
+            assert!(!streaming.query_ready(tier, now));
+            streaming.query_failed(tier, now);
+            assert!(!streaming.query_ready(tier, now));
+            now += Duration::from_secs(delay);
+            assert!(streaming.query_ready(tier, now));
+        }
+        streaming.query_submitted(tier);
+        streaming.query_failed(tier, now);
+        assert!(!streaming.query_ready(tier, now + Duration::from_secs(100)));
+        assert!(streaming.pending_queries.is_empty());
+        streaming.move_center(IVec2::ZERO, 1);
+        assert!(streaming.query_ready(tier, now));
+    }
+
+    #[test]
+    fn movement_retains_in_range_queued_metadata_but_discards_teleport_work() {
+        let metadata = retry_test_metadata();
+        let mut streaming = LodStreaming {
+            generation: 7,
+            center: Some(IVec2::ZERO),
+            pending_chunks: VecDeque::from([(7, metadata.clone(), None)]),
+            ..default()
+        };
+        streaming.move_center(IVec2::new(1, 0), metadata.key.worldspace_id);
+        assert_eq!(
+            streaming.pending_chunks.front(),
+            Some(&(8, metadata.clone(), None))
+        );
+        assert!(!is_current_query(&streaming, 7));
+        streaming.move_center(IVec2::new(1000, 1000), metadata.key.worldspace_id);
+        assert!(streaming.pending_chunks.is_empty());
+    }
+
+    #[test]
+    fn pending_counts_include_queued_and_retry_work_without_duplicates() {
+        let metadata = retry_test_metadata();
+        let key = metadata.key;
+        let mut streaming = LodStreaming {
+            generation: 7,
+            center: Some(IVec2::ZERO),
+            requested_queries: LodTier::ALL.into_iter().collect(),
+            pending_chunks: VecDeque::from([
+                (7, metadata.clone(), None),
+                (7, metadata.clone(), None),
+            ]),
+            ..default()
+        };
+        let mut metrics = StreamingMetrics::default();
+        let mut profiler = ProfilingState::default();
+        update_counts(&streaming, &mut metrics, &mut profiler);
+        assert_eq!(metrics.pending_lod_chunks, 1);
+        streaming.chunks.insert(
+            key,
+            LodChunkStatus::Failed {
+                origin: metadata.origin,
+                metadata,
+                retry_count: 0,
+                retry_at: Some(Instant::now() + Duration::from_secs(1)),
+            },
+        );
+        update_counts(&streaming, &mut metrics, &mut profiler);
+        assert_eq!(metrics.pending_lod_chunks, 1);
+        streaming.pending_chunks.clear();
+        streaming.query_failed(LodTier::Tier4, Instant::now());
+        update_counts(&streaming, &mut metrics, &mut profiler);
+        assert_eq!(metrics.pending_lod_queries, 1);
+        assert_eq!(metrics.pending_lod_chunks, 1);
+        if let Some(LodChunkStatus::Failed { retry_at, .. }) = streaming.chunks.get_mut(&key) {
+            *retry_at = None;
+        }
+        update_counts(&streaming, &mut metrics, &mut profiler);
+        assert_eq!(metrics.pending_lod_chunks, 0);
+        assert_eq!(metrics.unrecovered_lod_chunks, 1);
+        streaming.chunks.remove(&key);
+        update_counts(&streaming, &mut metrics, &mut profiler);
+        assert_eq!(metrics.unrecovered_lod_chunks, 0);
+    }
 
     #[test]
     fn lod_payload_hash_checks_keep_bad_and_missing_content_terminal() {

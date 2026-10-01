@@ -207,11 +207,16 @@ async fn main() -> Result<()> {
     // the process where it stands.
     let cancellation = Cancellation::new();
     let interrupt = cancellation.clone();
+    let metadata_rebuild = cli.reuse_assets.is_some();
     tokio::spawn(async move {
         let mut received = 0;
         while tokio::signal::ctrl_c().await.is_ok() {
             received += 1;
-            if received == 1 {
+            if received == 1 && metadata_rebuild {
+                eprintln!(
+                    "\nMetadata rebuild continues: it cannot cooperatively stop or resume. Press Ctrl+C again to force exit; its staging directory will require manual cleanup."
+                );
+            } else if received == 1 {
                 eprintln!(
                     "\nInterrupted: finishing the work in flight, then stopping. The staging folder is kept, so the run can be resumed."
                 );
@@ -224,6 +229,10 @@ async fn main() -> Result<()> {
     });
 
     let pipeline_result = if let Some(source) = &cli.reuse_assets {
+        eprintln!(
+            "Reusing manifest-verified package assets from {}. Retained models, textures and scripts are not refreshed from Data; use normal conversion after source asset changes.",
+            source.display()
+        );
         AssetPipeline::rebuild_metadata_async(config, source, tx)
             .await
             .map_err(converter::PipelineFailure::from)
@@ -504,28 +513,10 @@ fn validate_metadata_report_path(cli: &Cli) -> Result<()> {
     let (Some(source), Some(report)) = (&cli.reuse_assets, &cli.report_json) else {
         return Ok(());
     };
-    let parent = report
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let report = fs::canonicalize(parent)?.join(
-        report
-            .file_name()
-            .ok_or_else(|| color_eyre::eyre::eyre!("report has no file name"))?,
-    );
+    let report = shared::asset_lock::resolve_asset_path(report)
+        .wrap_err_with(|| format!("failed to resolve metadata report {}", report.display()))?;
     for root in [source, &cli.data, &cli.output] {
-        let root = if root.exists() {
-            fs::canonicalize(root)?
-        } else {
-            let parent = root
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            fs::canonicalize(parent)?.join(
-                root.file_name()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("output has no directory name"))?,
-            )
-        };
+        let root = shared::asset_lock::resolve_asset_path(root)?;
         color_eyre::eyre::ensure!(
             !report.starts_with(root),
             "metadata report must be outside source, Data, and output directories"
@@ -803,7 +794,12 @@ resumes where it stopped is printed when the run stops. A second Ctrl+C exits im
 
 converter check compares a converted output with its conversion-manifest.json without converting:
 the existence and size of every file, and with --full their hashes too. Exit code 0: all good,
-1: problems found, 2: no readable manifest. --reuse-assets rebuilds metadata from an existing asset tree."
+1: problems found, 2: no readable manifest.
+
+--reuse-assets rebuilds metadata while preserving manifest-verified assets from an existing
+package. Data supplies matching plugins, LOD settings and terrain diffuse inputs; retained
+models, textures and scripts are not refreshed from Data. Use normal conversion after
+changing those source assets. This route cannot resume or cooperatively cancel."
 }
 
 #[cfg(test)]
@@ -838,11 +834,32 @@ mod tests {
                 OsString::from("--reuse-assets"),
                 source.clone().into_os_string(),
                 OsString::from("--report-json"),
-                root.join("metadata.json").into_os_string(),
+                root.join("new/nested/metadata.json").into_os_string(),
             ])
             .unwrap();
             assert!(validate_metadata_report_path(&cli).is_err());
         }
+    }
+
+    #[test]
+    fn metadata_reports_accept_missing_disjoint_parent_without_creating_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&source).unwrap();
+        let reports = directory.path().join("new/nested");
+        let cli = parse_cli(vec![
+            data.into_os_string(),
+            directory.path().join("derived").into_os_string(),
+            OsString::from("--reuse-assets"),
+            source.into_os_string(),
+            OsString::from("--report-json"),
+            reports.join("metadata.json").into_os_string(),
+        ])
+        .unwrap();
+        validate_metadata_report_path(&cli).unwrap();
+        assert!(!reports.exists());
     }
 
     #[test]

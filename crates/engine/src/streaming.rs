@@ -161,6 +161,8 @@ struct StreamingCommitBudget {
     frame_started: Instant,
     remaining: usize,
     commits: usize,
+    lod_priority: bool,
+    reserved_for_lod: bool,
 }
 
 impl Default for StreamingCommitBudget {
@@ -169,7 +171,20 @@ impl Default for StreamingCommitBudget {
             frame_started: Instant::now(),
             remaining: 0,
             commits: 0,
+            lod_priority: false,
+            reserved_for_lod: false,
         }
+    }
+}
+
+impl StreamingCommitBudget {
+    fn reserve_for_lod(&mut self, waiting: bool, frame_limit: usize) {
+        self.reserved_for_lod = waiting && (self.lod_priority || frame_limit > 1);
+    }
+
+    fn remaining_for_cells(&self) -> usize {
+        self.remaining
+            .saturating_sub(usize::from(self.reserved_for_lod))
     }
 }
 
@@ -285,10 +300,12 @@ pub struct StreamingMetrics {
     pub lod_query_submission_failures: u64,
     pub stale_lod_query_responses: u64,
     pub failed_lod_queries: u64,
+    pub unrecovered_lod_queries: usize,
     pub pending_lod_queries: usize,
     pub lod_chunks_requested: u64,
     pub lod_chunks_ready: u64,
     pub failed_lod_chunks: u64,
+    pub unrecovered_lod_chunks: usize,
     pub resident_lod_chunks: usize,
     pub pending_lod_chunks: usize,
     pub ready_lod_terrain_patches: u64,
@@ -481,6 +498,8 @@ fn plan_cells(
     let plan_started = Instant::now();
     commit_budget.remaining = config.max_cell_commits_per_frame;
     commit_budget.commits = 0;
+    commit_budget.lod_priority = !commit_budget.lod_priority;
+    commit_budget.reserved_for_lod = false;
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -726,7 +745,7 @@ fn collect_cells(
     commit_budget.frame_started = frame_commit_started;
     let response_scan_limit = config.max_cell_commits_per_frame.saturating_mul(8).max(8);
     for _ in 0..response_scan_limit {
-        if commit_budget.remaining == 0 {
+        if commit_budget.remaining_for_cells() == 0 {
             break;
         }
         let Some(response) = database.try_response() else {
@@ -3344,6 +3363,33 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
+
+    #[test]
+    fn one_commit_budget_alternates_priority_without_starving_cells_or_lod() {
+        let mut budget = StreamingCommitBudget {
+            remaining: 1,
+            ..Default::default()
+        };
+        budget.reserve_for_lod(true, 1);
+        assert_eq!(budget.remaining_for_cells(), 1);
+        budget.lod_priority = true;
+        budget.reserve_for_lod(true, 1);
+        assert_eq!(budget.remaining_for_cells(), 0);
+        budget.reserve_for_lod(false, 1);
+        assert_eq!(budget.remaining_for_cells(), 1);
+        budget.remaining = 2;
+        budget.lod_priority = false;
+        budget.reserve_for_lod(true, 2);
+        assert_eq!(budget.remaining_for_cells(), 1);
+        budget.remaining -= 1;
+        assert_eq!(
+            budget.remaining_for_cells(),
+            0,
+            "reservation survives a near-cell commit"
+        );
+        budget.remaining = 0;
+        assert_eq!(budget.remaining_for_cells(), 0);
+    }
 
     #[test]
     fn multiple_authored_meshes_attach_to_one_fixed_body_without_nested_composites() {

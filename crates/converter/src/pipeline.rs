@@ -1990,32 +1990,41 @@ fn plugin_paths(
 }
 
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
+    archives.sort_by_cached_key(|archive| {
+        (
+            archive_load_order_priority(archive, plugins).unwrap_or(usize::MAX),
+            archive
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase(),
+        )
+    });
+}
+
+pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -> Option<usize> {
     let plugin_stems = plugins
         .iter()
         .filter_map(|path| path.file_stem())
         .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
         .collect::<Vec<_>>();
-    archives.sort_by_key(|archive| {
-        let stem = archive
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let priority = plugin_stems
-            .iter()
-            .enumerate()
-            .filter(|(_, plugin)| {
-                stem == plugin.as_str()
-                    || stem
-                        .strip_prefix(plugin.as_str())
-                        .and_then(|suffix| suffix.chars().next())
-                        .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
-            })
-            .map(|(index, _)| index)
-            .next()
-            .unwrap_or(usize::MAX);
-        (priority, stem)
-    });
+    let stem = archive
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    plugin_stems
+        .iter()
+        .enumerate()
+        .filter(|(_, plugin)| {
+            stem == plugin.as_str()
+                || stem
+                    .strip_prefix(plugin.as_str())
+                    .and_then(|suffix| suffix.chars().next())
+                    .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
+        })
+        .map(|(index, _)| index)
+        .next()
 }
 
 fn extension(path: &Path, expected: &[&str]) -> bool {
@@ -2706,7 +2715,11 @@ fn publish_directory_with_policy(staging: &Path, output: &Path, replace: bool) -
         return fs::rename(staging, output).wrap_err("failed to publish new metadata output");
     }
     recover_interrupted_publication(output)?;
-    let backup = output.with_extension(format!("backup-{}", std::process::id()));
+    let backup = output.with_file_name(format!(
+        "{}{}",
+        publication_backup_prefix(output)?,
+        std::process::id()
+    ));
     if backup.exists() {
         bail!("refusing to overwrite stale backup {}", backup.display());
     }
@@ -2766,7 +2779,7 @@ fn recover_published_output_if_missing(output: &Path) -> Result<()> {
     recover_interrupted_publication(output)
 }
 
-/// Restores the newest previous output if a process crashed after moving it
+/// Restores the newest verified complete output if a process crashed after moving it
 /// aside but before moving the staged tree into place. The caller holds the
 /// exclusive asset-directory lock throughout recovery and publication.
 fn recover_interrupted_publication(output: &Path) -> Result<()> {
@@ -2777,10 +2790,7 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let Some(stem) = output.file_stem().or_else(|| output.file_name()) else {
-        return Ok(());
-    };
-    let prefix = format!("{}.backup-", stem.to_string_lossy());
+    let prefix = publication_backup_prefix(output)?;
     let entries = fs::read_dir(parent)
         .wrap_err_with(|| {
             format!(
@@ -2792,7 +2802,8 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
     let mut backups = entries
         .into_iter()
         .filter(|entry| {
-            entry.file_name().to_string_lossy().starts_with(&prefix) && entry.path().is_dir()
+            entry.file_name().to_string_lossy().starts_with(&prefix)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
         })
         .collect::<Vec<_>>();
     backups.sort_by_key(|entry| {
@@ -2801,13 +2812,63 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
             .and_then(|metadata| metadata.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     });
-    if let Some(backup) = backups.pop() {
+    let had_backups = !backups.is_empty();
+    while let Some(backup) = backups.pop() {
+        if let Err(error) = validate_publication_backup(&backup.path()) {
+            eprintln!(
+                "leaving invalid publication backup {} untouched: {error}",
+                backup.path().display()
+            );
+            continue;
+        }
         fs::rename(backup.path(), output).wrap_err_with(|| {
             format!(
                 "failed to restore last-good assets from {}",
                 backup.path().display()
             )
         })?;
+        return Ok(());
+    }
+    ensure!(
+        !had_backups,
+        "no complete verified publication backup for {}; inspect the untouched backup directories before rebuilding",
+        output.display()
+    );
+    Ok(())
+}
+
+fn publication_backup_prefix(output: &Path) -> Result<String> {
+    let name = output
+        .file_name()
+        .ok_or_else(|| color_eyre::eyre::eyre!("publication output has no directory name"))?;
+    Ok(format!("{}.backup-", name.to_string_lossy()))
+}
+
+fn validate_publication_backup(backup: &Path) -> Result<()> {
+    let root = fs::canonicalize(backup)?;
+    for entry in WalkDir::new(&root).follow_links(false) {
+        ensure!(
+            !entry?.file_type().is_symlink(),
+            "backup contains a symlink"
+        );
+    }
+    let manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(root.join("conversion-manifest.json"))?)?;
+    ensure!(
+        manifest.complete
+            && manifest.failures.is_empty()
+            && (1..=CONVERTER_SCHEMA_VERSION).contains(&manifest.schema_version),
+        "backup has an incomplete or unsupported conversion manifest"
+    );
+    for entry in manifest.entries.values() {
+        let path = resolve_asset_uri(&root, &root.join("conversion-manifest.json"), &entry.output)?;
+        ensure!(
+            path.is_file()
+                && fs::metadata(&path)?.len() == entry.output_size
+                && hash_file(&path)? == entry.output_hash,
+            "backup output does not match its manifest: {}",
+            entry.output
+        );
     }
     Ok(())
 }
@@ -2996,11 +3057,98 @@ mod tests {
         let backup = output.with_extension("backup-12345");
         fs::create_dir_all(&backup).unwrap();
         fs::write(backup.join("sentinel"), b"last good").unwrap();
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            entries: BTreeMap::from([(
+                "sentinel".to_owned(),
+                CacheEntry {
+                    source_hash: "source".to_owned(),
+                    output: "sentinel".to_owned(),
+                    output_size: 9,
+                    output_hash: hash_file(&backup.join("sentinel")).unwrap(),
+                },
+            )]),
+            ..Default::default()
+        };
+        manifest
+            .save(&backup.join("conversion-manifest.json"))
+            .unwrap();
 
         recover_interrupted_publication(&output).unwrap();
 
         assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn recovery_preserves_unrelated_and_incomplete_backups() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern_assets");
+        let backup = output.with_extension("backup-12345");
+        fs::create_dir(&backup).unwrap();
+        fs::write(backup.join("sentinel"), b"unrelated").unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert!(!output.exists());
+        assert!(backup.join("sentinel").exists());
+        ConversionManifest::default()
+            .save(&backup.join("conversion-manifest.json"))
+            .unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert!(!output.exists());
+        assert!(backup.exists());
+    }
+
+    #[test]
+    fn dotted_output_does_not_adopt_another_outputs_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Skyrim.New");
+        let backup = directory.path().join("Skyrim.Old.backup-12345");
+        fs::create_dir(&backup).unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            ..Default::default()
+        }
+        .save(&backup.join("conversion-manifest.json"))
+        .unwrap();
+        recover_interrupted_publication(&output).unwrap();
+        assert!(!output.exists());
+        assert!(backup.exists());
+        assert_eq!(
+            publication_backup_prefix(&output).unwrap(),
+            "Skyrim.New.backup-"
+        );
+    }
+
+    #[test]
+    fn recovery_rejects_missing_or_changed_manifest_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("modern_assets");
+        let backup = output.with_extension("backup-12345");
+        fs::create_dir(&backup).unwrap();
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            entries: BTreeMap::from([(
+                "asset".to_owned(),
+                CacheEntry {
+                    source_hash: "source".to_owned(),
+                    output: "asset".to_owned(),
+                    output_size: 4,
+                    output_hash: hash_bytes(b"good"),
+                },
+            )]),
+            ..Default::default()
+        };
+        manifest
+            .save(&backup.join("conversion-manifest.json"))
+            .unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        fs::write(backup.join("asset"), b"evil").unwrap();
+        assert!(recover_interrupted_publication(&output).is_err());
+        assert!(!output.exists());
+        assert!(backup.exists());
     }
 
     #[test]

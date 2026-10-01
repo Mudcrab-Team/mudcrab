@@ -147,6 +147,14 @@ def run_postflight_validator(root):
 
 
 class CaptureRiverwoodGateTests(unittest.TestCase):
+    def test_capture_scripts_redirect_logs_without_unsupported_engine_flag(self):
+        for script in (SCRIPT, SCRIPT.with_name("capture-lod-phase1.sh")):
+            with self.subTest(script=script.name):
+                source = script.read_text(encoding="utf-8")
+                self.assertNotIn("--log-file", source)
+                self.assertIn('2>&1', source)
+                self.assertIn('$name.log', source)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

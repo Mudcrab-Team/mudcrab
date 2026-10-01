@@ -1,5 +1,11 @@
 # LOD Consolidation On Main
 
+This report records the consolidation checkpoint before the fresh release
+candidate. The later [RC handoff](lod-rc-20260930.md) supersedes its failed
+capture and no-publication status: radius-2 P95 is 14.148632 ms and both smoke
+gates pass. Broader visual, moving-camera, recovery and long-session gates
+remain open. The checkpoint evidence below is retained unchanged.
+
 Feature request: [mudcrab #103](https://github.com/realfakenerd/mudcrab/issues/103),
 assigned to `TaylorTurnerIT`.
 
