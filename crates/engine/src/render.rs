@@ -25,6 +25,7 @@ use bevy::{
     shader::ShaderRef,
 };
 use serde::Serialize;
+use shared::LAND_TEXTURE_REPEATS_PER_CELL;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -32,13 +33,6 @@ use std::sync::{
 
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
-
-// Skyrim advances LAND texture UVs by fLandTextureTilingMult / 4 per sample interval.
-// The vanilla default is 3, giving 32 intervals * (3 / 4) = 24 repeats per cell.
-// See docs/specs/rendering/landscape-texture-scale.md for sources and verification.
-// Cell UVs here span 0..1.
-// Apply this only to texture sampling, never to the LAND blend-weight grid.
-const LAND_TEXTURE_REPEATS_PER_CELL: f32 = 8.0 * 3.0;
 
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
@@ -1034,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_sampler_repeats_with_linear_mip_filtering() {
+    fn terrain_sampler_repeats_with_linear_mips_and_16x_anisotropy() {
         let sampler = terrain_layer_sampler();
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);

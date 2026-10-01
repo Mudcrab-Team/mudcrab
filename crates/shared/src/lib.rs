@@ -9,6 +9,14 @@ pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 4;
 pub const CELL_CACHE_VERSION: u32 = 3;
 pub const LAND_SIDE: u16 = 33;
 
+/// Default LAND texture repeats per full cell per axis. Skyrim advances texture UVs
+/// by `fLandTextureTilingMult / 4` per sample interval; the vanilla default is 3,
+/// so 32 intervals give `32 * (3 / 4) = 24` repeats per cell.
+/// Apply this to diffuse/normal sampling, never to the LAND blend-weight grid.
+/// See [landscape texture scale](../../../docs/specs/engine/landscape-texture-scale.md)
+/// for sources and verification.
+pub const LAND_TEXTURE_REPEATS_PER_CELL: f32 = 32.0 * (3.0 / 4.0);
+
 #[derive(Debug, Clone, Archive, Serialize, Deserialize, PartialEq)]
 #[rkyv(bytecheck())]
 pub struct TerrainLayer {

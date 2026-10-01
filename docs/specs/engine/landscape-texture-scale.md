@@ -35,6 +35,10 @@ eight is not an already-applied effective default.
 
 ## Engine mapping and limits
 
+The shared crate defines [`LAND_TEXTURE_REPEATS_PER_CELL`](../../../crates/shared/src/lib.rs)
+as `32.0 * (3.0 / 4.0)`, exactly `24.0`. The engine imports this constant;
+converter terrain LOD baking can use the same value without depending on the engine.
+
 `build_terrain_quadrant_mesh` uses full-cell UVs `x / 32, y / 32`.
 Multiplying by 24 produces the same 0.75 UV increment per interval. Adjacent
 quadrants differ by 12 whole repeats, preserving texture phase under repeat
