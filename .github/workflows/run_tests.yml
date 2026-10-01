@@ -198,6 +198,11 @@ jobs:
         with:
           clean: false
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
 
