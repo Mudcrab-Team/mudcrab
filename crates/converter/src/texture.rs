@@ -158,47 +158,9 @@ impl TextureConverter {
 
         let ktx2 =
             Self::convert_with_options(&mmap, encoding, etc1s_quality, uastc_level, zstd_level)?;
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let temporary = output.with_extension(format!("ktx2.{}.partial", std::process::id()));
-        let backup = output.with_extension(format!("ktx2.{}.backup", std::process::id()));
-        ensure!(
-            !temporary.exists() && !backup.exists(),
-            "stale texture publication file exists beside {}",
-            output.display()
-        );
-        fs::write(&temporary, &ktx2)
-            .wrap_err_with(|| format!("failed to write {}", temporary.display()))?;
-        let publish = (|| {
-            let metadata = inspect_ktx2(&ktx2, encoding)?;
-            let had_previous = output.is_file();
-            if had_previous {
-                fs::rename(output, &backup).wrap_err_with(|| {
-                    format!("failed to stage replacement for {}", output.display())
-                })?;
-            }
-            if let Err(error) = fs::rename(&temporary, output) {
-                if had_previous {
-                    let _ = fs::rename(&backup, output);
-                }
-                return Err(error)
-                    .wrap_err_with(|| format!("failed to publish {}", output.display()));
-            }
-            if had_previous {
-                fs::remove_file(&backup).wrap_err_with(|| {
-                    format!("failed to remove publication backup {}", backup.display())
-                })?;
-            }
-            Ok(metadata)
-        })();
-        if publish.is_err() {
-            let _ = fs::remove_file(&temporary);
-            if backup.is_file() && !output.is_file() {
-                let _ = fs::rename(&backup, output);
-            }
-        }
-        publish
+        let metadata = inspect_ktx2(&ktx2, encoding)?;
+        publish_ktx2_file(output, &ktx2)?;
+        Ok(metadata)
     }
 
     pub fn convert(dds_bytes: &[u8], encoding: TextureEncoding) -> Result<Vec<u8>> {
@@ -309,6 +271,57 @@ impl TextureConverter {
     }
 }
 
+/// Writes `ktx2` to `output` through a temporary file, so a crash never
+/// leaves a half-written texture there. An existing output is kept as a
+/// backup until the new one is in place and restored if publication fails.
+pub(crate) fn publish_ktx2_file(output: &Path, ktx2: &[u8]) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = output.with_extension(format!("ktx2.{}.partial", std::process::id()));
+    let backup = output.with_extension(format!("ktx2.{}.backup", std::process::id()));
+    ensure!(
+        !temporary.exists() && !backup.exists(),
+        "stale texture publication file exists beside {}",
+        output.display()
+    );
+    fs::write(&temporary, ktx2)
+        .wrap_err_with(|| format!("failed to write {}", temporary.display()))?;
+    let publish = (|| {
+        let had_previous = output.is_file();
+        if had_previous {
+            fs::rename(output, &backup).wrap_err_with(|| {
+                format!("failed to stage replacement for {}", output.display())
+            })?;
+        }
+        if let Err(error) = fs::rename(&temporary, output) {
+            if had_previous {
+                let _ = fs::rename(&backup, output);
+            }
+            return Err(error).wrap_err_with(|| format!("failed to publish {}", output.display()));
+        }
+        if had_previous {
+            fs::remove_file(&backup).wrap_err_with(|| {
+                format!("failed to remove publication backup {}", backup.display())
+            })?;
+        }
+        Ok(())
+    })();
+    if publish.is_err() {
+        let _ = fs::remove_file(&temporary);
+        if backup.is_file() && !output.is_file() {
+            let _ = fs::rename(&backup, output);
+        }
+    }
+    publish
+}
+
+/// Whether the converter copies this DDS's blocks instead of encoding them.
+/// Only the remaining textures are worth sending to the GPU encoder.
+pub(crate) fn preserves_native_blocks(dds: &Dds, encoding: TextureEncoding) -> bool {
+    native_ktx2_format(dds, encoding).is_some()
+}
+
 /// Maps a DDS to its native KTX2 `VkFormat` when the source blocks can be
 /// preserved byte-for-byte. Returns `None` for formats that must still go
 /// through the UASTC path (uncompressed sources, legacy packed pixels).
@@ -316,12 +329,6 @@ impl TextureConverter {
 /// sRGB vs linear comes from the material-slot `encoding`, never the file:
 /// FourCC BC sources carry no color-space marker, and the DXGI sRGB spellings
 /// describe the same blocks as their UNORM twins.
-/// Whether the converter copies this DDS's blocks instead of encoding them.
-/// Only the remaining textures are worth sending to the GPU encoder.
-pub(crate) fn preserves_native_blocks(dds: &Dds, encoding: TextureEncoding) -> bool {
-    native_ktx2_format(dds, encoding).is_some()
-}
-
 fn native_ktx2_format(dds: &Dds, encoding: TextureEncoding) -> Option<ktx2::Format> {
     use DxgiFormat as Dx;
     use ktx2::Format as Vk;

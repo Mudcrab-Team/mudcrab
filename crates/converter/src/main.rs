@@ -593,9 +593,9 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut resume_staging = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
-    let mut texture_backend = "cpu";
-    let mut gpu_quality = converter::texture_gpu::DEFAULT_QUALITY;
-    let mut gpu_batch_mb = converter::texture_gpu::DEFAULT_BATCH_MB;
+    let mut use_gpu = false;
+    let mut gpu_quality = None;
+    let mut gpu_batch_mb = None;
     let mut fail_fast = false;
     let mut invalidate_cache = false;
     let mut verify_cache = true;
@@ -623,18 +623,23 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             }
             Some("--texture-encoder") => {
                 let value = next_value(&mut args, "--texture-encoder")?;
-                texture_backend = match value.to_str() {
-                    Some("cpu") => "cpu",
-                    Some("gpu") => "gpu",
+                use_gpu = match value.to_str() {
+                    Some("cpu") => false,
+                    Some("gpu") => true,
                     _ => bail!("--texture-encoder must be cpu or gpu"),
                 };
             }
             Some("--gpu-quality") => {
-                gpu_quality = parse_u32(next_value(&mut args, "--gpu-quality")?, "--gpu-quality")?;
+                gpu_quality = Some(parse_u32(
+                    next_value(&mut args, "--gpu-quality")?,
+                    "--gpu-quality",
+                )?);
             }
             Some("--gpu-batch-mb") => {
-                gpu_batch_mb =
-                    parse_u64(next_value(&mut args, "--gpu-batch-mb")?, "--gpu-batch-mb")?;
+                gpu_batch_mb = Some(parse_u64(
+                    next_value(&mut args, "--gpu-batch-mb")?,
+                    "--gpu-batch-mb",
+                )?);
             }
             Some("--fail-fast") => fail_fast = true,
             Some("--invalidate-cache") => invalidate_cache = true,
@@ -648,6 +653,17 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     if positional.is_empty() || positional.len() > 2 {
         bail!(usage());
     }
+    let texture_encoder = if use_gpu {
+        TextureEncoder::Gpu {
+            quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
+            batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
+        }
+    } else {
+        if gpu_quality.is_some() || gpu_batch_mb.is_some() {
+            bail!("--gpu-quality and --gpu-batch-mb require --texture-encoder gpu");
+        }
+        TextureEncoder::Cpu
+    };
     Ok(Cli {
         data: positional.remove(0),
         output: positional
@@ -657,14 +673,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         report_json,
         cpu_jobs,
         io_jobs,
-        texture_encoder: if texture_backend == "gpu" {
-            TextureEncoder::Gpu {
-                quality: gpu_quality,
-                batch_mb: gpu_batch_mb,
-            }
-        } else {
-            TextureEncoder::Cpu
-        },
+        texture_encoder,
         fail_fast,
         invalidate_cache,
         verify_cache,
@@ -1027,6 +1036,15 @@ mod tests {
                 batch_mb: 128
             }
         );
+        // GPU settings without the GPU encoder are a mistake, not a no-op.
+        let error = parse_cli(
+            ["Data", "--gpu-quality", "3"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("--texture-encoder gpu"));
     }
 
     #[test]

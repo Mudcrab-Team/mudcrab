@@ -6,15 +6,21 @@
 //!
 //! The pipeline is built so that the GPU, not the CPU, is the limit:
 //! - Reader threads only read files and parse DDS headers
-//!   (`PreparedTexture::from_dds`). BC1/BC2/BC3 and 8-bit BGR(A/X)/RGBA data is
-//!   uploaded as stored and decoded on the GPU, so the upload is the DDS size
-//!   instead of the 4-8x larger RGBA, and no CPU time goes into decoding.
+//!   (`PreparedTexture::from_dds`). 8-bit BGR(A/X) data is uploaded as stored;
+//!   other formats are decoded to RGBA on the reader thread. Queued textures
+//!   are bounded by their bytes (`job_channel`), not their count.
 //! - One batcher thread streams each texture into a free, reusable GPU slot as
-//!   it arrives; a full slot becomes a single dispatch over every 4x4 block of
-//!   every mip and face of many unrelated textures (one GPU thread per block).
-//! - A readback thread waits for finished slots and builds/validates the KTX2
-//!   files on its own thread pool, then hands the slot back. With `SLOTS`
-//!   slots, filling, GPU work and post-processing all overlap.
+//!   it arrives; a full slot is encoded in a few dispatches over every 4x4
+//!   block of every mip and face of many unrelated textures (one GPU thread
+//!   per block), each small enough to stay clear of GPU watchdogs.
+//! - A readback thread waits for finished slots and builds the KTX2 files on
+//!   its own thread pool, then hands the slot back; writer threads validate
+//!   and hand them to the caller. With `SLOTS` slots, filling, GPU work and
+//!   post-processing all overlap.
+//!
+//! A GPU that fails (an error outside the encoder's error scopes, or a lost
+//! device) is not used again: every texture still queued, in flight or sent
+//! later comes back as an error, which callers answer with the CPU encoder.
 //!
 //! # Third-party notices
 //!
@@ -25,9 +31,6 @@
 //!   the ASTC endpoint unquantization parameters (`astc_tables.rs`), the BC7
 //!   transcode simulation (p-bit selection, weight mappings) and the mode
 //!   selection thresholds in `uastc_encode.wgsl`.
-//! - **bcdec_rs** (MIT, <https://github.com/ScanMountGoat/image_dds>, a port
-//!   of bcdec by Sergii Kudlai): the integer BC1/BC2/BC3 decoding formulas in
-//!   `uastc_encode.wgsl`, kept identical so GPU and CPU decoding agree.
 //! - **ComputeASTC** (Copyright (c) 2021 niedap, MIT,
 //!   <https://github.com/niepp/astc_encoder>): the PCA-axis-plus-projection
 //!   endpoint fit the encoder is modelled on.
@@ -43,7 +46,7 @@ use color_eyre::{
     Report, Result,
     eyre::{ensure, eyre},
 };
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use ddsfile::{Caps2, D3DFormat, Dds, Header, Header10, MiscFlag};
 use rayon::prelude::*;
 use std::{
@@ -53,58 +56,64 @@ use std::{
     ops::Range,
     path::Path,
     pin::pin,
-    sync::{Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker},
-    time::Instant,
 };
 
 const WORKGROUP_SIZE: u32 = 64;
-const MAX_GROUPS_PER_DIM: u32 = 65_535;
+/// Blocks encoded per dispatch. Each dispatch is its own submission, so no
+/// single one runs long enough to trip a GPU watchdog (TDR on Windows, the
+/// kernel driver's job timeout on Linux) on a slower GPU.
+const DISPATCH_BLOCKS: u32 = 1 << 18;
+const _: () = assert!(DISPATCH_BLOCKS / WORKGROUP_SIZE <= 65_535);
 const IMAGE_DESC_BYTES: usize = 32;
 /// Reusable upload/dispatch/readback slots; one being filled, the others on
 /// the GPU or being copied out.
 const SLOTS: usize = 3;
 /// Images a default slot has room for.
 const SLOT_IMAGES: u64 = 16 * 1024;
-/// Blocks a default slot has room for beyond its densest source (BC1, 8
-/// source bytes per block): small mips round up to whole blocks.
+/// Source bytes per 4x4 block of the densest format the shader reads (BGR8).
+const DENSEST_BLOCK_BYTES: u64 = 48;
+/// Blocks a default slot has room for beyond its densest source: small mips
+/// round up to whole blocks.
 const SLOT_SPARE_BLOCKS: u64 = 1024;
+/// Batches' worth of source bytes allowed to wait for the batcher.
+const QUEUED_BATCHES: u64 = 2;
 /// Built KTX2 bytes allowed to wait for the writer threads.
 const PENDING_WRITE_BYTES: u64 = 2 << 30;
 /// Bytes per UASTC 4x4 block.
-pub const UASTC_BLOCK_BYTES: usize = 16;
+const UASTC_BLOCK_BYTES: usize = 16;
 /// Default refinement passes; texbench measured q2 within ~0.4 dB of the CPU
 /// encoder's UASTC level 2 at ~1/130 of the time.
 pub const DEFAULT_QUALITY: u32 = 2;
-/// Source (DDS) megabytes packed into one GPU dispatch.
+/// Source (DDS) megabytes packed into one GPU batch.
 pub const DEFAULT_BATCH_MB: u64 = 256;
+/// Changes whenever the shader's output does, so cached GPU encodings from an
+/// older shader are converted again.
+const ENCODER_VERSION: u32 = 1;
+
+/// Suffix of the cache hash of textures the GPU encodes at `quality`.
+pub(crate) fn cache_label(quality: u32) -> String {
+    format!(":gpu-uastc-v{ENCODER_VERSION}-q{quality}")
+}
 
 /// How an image's bytes are stored; decoded by the shader. Values match the
 /// `FMT_*` constants in `uastc_encode.wgsl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-pub enum SourceFormat {
+enum SourceFormat {
     Rgba8 = 0,
-    Bc1 = 1,
-    Bc2 = 2,
-    Bc3 = 3,
-    Bgra8 = 4,
+    Bgra8 = 1,
     /// X8R8G8B8: alpha is forced to 255.
-    Bgrx8 = 5,
-    Bgr8 = 6,
+    Bgrx8 = 2,
+    Bgr8 = 3,
 }
 
 impl SourceFormat {
-    /// Bytes per 4x4 block for BCn, `None` for per-texel formats.
-    fn block_bytes(self) -> Option<usize> {
-        match self {
-            Self::Bc1 => Some(8),
-            Self::Bc2 | Self::Bc3 => Some(16),
-            _ => None,
-        }
-    }
-
-    /// Bytes per texel for the per-texel formats.
+    /// Bytes per texel.
     fn texel_bytes(self) -> u32 {
         match self {
             Self::Bgr8 => 3,
@@ -115,29 +124,26 @@ impl SourceFormat {
 
 /// One mip level of one face, as stored in `PreparedTexture::upload`.
 #[derive(Debug, Clone)]
-pub struct SourceImage {
-    pub width: u32,
-    pub height: u32,
-    pub format: SourceFormat,
+struct SourceImage {
+    width: u32,
+    height: u32,
+    format: SourceFormat,
     /// Byte offset in the texture's upload bytes.
-    pub offset: usize,
-    /// Bytes per texel row (per-texel formats only).
-    pub pitch: u32,
+    offset: usize,
+    /// Bytes per texel row.
+    pitch: u32,
 }
 
 impl SourceImage {
     /// Number of 4x4 blocks covering the image (partial blocks count as whole).
-    pub fn block_count(&self) -> usize {
+    fn block_count(&self) -> usize {
         self.width.div_ceil(4) as usize * self.height.div_ceil(4) as usize
     }
 
     /// Bytes the image occupies in the source data, or `None` when the size
     /// does not fit (dimensions come straight from an untrusted header).
     fn byte_len(&self) -> Option<usize> {
-        match self.format.block_bytes() {
-            Some(block) => self.block_count().checked_mul(block),
-            None => (self.pitch as usize).checked_mul(self.height as usize),
-        }
+        (self.pitch as usize).checked_mul(self.height as usize)
     }
 }
 
@@ -176,24 +182,31 @@ fn stored_layout(
 
 /// A texture ready for the GPU: its bytes as uploaded plus where each image
 /// lives in them.
-pub struct PreparedTexture {
-    pub width: u32,
-    pub height: u32,
-    pub faces: u32,
+pub(crate) struct PreparedTexture {
+    width: u32,
+    height: u32,
+    faces: u32,
     /// `images[mip * faces + face]`.
-    pub images: Vec<SourceImage>,
+    images: Vec<SourceImage>,
     bytes: Vec<u8>,
     data: Range<usize>,
 }
 
 impl PreparedTexture {
     /// Bytes to upload (the DDS payload, or RGBA for CPU-decoded formats).
-    pub fn upload(&self) -> &[u8] {
+    fn upload(&self) -> &[u8] {
         &self.bytes[self.data.clone()]
     }
 
+    /// Frees the upload bytes once they are on their way to the GPU; the
+    /// layout is all the readback needs.
+    fn release_upload(&mut self) {
+        self.bytes = Vec::new();
+        self.data = 0..0;
+    }
+
     /// Number of 4x4 blocks across every mip and face.
-    pub fn block_count(&self) -> usize {
+    fn block_count(&self) -> usize {
         self.images.iter().map(SourceImage::block_count).sum()
     }
 
@@ -201,7 +214,7 @@ impl PreparedTexture {
     /// referenced in place; anything else `image_dds` can read is decoded to
     /// RGBA on the CPU. Volumes and arrays return an error (callers use the
     /// CPU converter for them).
-    pub fn from_dds(bytes: Vec<u8>, encoding: TextureEncoding) -> Result<Self> {
+    pub(crate) fn from_dds(bytes: Vec<u8>, encoding: TextureEncoding) -> Result<Self> {
         let dds = read_header(&bytes)?;
         let faces = gpu_faces(&dds, encoding)?;
         let data_start = 4 + 124 + if dds.header10.is_some() { 20 } else { 0 };
@@ -288,7 +301,7 @@ fn gpu_faces(dds: &Dds, encoding: TextureEncoding) -> Result<u32> {
 /// checks `PreparedTexture::from_dds` applies. Natively preserved textures,
 /// volumes and arrays are not taken; an unreadable file is not either and is
 /// reported by the conversion itself.
-pub fn takes(source: &Path, encoding: TextureEncoding) -> bool {
+pub(crate) fn takes(source: &Path, encoding: TextureEncoding) -> bool {
     // 4-byte magic + 124-byte header + 20-byte DX10 extension.
     let mut header = [0u8; 148];
     let Ok(read) = File::open(source).and_then(|mut file| {
@@ -326,16 +339,14 @@ fn read_header(bytes: &[u8]) -> Result<Dds> {
     })
 }
 
-/// Formats the shader decodes, interpreted exactly as `image_dds` (and the
-/// CPU converter's X8R8G8B8 path) interpret them.
+/// Formats the shader reads as stored, interpreted exactly as `image_dds`
+/// (and the CPU converter's X8R8G8B8 path) interpret them. DXT1-DXT5 never
+/// get here: the converter always copies their blocks natively.
 fn gpu_format(dds: &Dds) -> Option<SourceFormat> {
     if dds.header10.is_some() {
         return None;
     }
     Some(match dds.get_d3d_format()? {
-        D3DFormat::DXT1 => SourceFormat::Bc1,
-        D3DFormat::DXT2 | D3DFormat::DXT3 => SourceFormat::Bc2,
-        D3DFormat::DXT4 | D3DFormat::DXT5 => SourceFormat::Bc3,
         D3DFormat::A8R8G8B8 => SourceFormat::Bgra8,
         D3DFormat::X8R8G8B8 => SourceFormat::Bgrx8,
         D3DFormat::A8B8G8R8 => SourceFormat::Rgba8,
@@ -397,9 +408,9 @@ fn decode_dds_rgba(bytes: &[u8]) -> Result<DecodedTexture> {
 
 /// A finished texture: KTX2 bytes plus their SHA-256 (already computed by
 /// the validation, so callers need not hash again).
-pub struct EncodedTexture {
-    pub bytes: Vec<u8>,
-    pub sha256: String,
+pub(crate) struct EncodedTexture {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) sha256: String,
 }
 
 /// KTX2 bytes copied out of a finished slot, not yet validated.
@@ -469,29 +480,81 @@ fn validate_ktx2(
     })
 }
 
-/// Caps the bytes of built-but-unwritten textures, so a slow disk throttles
-/// the GPU side instead of filling memory.
+/// Caps bytes in a queue, so a slow consumer throttles its producers instead
+/// of filling memory. Closing it releases every waiting producer.
 struct ByteBudget {
-    used: Mutex<u64>,
+    state: Mutex<BudgetState>,
     freed: Condvar,
     limit: u64,
 }
 
+#[derive(Default)]
+struct BudgetState {
+    used: u64,
+    closed: bool,
+}
+
 impl ByteBudget {
-    /// Blocks until `bytes` more pending bytes fit under the limit, then reserves them.
-    fn acquire(&self, bytes: u64) {
-        let mut used = self.used.lock().unwrap();
-        // Always admit one item, however large, when nothing is pending.
-        while *used > 0 && *used + bytes > self.limit {
-            used = self.freed.wait(used).unwrap();
+    fn new(limit: u64) -> Self {
+        Self {
+            state: Mutex::default(),
+            freed: Condvar::new(),
+            limit,
         }
-        *used += bytes;
+    }
+
+    /// Blocks until `bytes` more fit under the limit, then reserves them.
+    /// Returns `false`, reserving nothing, once the budget is closed.
+    fn acquire(&self, bytes: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        // Always admit one item, however large, when nothing is pending.
+        while !state.closed && state.used > 0 && state.used + bytes > self.limit {
+            state = self.freed.wait(state).unwrap();
+        }
+        if state.closed {
+            return false;
+        }
+        state.used += bytes;
+        true
     }
 
     /// Returns `bytes` to the budget and wakes waiting producers.
     fn release(&self, bytes: u64) {
-        *self.used.lock().unwrap() -= bytes;
+        self.state.lock().unwrap().used -= bytes;
         self.freed.notify_all();
+    }
+
+    /// Refuses every later `acquire` and wakes those waiting.
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.freed.notify_all();
+    }
+}
+
+/// Whether the GPU still works. Set from wgpu's callbacks, which run on
+/// whichever thread notices the failure.
+#[derive(Default)]
+struct Health {
+    failed: AtomicBool,
+    reason: Mutex<Option<String>>,
+}
+
+impl Health {
+    /// Marks the GPU as failed; the first reason is kept.
+    fn fail(&self, reason: String) {
+        self.reason.lock().unwrap().get_or_insert(reason);
+        self.failed.store(true, Ordering::Release);
+    }
+
+    fn check(&self) -> Result<()> {
+        if !self.failed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let reason = self.reason.lock().unwrap();
+        Err(eyre!(
+            "GPU stopped working: {}",
+            reason.as_deref().unwrap_or("unknown error")
+        ))
     }
 }
 
@@ -507,25 +570,26 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-pub struct GpuUastc {
+pub(crate) struct GpuUastc {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     /// Trit endpoint tables (astc_tables.rs), uploaded once.
     tables: wgpu::Buffer,
     /// 0 = fastest; each step adds an endpoint refinement pass.
-    pub quality: u32,
+    pub(crate) quality: u32,
     /// Zstandard level for the KTX2 levels (0 = stored), as the CPU path.
-    pub zstd_level: i32,
+    pub(crate) zstd_level: i32,
     /// Source bytes a slot is filled up to before it is dispatched.
-    pub batch_bytes: u64,
+    pub(crate) batch_bytes: u64,
     /// Largest buffer the device can bind; a single texture may exceed
     /// `batch_bytes` but never this.
     binding_limit: u64,
     /// Slots allocated by `new`, so a GPU that cannot provide them is known
     /// before any texture is queued; `run_batcher` takes them.
     slots: Mutex<Vec<Slot>>,
-    pub adapter_name: String,
+    health: Arc<Health>,
+    pub(crate) adapter_name: String,
 }
 
 /// Reusable GPU buffers for one batch.
@@ -582,13 +646,14 @@ impl<T> Batch<T> {
 struct InFlight<T> {
     batch: Batch<T>,
     submission: wgpu::SubmissionIndex,
-    submitted: Instant,
+    /// An error wgpu reported while the batch was recorded or submitted.
+    error: Option<String>,
 }
 
 impl GpuUastc {
     /// Opens the GPU, compiles the encoder shader and runs a warm-up dispatch. Fails when no
     /// hardware GPU is available or its buffer limits are too small; callers then use the CPU encoder.
-    pub fn new(quality: u32, batch_mb: u64) -> Result<Self> {
+    pub(crate) fn new(quality: u32, batch_mb: u64) -> Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -613,6 +678,19 @@ impl GpuUastc {
             trace: wgpu::Trace::Off,
         }))
         .map_err(|error| eyre!("cannot open GPU device: {error}"))?;
+        // wgpu's default handlers panic. Errors outside the encoder's scopes
+        // and a lost device instead retire the GPU; what it had not finished
+        // goes to the CPU encoder.
+        let health = Arc::new(Health::default());
+        device.on_uncaptured_error({
+            let health = Arc::clone(&health);
+            Arc::new(move |error| health.fail(format!("{error}")))
+        });
+        device.set_device_lost_callback({
+            let health = Arc::clone(&health);
+            move |reason, message| health.fail(format!("device lost ({reason:?}): {message}"))
+        });
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("uastc_encode"),
             source: wgpu::ShaderSource::Wgsl(include_str!("uastc_encode.wgsl").into()),
@@ -625,6 +703,9 @@ impl GpuUastc {
             compilation_options: Default::default(),
             cache: None,
         });
+        if let Some(error) = block_on(validation.pop()) {
+            return Err(eyre!("the encoder shader does not compile: {error}"));
+        }
         let table_bytes: Vec<u8> = astc_tables::shader_tables()
             .iter()
             .flat_map(|word| word.to_le_bytes())
@@ -639,12 +720,10 @@ impl GpuUastc {
         let binding_limit = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
-        // A full default slot writes 16 bytes per block for as little as 8
-        // source bytes (BC1), so its output buffer, and the readback buffer
-        // that also carries the alpha flags, are about twice its source. The
-        // batch size is capped so those fit the device limits as well.
+        // A full default slot writes 16 bytes per block for as little as 48
+        // source bytes (BGR8), so the source buffer is the largest binding.
         let slot_overhead = SLOT_SPARE_BLOCKS * UASTC_BLOCK_BYTES as u64 + SLOT_IMAGES * 4;
-        let batch_limit = binding_limit.saturating_sub(slot_overhead) / 2;
+        let batch_limit = binding_limit.saturating_sub(slot_overhead);
         ensure!(
             batch_limit >= 1 << 20,
             "the GPU's buffer size limit ({binding_limit} bytes) is too small"
@@ -660,6 +739,7 @@ impl GpuUastc {
             batch_bytes: (batch_mb << 20).clamp(1 << 20, batch_limit) & !3,
             binding_limit,
             slots: Mutex::new(Vec::new()),
+            health,
             adapter_name: format!("{} ({:?})", info.name, info.backend),
         };
         // Warm-up: surfaces shader/driver errors now and keeps driver
@@ -683,6 +763,7 @@ impl GpuUastc {
             .map_err(|(_, error)| error)?;
         let flight = gpu.dispatch(batch);
         gpu.wait(&flight)?;
+        flight.batch.slot.readback.unmap();
         let slots = (0..SLOTS)
             .map(|_| gpu.default_slot())
             .collect::<Result<Vec<_>>>()?;
@@ -691,7 +772,7 @@ impl GpuUastc {
     }
 
     /// Allocates the buffers and bind group of a slot with the given capacities. Validation and
-    /// out-of-memory failures are returned instead of reaching wgpu's panicking error handler.
+    /// out-of-memory failures are returned instead of reaching wgpu's error handler.
     fn new_slot(&self, source_cap: u64, images_cap: u64, blocks_cap: u64) -> Result<Slot> {
         let out_of_memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -769,13 +850,13 @@ impl GpuUastc {
         Ok(slots)
     }
 
-    /// A slot for a full batch. Output is sized for the densest source (BC1:
-    /// 8 source bytes per 16-byte UASTC block).
+    /// A slot for a full batch. Output is sized for the densest source (BGR8:
+    /// 48 source bytes per 16-byte UASTC block).
     fn default_slot(&self) -> Result<Slot> {
         self.new_slot(
             self.batch_bytes,
             SLOT_IMAGES,
-            self.batch_bytes / 8 + SLOT_SPARE_BLOCKS,
+            self.batch_bytes / DENSEST_BLOCK_BYTES + SLOT_SPARE_BLOCKS,
         )
     }
 
@@ -793,7 +874,7 @@ impl GpuUastc {
     fn place<T>(
         &self,
         batch: &mut Batch<T>,
-        texture: PreparedTexture,
+        mut texture: PreparedTexture,
         encoding: TextureEncoding,
         tag: T,
     ) -> std::result::Result<(), (T, Report)> {
@@ -829,6 +910,7 @@ impl GpuUastc {
         }
         let base = batch.source_len;
         write_padded(&self.queue, &batch.slot.source, base, texture.upload());
+        texture.release_upload();
         let mut first_block = batch.blocks;
         for image in &texture.images {
             let fields = [
@@ -859,57 +941,88 @@ impl GpuUastc {
         Ok(())
     }
 
-    /// Encodes every block of the batch in one dispatch. Does not wait.
+    /// Encodes every block of the batch, `DISPATCH_BLOCKS` per submission, and
+    /// queues the copy to the readback buffer. Does not wait.
     fn dispatch<T>(&self, batch: Batch<T>) -> InFlight<T> {
+        let out_of_memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let slot = &batch.slot;
         self.queue.write_buffer(&slot.descs, 0, &batch.descs);
-        let params: Vec<u8> = [batch.images as u32, batch.blocks as u32, self.quality, 0]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        self.queue.write_buffer(&slot.params, 0, &params);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("uastc_encode"),
-            });
+        let total = batch.blocks as u32;
         let alpha_bytes = (batch.images as u64 * 4).max(4);
-        encoder.clear_buffer(&slot.alpha, 0, Some(alpha_bytes));
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("uastc_encode"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &slot.bind_group, &[]);
-            let groups = (batch.blocks as u32).div_ceil(WORKGROUP_SIZE).max(1);
-            let groups_x = groups.min(MAX_GROUPS_PER_DIM);
-            pass.dispatch_workgroups(groups_x, groups.div_ceil(groups_x), 1);
-        }
-        let output_bytes = batch.blocks as u64 * UASTC_BLOCK_BYTES as u64;
-        if output_bytes > 0 {
-            encoder.copy_buffer_to_buffer(&slot.output, 0, &slot.readback, 0, output_bytes);
-        }
-        encoder.copy_buffer_to_buffer(&slot.alpha, 0, &slot.readback, output_bytes, alpha_bytes);
-        let submission = self.queue.submit([encoder.finish()]);
+        let mut base = 0u32;
+        let submission = loop {
+            let end = total.min(base.saturating_add(DISPATCH_BLOCKS));
+            // Applied before the next submission, so each one sees its own range.
+            let params: Vec<u8> = [batch.images as u32, end, self.quality, base]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            self.queue.write_buffer(&slot.params, 0, &params);
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("uastc_encode"),
+                });
+            if base == 0 {
+                encoder.clear_buffer(&slot.alpha, 0, Some(alpha_bytes));
+            }
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("uastc_encode"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &slot.bind_group, &[]);
+                pass.dispatch_workgroups((end - base).div_ceil(WORKGROUP_SIZE).max(1), 1, 1);
+            }
+            if end < total {
+                self.queue.submit([encoder.finish()]);
+                base = end;
+                continue;
+            }
+            let output_bytes = batch.blocks as u64 * UASTC_BLOCK_BYTES as u64;
+            if output_bytes > 0 {
+                encoder.copy_buffer_to_buffer(&slot.output, 0, &slot.readback, 0, output_bytes);
+            }
+            encoder.copy_buffer_to_buffer(
+                &slot.alpha,
+                0,
+                &slot.readback,
+                output_bytes,
+                alpha_bytes,
+            );
+            break self.queue.submit([encoder.finish()]);
+        };
+        // Scopes pop in reverse order of their push.
+        let errors = [block_on(validation.pop()), block_on(out_of_memory.pop())];
+        let error = errors
+            .into_iter()
+            .flatten()
+            .next()
+            .map(|error| error.to_string());
         InFlight {
             batch,
             submission,
-            submitted: Instant::now(),
+            error,
         }
     }
 
-    /// Blocks until a dispatched batch is done and its readback is mapped.
+    /// Blocks until a dispatched batch is done and its readback is mapped. On
+    /// an error nothing is left mapped and the slot can be reused.
     fn wait<T>(&self, flight: &InFlight<T>) -> Result<()> {
+        if let Some(error) = &flight.error {
+            return Err(eyre!("GPU dispatch failed: {error}"));
+        }
+        self.health.check()?;
+        let readback = &flight.batch.slot.readback;
         let (tx, rx) = std::sync::mpsc::channel();
-        flight
-            .batch
-            .slot
-            .readback
-            .slice(..flight.batch.readback_len())
-            .map_async(wgpu::MapMode::Read, move |result| {
+        readback.slice(..flight.batch.readback_len()).map_async(
+            wgpu::MapMode::Read,
+            move |result| {
                 let _ = tx.send(result);
-            });
+            },
+        );
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(flight.submission.clone()),
@@ -918,7 +1031,13 @@ impl GpuUastc {
             .map_err(|error| eyre!("GPU poll failed: {error}"))?;
         rx.recv()
             .map_err(|_| eyre!("GPU readback was dropped"))?
-            .map_err(|error| eyre!("GPU readback failed: {error}"))
+            .map_err(|error| eyre!("GPU readback failed: {error}"))?;
+        // A device lost while the batch ran leaves the readback undefined.
+        if let Err(error) = self.health.check() {
+            readback.unmap();
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
@@ -941,115 +1060,162 @@ fn write_padded(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: 
 }
 
 /// A texture queued for the GPU, with the caller's bookkeeping.
-pub struct GpuJob<T> {
-    pub texture: PreparedTexture,
-    pub encoding: TextureEncoding,
-    pub tag: T,
+pub(crate) struct GpuJob<T> {
+    pub(crate) texture: PreparedTexture,
+    pub(crate) encoding: TextureEncoding,
+    pub(crate) tag: T,
+}
+
+impl<T> GpuJob<T> {
+    fn upload_len(&self) -> u64 {
+        self.texture.upload().len() as u64
+    }
+}
+
+/// The batcher's end of `job_channel`.
+pub(crate) struct JobReceiver<T> {
+    jobs: Receiver<GpuJob<T>>,
+    budget: Arc<ByteBudget>,
+}
+
+impl<T> Drop for JobReceiver<T> {
+    fn drop(&mut self) {
+        // Senders waiting for room give up instead of waiting forever.
+        self.budget.close();
+    }
+}
+
+/// The readers' end of `job_channel`.
+pub(crate) struct JobSender<T> {
+    jobs: Sender<GpuJob<T>>,
+    budget: Arc<ByteBudget>,
+    health: Arc<Health>,
+}
+
+impl<T> JobSender<T> {
+    /// Queues a texture for the GPU, waiting while the queue holds its
+    /// limit in bytes. Hands the job back when the GPU has failed or the
+    /// batcher is gone; the caller then encodes it on the CPU.
+    pub(crate) fn send(&self, job: GpuJob<T>) -> std::result::Result<(), GpuJob<T>> {
+        if self.health.check().is_err() {
+            return Err(job);
+        }
+        let bytes = job.upload_len();
+        if !self.budget.acquire(bytes) {
+            return Err(job);
+        }
+        self.jobs.send(job).map_err(|error| {
+            self.budget.release(bytes);
+            error.into_inner()
+        })
+    }
+}
+
+/// A queue of textures for `run_batcher`, holding at most `QUEUED_BATCHES`
+/// batches' worth of source bytes.
+pub(crate) fn job_channel<T>(gpu: &GpuUastc) -> (JobSender<T>, JobReceiver<T>) {
+    let (sender, receiver) = crossbeam_channel::unbounded();
+    let budget = Arc::new(ByteBudget::new(QUEUED_BATCHES * gpu.batch_bytes));
+    (
+        JobSender {
+            jobs: sender,
+            budget: Arc::clone(&budget),
+            health: Arc::clone(&gpu.health),
+        },
+        JobReceiver {
+            jobs: receiver,
+            budget,
+        },
+    )
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct BatchStats {
-    pub batches: usize,
-    pub textures: usize,
+pub(crate) struct BatchStats {
+    pub(crate) batches: usize,
+    pub(crate) textures: usize,
     /// Bytes uploaded (DDS payloads, or RGBA for CPU-decoded formats).
-    pub source_bytes: u64,
-    /// Batcher thread: waiting for prepared textures,
-    pub wait_jobs_ms: f64,
-    /// uploading them into slots,
-    pub upload_ms: f64,
-    /// and waiting for a free slot (GPU or post-processing is behind).
-    pub wait_slot_ms: f64,
-    /// Readback thread: waiting for the GPU to finish a dispatched batch,
-    pub wait_gpu_ms: f64,
-    /// copying blocks out into KTX2 files (in parallel),
-    pub post_ms: f64,
-    /// and waiting for the writer threads (disk or `done` is behind).
-    pub wait_writers_ms: f64,
-    /// Writer threads: validation, hashing and `done` (summed thread time).
-    pub writer_ms: f64,
-    /// Summed dispatch-to-mapped time per batch; batches overlap.
-    pub gpu_ms: f64,
+    pub(crate) source_bytes: u64,
 }
 
+/// Item for the writer threads: a built KTX2, or why the texture was not encoded.
+type Pending<T> = (T, TextureEncoding, Result<BuiltKtx2>);
+
 /// Encodes every job arriving on `jobs` until all senders are dropped, and
-/// calls `done` (from post-processing threads, in any order) with each job's
-/// tag and its validated KTX2. See the module docs for the thread layout.
-pub fn run_batcher<T: Send>(
+/// calls `done` (from `threads` writer threads, in any order) with each job's
+/// tag and its validated KTX2, or the error that kept the GPU from encoding
+/// it. Once `stopped` returns true, jobs are dropped without calling `done`.
+/// See the module docs for the thread layout.
+pub(crate) fn run_batcher<T: Send>(
     gpu: &GpuUastc,
-    jobs: Receiver<GpuJob<T>>,
+    jobs: JobReceiver<T>,
+    threads: usize,
+    stopped: impl Fn() -> bool + Sync,
     done: impl Fn(T, Result<EncodedTexture>) + Sync,
 ) -> BatchStats {
-    let post_threads = std::thread::available_parallelism().map_or(4, usize::from);
+    let threads = threads.max(1);
     let post_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(post_threads)
+        .num_threads(threads)
         .thread_name(|index| format!("texture-gpu-post-{index}"))
         .build()
         .expect("texture post-processing pool");
     let (flight_tx, flight_rx) = crossbeam_channel::bounded::<InFlight<T>>(SLOTS);
     let (slot_tx, slot_rx) = crossbeam_channel::bounded::<Slot>(SLOTS);
-    let mut slots = match gpu.take_slots() {
-        Ok(slots) => slots,
-        Err(error) => {
-            // Without slots nothing can be encoded here; every job goes back with the reason.
-            for job in jobs {
-                done(job.tag, Err(eyre!("{error:#}")));
-            }
-            return BatchStats::default();
-        }
-    };
-    // One slot starts in the batcher's hands, the rest wait here.
-    let first_slot = slots.pop().expect("take_slots returns SLOTS slots");
-    for slot in slots {
-        let _ = slot_tx.send(slot);
-    }
     let stats = Mutex::new(BatchStats::default());
-    let ms = |since: Instant| since.elapsed().as_secs_f64() * 1000.0;
-    let (done, stats_ref, post_pool) = (&done, &stats, &post_pool);
-
-    let budget = ByteBudget {
-        used: Mutex::new(0),
-        freed: Condvar::new(),
-        limit: PENDING_WRITE_BYTES,
-    };
-    let budget = &budget;
-    let (write_tx, write_rx) =
-        crossbeam_channel::unbounded::<(T, TextureEncoding, Result<BuiltKtx2>)>();
+    let budget = ByteBudget::new(PENDING_WRITE_BYTES);
+    let (write_tx, write_rx) = crossbeam_channel::unbounded::<Pending<T>>();
+    let (done, stopped, stats_ref, post_pool, budget) =
+        (&done, &stopped, &stats, &post_pool, &budget);
 
     std::thread::scope(|scope| {
         // Writers: validate, hash and hand each texture to `done` (which
         // writes it), in parallel and decoupled from the GPU slots.
-        for index in 0..post_threads {
+        for index in 0..threads {
             let write_rx = write_rx.clone();
             std::thread::Builder::new()
                 .name(format!("texture-gpu-write-{index}"))
                 .spawn_scoped(scope, move || {
-                    let mut busy_ms = 0.0;
                     for (tag, encoding, built) in write_rx {
-                        let started = Instant::now();
                         let len = built.as_ref().map_or(0, |built| built.bytes.len() as u64);
-                        done(
-                            tag,
-                            built.and_then(|built| validate_ktx2(built, encoding, gpu.zstd_level)),
-                        );
+                        if !stopped() {
+                            done(
+                                tag,
+                                built.and_then(|built| {
+                                    validate_ktx2(built, encoding, gpu.zstd_level)
+                                }),
+                            );
+                        }
                         budget.release(len);
-                        busy_ms += ms(started);
                     }
-                    stats_ref.lock().unwrap().writer_ms += busy_ms;
                 })
                 .expect("spawn texture writer");
         }
         drop(write_rx);
 
+        let mut slots = match gpu.take_slots() {
+            Ok(slots) => slots,
+            Err(error) => {
+                // Without slots nothing can be encoded here; every job goes back with the reason.
+                for job in jobs.jobs.iter() {
+                    jobs.budget.release(job.upload_len());
+                    let failed = Err(eyre!("{error:#}"));
+                    let _ = write_tx.send((job.tag, job.encoding, failed));
+                }
+                return;
+            }
+        };
+        // One slot starts in the batcher's hands, the rest wait here.
+        let first_slot = slots.pop().expect("take_slots returns SLOTS slots");
+        for slot in slots {
+            let _ = slot_tx.send(slot);
+        }
+
         // Readback: wait for each batch in order, copy its blocks out into
         // KTX2 files in parallel, return the slot at once, then queue the
         // files for the writers.
+        let readback_write_tx = write_tx.clone();
         scope.spawn(move || {
             for flight in flight_rx {
-                let waiting = Instant::now();
                 let waited = gpu.wait(&flight);
-                let wait_gpu_ms = ms(waiting);
-                let gpu_ms = ms(flight.submitted);
-                let posting = Instant::now();
                 let readback_len = flight.batch.readback_len();
                 let Batch {
                     slot,
@@ -1058,7 +1224,7 @@ pub fn run_batcher<T: Send>(
                     ..
                 } = flight.batch;
                 let count = textures.len();
-                let built: Vec<(T, TextureEncoding, Result<BuiltKtx2>)> = match waited {
+                let built: Vec<Pending<T>> = match waited {
                     Ok(()) => {
                         let built = {
                             let mapped = slot.readback.slice(..readback_len).get_mapped_range();
@@ -1103,58 +1269,53 @@ pub fn run_batcher<T: Send>(
                         })
                         .collect(),
                 };
-                let post_ms = ms(posting);
                 // A slot grown for one oversized texture stays in rotation: it
                 // already exists and is within the device limits.
                 let _ = slot_tx.send(slot);
-                let queueing = Instant::now();
                 for item in built {
                     budget.acquire(item.2.as_ref().map_or(0, |built| built.bytes.len() as u64));
-                    let _ = write_tx.send(item);
+                    let _ = readback_write_tx.send(item);
                 }
                 let mut stats = stats_ref.lock().unwrap();
                 stats.batches += 1;
                 stats.textures += count;
-                stats.wait_gpu_ms += wait_gpu_ms;
-                stats.gpu_ms += gpu_ms;
-                stats.post_ms += post_ms;
-                stats.wait_writers_ms += ms(queueing);
             }
         });
 
         // Batcher: stream textures into the current slot, dispatch when full.
-        let (mut wait_jobs_ms, mut upload_ms, mut wait_slot_ms) = (0.0, 0.0, 0.0);
         let mut source_bytes = 0u64;
         let mut batch = Batch::<T>::new(first_slot);
-        loop {
-            let waiting = Instant::now();
-            let Ok(job) = jobs.recv() else {
-                break;
-            };
-            wait_jobs_ms += ms(waiting);
+        for job in jobs.jobs.iter() {
+            let bytes = job.upload_len();
+            if stopped() {
+                jobs.budget.release(bytes);
+                continue;
+            }
+            // A failed GPU takes nothing more; the writers hand the job back.
+            if let Err(error) = gpu.health.check() {
+                jobs.budget.release(bytes);
+                let _ = write_tx.send((job.tag, job.encoding, Err(error)));
+                continue;
+            }
             if !batch.textures.is_empty() && !gpu.fits(&batch, &job.texture) {
-                let waiting = Instant::now();
                 let next = slot_rx.recv().expect("readback thread returns slots");
-                wait_slot_ms += ms(waiting);
                 let full = std::mem::replace(&mut batch, Batch::new(next));
                 let _ = flight_tx.send(gpu.dispatch(full));
             }
-            let uploading = Instant::now();
-            source_bytes += job.texture.upload().len() as u64;
-            if let Err((tag, error)) = gpu.place(&mut batch, job.texture, job.encoding, job.tag) {
-                done(tag, Err(error));
+            source_bytes += bytes;
+            let encoding = job.encoding;
+            let placed = gpu.place(&mut batch, job.texture, encoding, job.tag);
+            jobs.budget.release(bytes);
+            if let Err((tag, error)) = placed {
+                let _ = write_tx.send((tag, encoding, Err(error)));
             }
-            upload_ms += ms(uploading);
         }
-        if !batch.textures.is_empty() {
+        if !batch.textures.is_empty() && !stopped() {
             let _ = flight_tx.send(gpu.dispatch(batch));
         }
         drop(flight_tx);
-        let mut stats = stats.lock().unwrap();
-        stats.wait_jobs_ms += wait_jobs_ms;
-        stats.upload_ms += upload_ms;
-        stats.wait_slot_ms += wait_slot_ms;
-        stats.source_bytes += source_bytes;
+        drop(write_tx);
+        stats.lock().unwrap().source_bytes += source_bytes;
     });
     stats.into_inner().unwrap()
 }
@@ -1199,9 +1360,9 @@ mod tests {
             .collect();
         assert_eq!(placed, [(8, 4, 0, 32), (4, 2, 128, 16), (2, 1, 160, 8)]);
         assert_eq!(len, 168);
-        // BC1 stores 8 bytes per 4x4 block, partial blocks included.
-        let (images, len) = stored_layout(SourceFormat::Bc1, 6, 6, 1, 1).unwrap();
-        assert_eq!((images[0].block_count(), len), (4, 32));
+        // BGR8 rows are 3 bytes per texel; partial blocks still count as whole.
+        let (images, len) = stored_layout(SourceFormat::Bgr8, 6, 6, 1, 1).unwrap();
+        assert_eq!((images[0].block_count(), len), (4, 108));
     }
 
     /// Sizes that overflow are reported, not wrapped: a header can claim any dimensions.
@@ -1209,7 +1370,7 @@ mod tests {
     fn stored_layout_rejects_dimensions_whose_sizes_overflow() {
         assert!(stored_layout(SourceFormat::Bgra8, u32::MAX, 1, 1, 1).is_none());
         assert!(stored_layout(SourceFormat::Bgra8, 1 << 30, u32::MAX, 1, 1).is_none());
-        assert!(stored_layout(SourceFormat::Bc3, u32::MAX, u32::MAX, 6, 1).is_none());
+        assert!(stored_layout(SourceFormat::Bgr8, u32::MAX, u32::MAX, 6, 1).is_none());
     }
 
     /// A well-formed uncompressed DDS is referenced in place, mip by mip.
@@ -1231,5 +1392,101 @@ mod tests {
             let bytes = bgra_dds(width, height, 1, 64);
             assert!(PreparedTexture::from_dds(bytes, TextureEncoding::ColorSrgb).is_err());
         }
+    }
+
+    /// The KTX2 header and data format descriptor the GPU path writes match
+    /// Basis Universal's for the same texture, so the two encoders' files are
+    /// interchangeable at runtime.
+    #[test]
+    fn ktx2_container_matches_basis_universal() {
+        let cases = [
+            (TextureEncoding::ColorSrgb, 255u8),
+            (TextureEncoding::NormalLinear, 255),
+            (TextureEncoding::DataLinear, 128),
+        ];
+        for (encoding, alpha) in cases {
+            let mut dds = bgra_dds(8, 8, 1, 8 * 8 * 4);
+            for (index, texel) in dds[128..].chunks_mut(4).enumerate() {
+                texel.copy_from_slice(&[index as u8 * 4, 64, 255 - index as u8, alpha]);
+            }
+            let cpu =
+                crate::texture::TextureConverter::convert_uncompressed(&dds, encoding).unwrap();
+            let gpu = ktx2::write_uastc(
+                8,
+                8,
+                1,
+                &[vec![0; 4 * UASTC_BLOCK_BYTES]],
+                encoding == TextureEncoding::ColorSrgb,
+                alpha != 255,
+            );
+            let dfd = |bytes: &[u8]| {
+                let index = ::ktx2::Reader::new(bytes).unwrap().header().index;
+                let start = index.dfd_byte_offset as usize;
+                bytes[start..start + index.dfd_byte_length as usize].to_vec()
+            };
+            assert_eq!(dfd(&gpu), dfd(&cpu), "{encoding:?}");
+            let (gpu_header, cpu_header) = (
+                ::ktx2::Reader::new(&gpu[..]).unwrap().header(),
+                ::ktx2::Reader::new(&cpu[..]).unwrap().header(),
+            );
+            assert_eq!(gpu_header.format, cpu_header.format);
+            assert_eq!(gpu_header.type_size, cpu_header.type_size);
+            assert_eq!(
+                (gpu_header.pixel_width, gpu_header.pixel_height),
+                (cpu_header.pixel_width, cpu_header.pixel_height)
+            );
+            assert_eq!(gpu_header.pixel_depth, cpu_header.pixel_depth);
+            assert_eq!(gpu_header.layer_count, cpu_header.layer_count);
+            assert_eq!(gpu_header.face_count, cpu_header.face_count);
+            assert_eq!(gpu_header.level_count, cpu_header.level_count);
+            inspect_ktx2(&gpu, encoding).unwrap();
+        }
+    }
+
+    /// The encoder shader parses and validates, so a broken shader fails here
+    /// rather than on the first machine with a GPU.
+    #[test]
+    fn encoder_shader_validates() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(include_str!("uastc_encode.wgsl"))
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string("uastc_encode.wgsl")));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
+
+    /// A full budget holds producers back until a release, and closing it
+    /// releases them without reserving anything.
+    #[test]
+    fn byte_budget_blocks_until_released_or_closed() {
+        let budget = ByteBudget::new(10);
+        assert!(budget.acquire(8));
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| budget.acquire(8));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(!waiting.is_finished());
+            budget.release(8);
+            assert!(waiting.join().unwrap());
+        });
+        // One item larger than the limit is still admitted when nothing waits.
+        budget.release(8);
+        assert!(budget.acquire(100));
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| budget.acquire(1));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            budget.close();
+            assert!(!waiting.join().unwrap());
+        });
+        assert!(!budget.acquire(0));
+    }
+
+    /// GPU-encoded textures get their own cache label, versioned by the shader.
+    #[test]
+    fn cache_label_names_encoder_version_and_quality() {
+        assert_eq!(cache_label(2), format!(":gpu-uastc-v{ENCODER_VERSION}-q2"));
+        assert_ne!(cache_label(2), cache_label(3));
     }
 }

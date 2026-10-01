@@ -12,7 +12,7 @@ use crate::{
     mesh::MeshConverter,
     progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
-    texture::{TextureConverter, TextureEncoding, TextureSemantic},
+    texture::{TextureConverter, TextureEncoding, TextureSemantic, publish_ktx2_file},
     texture_gpu::{self, GpuJob, GpuUastc, PreparedTexture},
 };
 use color_eyre::{
@@ -954,15 +954,22 @@ impl ConversionBatch<'_> {
             // Cache label of GPU-encoded textures (see the hash below).
             let gpu_label = gpu
                 .as_ref()
-                .map(|gpu| format!(":gpu-uastc-q{}", gpu.quality));
+                .map(|gpu| texture_gpu::cache_label(gpu.quality));
             let (gpu_sender, gpu_thread) = if let Some(gpu) = gpu {
-                let (sender, receiver) = crossbeam_channel::bounded::<GpuJob<GpuTag>>(256);
+                let (sender, receiver) = texture_gpu::job_channel::<GpuTag>(&gpu);
                 let gpu_outcomes = outcome_tx.clone();
                 let gpu_label = gpu_label.clone().unwrap_or_default();
+                let gpu_cancelled = Arc::clone(&worker_cancelled);
+                let gpu_run_cancelled = run_cancelled.clone();
+                // Like the workers, the GPU stops taking textures once the
+                // batch or the run is stopped.
+                let stopped = move || {
+                    gpu_cancelled.load(Ordering::Relaxed) || gpu_run_cancelled.is_cancelled()
+                };
                 let handle = std::thread::spawn(move || {
-                    // Called on the batcher's post-processing threads, so the
-                    // writes run in parallel.
-                    let stats = texture_gpu::run_batcher(&gpu, receiver, |tag: GpuTag, result| {
+                    // Called on the batcher's writer threads, so the writes
+                    // run in parallel.
+                    let finish = |tag: GpuTag, result: Result<texture_gpu::EncodedTexture>| {
                         let GpuTag {
                             index,
                             key,
@@ -974,7 +981,7 @@ impl ConversionBatch<'_> {
                             encoding,
                         } = tag;
                         let written = result.and_then(|encoded| {
-                            write_atomically(&target, &encoded.bytes)?;
+                            publish_ktx2_file(&target, &encoded.bytes)?;
                             Ok((encoded.bytes.len() as u64, encoded.sha256))
                         });
                         let (hash, result) = match written {
@@ -1009,7 +1016,8 @@ impl ConversionBatch<'_> {
                             .wrap_err_with(|| format!("failed to convert {}", relative.display()));
                         let _ = gpu_outcomes
                             .send((index, key, hash, target_rel, relative, result, target));
-                    });
+                    };
+                    let stats = texture_gpu::run_batcher(&gpu, receiver, cpu_jobs, stopped, finish);
                     eprintln!(
                         "GPU texture encoder: {} textures in {} batches, {:.1} GB uploaded",
                         stats.textures,
@@ -1580,18 +1588,6 @@ fn source_texture_key(runtime_key: &str) -> Result<String> {
         return Ok(format!("{stem}.ktx2"));
     }
     Ok(runtime_key.to_owned())
-}
-
-/// Writes a converted output via a temporary file, so a crash never leaves a
-/// half-written file at `target`.
-fn write_atomically(target: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let partial = target.with_extension(format!("ktx2.{}.gpu-partial", std::process::id()));
-    fs::write(&partial, bytes)
-        .wrap_err_with(|| format!("failed to write {}", partial.display()))?;
-    fs::rename(&partial, target).wrap_err_with(|| format!("failed to publish {}", target.display()))
 }
 
 fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {

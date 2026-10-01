@@ -6,10 +6,8 @@
 // the shared `blocks` output; every invocation handles exactly one block and
 // finds its image by binary search, so all blocks of the batch run in parallel.
 //
-// Decoding: `source` holds the DDS data as stored (BC1/BC2/BC3, BGRA/BGRX/BGR
-// or RGBA bytes). Each invocation decodes its own 4x4 block with the same
-// integer math as bcdec_rs (which image_dds uses on the CPU), so GPU and CPU
-// decoding agree bit for bit.
+// Decoding: `source` holds 8-bit texels as stored in the DDS (BGRA/BGRX/BGR)
+// or as RGBA decoded on the CPU. Each invocation reads its own 4x4 block.
 //
 // Bitstream layout follows basisu's unpack_uastc() (basisu_transcoder.cpp):
 // LSB-first, [mode code][hint bits][ccs][endpoints][weights]; the anchor
@@ -47,19 +45,19 @@ struct ImageDesc {
 };
 
 const FMT_RGBA8: u32 = 0u;
-const FMT_BC1: u32 = 1u;
-const FMT_BC2: u32 = 2u;
-const FMT_BC3: u32 = 3u;
-const FMT_BGRA8: u32 = 4u;
-const FMT_BGRX8: u32 = 5u;
-const FMT_BGR8: u32 = 6u;
+const FMT_BGRA8: u32 = 1u;
+const FMT_BGRX8: u32 = 2u;
+const FMT_BGR8: u32 = 3u;
 
 struct Params {
     image_count: u32,
-    total_blocks: u32,
+    // One past the last block of this dispatch.
+    block_end: u32,
     // 0 = fastest. Each step adds one least-squares endpoint refinement pass.
     quality: u32,
-    pad: u32,
+    // First block of this dispatch: a batch is encoded in several
+    // dispatches so no single one runs long enough to trip a GPU watchdog.
+    block_base: u32,
 };
 
 @group(0) @binding(0) var<storage, read> source: array<u32>;
@@ -866,125 +864,27 @@ fn rgba(r: u32, g: u32, b: u32, a: u32) -> u32 {
     return r | (g << 8u) | (b << 16u) | (a << 24u);
 }
 
-// BC1 color block palette (bcdec_rs color_block). BC2/BC3 always use the
-// four-color mode (`opaque_only`).
-fn bc_palette(addr: u32, opaque_only: bool) -> array<u32, 4> {
-    let w = src_word(addr);
-    let c0 = w & 0xFFFFu;
-    let c1 = w >> 16u;
-    let r0 = (c0 >> 11u) & 31u;
-    let g0 = (c0 >> 5u) & 63u;
-    let b0 = c0 & 31u;
-    let r1 = (c1 >> 11u) & 31u;
-    let g1 = (c1 >> 5u) & 63u;
-    let b1 = c1 & 31u;
-    var palette: array<u32, 4>;
-    palette[0] = rgba((r0 * 527u + 23u) >> 6u, (g0 * 259u + 33u) >> 6u, (b0 * 527u + 23u) >> 6u, 255u);
-    palette[1] = rgba((r1 * 527u + 23u) >> 6u, (g1 * 259u + 33u) >> 6u, (b1 * 527u + 23u) >> 6u, 255u);
-    if (c0 > c1 || opaque_only) {
-        palette[2] = rgba(((2u * r0 + r1) * 351u + 61u) >> 7u,
-                          ((2u * g0 + g1) * 2763u + 1039u) >> 11u,
-                          ((2u * b0 + b1) * 351u + 61u) >> 7u, 255u);
-        palette[3] = rgba(((r0 + 2u * r1) * 351u + 61u) >> 7u,
-                          ((g0 + 2u * g1) * 2763u + 1039u) >> 11u,
-                          ((b0 + 2u * b1) * 351u + 61u) >> 7u, 255u);
-    } else {
-        palette[2] = rgba(((r0 + r1) * 1053u + 125u) >> 8u,
-                          ((g0 + g1) * 4145u + 1019u) >> 11u,
-                          ((b0 + b1) * 1053u + 125u) >> 8u, 255u);
-        palette[3] = 0u; // transparent black
-    }
-    return palette;
-}
-
-// BC3 alpha palette (bcdec_rs smooth_alpha_block).
-fn bc3_alpha_palette(a0: u32, a1: u32) -> array<u32, 8> {
-    var alpha: array<u32, 8>;
-    alpha[0] = a0;
-    alpha[1] = a1;
-    if (a0 > a1) {
-        alpha[2] = (6u * a0 + a1 + 1u) / 7u;
-        alpha[3] = (5u * a0 + 2u * a1 + 1u) / 7u;
-        alpha[4] = (4u * a0 + 3u * a1 + 1u) / 7u;
-        alpha[5] = (3u * a0 + 4u * a1 + 1u) / 7u;
-        alpha[6] = (2u * a0 + 5u * a1 + 1u) / 7u;
-        alpha[7] = (a0 + 6u * a1 + 1u) / 7u;
-    } else {
-        alpha[2] = (4u * a0 + a1 + 1u) / 5u;
-        alpha[3] = (3u * a0 + 2u * a1 + 1u) / 5u;
-        alpha[4] = (2u * a0 + 3u * a1 + 1u) / 5u;
-        alpha[5] = (a0 + 4u * a1 + 1u) / 5u;
-        alpha[6] = 0u;
-        alpha[7] = 255u;
-    }
-    return alpha;
-}
-
 // Decodes block (bx, by) of `img` to packed RGBA texels in raster order.
 // Texels past the image edge repeat the last column/row, matching the CPU
 // path, which decodes the cropped image and then clamps.
 fn load_block(img: ImageDesc, bx: u32, by: u32) -> array<u32, 16> {
     var out: array<u32, 16>;
     let fmt = img.format;
-    if (fmt == FMT_BC1 || fmt == FMT_BC2 || fmt == FMT_BC3) {
-        let block_bytes = select(16u, 8u, fmt == FMT_BC1);
-        let addr = img.source_offset + (by * img.blocks_x + bx) * block_bytes;
-        let color_addr = select(addr + 8u, addr, fmt == FMT_BC1);
-        var palette = bc_palette(color_addr, fmt != FMT_BC1);
-        let selectors = src_word(color_addr + 4u);
-        var decoded: array<u32, 16>;
-        for (var k = 0u; k < 16u; k++) {
-            decoded[k] = palette[(selectors >> (2u * k)) & 3u];
-        }
-        if (fmt == FMT_BC2) {
-            // 4-bit explicit alpha, one 16-bit row per texel row.
-            for (var k = 0u; k < 16u; k++) {
-                let row = src_word(addr + (k >> 3u) * 4u) >> (((k >> 2u) & 1u) * 16u);
-                let a = ((row >> (4u * (k & 3u))) & 15u) * 17u;
-                decoded[k] = (decoded[k] & 0x00FFFFFFu) | (a << 24u);
-            }
-        } else if (fmt == FMT_BC3) {
-            let w0 = src_word(addr);
-            let w1 = src_word(addr + 4u);
-            var alpha = bc3_alpha_palette(w0 & 255u, (w0 >> 8u) & 255u);
-            // 48 bits of 3-bit indices start at bit 16.
-            let lo = (w0 >> 16u) | (w1 << 16u);
-            let hi = w1 >> 16u;
-            for (var k = 0u; k < 16u; k++) {
-                let pos = 3u * k;
-                var code: u32;
-                if (pos + 3u <= 32u) {
-                    code = (lo >> pos) & 7u;
-                } else if (pos >= 32u) {
-                    code = (hi >> (pos - 32u)) & 7u;
-                } else {
-                    code = ((lo >> pos) | (hi << (32u - pos))) & 7u;
-                }
-                decoded[k] = (decoded[k] & 0x00FFFFFFu) | (alpha[code] << 24u);
-            }
-        }
-        for (var i = 0u; i < 16u; i++) {
-            let x = min(bx * 4u + (i & 3u), img.width - 1u) - bx * 4u;
-            let y = min(by * 4u + (i >> 2u), img.height - 1u) - by * 4u;
-            out[i] = decoded[y * 4u + x];
-        }
-        return out;
-    }
     let bpp = select(4u, 3u, fmt == FMT_BGR8);
     for (var i = 0u; i < 16u; i++) {
         let x = min(bx * 4u + (i & 3u), img.width - 1u);
         let y = min(by * 4u + (i >> 2u), img.height - 1u);
         let addr = img.source_offset + y * img.pitch + x * bpp;
         switch (fmt) {
-            case 4u: { // BGRA8
+            case FMT_BGRA8: {
                 let w = src_word(addr);
                 out[i] = rgba((w >> 16u) & 255u, (w >> 8u) & 255u, w & 255u, w >> 24u);
             }
-            case 5u: { // BGRX8
+            case FMT_BGRX8: {
                 let w = src_word(addr);
                 out[i] = rgba((w >> 16u) & 255u, (w >> 8u) & 255u, w & 255u, 255u);
             }
-            case 6u: { // BGR8
+            case FMT_BGR8: {
                 out[i] = rgba(src_byte(addr + 2u), src_byte(addr + 1u), src_byte(addr), 255u);
             }
             default: { // RGBA8
@@ -1015,8 +915,8 @@ fn find_image(block: u32) -> u32 {
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
         @builtin(num_workgroups) groups: vec3<u32>,
         @builtin(local_invocation_index) local: u32) {
-    let block = (wg.y * groups.x + wg.x) * WORKGROUP_SIZE + local;
-    if (block >= params.total_blocks) {
+    let block = params.block_base + (wg.y * groups.x + wg.x) * WORKGROUP_SIZE + local;
+    if (block >= params.block_end) {
         return;
     }
     let img_index = find_image(block);
