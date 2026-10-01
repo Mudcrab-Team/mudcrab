@@ -1,6 +1,6 @@
 # Data Formats & Specs Reference
 
-This document outlines the binary structures of Bethesda Creation Engine files used by Mudcrab.
+This document outlines the binary structures of Bethesda Creation Engine files used by OpenSkyrim.
 
 ---
 
@@ -43,7 +43,7 @@ Skyrim master files (`Skyrim.esm`, `Dawnguard.esm`) consist of a series of **Rec
 | `version`   | `u16`         | Record version                                                       |
 | `unknown`   | `u16`         | Internal padding/flags                                               |
 
-### Key Record Types for Mudcrab
+### Key Record Types for OpenSkyrim
 
 - **`TES4`**: Master file header (contains author, description, master dependencies).
 - **`CELL`**: Interior or Exterior cell definition (world coordinates, lighting parameters).

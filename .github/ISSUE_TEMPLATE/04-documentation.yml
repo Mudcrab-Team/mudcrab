@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve Mudcrab's documentation! Please describe what is missing, unclear, or incorrect.
+        Thanks for helping improve OpenSkyrim's documentation! Please describe what is missing, unclear, or incorrect.
   - type: textarea
     id: page
     attributes:

@@ -1,6 +1,6 @@
-# Mudcrab Technical Specifications (`docs/specs/`)
+# OpenSkyrim Technical Specifications (`docs/specs/`)
 
-Comprehensive technical architecture specifications, asset converter pipelines, rendering optimizations, and modding subsystem designs for **Mudcrab**.
+Comprehensive technical architecture specifications, asset converter pipelines, rendering optimizations, and modding subsystem designs for **OpenSkyrim**.
 
 ---
 
@@ -66,6 +66,6 @@ Scripting, type definitions, UI, and launcher specifications:
 
 Project domain glossary and system benchmarks:
 
-- 📄 **[`context.md`](meta/context.md)** — Mudcrab canonical terms and domain glossary.
+- 📄 **[`context.md`](meta/context.md)** — OpenSkyrim canonical terms and domain glossary.
 - 📄 **[`platforms.md`](meta/platforms.md)** — Cross-platform target matrix (Windows, Linux, macOS, Android ARM64, WASM).
-- 📄 **[`requirements.md`](meta/requirements.md)** — Official Skyrim SE vs Mudcrab hardware system specs comparison.
+- 📄 **[`requirements.md`](meta/requirements.md)** — Official Skyrim SE vs OpenSkyrim hardware system specs comparison.

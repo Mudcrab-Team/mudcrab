@@ -11,10 +11,9 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-/// The engine's log (stdout and stderr), truncated at each launch.
 /// The engine's log (stdout and stderr) is `<prefix><launcher pid>.log` in the temp directory,
 /// truncated at each launch. The launcher's own id keeps two launchers from sharing one log.
-pub const STDERR_LOG_PREFIX: &str = "mudcrab-engine-";
+pub const STDERR_LOG_PREFIX: &str = "openskyrim-engine-";
 /// Bytes read from the end of the log when the engine stops early.
 pub const TAIL_MAX_BYTES: u64 = 8 * 1024;
 /// Log lines shown when the engine stops early.
@@ -192,7 +191,7 @@ mod tests {
     /// A file path under the temp directory unique to this test process and `name`.
     fn test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "mudcrab-launcher-test-{}-{name}",
+            "openskyrim-launcher-test-{}-{name}",
             std::process::id()
         ))
     }

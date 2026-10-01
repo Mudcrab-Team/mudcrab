@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS cells (
 
 ### C. Hybrid Spatial Indexing Architecture (Exterior vs. Interior)
 
-To prevent `float32` precision loss at large exterior coordinates (e.g. Tamriel bounds $\pm 200,000$) and avoid coordinate collisions between interior local origins $(0,0,0)$ and exterior global space, Mudcrab uses a **Two-Tier Hybrid Spatial Strategy**:
+To prevent `float32` precision loss at large exterior coordinates (e.g. Tamriel bounds $\pm 200,000$) and avoid coordinate collisions between interior local origins $(0,0,0)$ and exterior global space, OpenSkyrim uses a **Two-Tier Hybrid Spatial Strategy**:
 
 1. **Exterior Worldspace R-Tree (`exterior_spatial`):** Coordinates inside the R-Tree are stored normalized relative to the center of each $4096 \times 4096$ Skyrim cell origin, constraining bounding box values between $-2048.0$ and $+2048.0$. This guarantees high single-precision float accuracy.
 2. **Interior Cell Direct Lookup (`cell_id` Hash Index):** Interior dungeons and houses do not use R-Trees. All interior `REFR` objects are indexed directly by `cell_id` for $O(1)$ fast lookup when entering interior doors.

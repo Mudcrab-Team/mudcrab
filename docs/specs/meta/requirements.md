@@ -1,6 +1,6 @@
 # Build and Conversion Requirements
 
-What a contributor's machine spends on Mudcrab, measured on a Windows desktop with NVMe drives and
+What a contributor's machine spends on OpenSkyrim, measured on a Windows desktop with NVMe drives and
 Skyrim Special Edition with its free Creation Club content. Treat the times as a guide: they depend on the
 CPU, the disk and what else is running.
 
@@ -19,10 +19,10 @@ CPU, the disk and what else is running.
 | Item | Size or time | Notes |
 | :--- | :--- | :--- |
 | the game's `Data` folder | about 15 GB | read only; the converter never writes into it |
-| a first (fresh) conversion | about 5 hours | measured 5.1 h on a full UASTC run; desktop default preserves native BC1–BC7 blocks |
+| a first (fresh) conversion | not re-measured | the desktop default preserves native BC1–BC7 blocks, so textures take minutes; the 5.1 h figure was a full UASTC run |
 | a reconversion with unchanged inputs | about 30 minutes | converted assets are reused through `conversion-manifest.json` |
-| the converted output | about 70 GB | textures about 19 GB, the rest mostly the extracted archives (`vfs/`, `.ingestion-cache/`) |
-| free space during a reconversion | about the size of the output again | the new output is staged beside the old one and renamed over it at the end |
+| the converted output | not re-measured | only runtime artifacts are published (textures, meshes, scripts, databases, manifest); `vfs/` and `.ingestion-cache/` stay in staging; the persistent cache is `<output>.assets-cache`, hard-linked where the filesystem allows |
+| free space during a reconversion | about the size of the output again, plus the cache | the runtime pack is linked from staging and published over the old output at the end; staging is removed after a fresh run publishes |
 
 Without Skyrim, the `dummy-content` fixture (see [CONTRIBUTING](../../../CONTRIBUTING.md)) builds and
 converts a small synthetic game in a couple of minutes.
