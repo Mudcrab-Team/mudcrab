@@ -28,7 +28,7 @@ use std::{
 };
 
 const GLOW: [u8; 4] = [128, 64, 255, 128];
-const CASES: [(&str, [f32; 3], f32, bool); 8] = [
+const CASES: [(&str, [f32; 3], f32, bool); 9] = [
     ("zero", [1.0, 0.5, 0.25], 0.0, true),
     ("dim", [1.0, 0.5, 0.25], 0.25, true),
     ("unit", [1.0, 0.5, 0.25], 1.0, true),
@@ -37,6 +37,7 @@ const CASES: [(&str, [f32; 3], f32, bool); 8] = [
     ("black_glow", [0.0; 3], 2.0, true),
     ("untextured_hdr", [2.0, 0.5, 0.25], 2.0, false),
     ("own_emit_atlas", [0.0; 3], 0.0, false),
+    ("signed_tint", [1.0, -0.25, 0.5], 0.5, true),
 ];
 
 #[derive(Resource)]
@@ -237,7 +238,7 @@ fn main() {
         .resource_mut::<Assets<Image>>()
         .add(Image::new_target_texture(
             800,
-            800,
+            CASES.len() as u32 * 100,
             bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
             None,
         ));
@@ -300,7 +301,7 @@ fn render_and_capture(
         for (index, (name, color, multiple, glow)) in CASES.iter().enumerate() {
             let handle = probe.materials[index].clone();
             let loaded = materials.get(&handle).unwrap();
-            let energy = color.map(|v| v * multiple);
+            let energy = color.map(|v| v.max(0.0) * multiple);
             let actual = loaded.emissive.to_f32_array();
             let format = loaded
                 .emissive_texture
@@ -327,7 +328,7 @@ fn render_and_capture(
                 commands.spawn((
                     Mesh3d(quad.clone()),
                     MeshMaterial3d(material),
-                    Transform::from_xyz(x, 3.5 - index as f32, 0.0),
+                    Transform::from_xyz(x, (CASES.len() as f32 - 1.0) * 0.5 - index as f32, 0.0),
                 ));
             }
         }
@@ -347,7 +348,7 @@ fn render_and_capture(
             },
             Projection::Orthographic(OrthographicProjection {
                 scaling_mode: ScalingMode::FixedVertical {
-                    viewport_height: 8.0,
+                    viewport_height: CASES.len() as f32,
                 },
                 ..OrthographicProjection::default_3d()
             }),
@@ -401,7 +402,7 @@ fn evaluate(
         };
         samples.push(serde_json::json!({"case":name,"pixel_y":y,"converted_rgb":actual,"reference_rgb":expected,"max_error_u8":error}));
     }
-    let report = serde_json::json!({"kind":"converted-material-emission","retail_parity":false,"space":if probe.interior {"interior"} else {"exterior"},"legacy_emission":probe.legacy,"ev100":9.7,"tonemapping":"TonyMcMapface","glow_rgba_u8":GLOW,"resolution":[800,800],"camera":{"position":[0,0,10],"projection":"orthographic","vertical_size":8},"ambient_brightness":0,"lights":0,"tolerance_u8":2,"loader":probe.loaded,"samples":samples,"adapter":{"name":adapter.name,"driver":adapter.driver,"driver_info":adapter.driver_info},"passed":passed});
+    let report = serde_json::json!({"kind":"converted-material-emission","retail_parity":false,"space":if probe.interior {"interior"} else {"exterior"},"legacy_emission":probe.legacy,"ev100":9.7,"tonemapping":"TonyMcMapface","glow_rgba_u8":GLOW,"resolution":[800,CASES.len()*100],"camera":{"position":[0,0,10],"projection":"orthographic","vertical_size":CASES.len()},"ambient_brightness":0,"lights":0,"tolerance_u8":2,"loader":probe.loaded,"samples":samples,"adapter":{"name":adapter.name,"driver":adapter.driver,"driver_info":adapter.driver_info},"passed":passed});
     std::fs::write(
         probe.output.join("probe.json"),
         serde_json::to_vec_pretty(&report).unwrap(),

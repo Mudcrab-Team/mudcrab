@@ -490,6 +490,16 @@ fn publish_emissive(
     registry: &mut TextureRegistry,
     used_extensions: &mut BTreeSet<String>,
 ) -> Result<()> {
+    // NIF can store signed tints (including unused channels with multiplier 0).
+    // glTF emission is nonnegative. Retain raw signed values for a future native
+    // shader; keep the previous lower clamp in this compatibility projection.
+    if material.emissive_color.iter().any(|value| *value < 0.0) {
+        output["extras"]["openSkyrim"]["sourceEmission"] = serde_json::json!({
+            "color": material.emissive_color,
+            "multiple": material.emissive_multiple,
+            "representation": "negative_channels_clamped_for_gltf"
+        });
+    }
     let has_color = material.emissive_color.iter().any(|value| *value > 0.0);
     if glow.is_none() && !has_color {
         return Ok(());
@@ -497,7 +507,7 @@ fn publish_emissive(
     // glTF bounds the tint to [0, 1], but the extension preserves its authored
     // linear energy. Keep black tints black, and permit strengths below one.
     let peak = material.emissive_color.into_iter().fold(1.0_f32, f32::max);
-    let color = material.emissive_color.map(|value| value / peak);
+    let color = material.emissive_color.map(|value| value.max(0.0) / peak);
     output["emissiveFactor"] = serde_json::json!(color);
     if let Some(slot) = glow {
         output["emissiveTexture"] = serde_json::json!({
@@ -1059,17 +1069,15 @@ fn validate_material(
         )
     );
     ensure!(
-        material.emissive_color.iter().all(|value| *value >= 0.0)
-            && (material.emissive_color.into_iter().fold(1.0_f32, f32::max)
-                * material.emissive_multiple)
-                .is_finite(),
+        (material.emissive_color.into_iter().fold(1.0_f32, f32::max) * material.emissive_multiple)
+            .is_finite(),
         "{}",
         material_error(
             source,
             shape_block,
             shape_name,
             format!(
-                "shader block {} contains negative emission or overflowing emissive energy",
+                "shader block {} contains overflowing emissive energy",
                 material.shader_block
             )
         )
@@ -1270,22 +1278,58 @@ mod tests {
     }
 
     #[test]
-    fn v6_rejects_negative_tint_and_overflowing_emission_with_context() {
-        for (color, multiple) in [([-0.1, 1.0, 1.0], 1.0), ([f32::MAX; 3], 2.0)] {
-            let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
-            material.emissive_color = color;
-            material.emissive_multiple = multiple;
-            let error = validate_material(
-                Path::new("invalid-emission.nif"),
-                10,
-                Some("emitter"),
-                &material,
-            )
-            .unwrap_err();
-            let message = format!("{error:#}");
-            assert!(message.contains("invalid-emission.nif"));
-            assert!(message.contains("shape block 10"));
-            assert!(message.contains("emissive energy"));
+    fn v6_rejects_overflowing_emission_with_context() {
+        let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
+        material.emissive_color = [f32::MAX; 3];
+        material.emissive_multiple = 2.0;
+        let error = validate_material(
+            Path::new("invalid-emission.nif"),
+            10,
+            Some("emitter"),
+            &material,
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("invalid-emission.nif"));
+        assert!(message.contains("shape block 10"));
+        assert!(message.contains("emissive energy"));
+    }
+
+    #[test]
+    fn v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels() {
+        for (color, multiple) in [
+            ([1.0, -0.25, 0.5], 0.5),
+            ([-0.67, -1.0, 1.0], 0.2),
+            ([-0.1; 3], 1.5),
+            ([-1.12e38, 1.0e-39, -1.12e38], 0.0),
+        ] {
+            let mut source = fixture(NifAlphaMode::Opaque, false, false, false);
+            source.emissive_color = color;
+            source.emissive_multiple = multiple;
+            validate_material(Path::new("signed-tint.nif"), 10, None, &source).unwrap();
+            assert_eq!(source.emissive_color, color);
+            for glow in [false, true] {
+                let document = publish_emission_fixture(color, multiple, glow);
+                let material = &document["materials"][0];
+                let saved = &material["extras"]["openSkyrim"]["sourceEmission"];
+                assert_eq!(saved["color"], serde_json::json!(color));
+                assert_eq!(saved["multiple"], serde_json::json!(multiple));
+                assert_eq!(
+                    saved["representation"],
+                    "negative_channels_clamped_for_gltf"
+                );
+                let strength =
+                    material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
+                        .as_f64()
+                        .unwrap_or(1.0);
+                for (channel, value) in color.into_iter().enumerate() {
+                    let factor = material["emissiveFactor"][channel].as_f64().unwrap_or(0.0);
+                    assert!((0.0..=1.0).contains(&factor));
+                    assert!(
+                        (factor * strength - f64::from(value.max(0.0) * multiple)).abs() < 1e-6
+                    );
+                }
+            }
         }
     }
 
