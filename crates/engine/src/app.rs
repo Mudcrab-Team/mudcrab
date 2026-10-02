@@ -729,6 +729,7 @@ fn setup_material_fixture(
     }
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(0.0, 5.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -970,6 +971,7 @@ fn setup_terrain_water_fixture(
     let target = Vec3::new(CELL_SIZE_HALF, 0.0, -CELL_SIZE_HALF);
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(CELL_SIZE_HALF, 1800.0, 2600.0).looking_at(target, Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1144,6 +1146,7 @@ fn setup_transform_bounds_fixture(
         });
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(2.0, 5.5, 16.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1351,6 +1354,7 @@ fn setup_renderer_fixture(
     ));
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(0.0, 1.5, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1766,6 +1770,7 @@ fn setup_world(
     };
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
         camera_transform,
         StreamingCamera,

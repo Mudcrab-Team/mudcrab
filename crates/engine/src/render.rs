@@ -1,4 +1,5 @@
 use crate::{
+    color_pipeline::SceneColorPipeline,
     profiling::ProfilingState,
     world::{cache::TerrainSnapshot, database::AssetCatalog},
 };
@@ -6,7 +7,7 @@ use bevy::{
     app::{HierarchyPropagatePlugin, PropagateOver, PropagateSet},
     asset::embedded_asset,
     camera::{
-        RenderTarget,
+        Exposure, RenderTarget,
         primitives::{Aabb, Frustum},
         visibility::{Layer, RenderLayers, VisibilitySystems},
     },
@@ -704,12 +705,13 @@ fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Imag
     let image = images.add(Image::new_target_texture(
         1024,
         576,
-        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
-        Some(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb),
+        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        None,
     ));
     commands.insert_resource(WaterReflectionTexture(image.clone()));
     commands.spawn((
         Camera3d::default(),
+        SceneColorPipeline::reflection(),
         Camera {
             order: -1,
             // The camera is placed below the water looking up, not mirrored, so its triangles keep
@@ -739,20 +741,32 @@ type WaterReflectionObserverView = (
     &'static GlobalTransform,
     Option<&'static Frustum>,
     Option<&'static Projection>,
+    Option<&'static Exposure>,
 );
 
 fn update_water_reflection_camera(
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
-    mut reflection_camera: Query<(&mut Transform, &mut Camera), With<WaterReflectionCamera>>,
+    mut reflection_camera: Query<
+        (&mut Transform, &mut Camera, &mut Exposure),
+        With<WaterReflectionCamera>,
+    >,
     mut profiler: ResMut<ProfilingState>,
 ) {
     let started = std::time::Instant::now();
-    let (Ok((main, frustum, projection)), Ok((mut reflection, mut camera))) =
-        (main_camera.single(), reflection_camera.single_mut())
+    let (
+        Ok((main, frustum, projection, exposure)),
+        Ok((mut reflection, mut camera, mut reflection_exposure)),
+    ) = (main_camera.single(), reflection_camera.single_mut())
     else {
         return;
     };
+    // PBR lighting is already exposure-scaled when the reflection is sampled by water.
+    // Keep both views in the same domain, including explicit diagnostic exposure changes.
+    reflection_exposure.ev100 = exposure.map_or_else(
+        || SceneColorPipeline::default().exposure.ev100,
+        |value| value.ev100,
+    );
     // The surface nearest the main camera fixes the mirror plane; a further surface would put the
     // reflection at the wrong height when more than one water level is streamed in.
     let mut mirror_surface = None;
@@ -869,6 +883,7 @@ mod tests {
                         ..default()
                     },
                     Transform::default(),
+                    SceneColorPipeline::reflection(),
                     WaterReflectionCamera,
                 ))
                 .id();
@@ -942,6 +957,65 @@ mod tests {
         let world = app.world();
         assert!(world.get::<Frustum>(camera).is_some());
         assert!(world.get::<Projection>(camera).is_some());
+    }
+
+    #[test]
+    fn reflection_target_preserves_linear_hdr_until_the_main_view() {
+        use bevy::camera::Hdr;
+        use bevy::core_pipeline::tonemapping::Tonemapping;
+        use bevy::render::render_resource::TextureFormat;
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .add_systems(Startup, setup_water_reflection);
+        app.update();
+        let target = &app.world().resource::<WaterReflectionTexture>().0;
+        let image = app.world().resource::<Assets<Image>>().get(target).unwrap();
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba16Float);
+        assert!(image.texture_view_descriptor.is_none());
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<(&Hdr, &Tonemapping, &Exposure), With<WaterReflectionCamera>>();
+        let (_, tonemapping, exposure) = cameras.single(app.world()).unwrap();
+        assert_eq!(*tonemapping, Tonemapping::None);
+        assert_eq!(exposure.ev100, 9.7);
+    }
+
+    #[test]
+    fn reflection_tracks_exposure_changes_even_while_not_visible() {
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        for ev100 in [7.0, 12.0, 9.7] {
+            harness
+                .app
+                .world_mut()
+                .entity_mut(harness.main_camera)
+                .insert(Exposure { ev100 });
+            assert!(!harness.frame().active);
+            assert_eq!(
+                harness
+                    .app
+                    .world()
+                    .get::<Exposure>(harness.reflection_camera)
+                    .unwrap()
+                    .ev100,
+                ev100
+            );
+        }
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .remove::<Exposure>();
+        harness.frame();
+        assert_eq!(
+            harness
+                .app
+                .world()
+                .get::<Exposure>(harness.reflection_camera)
+                .unwrap()
+                .ev100,
+            9.7
+        );
     }
 
     #[test]

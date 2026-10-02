@@ -506,6 +506,7 @@ fn setup_physics_fixture(
 
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(0.0, 900.0, 1900.0).looking_at(Vec3::new(0.0, 0.0, -200.0), Vec3::Y),
         StreamingCamera,
     ));
