@@ -58,9 +58,10 @@ Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
 ([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)),
 which reach 12/25/91 cells. The initial terrain slice was measured and
 accepted at a 4/8/16-cell reach (`fSplitDistanceMult=1` with block distances
-16384/32768/65536); those captures predate the Skyrim defaults, and a matched
-capture at the new defaults is still owed. Pass the old values through `--ini`
-to reproduce the earlier runs.
+16384/32768/65536). The [`cb617fc0` candidate](../../research/lod-rc-20261002.md)
+was approved visually at the Skyrim defaults; performance at that reach was
+deferred and has not been measured. Pass the old values through `--ini` to
+reproduce the earlier runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
@@ -128,10 +129,13 @@ make geometry beyond that distance invisible. See the
 ## Delivery plan
 
 The initial terrain slice is implemented and delivered for scoped human
-testing. The [Fiji handoff](../../research/lod-rc-20260930.md) records source,
-asset validation, scripted captures, and unchanged performance gates. Terrain
-quality remains coarse; moving-camera, recovery, and long-session acceptance
-remain open. Launcher reporting is implemented separately from that candidate.
+testing. The latest [Fiji handoff](../../research/lod-rc-20261002.md) records
+source, asset validation and human sign-off at the Skyrim-default reach; its
+performance was deliberately not measured. The
+[earlier handoff](../../research/lod-rc-20260930.md) records scripted captures
+and unchanged performance gates at the 4/8/16-cell reach. Terrain quality
+remains coarse; performance at the new reach, moving-camera, recovery, and
+long-session acceptance remain open. Launcher reporting is implemented separately from that candidate.
 
 The table below describes full phase acceptance, not implementation status.
 A green build or completed task list does not open its dependents; each gate
