@@ -57,7 +57,7 @@ struct InitialCameraGroundHeight(f32);
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
-    configure_io_task_pool();
+    configure_io_task_pool(config.io_threads);
     let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
         let fixture = StreamingFixtureDirectory::create(config.worldspace_id, config.start_grid)?;
@@ -290,10 +290,26 @@ fn io_task_pool_builder(threads: usize) -> TaskPoolBuilder {
         .stack_size(IO_TASK_STACK_BYTES)
 }
 
-fn configure_io_task_pool() {
-    let threads = std::thread::available_parallelism()
-        .map(|count| count.get().div_ceil(4).clamp(1, 4))
+/// IO pool size for `requested` threads; `0` means automatic: a quarter of the hardware threads,
+/// at least one and at most four (16 -> 4, 8 -> 2, 4 -> 1, 64 -> 4). A requested size is used as
+/// given.
+///
+/// More threads were measured on a 16-thread machine: 8 loaded a world no faster than 4 (the
+/// ranges overlapped) and lengthened the worst frame while loading (27.5-33.6 ms against
+/// 14.7-20.4 ms, both arming 4 models a frame), so the automatic size stays as it was.
+fn io_pool_threads(requested: usize, available: usize) -> usize {
+    if requested > 0 {
+        requested
+    } else {
+        available.div_ceil(4).clamp(1, 4)
+    }
+}
+
+fn configure_io_task_pool(requested: usize) {
+    let available = std::thread::available_parallelism()
+        .map(|count| count.get())
         .unwrap_or(1);
+    let threads = io_pool_threads(requested, available);
     IoTaskPool::get_or_init(|| io_task_pool_builder(threads).build());
 }
 
@@ -2012,6 +2028,17 @@ mod tests {
     use super::*;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
+
+    #[test]
+    fn io_pool_is_a_quarter_of_the_hardware_threads_unless_requested() {
+        assert_eq!(io_pool_threads(0, 16), 4);
+        assert_eq!(io_pool_threads(0, 8), 2);
+        assert_eq!(io_pool_threads(0, 4), 1);
+        assert_eq!(io_pool_threads(0, 1), 1);
+        assert_eq!(io_pool_threads(0, 64), 4);
+        assert_eq!(io_pool_threads(6, 16), 6);
+        assert_eq!(io_pool_threads(32, 16), 32);
+    }
 
     /// The streaming fixture's own systems over its own fixture database, with no window, GPU or
     /// game data: the camera crosses exteriors, the fixture loads its interior by id, and the

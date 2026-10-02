@@ -1,6 +1,12 @@
 use bevy::prelude::Resource;
 use std::path::PathBuf;
 
+/// Most IO threads `--io-threads` accepts; `0` still asks for the automatic size. Each thread
+/// reserves 128 MiB of address space (`app::IO_TASK_STACK_BYTES`), so an unbounded count could
+/// exhaust it and make Bevy panic spawning threads. 64 is well past the 4 the automatic size
+/// uses and the 8 that were measured.
+const MAX_IO_THREADS: usize = 64;
+
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
     pub assets_dir: PathBuf,
@@ -16,6 +22,10 @@ pub struct EngineConfig {
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
     pub max_model_spawns_per_frame: usize,
+    /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
+    /// threads, at least one and at most four. A nonzero count must be at most
+    /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
+    pub io_threads: usize,
     /// MiB of newly loaded render assets (meshes, textures) the renderer may
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
@@ -69,13 +79,16 @@ impl Default for EngineConfig {
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
             max_cell_unloads_per_frame: 2,
-            // A cell holds on the order of 15 references with a model and cells commit one per
-            // frame, so 15 models is the largest batch a frame can be handed at once. Bevy
-            // instantiates a batch like that in an estimated 5-8 ms on the stress scenario, which is
-            // most of a 60 fps frame; arming 4 per frame keeps a batch near 1.5 ms and a whole
-            // cell's models armed within four frames (~67 ms at 60 fps). `0` arms the batch whole,
-            // as the engine did before this budget existed.
-            max_model_spawns_per_frame: 4,
+            // After a jump, the models of several cells are already loaded and reach the scene
+            // spawner together: on the stress scenario the backlog runs to about 2,000 models. At 4
+            // a frame that backlog took ~500 frames to clear; at 32 the world is ready 2.5x sooner
+            // with the same worst frame, because a frame hands over more of the queue without
+            // instantiating so many models at once that the frame blows past 60 fps. The limit
+            // still spreads a burst over frames; `0` arms the whole batch at once, the behaviour
+            // before this budget existed (docs/roadmap/02-profiling.md, "Load speed defaults").
+            max_model_spawns_per_frame: 32,
+            // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
+            io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
             // a cell's new textures spread over a few frames instead of landing
             // in one 13 ms upload burst, and at 60 fps the budget still admits
@@ -202,6 +215,15 @@ impl EngineConfig {
                 "--max-model-spawns-per-frame" => {
                     if let Some(value) = args.next().and_then(|value| value.parse().ok()) {
                         config.max_model_spawns_per_frame = value;
+                    }
+                }
+                // 0 keeps the automatic size; a count past the cap is refused exactly like a
+                // value that fails to parse (the setting stays at its default).
+                "--io-threads" => {
+                    if let Some(value) = args.next().and_then(|value| value.parse().ok())
+                        && value <= MAX_IO_THREADS
+                    {
+                        config.io_threads = value;
                     }
                 }
                 "--max-upload-mib-per-frame" => {
@@ -355,7 +377,8 @@ mod tests {
         assert_eq!(config.max_cell_commits_per_frame, 1);
         assert_eq!(config.max_commit_micros_per_frame, 16_670);
         assert_eq!(config.max_cell_unloads_per_frame, 2);
-        assert_eq!(config.max_model_spawns_per_frame, 4);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+        assert_eq!(config.io_threads, 0);
     }
 
     #[test]
@@ -367,6 +390,23 @@ mod tests {
         let unlimited =
             EngineConfig::from_args(["--max-model-spawns-per-frame", "0"].map(str::to_owned));
         assert_eq!(unlimited.max_model_spawns_per_frame, 0);
+    }
+
+    #[test]
+    fn parses_the_io_thread_count_and_refuses_one_past_the_cap() {
+        let config = EngineConfig::from_args(["--io-threads", "6"].map(str::to_owned));
+        assert_eq!(config.io_threads, 6);
+
+        let at_the_cap = EngineConfig::from_args(["--io-threads", "64"].map(str::to_owned));
+        assert_eq!(at_the_cap.io_threads, 64);
+
+        // 0 still asks for the automatic size.
+        let automatic = EngineConfig::from_args(["--io-threads", "0"].map(str::to_owned));
+        assert_eq!(automatic.io_threads, 0);
+
+        // Past the cap is refused like a malformed number: the default stays.
+        let past_the_cap = EngineConfig::from_args(["--io-threads", "65"].map(str::to_owned));
+        assert_eq!(past_the_cap.io_threads, 0);
     }
 
     #[test]
