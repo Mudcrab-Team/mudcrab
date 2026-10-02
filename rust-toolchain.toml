@@ -1,0 +1,5 @@
+[toolchain]
+# Upgrade deliberately after CI passes; keep workflow toolchain inputs in sync.
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -14,6 +14,7 @@ Build Skyrim-derived player movement in phases. First milestone: retain working 
 - Riverwood primary manual physics test area; primitive fixture retained for automated regression only.
 - Prototype stack: Bevy `0.19.0`; Rapier 3D `0.36.x`. Q2 reuses current Rapier controller and fixed-step integration; later replacement requires a concrete mismatch and Riverwood regression gate.
 - Linux build/test → `devenv shell` supplies Bevy Wayland pkg-config libraries.
+- Rust release upgrades deliberate: `rust-toolchain.toml`, CI toolchain inputs & `RUSTUP_TOOLCHAIN` ! same fixed version; `devenv` reads toolchain file.
 - Former P3 moves first, merged with thin WALK/tankard fixture from former P4; phases renumbered in execution order. Every collision gate uses same player capsule & dynamic tankard, not probes alone.
 - Render terrain/collision terrain share validated 33×33 quadrant geometry, transforms, & streamed lifetime.
 - Static collision source explicit per converted asset. Prefer original NIF/Havok collision for placed `STAT`/`TREE`/`FURN`; `FURN` gets no render proxy. Where unavailable, use declared render-triangle proxy only for verified `STAT`/`TREE` solids. Never use broad bounds boxes or treat all visuals as solid. Record proxy/skipped coverage.
@@ -261,3 +262,4 @@ B37|2026-09-29|record tuning and scene helper used patterns Clippy rejects under
 B38|2026-09-29|active WALK treated any downward ray miss as loading and reset fall state every tick|V69
 B39|2026-09-29|NOCLIP→WALK rejected free high-altitude capsule because ground lay beyond 400-unit cast|V70
 B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; report & database gates rejected valid package|V71
+B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings failed unchanged workspace under `-D warnings`|§C fixed Rust toolchain; restore 1.98.1

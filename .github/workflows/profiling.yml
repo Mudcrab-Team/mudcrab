@@ -14,7 +14,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
       - name: Profile synthetic renderer three times
         shell: pwsh
         run: ./scripts/phase2-profile.ps1 -Scenario synthetic -Repetitions 3 -DurationSeconds ${{ inputs.duration_seconds }}
