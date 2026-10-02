@@ -306,8 +306,11 @@ fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
 fn summary_headline(report: &PipelineReport) -> String {
     let elapsed = format_elapsed(report.elapsed_ms as f64 / 1000.0);
     let counts = format!(
-        "converted {}, reused {}, failed {}",
-        report.converted, report.cache_hits, report.skipped
+        "converted {}, reused {}, failed {}, skipped {}",
+        report.converted,
+        report.cache_hits,
+        report.warnings.len(),
+        report.skipped
     );
     if report.complete {
         format!("Conversion complete in {elapsed}: {counts}")
@@ -911,15 +914,32 @@ mod tests {
         };
         assert_eq!(
             summary_headline(&report),
-            "Conversion complete in 0:01:02.3: converted 10, reused 4, failed 0"
+            "Conversion complete in 0:01:02.3: converted 10, reused 4, failed 0, skipped 0"
         );
 
         report.skipped = 2;
+        report.warnings = vec!["bad mesh".into(), "bad texture".into()];
         report.complete = false;
         assert_eq!(
             summary_headline(&report),
-            "Conversion finished in 0:01:02.3, incomplete: converted 10, reused 4, failed 2"
+            "Conversion finished in 0:01:02.3, incomplete: converted 10, reused 4, failed 2, skipped 2"
         );
+    }
+
+    /// The headline counts integration failures even when no input was skipped, excluding notices.
+    #[test]
+    fn summary_headline_counts_integration_failures_without_skipped_inputs() {
+        let report = PipelineReport {
+            warnings: vec!["asset integration failed: 1 missing models".into()],
+            notices: vec!["nested plugins ignored".into()],
+            integration: Some(converter::IntegrationReport {
+                passed: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(report.skipped, 0);
+        assert!(summary_headline(&report).ends_with("failed 1, skipped 0"));
     }
 
     #[test]
