@@ -1,6 +1,6 @@
-# OpenSkyrim Roadmap Index
+# Mudcrab Roadmap Index
 
-Welcome to the technical roadmap for **OpenSkyrim**, an open-source engine reimplementation for *The Elder Scrolls V: Skyrim (Special Edition)* built in **Rust** using **Bevy Engine**, **Luau**, **SQLite 3**, and **WebGPU**.
+Welcome to the technical roadmap for **Mudcrab**, an open-source engine reimplementation for *The Elder Scrolls V: Skyrim (Special Edition)* built in **Rust** using **Bevy Engine**, **Luau**, **SQLite 3**, and **WebGPU**.
 
 ---
 
@@ -8,7 +8,7 @@ Welcome to the technical roadmap for **OpenSkyrim**, an open-source engine reimp
 
 ```mermaid
 timeline
-    title OpenSkyrim Master Development Timeline
+    title Mudcrab Master Development Timeline
     Phase 1 : Asset Pipeline : Storage Architecture : ESM/NIF/DDS/PEX Transpilers
     Phase 2 : Core Engine Runtime & Vercidium Renderer : Bevy 0.19 Integration : Hybrid Spatial Streaming & Indirect Rendering
     Phase 3 : Luau Scripting, UI & Modding Layer : Isolated crates/scripting VM : Bevy bsn! UI & Modder DX (.d.lua)

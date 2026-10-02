@@ -5,7 +5,7 @@ collider is considered for placed `STAT`, `TREE`, and `FURN` records. Placed
 `FURN` uses authored NIF collision only. `MISC`, `FLOR`, `DOOR`, and other
 movable or interactive records remain outside this fixed-static path.
 
-Converted GLBs now carry a versioned `openSkyrimCollision` value in scene
+Converted GLBs now carry a versioned `mudcrabCollision` value in scene
 extras. The converter follows each NIF `bhkCollisionObject` through its rigid
 body and shape references. It decodes compressed meshes, capsules, boxes,
 convex vertices, and NiTriStrips collision data. MOPP, list, and transform

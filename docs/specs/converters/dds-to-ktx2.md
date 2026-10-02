@@ -1,6 +1,6 @@
 # DDS to KTX2 Texture Conversion
 
-OpenSkyrim converts extracted Skyrim DDS assets ahead of time to KTX2 containers. Two output
+Mudcrab converts extracted Skyrim DDS assets ahead of time to KTX2 containers. Two output
 profiles exist:
 
 | Output profile | Texture policy |
@@ -90,4 +90,4 @@ Automated fixtures transcode the resulting UASTC through the desktop BC7 path an
 They verify that cutout alpha retains transparent and opaque regions, asymmetric tangent-space
 normal vectors keep X/Y orientation and Z intensity, and distinct authored mip colors/alpha remain
 in their original levels. Installed cubemap and volume fixtures can also be exercised through the
-`OPENSKYRIM_DDS_FIXTURE` and `OPENSKYRIM_VOLUME_DDS_FIXTURE` test environment variables.
+`MUDCRAB_DDS_FIXTURE` and `MUDCRAB_VOLUME_DDS_FIXTURE` test environment variables.

@@ -513,7 +513,7 @@ fn embed_collision(glb: Vec<u8>, collision: &CollisionAsset) -> Result<Vec<u8>> 
         .and_then(serde_json::Value::as_array_mut)
         .and_then(|scenes| scenes.first_mut())
         .ok_or_else(|| color_eyre::eyre::eyre!("GLB has no scene for collision metadata"))?;
-    scene["extras"]["openSkyrimCollision"] = serde_json::to_value(collision)?;
+    scene["extras"]["mudcrabCollision"] = serde_json::to_value(collision)?;
     rebuild_glb_with_document(&glb, &document)
 }
 
@@ -545,7 +545,7 @@ fn is_deferred_dynamic_mesh(path: &Path) -> bool {
 
 fn empty_scene_glb(name: &str) -> Vec<u8> {
     let mut json = serde_json::to_vec(&serde_json::json!({
-        "asset": { "version": "2.0", "generator": "OpenSkyrim converter" },
+        "asset": { "version": "2.0", "generator": "Mudcrab converter" },
         "scene": 0,
         "scenes": [{ "name": name, "nodes": [] }]
     }))
@@ -1576,11 +1576,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_NIF_FIXTURE with a locally installed Skyrim NIF"]
+    #[ignore = "requires MUDCRAB_NIF_FIXTURE with a locally installed Skyrim NIF"]
     fn converts_installed_non_renderable_nif_to_empty_scene() {
-        let path = std::env::var_os("OPENSKYRIM_NIF_FIXTURE")
+        let path = std::env::var_os("MUDCRAB_NIF_FIXTURE")
+            .or_else(|| std::env::var_os("OPENSKYRIM_NIF_FIXTURE"))
             .map(PathBuf::from)
-            .expect("set OPENSKYRIM_NIF_FIXTURE to a Skyrim NIF");
+            .expect("set MUDCRAB_NIF_FIXTURE to a Skyrim NIF");
         let diagnostics = MeshConverter::inspect_nif(&path).unwrap();
         assert_eq!(diagnostics.geometry_block_count, 0);
         assert!(
@@ -1598,11 +1599,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
+    #[ignore = "requires MUDCRAB_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
     fn static_fallback_converts_installed_nif_fixture() {
-        let path = std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE")
+        let path = std::env::var_os("MUDCRAB_STATIC_NIF_FIXTURE")
+            .or_else(|| std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE"))
             .map(PathBuf::from)
-            .expect("set OPENSKYRIM_STATIC_NIF_FIXTURE to a Skyrim NIF");
+            .expect("set MUDCRAB_STATIC_NIF_FIXTURE to a Skyrim NIF");
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("static-fallback.glb");
         MeshConverter::convert_nif_to_glb(&path, &output).unwrap();

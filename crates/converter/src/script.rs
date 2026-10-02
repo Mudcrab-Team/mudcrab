@@ -271,7 +271,7 @@ impl ScriptConverter {
 
         writeln!(
             out,
-            "-- Generated from {} by OpenSkyrim",
+            "-- Generated from {} by Mudcrab",
             pex.header.source_file
         )?;
         writeln!(

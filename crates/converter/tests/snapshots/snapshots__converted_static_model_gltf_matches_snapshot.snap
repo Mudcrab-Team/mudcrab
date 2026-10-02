@@ -169,7 +169,7 @@ expression: document
   "scenes": [
     {
       "extras": {
-        "openSkyrimCollision": {
+        "mudcrabCollision": {
           "authored": true,
           "shapes": [],
           "skipped": [],

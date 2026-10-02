@@ -1333,12 +1333,13 @@ mod tests {
     /// Reads the game install, so it is opt-in:
     /// `cargo test -p converter --lib -- --ignored`.
     #[test]
-    #[ignore = "requires OPENSKYRIM_SKYRIM_DATA with locally installed game assets"]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
     fn lights_of_the_real_plugin_decode_through_export() {
         use std::collections::HashSet;
-        let data_dir = std::env::var_os("OPENSKYRIM_SKYRIM_DATA")
+        let data_dir = std::env::var_os("MUDCRAB_SKYRIM_DATA")
+            .or_else(|| std::env::var_os("OPENSKYRIM_SKYRIM_DATA"))
             .map(std::path::PathBuf::from)
-            .expect("set OPENSKYRIM_SKYRIM_DATA to the Skyrim Data directory");
+            .expect("set MUDCRAB_SKYRIM_DATA to the Skyrim Data directory");
         let plugin = data_dir.join("Skyrim.esm");
         assert!(plugin.is_file(), "no Skyrim.esm at {}", plugin.display());
         let records = crate::esm::binary::parse_plugin_file(&plugin).unwrap();
