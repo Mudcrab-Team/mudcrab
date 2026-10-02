@@ -964,7 +964,9 @@ mod tests {
             let decoded = decode_vhgt(&heights);
             let _ = decode_normals(&normals, &decoded);
             let _ = decode_normals(&[], &decoded);
-            let _ = extract_texture_layers(&crate::esm::extractors::extract_subrecords(&subrecords));
+            if let Ok(decoded) = crate::esm::extractors::extract_subrecords(&subrecords) {
+                let _ = extract_texture_layers(&decoded);
+            }
         }
     }
 }
