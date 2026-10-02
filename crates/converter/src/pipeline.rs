@@ -1593,8 +1593,13 @@ fn plugin_paths(
         // The caller forwards notices on the progress channel; printing here would splice
         // into the CLI's status line.
         notices.push(format!(
-            "found {} plugin files, but none directly in {}; plugins in subfolders are ignored",
+            "found {} plugin {}, but none directly in {}; plugins in subfolders are ignored",
             discovered.len(),
+            if discovered.len() == 1 {
+                "file"
+            } else {
+                "files"
+            },
             config.data_dir.display()
         ));
     }

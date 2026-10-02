@@ -66,17 +66,23 @@ impl EsmParser {
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
         let mut game_settings = GameSettingIdentities::default();
-        let truncations = LightIdWarnings::default();
+        let warnings = RemapWarnings::default();
         for (priority, path) in plugin_paths.iter().enumerate() {
+            let masters = &order.metadata[priority].masters;
+            // Final ID -> (source ID, whether its master index was out of range). Two different
+            // source IDs that resolve to one final ID would silently replace each other.
+            let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
             for mut record in parse_plugin_file(path)? {
                 record.load_order = priority as u32;
+                let source_id = record.form_id;
+                let out_of_range = (source_id >> 24) as usize > masters.len();
                 remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
-                    &order.metadata[priority].masters,
+                    masters,
                     &order.normal,
                     &order.light,
-                    &truncations,
+                    &warnings,
                 )
                 .wrap_err_with(|| {
                     format!(
@@ -86,6 +92,18 @@ impl EsmParser {
                         record.form_id
                     )
                 })?;
+                if let Some((earlier, earlier_out_of_range)) =
+                    sources.insert(record.form_id, (source_id, out_of_range))
+                {
+                    // Light-ID truncation keeps its documented last-record-wins behaviour; only
+                    // an out-of-range master index is rejected when it lands on another record.
+                    color_eyre::eyre::ensure!(
+                        earlier == source_id || !(out_of_range || earlier_out_of_range),
+                        "{}: records {earlier:08X} and {source_id:08X} both resolve to {:08X}; an out-of-range master index would replace another record",
+                        order.names[priority],
+                        record.form_id
+                    );
+                }
                 if record.record_type == *b"GMST" {
                     let Some(canonical) =
                         game_settings.resolve(&record, &order.names[priority], &merged)?
@@ -107,29 +125,53 @@ impl EsmParser {
                 }
             }
         }
-        truncations.report();
+        warnings.report();
         Ok(merged)
     }
 }
 
-/// Count truncated ID occurrences (including references) by owning plugin.
-/// Retain one example, so memory and log volume scale with plugins, not records.
-#[derive(Default)]
-struct LightIdWarnings(RefCell<BTreeMap<String, (u64, u32)>>);
+/// Per-plugin count of out-of-range master indices, with the first ID and its record type.
+type OutOfRangeCounts = BTreeMap<String, (u64, u32, [u8; 4])>;
 
-impl LightIdWarnings {
+/// Remap diagnostics counted per plugin (including references), each keeping its first
+/// example, so memory and log volume scale with plugins, not records.
+#[derive(Default)]
+struct RemapWarnings {
+    /// Light-plugin local IDs wider than 12 bits, keyed by owning plugin.
+    truncations: RefCell<BTreeMap<String, (u64, u32)>>,
+    /// IDs whose master index lies past the plugin's master list, keyed by the plugin that
+    /// contains them; the example keeps its record type.
+    out_of_range: RefCell<OutOfRangeCounts>,
+}
+
+impl RemapWarnings {
     /// Accumulate one truncation without emitting a per-reference diagnostic.
-    fn record(&self, owner: &str, form_id: u32) {
-        let mut counts = self.0.borrow_mut();
+    fn truncated(&self, owner: &str, form_id: u32) {
+        let mut counts = self.truncations.borrow_mut();
         let entry = counts.entry(owner.to_owned()).or_insert((0, form_id));
+        entry.0 += 1;
+    }
+
+    /// Accumulate one ID that names a master the plugin does not have.
+    fn out_of_range(&self, plugin: &str, form_id: u32, record_type: [u8; 4]) {
+        let mut counts = self.out_of_range.borrow_mut();
+        let entry = counts
+            .entry(plugin.to_owned())
+            .or_insert((0, form_id, record_type));
         entry.0 += 1;
     }
 
     /// Emit one deterministic summary per affected plugin after a successful merge.
     fn report(&self) {
-        for (owner, (count, example)) in self.0.borrow().iter() {
+        for (owner, (count, example)) in self.truncations.borrow().iter() {
             eprintln!(
                 "warning: {owner}: {count} light-plugin ID occurrences exceeded 12 bits and were truncated (first: {example:08X}); compact the plugin's FormIDs before ESL-flagging it"
+            );
+        }
+        for (plugin, (count, example, record_type)) in self.out_of_range.borrow().iter() {
+            eprintln!(
+                "warning: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
+                String::from_utf8_lossy(record_type)
             );
         }
     }
@@ -277,7 +319,7 @@ fn remap_record_form_ids(
     masters: &[String],
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
-    truncations: &LightIdWarnings,
+    warnings: &RemapWarnings,
 ) -> Result<()> {
     // Enforce strict reference validation for landscape and grass record kinds.
     // Preserve legacy handling elsewhere until their record-specific exceptions
@@ -286,6 +328,7 @@ fn remap_record_form_ids(
         &record.record_type,
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
     );
+    let record_type = record.record_type;
     let remap = |form_id: u32| -> Result<u32> {
         if form_id == 0 {
             return Ok(0);
@@ -295,6 +338,12 @@ fn remap_record_form_ids(
             !strict || local_index <= masters.len(),
             "{plugin_name}: {form_id:08X} has invalid master index {local_index}"
         );
+        if local_index > masters.len() {
+            // Treated as the plugin's own, which shipped data relies on (Skyrim.esm and
+            // Dawnguard.esm each carry one such ID). Reported, and the merge rejects it when
+            // it would replace another record.
+            warnings.out_of_range(plugin_name, form_id, record_type);
+        }
         let owner = if local_index < masters.len() {
             masters[local_index].to_ascii_lowercase()
         } else {
@@ -306,7 +355,7 @@ fn remap_record_form_ids(
                     !strict,
                     "{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"
                 );
-                truncations.record(&owner, form_id);
+                warnings.truncated(&owner, form_id);
             }
             return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));
         }
@@ -401,7 +450,7 @@ mod tests {
             &["skyrim.esm".to_string()],
             &normal_indices,
             &HashMap::new(),
-            &LightIdWarnings::default(),
+            &RemapWarnings::default(),
         )
         .unwrap();
         assert_eq!(race.form_id, 0x0301_3746);
@@ -434,7 +483,7 @@ mod tests {
             &[],
             &normal_indices,
             &light_indices,
-            &LightIdWarnings::default(),
+            &RemapWarnings::default(),
         )
         .unwrap();
         assert_eq!(tes4.subrecords[0].1, b"Bethesda Game Studios\0");
@@ -455,7 +504,7 @@ mod tests {
             &[],
             &normal_indices,
             &light_indices,
-            &LightIdWarnings::default(),
+            &RemapWarnings::default(),
         )
         .unwrap();
         assert_eq!(clfm.subrecords[0].1, vec![128, 64, 32, 255]);
@@ -485,7 +534,7 @@ mod tests {
             &["skyrim.esm".to_string()],
             &normal_indices,
             &light_indices,
-            &LightIdWarnings::default(),
+            &RemapWarnings::default(),
         )
         .unwrap();
         assert_eq!(

@@ -456,3 +456,48 @@ fn stable_identity_uses_independent_full_and_light_slot_indexes() {
     order.light.remove("light.esl");
     assert!(order.identity(0xfe000800).is_err());
 }
+
+/// A master index past the plugin's master list is treated as the plugin's own, as shipped
+/// data relies on (Skyrim.esm and Dawnguard.esm each carry one such ID), so a lone one
+/// still converts.
+#[test]
+fn out_of_range_master_index_resolves_to_the_plugin_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = plugin(
+        dir.path(),
+        "Masterless.esm",
+        &[],
+        1,
+        record(b"STAT", 0x0200_0800, 0, sub(b"EDID", b"Stray\0")),
+    );
+    let merged = EsmParser::merge_plugins(&[path]).unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[&0x0000_0800].subrecords[0].1, b"Stray\0");
+}
+
+/// An out-of-range master index that lands on another record of the same plugin would
+/// silently replace it, so the merge rejects it whichever record comes first.
+#[test]
+fn out_of_range_master_index_may_not_replace_another_record() {
+    for ids in [[0x0000_0800, 0x0200_0800], [0x0200_0800, 0x0000_0800]] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = plugin(
+            dir.path(),
+            "Masterless.esm",
+            &[],
+            1,
+            [
+                record(b"STAT", ids[0], 0, sub(b"EDID", b"First\0")),
+                record(b"STAT", ids[1], 0, sub(b"EDID", b"Second\0")),
+            ]
+            .concat(),
+        );
+        let error = format!("{:?}", EsmParser::merge_plugins(&[path]).unwrap_err());
+        assert!(
+            error.contains("both resolve to 00000800")
+                && error.contains("00000800")
+                && error.contains("02000800"),
+            "{error}"
+        );
+    }
+}

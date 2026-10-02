@@ -189,7 +189,7 @@ async fn nested_only_plugin_notice_reaches_the_progress_channel() {
     let notices = collect.await.unwrap();
     assert!(report.complete, "{report:?}");
     let expected = format!(
-        "note: found 1 plugin files, but none directly in {}; plugins in subfolders are ignored",
+        "note: found 1 plugin file, but none directly in {}; plugins in subfolders are ignored",
         data.display()
     );
     assert_eq!(
