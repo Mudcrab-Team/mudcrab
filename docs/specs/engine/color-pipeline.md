@@ -4,7 +4,7 @@ Tracks [L1 #131](https://github.com/Mudcrab-Team/mudcrab/issues/131), under [van
 
 ## Scope and evidence
 
-Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. This first L1 slice fixes output-domain inconsistencies and supplies controlled probes. It does not establish Skyrim's image-space equations or select its final exposure/tone curve.
+Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. L1 slices fix output-domain inconsistencies and static emission publication, with controlled probes. They do not establish Skyrim's image-space equations or select its final exposure/tone curve.
 
 Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source trace below describes actual runtime behavior. Claims in older sky notes about encoded weather interpolation and fog equations still require the L0/L2 retail evidence; this change preserves those inputs.
 
@@ -13,7 +13,7 @@ Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source
 | Stage / owner | Input → output | Current limit / next owner |
 |---|---|---|
 | `converter/src/texture.rs`, `material.rs` | DDS channels → semantic KTX2 transfer format; diffuse/glow use sRGB aliases, normals/data use linear views | Shared source bytes may have distinct views; preserve alpha as data. Existing round-trip tests cover encoded channels. |
-| `converter/src/material.rs` | Validated per-shape NIF values → glTF factors, extensions, source extras | #81: specular enable, normal-alpha mask and gloss exponent approximation. #82: glow-slot eligibility and emission energy. #83: alpha/UV. #84: effect/editor surfaces. These issues are open, not integrated by this slice. |
+| `converter/src/material.rs` | Validated per-shape NIF values → glTF factors, extensions, source extras | #81: specular enable, normal-alpha mask and gloss exponent approximation. #82: static glow-slot eligibility and emission energy corrected; animated emission remains unsupported. #83: alpha/UV. #84: effect/editor surfaces. Remaining issues stay open; emission animation is outside #82. |
 | Bevy glTF / `StandardMaterial` | sRGB textures decoded once; material factors and data textures remain linear → material response | Bevy's PBR BRDF is an approximation, not recovered Skyrim shading. Tangent/model-space normals require distinct treatment. |
 | `shaders/terrain.wgsl` | Linear layer samples and normal data → weighted material response → PBR lighting | Authored normal conventions, layer semantics and specular response remain separate material probes. |
 | Bevy `pbr_functions.wgsl` | Lights + material → exposure-scaled linear RGB | `Exposure.ev100` uses Bevy's `2^-EV100 / 1.2`. Current 9.7 is pinned from the prior default, not a Skyrim value. Emission's exposure weight is material-owned; default emission is exposure-independent. |
@@ -32,12 +32,14 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V3: Sky, unlit mesh, fully fogged mesh, terrain emission and unit-reflecting water given equal composition-domain RGB produce matching output within 2/255 per channel. Exterior includes sky; interior has a black background. Test neutral gray and saturated HDR inputs.
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
 - V5: Preserve NIF source values and declared unsupported families. Do not compensate for pending material errors with global tint, exposure, ambient or emission changes.
+- V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Invalid negative tint or overflowing energy → contextual conversion error.
+- V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–17; world database schema unchanged.
 
 ## Supported response and remaining material work
 
 | Family / path | Current representation | L1 acceptance status |
 |---|---|---|
-| Ordinary lighting / opaque | glTF `StandardMaterial`, PBR lighting | Output consistency can be tested now; NIF specular and emission fixes pending #81/#82. |
+| Ordinary lighting / opaque | glTF `StandardMaterial`, PBR lighting | Output consistency can be tested now; NIF specular fixes pending #81; static emission corrected by T6. |
 | Alpha-tested / blended | glTF alpha modes + existing prepass | #83 and PR #99 remain separate dependencies. Do not declare caster silhouettes accepted before they are integrated and tested. |
 | Tangent-space normal maps | Linear normal samples through glTF; terrain has its own tangent frame | Direction, handedness and specular-alpha probe still required. |
 | Model-space normals | No established compatibility path in this slice | Named L1 gap; generic tangent interpretation cannot count as acceptance. |
@@ -54,6 +56,22 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - `--legacy-output` is a negative control: restore the previous non-HDR cameras and 8-bit reflection target inside the probe. It must fail the consistency check, with a nonzero status and saved pixel differences. This option does not exist on the game CLI.
 - Complete L1 acceptance additionally needs NIF-to-runtime material probes, integrated dependency fixes and matched vanilla neutral/material captures from L0. Leave #131 open until those gates pass.
 
+## Static emission publication
+
+[Emission issue #82](https://github.com/Mudcrab-Team/mudcrab/issues/82): `Own_Emit` declares own emittance; `Glow_Map` declares third-slot glow (`vendor/project-wormhole-nif/src/nif_flags.rs`). Glow shader type also permits slot 2. Own_Emit alone retains slot 2 as unclassified source data; no emissive texture sampling.
+
+Publication: `peak = max(1, max(emissive_color))`; `emissiveFactor = emissive_color / peak`; `emissiveStrength = emissive_multiple * peak`. glTF factor remains in [0,1]; reconstructed linear RGB retains authored energy. Extension emitted whenever strength ≠ 1, including 0 and values below 1. Black tint stays black with glow present. Bevy 0.19 glTF loader multiplies factor by strength into `StandardMaterial.emissive`; glow uses sRGB decode once, alpha does not scale opaque emission. No camera/ambient compensation.
+
+Invalid negative tint or strength overflow → contextual conversion error. Source contract retains original valid values. Existing negative-multiplier controller endpoint handling unchanged; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
+
+`material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Eight cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×800, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
+
+Converter cache schema 17: schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Runtime accepts complete converter schemas 15–17; world database schemas 3–4 and cell-cache version unchanged. Launcher requires latest converter schema.
+
+For testing, reconvert to separate output directory with converter built from this branch, then run matching engine against that directory. Existing packs remain valid in engine but retain old emission until reconverted. Preserve old pack for rollback; older #137 engine rejects schema 17, so use new engine for new pack. No retail asset reconversion performed by this slice.
+
+Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_negative_tint_and_overflowing_emission_with_context`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v7_schema_16_rebuilds_meshes_and_reuses_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
+
 ## Local verification, 2026-10-02
 
 Headless Vulkan on llvmpipe / Mesa 26.2.2, LLVM 21.1.8. No renderer errors in the six final runs. These are functional shader checks, not target-hardware performance or Skyrim visual acceptance.
@@ -69,6 +87,8 @@ Headless Vulkan on llvmpipe / Mesa 26.2.2, LLVM 21.1.8. No renderer errors in th
 
 HDR mesh/sky/fog/water samples: `(114,151,239)`; terrain: `(114,152,239)`. Previous-path sky: `(118,170,255)`; water: `(107,136,200)`. All new-path gray samples: `(115,115,115)`. Interior background: black. Pixel tolerance was fixed at 2/255 before running; the negative controls returned exit code 1.
 
+Static emission probe: exterior and interior both pass with maximum difference 1/255; all eight loaded material checks pass. Legacy negative control returns exit 1, maximum error 230/255, seven loaded-energy/eligibility checks fail. Zero/black/Own_Emit cases render `(0,0,0)`; dim `(68,21,73)`, unit `(123,49,130)`, textured HDR `(237,145,203)`. 353 converter tests pass (13 existing ignores); 230 engine library tests pass; formatting and converter/engine Clippy libraries/tests/examples pass with warnings denied. Same llvmpipe adapter as above. Evidence: `/home/dev/Projects/mudcrab-lighting-emission-evidence/{exterior,interior,legacy}`; functional synthetic proof, not Fiji performance or vanilla retail acceptance.
+
 ## Tasks
 
 id|status|task|cites
@@ -76,6 +96,7 @@ T1|x|Trace existing color/material owners and name unsupported paths|V5
 T2|x|Use explicit HDR scene composition and linear reflection storage; synchronize exposure|V1,V2
 T3|x|Render paired synthetic probes and record pixel evidence|V3,V4
 T4|.|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes|V5
+T6|x|Fix static emission publication; load converted materials and compare GPU swatches; migrate cache|V5,V6,V7
 T5|.|Compare both scene types against L0 references; accept declared tolerances|V3,V5
 
 ## Bugs
@@ -85,3 +106,6 @@ B1|2026-10-02|Non-HDR mesh shaders tone-map while sky bypasses transform|V1,V3
 B2|2026-10-02|Reflection is display-mapped before water applies another transform|V2,V3
 B3|2026-10-02|Xvfb launch lacked `libxkbcommon-x11` runtime path; local software Vulkan rejected optional features; baseline WebGPU limits excluded terrain bindings|Headless readback; explicit 32 texture/sampler slots; no game renderer fallback change
 B4|2026-10-02|Probe used unboxed `WgpuSettings` for Bevy 0.19 `RenderCreation::Automatic`|Box settings; compile-only correction, no new invariant
+B5|2026-10-02|Own_Emit enables slot-2 glow; multiplier floor, HDR clipping and white fallback alter authored emission|V6,V7
+B6|2026-10-02|Probe assumed glTF material handles were StandardMaterial in Bevy 0.19|Load production PBR /std labels; compiler catches type mismatch; no new invariant
+B7|2026-10-02|Schema bump changes pinned manifest configuration hash|Snapshot diff reviewed: schema 17 and corresponding configuration hash only; V7

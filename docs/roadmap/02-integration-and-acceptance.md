@@ -5,7 +5,7 @@ owned Skyrim Special Edition installation is required only for the final real-wo
 
 ## What is enforced
 
-- The engine accepts converter manifest schemas 15–16, cell cache version 3, and world database
+- The engine accepts converter manifest schemas 15–17, cell cache version 3, and world database
   schemas 3–4, and rejects stale or incompatible outputs with the accepted range in the message.
   The ranges are defined in `crates/engine/src/app.rs` (`MIN_RUNTIME_CONVERTER_SCHEMA_VERSION`)
   and `crates/engine/src/world/database.rs` (`MIN_`/`MAX_RUNTIME_DATABASE_SCHEMA_VERSION`). The

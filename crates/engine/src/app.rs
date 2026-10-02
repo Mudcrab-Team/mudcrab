@@ -1596,12 +1596,13 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 
 /// The oldest converter manifest schema the runtime accepts. Schema 15 sets were written before
 /// the merge that brought converter schema 16 and world database schema 4, and still load.
+/// Schema 17 changes material emission without changing runtime asset structure.
 const MIN_RUNTIME_CONVERTER_SCHEMA_VERSION: u32 = 15;
 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    16
+    17
 }
 
 fn setup_synthetic_benchmark(
@@ -2841,6 +2842,34 @@ mod tests {
             ..default()
         };
         validate_runtime_assets(&config).unwrap();
+    }
+
+    #[test]
+    fn v7_accepts_unchanged_schema_16_and_new_emission_schema_17() {
+        assert_eq!(
+            converter_schema_version(),
+            converter::cache::CONVERTER_SCHEMA_VERSION
+        );
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":4,"passed":true}"#,
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        for schema in [16, 17] {
+            std::fs::write(
+                directory.path().join("conversion-manifest.json"),
+                format!(r#"{{"schema_version":{schema},"complete":true}}"#),
+            )
+            .unwrap();
+            validate_runtime_assets(&config).unwrap();
+        }
     }
 
     #[test]
