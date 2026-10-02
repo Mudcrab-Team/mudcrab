@@ -50,6 +50,9 @@ pub struct PipelineReport {
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
     pub warnings: Vec<String>,
+    /// advisory messages that do not affect completeness
+    #[serde(default)]
+    pub notices: Vec<String>,
     pub artifacts: Vec<PathBuf>,
     pub inputs_by_kind: BTreeMap<String, u64>,
     pub elapsed_ms: u128,
@@ -376,7 +379,19 @@ impl AssetPipeline {
             entries: Default::default(),
         };
         let files = discover(&config.data_dir)?;
-        let plugins = plugin_paths(config, &files)?;
+        let plugins = plugin_paths(config, &files, &mut report.notices)?;
+        // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
+        // prints them without splicing into its status line and the launcher shows them in its
+        // notice pane. They stay in `report.notices` for the summary and the JSON report.
+        for notice in &report.notices {
+            send_notice(
+                progress_tx,
+                ProgressStage::Discovering,
+                None,
+                &format!("note: {notice}"),
+            )
+            .await;
+        }
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -562,9 +577,8 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            EsmParser::convert_plugins(&plugins, &db_path)?;
+            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
             validate_database(&Connection::open(&db_path)?)?;
-            let merged = EsmParser::merge_plugins(&plugins)?;
             write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
@@ -1553,15 +1567,42 @@ fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()
     Ok(())
 }
 
-fn plugin_paths(config: &PipelineConfig, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+/// Select explicit plugins or direct Data children, warning about nested-only discovery.
+fn plugin_paths(
+    config: &PipelineConfig,
+    files: &[PathBuf],
+    notices: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
     if let Some(path) = &config.plugins_file {
         return read_plugins_txt(path, &config.data_dir);
     }
-    let mut plugins: Vec<_> = files
+    let discovered: Vec<_> = files
         .iter()
         .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .collect();
+    let mut plugins: Vec<_> = discovered
+        .iter()
+        .copied()
+        .filter(|path| {
+            path.strip_prefix(&config.data_dir)
+                .is_ok_and(|relative| relative.components().count() == 1)
+        })
         .cloned()
         .collect();
+    if !discovered.is_empty() && plugins.is_empty() {
+        // The caller forwards notices on the progress channel; printing here would splice
+        // into the CLI's status line.
+        notices.push(format!(
+            "found {} plugin {}, but none directly in {}; plugins in subfolders are ignored",
+            discovered.len(),
+            if discovered.len() == 1 {
+                "file"
+            } else {
+                "files"
+            },
+            config.data_dir.display()
+        ));
+    }
     plugins.sort_by_key(|path| {
         let name = path
             .file_name()
@@ -1578,7 +1619,7 @@ fn plugin_paths(config: &PipelineConfig, files: &[PathBuf]) -> Result<Vec<PathBu
         };
         (rank, name)
     });
-    Ok(plugins)
+    crate::esm::load_order::order_discovered_plugins(plugins)
 }
 
 fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
@@ -2565,6 +2606,21 @@ mod tests {
             ..PipelineReport::default()
         };
         assert!(!conversion_is_complete(&warned));
+    }
+
+    /// Notices never hide failures or affect completeness, regardless of insertion order.
+    #[test]
+    fn notices_do_not_affect_completeness() {
+        let mut report = PipelineReport::default();
+        report.notices.push("nested plugins ignored".into());
+        assert!(conversion_is_complete(&report));
+        report.warnings.push("conversion failed".into());
+        assert!(!conversion_is_complete(&report));
+        report.notices.push("another advisory".into());
+        assert!(!conversion_is_complete(&report));
+        report.warnings.clear();
+        report.skipped = 1;
+        assert!(!conversion_is_complete(&report));
     }
 
     #[tokio::test]
