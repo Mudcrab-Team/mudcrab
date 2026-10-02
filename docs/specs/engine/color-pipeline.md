@@ -91,7 +91,15 @@ HDR mesh/sky/fog/water samples: `(114,151,239)`; terrain: `(114,152,239)`. Previ
 
 Static emission probe: exterior and interior both pass with maximum difference 1/255; all eight loaded material checks pass. Legacy negative control returns exit 1, maximum error 230/255, seven loaded-energy/eligibility checks fail. Zero/black/Own_Emit cases render `(0,0,0)`; dim `(68,21,73)`, unit `(123,49,130)`, textured HDR `(237,145,203)`. 353 converter tests pass (13 existing ignores); 230 engine library tests pass; formatting and converter/engine Clippy libraries/tests/examples pass with warnings denied. Same llvmpipe adapter as above. Evidence: `/home/dev/Projects/mudcrab-lighting-emission-evidence/{exterior,interior,legacy}`; functional synthetic proof, not Fiji performance or vanilla retail acceptance.
 
-Signed-tint correction: 18 failing retail NIFs → 18 converted, zero skips; isolated private-fixture run. Nine-case exterior/interior GPU probes pass ≤1/255; raw signed metadata and nonnegative glTF projection checked. Full converter suite: 354 passed, 13 existing ignores; formatting and Clippy pass. Delivery/full-pack integration pending T7.
+Signed-tint correction: 18 failing retail NIFs → 18 converted, zero skips; isolated private-fixture run. Nine-case exterior/interior GPU probes pass ≤1/255; raw signed metadata and nonnegative glTF projection checked. Full converter suite: 354 passed, 13 existing ignores; formatting and Clippy pass. Delivery/full-pack integration passed; T7 complete.
+
+## Fiji delivery, 2026-10-02
+
+Package: `/home/taylor/mudcrab-pr139-8db2a3d`; binaries ! commit `8db2a3d3ef07ef6dd92ad19f0c30d0c4c065da2e` (later documentation-only commits do not change deployed binaries). Separate schema-17 pack: complete; 18 converted, 257849 cache hits, zero skipped; inputs DDS 35663 / NIF 25388 / PEX 15162. World schema 4 integration passes; missing/invalid models 0. Converter quick check passes: 76213 files, 13.1 GB. Package hashes and bundled runtime dependency resolution pass.
+
+RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: nine-case exterior/interior probes both pass, maximum difference 0/255. Legacy control fails with exit 1, maximum error 231/255. Exact packaged `run-riverwood.sh --headless` exits 0 and records `OpenSkyrim runtime initialized`. Existing #137 package and original schema-16 asset pack preserved; original manifest/database/cell-cache hashes unchanged.
+
+Evidence: package `DEPLOYMENT.json`, `conversion-report.json`, `material-probe/{exterior,interior,legacy}/probe.json`, `asset-check.log`, `smoke-new-assets.log`; local copies under `/home/dev/Projects/mudcrab-lighting-emission-evidence/signed-fix/`. Installed source NIFs stay private. Synthetic GPU/startup proof ≠ matched Skyrim scene acceptance or release performance; L0 comparison and remaining L1 families remain open.
 
 ## Tasks
 
@@ -100,7 +108,7 @@ T1|x|Trace existing color/material owners and name unsupported paths|V5
 T2|x|Use explicit HDR scene composition and linear reflection storage; synchronize exposure|V1,V2
 T3|x|Render paired synthetic probes and record pixel evidence|V3,V4
 T4|.|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes|V5
-T7|~|Restore signed-tint NIF compatibility; verify retail reconversion and delivered pack|V5,V6,V8
+T7|x|Restore signed-tint NIF compatibility; verify retail reconversion and delivered pack|V5,V6,V8
 T6|x|Fix static emission publication; load converted materials and compare GPU swatches; migrate cache|V5,V6,V7
 T5|.|Compare both scene types against L0 references; accept declared tolerances|V3,V5
 
