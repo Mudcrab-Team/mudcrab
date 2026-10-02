@@ -24,6 +24,12 @@ pub struct EngineConfig {
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
+    /// `--benchmark-jump <grid-x>,<grid-y>`: once the world around the camera is first fully
+    /// loaded, move the camera to the centre of that cell of the same worldspace and measure how
+    /// long the world takes to become fully loaded again (`time_to_world_ready_after_jump_ms`).
+    /// Coordinates must be within [`JUMP_GRID_LIMIT`]; anything further out is ignored with a
+    /// warning, since the position maths would not survive it.
+    pub benchmark_jump: Option<(i32, i32)>,
     pub benchmark_output: PathBuf,
     /// Where to write every measured frame time, in order, as CSV (`--benchmark-frame-times`).
     /// Off by default: the report's summary is what acceptance reads; the series is for choosing
@@ -86,6 +92,7 @@ impl Default for EngineConfig {
             benchmark_frames: None,
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
+            benchmark_jump: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
             run_label: None,
@@ -144,10 +151,25 @@ impl EngineConfig {
         Self::from_args(std::env::args().skip(1))
     }
 
+    /// Whether this is a benchmark run: `--benchmark-frames` or `--benchmark-duration` was given.
+    /// The same test the report uses to decide whether to write itself (`metrics::collect_and_finish`),
+    /// so anything that only makes sense for a benchmark can key off it.
+    pub fn is_benchmark_run(&self) -> bool {
+        self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some()
+    }
+
+    /// Whether the pacing instrumentation should run at all. It is measurement only, and only a
+    /// benchmark report or the profiling campaign (itself a benchmark run) reads it, so an ordinary
+    /// play session installs none of it. A jump without a frame limit or duration still installs it:
+    /// the jump is documented to run in an interactive session and warn that it has no report.
+    pub fn measures_pacing(&self) -> bool {
+        self.is_benchmark_run() || self.benchmark_jump.is_some()
+    }
+
     /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
     /// the taskbar says what it is. An interactive run is plain "OpenSkyrim".
     pub fn window_title(&self) -> String {
-        let kind = if self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some() {
+        let kind = if self.is_benchmark_run() {
             Some("benchmark")
         } else if self.streaming_fixture {
             Some("streaming fixture")
@@ -231,6 +253,23 @@ impl EngineConfig {
                         config.benchmark_warmup_frames = value;
                     }
                 }
+                "--benchmark-jump" => match args.next_if(|value| !value.starts_with("--")) {
+                    Some(raw) => match parse_grid(&raw) {
+                        Some(value) if in_jump_grid_range(value) => {
+                            config.benchmark_jump = Some(value)
+                        }
+                        Some((x, y)) => eprintln!(
+                            "warning: ignoring --benchmark-jump {x},{y}: grid coordinates must be within {}..={JUMP_GRID_LIMIT}",
+                            -JUMP_GRID_LIMIT
+                        ),
+                        None => eprintln!(
+                            "warning: ignoring malformed --benchmark-jump {raw:?}; expected \"<grid-x>,<grid-y>\" integers"
+                        ),
+                    },
+                    None => eprintln!(
+                        "warning: missing value for --benchmark-jump; expected \"<grid-x>,<grid-y>\" integers"
+                    ),
+                },
                 "--benchmark-output" => {
                     if let Some(value) = args.next() {
                         config.benchmark_output = value.into();
@@ -320,7 +359,38 @@ impl EngineConfig {
                 _ => {}
             }
         }
+        config.drop_jump_the_run_would_overwrite();
         config
+    }
+
+    /// `--benchmark-jump` moves the camera once, so a run that keeps driving it would undo the
+    /// jump: auto-fly keeps moving it, the streaming fixture moves it every frame, and a screenshot
+    /// run anchors streaming on the start cell.
+    fn drop_jump_the_run_would_overwrite(&mut self) {
+        let reason = if self.auto_fly_speed > 0.0 {
+            Some("--auto-fly-speed keeps driving the camera")
+        } else if self.acceptance_screenshot.is_some() {
+            Some("--acceptance-screenshot anchors streaming on the start cell")
+        } else if self.streaming_fixture {
+            Some("--streaming-fixture moves the camera every frame")
+        } else {
+            None
+        };
+        let Some(reason) = reason else {
+            // The jump still runs, but with no frame limit or duration no benchmark report (which
+            // carries the pacing fields) is written, so there is nothing to read the jump out of.
+            if let Some((x, y)) = self.benchmark_jump
+                && !self.is_benchmark_run()
+            {
+                eprintln!(
+                    "warning: --benchmark-jump {x},{y} has no report to appear in without --benchmark-frames or --benchmark-duration"
+                );
+            }
+            return;
+        };
+        if let Some((x, y)) = self.benchmark_jump.take() {
+            eprintln!("warning: ignoring --benchmark-jump {x},{y}: {reason}");
+        }
     }
 }
 
@@ -333,6 +403,23 @@ fn parse_offset(value: &str) -> Option<(f32, f32, f32)> {
         return None;
     }
     Some((x, y, z))
+}
+
+/// The furthest grid coordinate `--benchmark-jump` accepts. The jump position maths subtracts the
+/// render origin and scales by the cell size, so an extreme `i32` would overflow; half the distance
+/// to `i32::MAX` in cells is far past any converted world.
+const JUMP_GRID_LIMIT: i32 = 512;
+
+fn in_jump_grid_range((x, y): (i32, i32)) -> bool {
+    (-JUMP_GRID_LIMIT..=JUMP_GRID_LIMIT).contains(&x)
+        && (-JUMP_GRID_LIMIT..=JUMP_GRID_LIMIT).contains(&y)
+}
+
+fn parse_grid(value: &str) -> Option<(i32, i32)> {
+    let mut parts = value.split(',');
+    let x: i32 = parts.next()?.trim().parse().ok()?;
+    let y: i32 = parts.next()?.trim().parse().ok()?;
+    parts.next().is_none().then_some((x, y))
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -388,6 +475,125 @@ mod tests {
             EngineConfig::from_args(["--max-upload-mib-per-frame", "0"].map(str::to_owned));
         assert_eq!(unlimited.max_upload_mib_per_frame, 0);
         assert_eq!(unlimited.max_upload_bytes_per_frame(), None);
+    }
+
+    #[test]
+    fn parses_the_benchmark_jump_target() {
+        let config = EngineConfig::from_args(["--benchmark-jump", "12,-7"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, Some((12, -7)));
+        assert_eq!(EngineConfig::default().benchmark_jump, None);
+        for bad in ["12", "12,", "a,b", "1,2,3", "1.5,2", ""] {
+            let config = EngineConfig::from_args(["--benchmark-jump", bad].map(str::to_owned));
+            assert_eq!(config.benchmark_jump, None, "{bad:?}");
+        }
+        // A missing value sets no target and does not swallow the next option.
+        let config = EngineConfig::from_args(["--benchmark-jump"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, None);
+        let config = EngineConfig::from_args(["--benchmark-jump", "--headless"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, None);
+        assert!(config.headless);
+    }
+
+    #[test]
+    fn a_jump_grid_coordinate_is_dropped_when_out_of_range() {
+        let args = |list: &[&str]| EngineConfig::from_args(list.iter().map(|v| (*v).to_owned()));
+        // The ends of the accepted range are kept.
+        assert_eq!(
+            args(&["--benchmark-jump", "512,-512"]).benchmark_jump,
+            Some((512, -512))
+        );
+        assert_eq!(
+            args(&["--benchmark-jump", "-512,512"]).benchmark_jump,
+            Some((-512, 512))
+        );
+        // One past either end is dropped, including the extremes that would overflow the position
+        // maths, and a flag after it is still read.
+        for bad in [
+            "513,0",
+            "0,513",
+            "-513,0",
+            "0,-513",
+            "2147483647,0",
+            "0,-2147483648",
+        ] {
+            let config = args(&["--benchmark-jump", bad, "--benchmark-frames", "60"]);
+            assert_eq!(config.benchmark_jump, None, "{bad:?}");
+            assert_eq!(
+                config.benchmark_frames,
+                Some(60),
+                "{bad:?} ate the next flag"
+            );
+        }
+    }
+
+    #[test]
+    fn pacing_is_measured_only_for_a_benchmark_or_a_jump() {
+        assert!(!EngineConfig::default().measures_pacing());
+        assert!(
+            EngineConfig {
+                benchmark_frames: Some(60),
+                ..EngineConfig::default()
+            }
+            .measures_pacing()
+        );
+        assert!(
+            EngineConfig {
+                benchmark_duration_secs: Some(30.0),
+                ..EngineConfig::default()
+            }
+            .measures_pacing()
+        );
+        // A jump without a frame limit or duration still runs, and warns that it has no report.
+        assert!(
+            EngineConfig {
+                benchmark_jump: Some((3, 4)),
+                ..EngineConfig::default()
+            }
+            .measures_pacing()
+        );
+    }
+
+    #[test]
+    fn a_jump_is_ignored_when_the_run_drives_the_camera() {
+        let args = |list: &[&str]| EngineConfig::from_args(list.iter().map(|v| (*v).to_owned()));
+        // In either order of the flags.
+        for list in [
+            ["--benchmark-jump", "3,4", "--auto-fly-speed", "900"],
+            ["--auto-fly-speed", "900", "--benchmark-jump", "3,4"],
+        ] {
+            let config = args(&list);
+            assert_eq!(config.benchmark_jump, None, "{list:?}");
+            assert_eq!(config.auto_fly_speed, 900.0);
+        }
+        let config = args(&[
+            "--benchmark-jump",
+            "3,4",
+            "--acceptance-screenshot",
+            "a.png",
+        ]);
+        assert_eq!(config.benchmark_jump, None);
+        // The streaming fixture drives the camera every frame too.
+        let config = args(&["--benchmark-jump", "3,4", "--streaming-fixture"]);
+        assert_eq!(config.benchmark_jump, None);
+        assert!(config.streaming_fixture);
+        assert_eq!(
+            args(&["--benchmark-jump", "3,4"]).benchmark_jump,
+            Some((3, 4))
+        );
+    }
+
+    /// Without a frame limit or duration no report is written, so the jump has nowhere to appear:
+    /// the run warns but keeps the target (an interactive run may still be worth watching).
+    #[test]
+    fn a_jump_without_a_report_keeps_the_target() {
+        let config = EngineConfig::from_args(["--benchmark-jump", "3,4"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, Some((3, 4)));
+        assert!(!config.is_benchmark_run());
+        let config = EngineConfig::from_args(
+            ["--benchmark-jump", "3,4", "--benchmark-frames", "600"].map(str::to_owned),
+        );
+        assert_eq!(config.benchmark_jump, Some((3, 4)));
+        assert!(config.is_benchmark_run());
     }
 
     #[test]

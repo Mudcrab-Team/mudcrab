@@ -1817,31 +1817,76 @@ fn initial_camera_ground_height(
     database_path: &std::path::Path,
     cache: &CellCache,
 ) -> Result<f32> {
+    Ok(cell_centre_ground_height(
+        config.worldspace_id,
+        config.start_grid,
+        database_path,
+        cache,
+    )?
+    .unwrap_or(0.0))
+}
+
+/// The terrain height at the middle of one exterior cell, or `None` when the cell has no terrain
+/// (or the cache has no height there).
+fn cell_centre_ground_height(
+    worldspace_id: u32,
+    grid: (i32, i32),
+    database_path: &std::path::Path,
+    cache: &CellCache,
+) -> Result<Option<f32>> {
     let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", database_path.display()))?;
     let cell_id = connection
         .query_row(
             crate::world::database::EXTERIOR_CELL_ID_SQL,
-            params![
-                config.worldspace_id,
-                config.start_grid.0,
-                config.start_grid.1
-            ],
+            params![worldspace_id, grid.0, grid.1],
             |row| row.get::<_, u32>(0),
         )
         .optional()?;
     let Some(terrain) = cell_id.and_then(|cell_id| cache.terrain(cell_id)) else {
-        return Ok(0.0);
+        return Ok(None);
     };
     let width = usize::from(terrain.width);
     let height = usize::from(terrain.height);
     let center = (height / 2)
         .checked_mul(width)
         .and_then(|row| row.checked_add(width / 2));
-    Ok(center
-        .and_then(|index| terrain.heights.get(index))
-        .copied()
-        .unwrap_or(0.0))
+    Ok(center.and_then(|index| terrain.heights.get(index)).copied())
+}
+
+/// Where `--benchmark-jump` puts the camera: the middle of exterior cell `grid`, at that cell's
+/// ground height plus the same height offset `setup_world` gives the start position, in the
+/// coordinates of the current render `origin`.
+pub(crate) fn benchmark_jump_position(
+    config: &EngineConfig,
+    cache: &CellCache,
+    origin: IVec2,
+    grid: (i32, i32),
+) -> Vec3 {
+    let database_path = config.assets_dir.join("skyrim_world.db");
+    let ground_height =
+        match cell_centre_ground_height(config.worldspace_id, grid, &database_path, cache) {
+            Ok(Some(height)) => height,
+            // A jump target with no terrain is legitimate (a cell past the map edge the run may
+            // still want to view), but a silent 0 puts the camera at the wrong height, so say so.
+            Ok(None) => {
+                warn!(
+                    grid_x = grid.0,
+                    grid_y = grid.1,
+                    "benchmark jump: no terrain at the target cell, using ground height 0"
+                );
+                0.0
+            }
+            Err(error) => {
+                warn!(%error, "benchmark jump: ground height unavailable, using 0");
+                0.0
+            }
+        };
+    Vec3::new(
+        ((grid.0 - origin.x) as f32 + 0.5) * crate::world::components::CELL_SIZE,
+        ground_height + camera_offset(config).y,
+        -((grid.1 - origin.y) as f32 + 0.5) * crate::world::components::CELL_SIZE,
+    )
 }
 
 const CELL_SIZE_HALF: f32 = crate::world::components::CELL_SIZE * 0.5;

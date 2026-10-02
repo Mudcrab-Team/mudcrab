@@ -1,8 +1,9 @@
 use crate::{
     config::EngineConfig,
+    pacing::{PacingReport, PacingTracker},
     profiling::{MetricSummary, ProfilingState, SystemMetadata, summarize},
     render::RendererMetrics,
-    render_timing::{RenderTimingPlugin, RenderTimings},
+    render_timing::{PipelineActivity, RenderTimingPlugin, RenderTimings},
     streaming::StreamingMetrics,
 };
 use bevy::{
@@ -33,6 +34,20 @@ impl Plugin for AcceptanceMetricsPlugin {
                 Last,
                 collect_and_finish.after(crate::render_timing::end_main_world),
             );
+        let measures_pacing = app
+            .world()
+            .get_resource::<EngineConfig>()
+            .map(EngineConfig::measures_pacing);
+        install_schedule_timing(app, measures_pacing);
+    }
+}
+
+/// Adds the schedule-timing plugin (which also counts asset arrivals) only when the run measures
+/// pacing. An ordinary play session installs neither the eight marker schedules per frame nor the
+/// four asset-arrival counts.
+fn install_schedule_timing(app: &mut App, measures_pacing: Option<bool>) {
+    if measures_pacing == Some(true) {
+        app.add_plugins(crate::schedule_timing::ScheduleTimingPlugin);
     }
 }
 
@@ -74,6 +89,13 @@ struct BenchmarkReport {
     /// milliseconds: the main world, the wait for the render thread, extract, and the render
     /// thread with its phases (see `render_timing`). Empty when the renderer did not run.
     render_world: BTreeMap<String, MetricSummary>,
+    /// Render pipelines queued and finished per render frame, set against render-thread time (see
+    /// `render_timing::PipelineActivity`). Serialised as `null` when the renderer did not run.
+    render_pipelines: Option<PipelineActivity>,
+    /// Time to a fully loaded world, the jump, and loading lag at speed (see `pacing`). The fields
+    /// sit at the top level of the report and are absent for a run with no streaming.
+    #[serde(flatten)]
+    pacing: Option<PacingReport>,
     thresholds: Thresholds,
     passed: bool,
 }
@@ -108,13 +130,12 @@ fn collect_and_finish(
     streaming: Option<Res<StreamingMetrics>>,
     renderer: Res<RendererMetrics>,
     render_timings: Res<RenderTimings>,
+    pacing: Option<Res<PacingTracker>>,
     mut samples: ResMut<BenchmarkSamples>,
     mut profiler: ResMut<ProfilingState>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if samples.finished
-        || (config.benchmark_frames.is_none() && config.benchmark_duration_secs.is_none())
-    {
+    if samples.finished || !config.is_benchmark_run() {
         return;
     }
     if !samples.measurement_complete {
@@ -175,6 +196,15 @@ fn collect_and_finish(
             (name.to_owned(), summarize(&values))
         })
         .collect();
+    let render_pipelines = render_timings.take_pipeline_activity();
+    let pacing_report = pacing.as_deref().map(|tracker| {
+        tracker.report(
+            &config,
+            streaming
+                .as_deref()
+                .map_or(0, |value| value.peak_arming_queue_depth),
+        )
+    });
     let mut ordered = samples.frame_ms.clone();
     ordered.sort_by(f64::total_cmp);
     let total_ms = ordered.iter().sum::<f64>();
@@ -227,7 +257,7 @@ fn collect_and_finish(
         memory: value.memory.clone(),
     });
     let report = BenchmarkReport {
-        format_version: 7,
+        format_version: 8,
         generated_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_millis()),
@@ -273,6 +303,8 @@ fn collect_and_finish(
         streaming: streaming.as_ref().map(|value| (*value).clone()),
         renderer: renderer.clone(),
         render_world,
+        render_pipelines,
+        pacing: pacing_report,
         thresholds: Thresholds {
             minimum_average_fps: config.accept_min_fps,
             maximum_p95_frame_ms: config.accept_p95_ms,
@@ -441,6 +473,56 @@ fn frame_times_csv(frame_ms: &[f64]) -> String {
 mod tests {
     use super::*;
 
+    /// The signal-timing app used by the gate test: minimal plugins, an asset store to add to,
+    /// and a `ProfilingState` for the plugin (or the test) to record into.
+    fn timing_app(measures_pacing: bool) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_resource::<ProfilingState>();
+        install_schedule_timing(&mut app, Some(measures_pacing));
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::from(Cuboid::default()));
+        app.update();
+        app.update();
+        app
+    }
+
+    /// A normal play session is not a benchmark, so it installs neither the marker schedules nor
+    /// the asset-arrival counting; a benchmark run installs both.
+    #[test]
+    fn schedule_and_asset_instrumentation_is_benchmark_only() {
+        let profiler = timing_app(false);
+        let profiler = profiler.world().resource::<ProfilingState>();
+        assert!(
+            profiler.span_samples("main_schedule/Update").is_empty(),
+            "a play session must not add the schedule markers"
+        );
+        assert!(
+            profiler.span_samples("assets_added/mesh").is_empty(),
+            "a play session must not count asset arrivals"
+        );
+
+        let profiler = timing_app(true);
+        let profiler = profiler.world().resource::<ProfilingState>();
+        assert!(
+            !profiler.span_samples("main_schedule/Update").is_empty(),
+            "a benchmark run times the schedules"
+        );
+        assert!(
+            profiler
+                .span_samples("assets_added/mesh")
+                .iter()
+                .sum::<f64>()
+                >= 1.0,
+            "a benchmark run counts asset arrivals"
+        );
+    }
+
     #[test]
     fn frame_times_are_written_in_measured_order() {
         assert_eq!(
@@ -484,11 +566,39 @@ mod tests {
     }
 
     #[test]
-    fn calculates_nearest_rank_percentiles() {
+    fn calculates_percentiles_at_the_shared_rank() {
         let samples: Vec<_> = (1..=100).map(f64::from).collect();
         assert_eq!(percentile(&samples, 0.50), 51.0);
         assert_eq!(percentile(&samples, 0.95), 96.0);
         assert_eq!(percentile(&samples, 0.99), 100.0);
+    }
+
+    /// A report without streaming carries no pacing fields at all: `#[serde(flatten)]` on the
+    /// `None` must not fail or leave a `null` behind.
+    #[test]
+    fn a_report_without_pacing_serialises_no_pacing_fields() {
+        #[derive(Serialize)]
+        struct Flattened {
+            frames: usize,
+            #[serde(flatten)]
+            pacing: Option<PacingReport>,
+        }
+        let value = serde_json::to_value(Flattened {
+            frames: 3,
+            pacing: None,
+        })
+        .expect("a report with no pacing block must serialise");
+        assert_eq!(value, serde_json::json!({ "frames": 3 }));
+        let value = serde_json::to_value(Flattened {
+            frames: 3,
+            pacing: Some(PacingReport {
+                world_ready_reached: true,
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+        assert_eq!(value["world_ready_reached"], serde_json::json!(true));
+        assert_eq!(value["frames"], serde_json::json!(3));
     }
 
     #[test]
