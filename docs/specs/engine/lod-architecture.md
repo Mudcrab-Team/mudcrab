@@ -26,8 +26,8 @@ so fast travel cannot strand half-loaded chunks. Unload uses hysteresis:
 drop a tier only when the camera leaves tier range plus a margin ring, so
 boundary oscillation does not thrash loads.
 Each tier queries, admits, retains and unloads at its own reach plus two
-cells. With the default reach of 4/8/16 cells that is 6/10/18 cells for tiers
-4/8/16. Coarse tiers retain inner coverage for fallback while finer data is
+cells. With the default reach of 12/25/91 cells that is 14/27/93 cells for
+tiers 4/8/16. Coarse tiers retain inner coverage for fallback while finer data is
 pending or unavailable.
 
 ## Distance configuration (Skyrim INI parity)
@@ -53,12 +53,14 @@ tier covers a square of cells around the camera. The terrain multiplier follows 
 distances times `fSplitDistanceMult` give the terrain LOD distances. Object LOD
 (Phase 2) will read the same three block distances without the multiplier.
 
-Defaults are the reach the initial terrain slice was measured and accepted at:
-16384, 32768 and 65536 units with a multiplier of 1, so 4/8/16 cells.
-Skyrim's own `SkyrimPrefs.ini` defaults are 35000, 70000, 250000 and 1.5
+Defaults are Skyrim Special Edition's own `SkyrimPrefs.ini` values: 35000,
+70000 and 250000 with a multiplier of 1.5
 ([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)),
-which reach 12/25/91 cells. Making those the engine default needs a new
-matched-quality performance capture; supplying them through `--ini` works now.
+which reach 12/25/91 cells. The initial terrain slice was measured and
+accepted at a 4/8/16-cell reach (`fSplitDistanceMult=1` with block distances
+16384/32768/65536); those captures predate the Skyrim defaults, and a matched
+capture at the new defaults is still owed. Pass the old values through `--ini`
+to reproduce the earlier runs.
 The camera far plane follows the largest configured reach.
 
 Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`

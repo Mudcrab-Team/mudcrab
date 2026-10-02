@@ -116,8 +116,8 @@ mod tests {
     fn reads_skyrim_prefs_keys_case_insensitively_with_a_bom() {
         let config = apply(
             "\u{feff}[General]\nuGridsToLoad=7\n; comment\n[TERRAINMANAGER]\n\
-             fblocklevel0distance=35000.0000\nfBlockLevel1Distance = 70000.0000\n\
-             fBlockMaximumDistance=250000.0000\nfSplitDistanceMult=1.5000\n",
+             fblocklevel0distance=40000.0000\nfBlockLevel1Distance = 80000.0000\n\
+             fBlockMaximumDistance=300000.0000\nfSplitDistanceMult=2.0000\n",
         );
         assert_eq!((config.stream_radius, config.unload_radius), (3, 4));
         let lod = config.terrain_lod;
@@ -128,10 +128,13 @@ mod tests {
                 lod.block_maximum_distance,
                 lod.split_distance_mult
             ),
-            (35_000.0, 70_000.0, 250_000.0, 1.5)
+            (40_000.0, 80_000.0, 300_000.0, 2.0)
         );
-        // 35000 * 1.5 / 4096 = 12.8 cells; 70000 * 1.5 / 4096 = 25.6; 250000 * 1.5 / 4096 = 91.6.
-        assert_eq!(LodTier::ALL.map(|tier| lod.reach_cells(tier)), [12, 25, 91]);
+        // 40000 * 2 / 4096 = 19.5 cells; 80000 * 2 / 4096 = 39.1; 300000 * 2 / 4096 = 146.5.
+        assert_eq!(
+            LodTier::ALL.map(|tier| lod.reach_cells(tier)),
+            [19, 39, 146]
+        );
     }
 
     #[test]

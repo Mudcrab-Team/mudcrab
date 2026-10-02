@@ -19,16 +19,15 @@ pub struct TerrainLodDistances {
 }
 
 impl Default for TerrainLodDistances {
-    /// Reaches of 4, 8 and 16 cells, the distances the terrain LOD slice was
-    /// measured and accepted at. Skyrim's own `SkyrimPrefs.ini` defaults
-    /// (35000, 70000, 250000 and 1.5) reach about 12, 25 and 91 cells; adopting
-    /// them as the default needs a new matched performance capture.
+    /// Skyrim Special Edition's `SkyrimPrefs.ini` defaults, so an install without
+    /// an INI draws as far as the game does: about 12, 25 and 91 cells for
+    /// tiers 4, 8 and 16.
     fn default() -> Self {
         Self {
-            block_level0_distance: 4.0 * CELL_SIZE,
-            block_level1_distance: 8.0 * CELL_SIZE,
-            block_maximum_distance: 16.0 * CELL_SIZE,
-            split_distance_mult: 1.0,
+            block_level0_distance: 35_000.0,
+            block_level1_distance: 70_000.0,
+            block_maximum_distance: 250_000.0,
+            split_distance_mult: 1.5,
         }
     }
 }

@@ -1212,32 +1212,39 @@ mod tests {
     use crate::world::database::LodChunkBounds;
     use bevy::ecs::system::RunSystemOnce;
 
-    fn default_unload_radius(tier: LodTier) -> i32 {
-        query_unload_radius(TerrainLodDistances::default().reach_cells(tier))
+    /// A reach equal to each tier's chunk side (4/8/16 cells), the smallest
+    /// nesting the residency tests below exercise.
+    fn side_reach() -> TerrainLodDistances {
+        TerrainLodDistances {
+            block_level0_distance: 4.0 * CELL_SIZE,
+            block_level1_distance: 8.0 * CELL_SIZE,
+            block_maximum_distance: 16.0 * CELL_SIZE,
+            split_distance_mult: 1.0,
+        }
     }
 
-    /// `SkyrimPrefs.ini` distances move each tier's reach, not the chunk sizes:
-    /// Skyrim's own defaults keep level 4 out to 12 cells instead of 4.
+    fn default_unload_radius(tier: LodTier) -> i32 {
+        query_unload_radius(side_reach().reach_cells(tier))
+    }
+
+    /// `SkyrimPrefs.ini` distances move each tier's reach, not the chunk sizes.
+    /// The defaults are Skyrim's own, so level 4 reaches 12 cells, not 4.
     #[test]
     fn configured_skyrim_distances_set_each_tier_reach() {
-        let defaults = TerrainLodDistances::default();
+        let skyrim = TerrainLodDistances::default();
         assert_eq!(
-            LodTier::ALL.map(|tier| defaults.reach_cells(tier)),
-            [4, 8, 16]
+            LodTier::ALL.map(|tier| skyrim.reach_cells(tier)),
+            [12, 25, 91]
         );
-        let skyrim = TerrainLodDistances {
-            block_level0_distance: 35_000.0,
-            block_level1_distance: 70_000.0,
-            block_maximum_distance: 250_000.0,
-            split_distance_mult: 1.5,
-        };
+        let short = side_reach();
+        assert_eq!(LodTier::ALL.map(|tier| short.reach_cells(tier)), [4, 8, 16]);
         let available = HashSet::from(LodTier::ALL);
         assert_eq!(
             select_terrain_lod_tier(12, false, &available, &skyrim),
             Some(LodTier::Tier4)
         );
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &defaults),
+            select_terrain_lod_tier(12, false, &available, &short),
             Some(LodTier::Tier16)
         );
         assert_eq!(
@@ -1253,7 +1260,7 @@ mod tests {
         let unbounded = TerrainLodDistances {
             block_maximum_distance: f32::MAX,
             split_distance_mult: f32::MAX,
-            ..defaults
+            ..skyrim
         };
         assert_eq!(unbounded.reach_cells(LodTier::Tier16), i32::MAX);
         assert_eq!(query_unload_radius(i32::MAX), i32::MAX);
@@ -1591,7 +1598,7 @@ mod tests {
 
     #[test]
     fn tier_handoff_is_per_quadrant_and_falls_back_to_ready_coarser_data() {
-        let defaults = TerrainLodDistances::default();
+        let defaults = side_reach();
         let available = HashSet::from([LodTier::Tier4, LodTier::Tier8, LodTier::Tier16]);
         assert_eq!(
             select_terrain_lod_tier(2, false, &available, &defaults),
@@ -1777,7 +1784,11 @@ mod tests {
     #[test]
     fn two_cell_handoff_is_independent_and_falls_back_after_a_tier_failure() {
         let mut world = World::new();
-        world.insert_resource(EngineConfig::default());
+        // The tier boundaries below are written for each tier reaching its chunk side.
+        world.insert_resource(EngineConfig {
+            terrain_lod: side_reach(),
+            ..EngineConfig::default()
+        });
         world.insert_resource(RenderOrigin(IVec2::ZERO));
         world.insert_resource(StreamingMetrics::default());
         world.insert_resource(ProfilingState::default());
@@ -1940,7 +1951,7 @@ mod tests {
             fine_chunk,
             LodOrigin::new(0, 0),
             (22, 0),
-            TerrainLodDistances::default().max_reach_cells() + LOD_UNLOAD_MARGIN_CELLS,
+            side_reach().max_reach_cells() + LOD_UNLOAD_MARGIN_CELLS,
         ));
     }
 }
