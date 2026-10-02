@@ -34,11 +34,6 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
-// Skyrim's base LAND UV frequency is eight repeats per cell, multiplied by
-// fLandTextureTilingMult:Landscape (vanilla default 3). Cell UVs here span 0..1.
-// Apply this only to texture sampling, never to the LAND blend-weight grid.
-const LAND_TEXTURE_REPEATS_PER_CELL: f32 = 8.0 * 3.0;
-
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
 const WAVE_STRENGTH: f32 = 0.05;
