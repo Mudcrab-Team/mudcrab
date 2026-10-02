@@ -2,7 +2,7 @@ use super::{
     RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage, TerrainSurfaceReady,
 };
 use crate::{
-    config::EngineConfig,
+    config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
     world::{
         components::{CELL_SIZE, StreamingCamera},
@@ -28,15 +28,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-const LOD_MAX_DISTANCE_CELLS: i32 = 16;
 const LOD_UNLOAD_MARGIN_CELLS: i32 = 2;
 const LOD_RESPONSE_SCAN_LIMIT: usize = 32;
 const LOD_CHUNK_MAX_RETRIES: u8 = 3;
 const LOD_CHUNK_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 const LOD_CHUNK_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
-pub(crate) const LOD_CAMERA_FAR: f32 =
-    CELL_SIZE * (LOD_MAX_DISTANCE_CELLS as f32 + 0.5) * std::f32::consts::SQRT_2;
+/// A far plane that keeps every cell within `reach_cells` of the camera's cell.
+fn lod_camera_far(reach_cells: i32) -> f32 {
+    CELL_SIZE * (reach_cells as f32 + 0.5) * std::f32::consts::SQRT_2
+}
 
 #[derive(Resource, Default)]
 pub(super) struct LodStreaming {
@@ -89,7 +90,7 @@ impl LodStreaming {
             })
     }
 
-    fn move_center(&mut self, center: IVec2, worldspace_id: u32) {
+    fn move_center(&mut self, center: IVec2, worldspace_id: u32, distances: &TerrainLodDistances) {
         self.generation = self.generation.wrapping_add(1);
         self.requested_queries.clear();
         self.pending_queries.clear();
@@ -101,7 +102,7 @@ impl LodStreaming {
                     metadata.key,
                     metadata.origin,
                     (i64::from(center.x), i64::from(center.y)),
-                    query_unload_radius(metadata.key.tier),
+                    query_unload_radius(distances.reach_cells(metadata.key.tier)),
                 );
             if keep {
                 *generation = self.generation;
@@ -256,7 +257,7 @@ pub(super) fn plan_lod_chunks(
 
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     if streaming.center != Some(center) {
-        streaming.move_center(center, config.worldspace_id);
+        streaming.move_center(center, config.worldspace_id, &config.terrain_lod);
     }
     let generation = streaming.generation;
     for tier in LodTier::ALL {
@@ -267,7 +268,7 @@ pub(super) fn plan_lod_chunks(
             config.worldspace_id,
             tier,
             center,
-            query_unload_radius(tier),
+            query_unload_radius(config.terrain_lod.reach_cells(tier)),
         );
         match database.request_lod_chunks(generation, query) {
             Ok(()) => {
@@ -291,7 +292,7 @@ pub(super) fn plan_lod_chunks(
             *key,
             status.origin(),
             center64,
-            query_unload_radius(key.tier),
+            query_unload_radius(config.terrain_lod.reach_cells(key.tier)),
         );
         if !keep {
             if let Some(root) = status.root() {
@@ -373,7 +374,9 @@ pub(super) fn collect_lod_chunks(
                     && let Ok(mut projection) = camera_projection.single_mut()
                     && let Projection::Perspective(perspective) = &mut *projection
                 {
-                    perspective.far = perspective.far.max(LOD_CAMERA_FAR);
+                    perspective.far = perspective
+                        .far
+                        .max(lod_camera_far(config.terrain_lod.max_reach_cells()));
                 }
                 streaming.pending_chunks.extend(
                     chunks
@@ -401,7 +404,7 @@ pub(super) fn collect_lod_chunks(
             metadata.key,
             metadata.origin,
             (i64::from(center.x), i64::from(center.y)),
-            query_unload_radius(metadata.key.tier),
+            query_unload_radius(config.terrain_lod.reach_cells(metadata.key.tier)),
         ) {
             continue;
         }
@@ -715,6 +718,7 @@ pub(super) fn update_terrain_lod_visibility(
                     distance,
                     full_ready.contains(&(grid, quadrant)),
                     candidates,
+                    &config.terrain_lod,
                 ),
             )
         })
@@ -958,17 +962,20 @@ fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
     Ok(())
 }
 
+/// The finest ready tier whose configured reach covers the cell, or `None` once
+/// full detail is drawable or the cell is beyond every reach.
 fn select_terrain_lod_tier(
     grid_distance: i32,
     full_detail_ready: bool,
     available: &HashSet<LodTier>,
+    distances: &TerrainLodDistances,
 ) -> Option<LodTier> {
     if full_detail_ready {
         return None;
     }
     LodTier::ALL
         .into_iter()
-        .find(|tier| grid_distance <= tier.side_cells() && available.contains(tier))
+        .find(|tier| grid_distance <= distances.reach_cells(*tier) && available.contains(tier))
 }
 
 fn chebyshev_grid_distance(left: IVec2, right: IVec2) -> i32 {
@@ -1015,8 +1022,8 @@ fn is_current_query(streaming: &LodStreaming, generation: u64) -> bool {
     streaming.center.is_some() && generation == streaming.generation
 }
 
-fn query_unload_radius(tier: LodTier) -> i32 {
-    tier.side_cells() + LOD_UNLOAD_MARGIN_CELLS
+fn query_unload_radius(reach_cells: i32) -> i32 {
+    reach_cells.saturating_add(LOD_UNLOAD_MARGIN_CELLS)
 }
 
 fn chunk_min_grid(key: ChunkKey, origin: LodOrigin) -> (i64, i64) {
@@ -1205,6 +1212,53 @@ mod tests {
     use crate::world::database::LodChunkBounds;
     use bevy::ecs::system::RunSystemOnce;
 
+    fn default_unload_radius(tier: LodTier) -> i32 {
+        query_unload_radius(TerrainLodDistances::default().reach_cells(tier))
+    }
+
+    /// `SkyrimPrefs.ini` distances move each tier's reach, not the chunk sizes:
+    /// Skyrim's own defaults keep level 4 out to 12 cells instead of 4.
+    #[test]
+    fn configured_skyrim_distances_set_each_tier_reach() {
+        let defaults = TerrainLodDistances::default();
+        assert_eq!(
+            LodTier::ALL.map(|tier| defaults.reach_cells(tier)),
+            [4, 8, 16]
+        );
+        let skyrim = TerrainLodDistances {
+            block_level0_distance: 35_000.0,
+            block_level1_distance: 70_000.0,
+            block_maximum_distance: 250_000.0,
+            split_distance_mult: 1.5,
+        };
+        let available = HashSet::from(LodTier::ALL);
+        assert_eq!(
+            select_terrain_lod_tier(12, false, &available, &skyrim),
+            Some(LodTier::Tier4)
+        );
+        assert_eq!(
+            select_terrain_lod_tier(12, false, &available, &defaults),
+            Some(LodTier::Tier16)
+        );
+        assert_eq!(
+            select_terrain_lod_tier(91, false, &available, &skyrim),
+            Some(LodTier::Tier16)
+        );
+        assert_eq!(
+            select_terrain_lod_tier(92, false, &available, &skyrim),
+            None
+        );
+        assert_eq!(query_unload_radius(skyrim.reach_cells(LodTier::Tier4)), 14);
+        assert!(lod_camera_far(skyrim.max_reach_cells()) > lod_camera_far(16));
+        let unbounded = TerrainLodDistances {
+            block_maximum_distance: f32::MAX,
+            split_distance_mult: f32::MAX,
+            ..defaults
+        };
+        assert_eq!(unbounded.reach_cells(LodTier::Tier16), i32::MAX);
+        assert_eq!(query_unload_radius(i32::MAX), i32::MAX);
+    }
+
     #[test]
     fn failed_queries_retry_with_bounded_backoff_in_the_same_generation() {
         let mut streaming = LodStreaming::default();
@@ -1223,7 +1277,7 @@ mod tests {
         streaming.query_failed(tier, LodChunkFailureClass::Transient, now);
         assert!(!streaming.query_ready(tier, now + Duration::from_secs(100)));
         assert!(streaming.pending_queries.is_empty());
-        streaming.move_center(IVec2::ZERO, 1);
+        streaming.move_center(IVec2::ZERO, 1, &TerrainLodDistances::default());
         assert!(streaming.query_ready(tier, now));
     }
 
@@ -1240,7 +1294,7 @@ mod tests {
 
     #[test]
     fn tier_residency_bounds_near_chunks_and_preserves_coarse_inner_fallback() {
-        assert_eq!(LodTier::ALL.map(query_unload_radius), [6, 10, 18]);
+        assert_eq!(LodTier::ALL.map(default_unload_radius), [6, 10, 18]);
         for tier in LodTier::ALL {
             let origin = LodOrigin::new(-4, -4);
             let inner = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, -1, -1));
@@ -1248,14 +1302,14 @@ mod tests {
                 inner,
                 origin,
                 (-1, -1),
-                query_unload_radius(tier)
+                default_unload_radius(tier)
             ));
             let outer = ChunkKey::new(1, tier, origin.chunk_for_cell(tier, 30, 30));
             assert!(!chunk_within_radius(
                 outer,
                 origin,
                 (-1, -1),
-                query_unload_radius(tier)
+                default_unload_radius(tier)
             ));
         }
     }
@@ -1266,7 +1320,7 @@ mod tests {
         for x in [-33, -17, -16, -5, -4, -1, 0, 3, 4, 15, 16, 31, 32] {
             let center = IVec2::new(x, -x);
             for tier in LodTier::ALL {
-                let radius = query_unload_radius(tier);
+                let radius = default_unload_radius(tier);
                 let query = query_for(1, tier, center, radius);
                 let mut bounded = 0;
                 let mut previous = 0;
@@ -1332,13 +1386,21 @@ mod tests {
             pending_chunks: VecDeque::from([(7, metadata.clone(), None)]),
             ..default()
         };
-        streaming.move_center(IVec2::new(1, 0), metadata.key.worldspace_id);
+        streaming.move_center(
+            IVec2::new(1, 0),
+            metadata.key.worldspace_id,
+            &TerrainLodDistances::default(),
+        );
         assert_eq!(
             streaming.pending_chunks.front(),
             Some(&(8, metadata.clone(), None))
         );
         assert!(!is_current_query(&streaming, 7));
-        streaming.move_center(IVec2::new(1000, 1000), metadata.key.worldspace_id);
+        streaming.move_center(
+            IVec2::new(1000, 1000),
+            metadata.key.worldspace_id,
+            &TerrainLodDistances::default(),
+        );
         assert!(streaming.pending_chunks.is_empty());
     }
 
@@ -1529,28 +1591,38 @@ mod tests {
 
     #[test]
     fn tier_handoff_is_per_quadrant_and_falls_back_to_ready_coarser_data() {
+        let defaults = TerrainLodDistances::default();
         let available = HashSet::from([LodTier::Tier4, LodTier::Tier8, LodTier::Tier16]);
         assert_eq!(
-            select_terrain_lod_tier(2, false, &available),
+            select_terrain_lod_tier(2, false, &available, &defaults),
             Some(LodTier::Tier4)
         );
         assert_eq!(
-            select_terrain_lod_tier(6, false, &available),
+            select_terrain_lod_tier(6, false, &available, &defaults),
             Some(LodTier::Tier8)
         );
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available),
+            select_terrain_lod_tier(12, false, &available, &defaults),
             Some(LodTier::Tier16)
         );
-        assert_eq!(select_terrain_lod_tier(2, true, &available), None);
+        assert_eq!(
+            select_terrain_lod_tier(2, true, &available, &defaults),
+            None
+        );
 
         let coarse_only = HashSet::from([LodTier::Tier16]);
         assert_eq!(
-            select_terrain_lod_tier(2, false, &coarse_only),
+            select_terrain_lod_tier(2, false, &coarse_only, &defaults),
             Some(LodTier::Tier16)
         );
-        assert_eq!(select_terrain_lod_tier(17, false, &coarse_only), None);
-        assert_eq!(select_terrain_lod_tier(2, false, &HashSet::new()), None);
+        assert_eq!(
+            select_terrain_lod_tier(17, false, &coarse_only, &defaults),
+            None
+        );
+        assert_eq!(
+            select_terrain_lod_tier(2, false, &HashSet::new(), &defaults),
+            None
+        );
     }
 
     #[test]
@@ -1868,7 +1940,7 @@ mod tests {
             fine_chunk,
             LodOrigin::new(0, 0),
             (22, 0),
-            LOD_MAX_DISTANCE_CELLS + LOD_UNLOAD_MARGIN_CELLS,
+            TerrainLodDistances::default().max_reach_cells() + LOD_UNLOAD_MARGIN_CELLS,
         ));
     }
 }

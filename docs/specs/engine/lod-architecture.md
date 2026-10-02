@@ -25,9 +25,46 @@ stale discard and a default of one commit per frame
 so fast travel cannot strand half-loaded chunks. Unload uses hysteresis:
 drop a tier only when the camera leaves tier range plus a margin ring, so
 boundary oscillation does not thrash loads.
-Each tier queries, admits, retains and unloads at its own outer distance plus
-two cells: 6/10/18 cells for tiers 4/8/16. Coarse tiers retain inner coverage
-for fallback while finer data is pending or unavailable.
+Each tier queries, admits, retains and unloads at its own reach plus two
+cells. With the default reach of 4/8/16 cells that is 6/10/18 cells for tiers
+4/8/16. Coarse tiers retain inner coverage for fallback while finer data is
+pending or unavailable.
+
+## Distance configuration (Skyrim INI parity)
+
+Tier reach and the full-detail grid use Skyrim's own setting names, so values a
+player, mod manager or LOD generator writes for Skyrim carry over unchanged.
+`--ini <path>` reads a `Skyrim.ini`/`SkyrimPrefs.ini`-format file; files apply
+in the order given, later files override earlier ones key by key, and explicit
+command-line options override every file wherever they appear
+(`crates/engine/src/skyrim_ini.rs`).
+
+| Section | Key | Effect |
+|---|---|---|
+| `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2`; odd values only |
+| `[TerrainManager]` | `fBlockLevel0Distance` | tier-4 reach before the multiplier |
+| `[TerrainManager]` | `fBlockLevel1Distance` | tier-8 reach before the multiplier |
+| `[TerrainManager]` | `fBlockMaximumDistance` | tier-16 reach before the multiplier |
+| `[TerrainManager]` | `fSplitDistanceMult` | terrain multiplier on the three block distances |
+
+A tier's reach in cells is `floor(block distance * fSplitDistanceMult / 4096)`,
+compared with the Chebyshev cell distance from the camera's cell, so each
+tier covers a square of cells around the camera. The terrain multiplier follows DynDOLOD's definition: the object LOD
+distances times `fSplitDistanceMult` give the terrain LOD distances. Object LOD
+(Phase 2) will read the same three block distances without the multiplier.
+
+Defaults are the reach the initial terrain slice was measured and accepted at:
+16384, 32768 and 65536 units with a multiplier of 1, so 4/8/16 cells.
+Skyrim's own `SkyrimPrefs.ini` defaults are 35000, 70000, 250000 and 1.5
+([STEP](https://stepmodifications.org/wiki/SkyrimSE:SkyrimPrefs_INI/TerrainManager)),
+which reach 12/25/91 cells. Making those the engine default needs a new
+matched-quality performance capture; supplying them through `--ini` works now.
+The camera far plane follows the largest configured reach.
+
+Not yet honoured: level-32 terrain (no compiled tier), `fTreeLoadDistance`
+(Phase 3), `uLargeRefLODGridSize` (large references are omitted), and the
+Skyrim quality presets themselves. The engine does not search for the user's
+`My Games` INI files; a launcher or script passes them explicitly.
 
 Handoff: each GLB chunk has a stable source-cell node with separately
 hideable terrain and object groups, and compatible material batches beneath
@@ -68,7 +105,8 @@ cumulative diagnostics and the unrecovered gauge.
 ## Camera, shadows, fog
 
 Camera far is currently `CELL_SIZE * (stream_radius + 2) * 2` (`app.rs`),
-32,768 units at the default radius 2. Sun shadow cascades derive from the
+32,768 units at the default radius 2. Once terrain LOD chunks arrive it
+extends to cover the largest configured tier reach (`streaming/lod.rs`). Sun shadow cascades derive from the
 same radius. LOD range must be fitted with the far plane and fog; distant
 shadow coverage needs its own quality and cost decision. `SkyrimClear` fog
 reaches its maximum amount of 0.85 at 53,289 units (`sky.rs`), so it does not
@@ -210,6 +248,14 @@ large-reference cases with a recorded reason until their later route exists.
 Preserve authored LOD shape metadata before using those NIF blocks as tier
 sources. Compile compatible material batches within the Phase 0 visibility
 unit, and retain provenance and a missing-reference inspector.
+
+Vanilla object LOD (`.bto`, readable through the `BSMultiBoundNode` and
+`BSSubIndexTriShape` reader support) may serve as a validation reference, not a
+source. Comparisons are advisory and per worldspace: a load order that changes
+a worldspace's winning references, statics or LOD models makes vanilla a stale
+reference, so that worldspace's comparison is skipped and reported as such, and
+a configuration option disables or overrides the reference set for modded
+installs. A mismatch never fails a build whose inputs differ from vanilla.
 
 Gate: representative state, movement, large-reference, negative-grid, and
 boundary fixtures show no baked stale object or lasting overlap. Partial and
