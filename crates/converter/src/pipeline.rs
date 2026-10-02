@@ -761,7 +761,6 @@ impl AssetPipeline {
                 .sum();
             let mut pruned_completed = 0;
             for file in &pruned {
-                batch.refresh_pruned_output(&file.glb)?;
                 for uri in &file.removed_uris {
                     pruned_completed += 1;
                     // The warning goes out as a notice on the progress channel rather than to
@@ -1586,18 +1585,6 @@ impl ConversionBatch<'_> {
             .entry(glb.to_owned())
             .or_default()
             .insert(reference.to_owned())
-    }
-
-    fn refresh_pruned_output(&mut self, glb: &str) -> Result<()> {
-        let key = canonical_asset_path(glb, AssetKind::Mesh, "nif")?;
-        let entry = self.manifest.entries.get_mut(&key).ok_or_else(|| {
-            color_eyre::eyre::eyre!("pruned GLB has no conversion provenance: {glb}")
-        })?;
-        let path = self.staging.join(glb);
-        entry.output_size = fs::metadata(&path)?.len();
-        entry.output_hash = hash_file(&path)?;
-        self.journal
-            .record(&key, &staged_output(entry, self.expected_configuration))
     }
 }
 
@@ -4750,8 +4737,10 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
-        // A stale backup makes the first run fail at publishing, after the prune pass, and keep
-        // its staging directory and journal.
+        // A stale backup beside a live output makes the first run fail at publishing, after the
+        // prune pass, and keep its staging directory and journal. Without the output, a lone
+        // backup reads as an interrupted swap and is recovered instead.
+        fs::create_dir_all(&output).unwrap();
         let backup = output.with_extension(format!("backup-{}", std::process::id()));
         fs::create_dir_all(&backup).unwrap();
 
@@ -4935,11 +4924,13 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
-        // A stale backup makes the run fail at publishing, after the prune pass, and keep its
-        // staging directory and journal.
+        // A stale backup beside a live output makes the run fail at publishing, after the prune
+        // pass, and keep its staging directory and journal. Without the output, a lone backup
+        // reads as an interrupted swap and is recovered instead.
         let backup = output.with_extension(format!("backup-{}", std::process::id()));
 
         // First cycle: stop before the first publish, then resume to completion.
+        fs::create_dir_all(&output).unwrap();
         fs::create_dir_all(&backup).unwrap();
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
