@@ -1,5 +1,6 @@
 use crate::esm::{
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
+    load_order::LoadOrder,
     records::RawRecord,
 };
 use crate::{
@@ -196,7 +197,29 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
 
 type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 
+/// Refresh projections without changing existing provenance. Synthetic records
+/// without a source load order have no formid_map entry; never invent an owner.
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
+    export_records(conn, master, None)
+}
+
+/// Export stable owning-plugin/local-ID pairs separately from the winning
+/// override priority in records.load_order.
+pub fn export_to_db_with_load_order(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: &LoadOrder,
+) -> Result<()> {
+    export_records(conn, master, Some(order))
+}
+
+/// Writes every merged record; with a load order, also records each record's
+/// owning plugin and plugin-local ID in `formid_map`.
+fn export_records(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: Option<&LoadOrder>,
+) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
     tx.execute("DELETE FROM movement_game_settings", [])?;
@@ -233,10 +256,18 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             "INSERT OR REPLACE INTO records(form_id, record_type, cell_id, worldspace_id, load_order, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![form_id, type_str, record.cell_form_id, record.worldspace_form_id, record.load_order, blob],
         )?;
-        tx.execute(
-            "INSERT OR REPLACE INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, 'merged', ?1, ?2)",
-            params![form_id, type_str],
-        )?;
+        if let Some(order) = order {
+            let identity = order.identity(form_id).map_err(|error| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("record {form_id:08X}: {error}"),
+                )))
+            })?;
+            tx.execute(
+                "INSERT OR REPLACE INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, ?2, ?3, ?4)",
+                params![form_id, identity.plugin, identity.local_id, type_str],
+            )?;
+        }
 
         let view = SubrecordView::new(&record.subrecords);
         if let Some(vmad_bytes) = view.find(b"VMAD")
@@ -341,10 +372,12 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
             }
             "GMST" => {
                 let editor_id = view.get_string(b"EDID");
-                if matches!(
-                    editor_id.as_deref(),
-                    Some("fMoveCharWalkBase" | "fJumpHeightMin")
-                ) {
+                let movement_name = editor_id.as_deref().and_then(|name| {
+                    ["fMoveCharWalkBase", "fJumpHeightMin"]
+                        .into_iter()
+                        .find(|known| known.eq_ignore_ascii_case(name))
+                });
+                if let Some(editor_id) = movement_name {
                     let value = decode_movement_setting(&view, form_id)?;
                     tx.execute(
                         "INSERT OR REPLACE INTO movement_game_settings(id, editor_id, value, load_order) VALUES (?1, ?2, ?3, ?4)",

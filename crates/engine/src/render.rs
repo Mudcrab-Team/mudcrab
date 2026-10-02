@@ -25,6 +25,7 @@ use bevy::{
     shader::ShaderRef,
 };
 use serde::Serialize;
+use shared::LAND_TEXTURE_REPEATS_PER_CELL;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -1032,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_sampler_repeats_with_linear_mip_filtering() {
+    fn terrain_sampler_repeats_with_linear_mips_and_16x_anisotropy() {
         let sampler = terrain_layer_sampler();
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
@@ -1524,7 +1525,7 @@ mod tests {
         );
     }
 
-    /// The shader tiles every layer `tiling` times across a cell (`uv * 8`), so the layer textures
+    /// The shader tiles every layer `tiling` times across a cell, so the layer textures
     /// must be sampled with a repeating address mode. Bevy's default clamps to the edge, which
     /// stretched the textures in the frames: everything past the first tile read the edge texels.
     #[test]
