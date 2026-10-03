@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CONVERTER_SCHEMA_VERSION: u32 = 17;
+pub const CONVERTER_SCHEMA_VERSION: u32 = 18;
 
 /// Provenance journal the converter keeps inside a staging directory.
 ///
@@ -201,7 +201,7 @@ pub struct ConversionManifest {
 /// These schema changes affect GLBs/world data, leaving texture/script/archive
 /// bytes compatible. Configuration and source hashes still have to match.
 pub(crate) fn can_reuse_non_mesh_outputs(schema: u32) -> bool {
-    matches!(schema, 12..=16)
+    matches!(schema, 12..=17)
 }
 
 impl ConversionManifest {
@@ -218,8 +218,8 @@ impl ConversionManifest {
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
         if can_reuse_non_mesh_outputs(manifest.schema_version) {
             // Schemas 13-15 changed mesh/material publication; schema 16 adds
-            // authored collision to GLBs; schema 17 fixes static emission. Preserve
-            // verified archives, textures and scripts; rebuild GLBs/world data.
+            // authored collision; schemas 17–18 fix emission/specular response.
+            // Preserve verified archives/textures/scripts; rebuild GLBs/world data.
             manifest.complete = false;
             manifest
                 .entries
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14, 15, 16] {
+        for schema_version in [12, 13, 14, 15, 16, 17] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {

@@ -12,6 +12,8 @@ use std::{
 };
 
 const NULL_BLOCK: u32 = u32::MAX;
+const SLSF1_SPECULAR: u32 = 1;
+const SLSF1_MODEL_SPACE_NORMALS: u32 = 1 << 12;
 const SLSF1_ENVIRONMENT_MAPPING: u32 = 1 << 7;
 const SLSF1_VERTEX_ALPHA: u32 = 1 << 3;
 const SLSF1_SCREENDOOR_ALPHA_FADE: u32 = 1 << 19;
@@ -399,6 +401,16 @@ fn srgb_texture_alias(canonical: &str) -> Result<String> {
     Ok(format!("{stem}.opensky-srgb.ktx2"))
 }
 
+/// Approximate the width of Skyrim's Blinn-Phong exponent with a GGX lobe.
+/// Bevy squares perceptual roughness to obtain the microfacet alpha parameter.
+/// This preserves exponent ordering, but does not recover Skyrim's BRDF.
+fn perceptual_roughness(glossiness: f32) -> f32 {
+    if !glossiness.is_finite() || glossiness < 0.0 {
+        return 1.0;
+    }
+    (2.0 / (glossiness + 2.0)).powf(0.25)
+}
+
 fn publish_material(
     shape: &NifShapeMaterial,
     material: &ValidatedNifMaterial,
@@ -413,7 +425,7 @@ fn publish_material(
     let mut pbr = serde_json::json!({
         "baseColorFactor": material.base_color,
         "metallicFactor": 0.0,
-        "roughnessFactor": (1.0 - (material.glossiness / 100.0).clamp(0.0, 1.0))
+        "roughnessFactor": perceptual_roughness(material.glossiness)
     });
     if let Some(slot) = diffuse {
         pbr["baseColorTexture"] = serde_json::json!({
@@ -467,6 +479,7 @@ fn publish_material(
     publish_specular(
         &mut output,
         material,
+        normal,
         specular,
         glb_output_path,
         registry,
@@ -532,19 +545,33 @@ fn publish_emissive(
 fn publish_specular(
     output: &mut serde_json::Value,
     material: &ValidatedNifMaterial,
+    normal: Option<&NifTextureSlot>,
     specular: Option<&NifTextureSlot>,
     glb_output_path: &Path,
     registry: &mut TextureRegistry,
     used_extensions: &mut BTreeSet<String>,
 ) -> Result<()> {
-    let enabled = material.specular_strength > 0.0 || specular.is_some();
-    if !enabled {
-        return Ok(());
-    }
+    let enabled = material.shader_flags_1 & SLSF1_SPECULAR != 0;
+    let strength = if enabled {
+        material.specular_strength.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mask = normal
+        .filter(|_| strength > 0.0 && material.shader_flags_1 & SLSF1_MODEL_SPACE_NORMALS == 0);
+    // Always publish zero explicitly: omitting the extension enables glTF's default shine.
     let mut extension = serde_json::json!({
-        "specularFactor": material.specular_strength.clamp(0.0, 1.0),
+        "specularFactor": strength,
         "specularColorFactor": material.specular_color.map(|value| value.clamp(0.0, 1.0))
     });
+    if let Some(slot) = mask {
+        extension["specularTexture"] = serde_json::json!({
+            "index": registry.texture(&slot.path, glb_output_path, false)?,
+            "texCoord": 0
+        });
+        // Keep the glTF factor bounded. The native loader owns Bevy-specific compensation.
+        output["extras"]["openSkyrim"]["specularMask"] = serde_json::json!("normal_alpha");
+    }
     if let Some(slot) = specular {
         extension["specularColorTexture"] = serde_json::json!({
             "index": registry.texture(&slot.path, glb_output_path, true)?,
@@ -1173,7 +1200,7 @@ mod tests {
             shader_block: 4,
             texture_set_block: Some(5),
             alpha_property_block: (mode != NifAlphaMode::Opaque).then_some(6),
-            shader_flags_1: 0,
+            shader_flags_1: SLSF1_SPECULAR,
             shader_flags_2: 0,
             base_color: [1.0; 4],
             alpha: 1.0,
@@ -1208,6 +1235,108 @@ mod tests {
             "extensionsUsed": ["KHR_materials_pbrSpecularGlossiness"],
             "extensionsRequired": ["KHR_materials_pbrSpecularGlossiness"]
         })
+    }
+
+    fn publish_specular_fixture(material: ValidatedNifMaterial) -> serde_json::Value {
+        let mut document = gltf(1);
+        publish_gltf_materials(
+            &mut document,
+            &[shape(10, material)],
+            &[10],
+            Path::new("assets/meshes/specular.glb"),
+        )
+        .unwrap();
+        document
+    }
+
+    #[test]
+    fn v9_glossiness_is_a_monotonic_blinn_phong_exponent() {
+        let mut previous = 2.0;
+        for (exponent, expected) in [
+            (0.0, 1.0),
+            (5.0, 0.731_110_5),
+            (30.0, 0.5),
+            (80.0, 0.395_188_28),
+            (100.0, 0.374_203_18),
+            (200.0, 0.315_442_1),
+            (400.0, 0.265_583_43),
+        ] {
+            let mut source = fixture(NifAlphaMode::Opaque, false, false, false);
+            source.glossiness = exponent;
+            let document = publish_specular_fixture(source);
+            let roughness = document["materials"][0]["pbrMetallicRoughness"]["roughnessFactor"]
+                .as_f64()
+                .unwrap();
+            assert!(
+                (roughness - expected).abs() < 1e-5,
+                "exponent {exponent}: {roughness}"
+            );
+            assert!(roughness > 0.0 && roughness <= 1.0 && roughness < previous);
+            previous = roughness;
+        }
+    }
+
+    #[test]
+    fn v10_disabled_and_zero_specular_are_explicitly_nonreflecting() {
+        for (flags, strength) in [(0, 1.0), (0, 0.0), (1, 0.0)] {
+            let mut source = fixture(NifAlphaMode::Opaque, false, false, false);
+            source.shader_flags_1 = flags;
+            source.specular_strength = strength;
+            source.textures.push(NifTextureSlot {
+                slot: 1,
+                semantic: NifTextureSemantic::Normal,
+                path: "textures/mask_n.dds".into(),
+                required: false,
+            });
+            let document = publish_specular_fixture(source);
+            let material = &document["materials"][0];
+            let specular = &material["extensions"]["KHR_materials_specular"];
+            assert_eq!(specular["specularFactor"], 0.0);
+            assert!(specular.get("specularTexture").is_none());
+            assert!(
+                material
+                    .pointer("/extras/openSkyrim/specularMask")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn v10_normal_alpha_mask_is_linear_shared_and_excludes_model_space_normals() {
+        for model_space in [false, true] {
+            let mut source = fixture(NifAlphaMode::Opaque, false, false, false);
+            source.shader_flags_1 = 1 | if model_space { 1 << 12 } else { 0 };
+            source.specular_strength = 0.8;
+            source.textures.push(NifTextureSlot {
+                slot: 1,
+                semantic: NifTextureSemantic::Normal,
+                path: "textures/mask_n.dds".into(),
+                required: false,
+            });
+            let document = publish_specular_fixture(source);
+            let material = &document["materials"][0];
+            let specular = &material["extensions"]["KHR_materials_specular"];
+            assert!((specular["specularFactor"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+            if model_space {
+                assert!(specular.get("specularTexture").is_none());
+                assert!(
+                    material
+                        .pointer("/extras/openSkyrim/specularMask")
+                        .is_none()
+                );
+            } else {
+                assert_eq!(
+                    specular["specularTexture"]["index"],
+                    material["normalTexture"]["index"]
+                );
+                assert_eq!(
+                    material["extras"]["openSkyrim"]["specularMask"],
+                    "normal_alpha"
+                );
+                assert_eq!(document["images"][0]["uri"], "../textures/mask_n.ktx2");
+                assert_eq!(document["textures"].as_array().unwrap().len(), 1);
+            }
+        }
     }
 
     #[test]
@@ -1587,7 +1716,7 @@ mod tests {
         let roughness = published["pbrMetallicRoughness"]["roughnessFactor"]
             .as_f64()
             .unwrap();
-        assert!((roughness - 0.68).abs() < 1e-6);
+        assert!((roughness - 0.492_479_06).abs() < 1e-6);
         assert_eq!(
             published["emissiveFactor"],
             serde_json::json!([1.0, 0.5, 0.25])

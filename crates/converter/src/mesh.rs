@@ -432,6 +432,15 @@ fn prune_document_images(document: &mut serde_json::Value, removed: &HashSet<usi
         for slot in ["normalTexture", "occlusionTexture", "emissiveTexture"] {
             remap_texture_info(object, slot, "index", &texture_remap);
         }
+        if let Some(extension) = object
+            .get_mut("extensions")
+            .and_then(|extensions| extensions.get_mut("KHR_materials_specular"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for slot in ["specularTexture", "specularColorTexture"] {
+                remap_texture_info(extension, slot, "index", &texture_remap);
+            }
+        }
         if let Some(slots) = object
             .get_mut("extensions")
             .and_then(|extensions| extensions.get_mut("OPEN_SKYRIM_material"))
@@ -1405,6 +1414,11 @@ fn texture_dependencies(document: &serde_json::Value) -> Vec<TextureDependency> 
                     false,
                 ),
                 (
+                    "/extensions/KHR_materials_specular/specularTexture/index",
+                    TextureSemantic::SpecularGlossiness,
+                    false,
+                ),
+                (
                     "/extensions/KHR_materials_specular/specularColorTexture/index",
                     TextureSemantic::SpecularGlossiness,
                     false,
@@ -1918,6 +1932,33 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(fs::read(&glb).unwrap(), bytes);
+    }
+
+    #[test]
+    fn v11_prunes_and_remaps_both_specular_textures_without_changing_strength() {
+        let mut document = serde_json::json!({
+            "images": [{"uri":"a.ktx2"},{"uri":"gone.ktx2"},{"uri":"b.ktx2"}],
+            "textures": [{"source":0},{"source":1},{"source":2}],
+            "materials": [
+                {"normalTexture":{"index":2},"extensions":{"KHR_materials_specular":{
+                    "specularFactor":0.8,"specularTexture":{"index":2},"specularColorTexture":{"index":0}
+                }}},
+                {"extensions":{"KHR_materials_specular":{
+                    "specularFactor":0.8,"specularTexture":{"index":1},"specularColorTexture":{"index":2}
+                }}}
+            ]
+        });
+        prune_document_images(&mut document, &HashSet::from([1]));
+        let retained = &document["materials"][0];
+        let specular = &retained["extensions"]["KHR_materials_specular"];
+        assert_eq!(specular["specularTexture"]["index"], 1);
+        assert_eq!(specular["specularColorTexture"]["index"], 0);
+        assert_eq!(retained["normalTexture"]["index"], 1);
+        assert_eq!(specular["specularFactor"], 0.8);
+        let dropped = &document["materials"][1]["extensions"]["KHR_materials_specular"];
+        assert!(dropped.get("specularTexture").is_none());
+        assert_eq!(dropped["specularColorTexture"]["index"], 1);
+        assert_eq!(dropped["specularFactor"], 0.8);
     }
 
     #[test]
