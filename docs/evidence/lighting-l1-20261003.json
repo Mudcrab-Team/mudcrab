@@ -1,0 +1,3423 @@
+{
+  "scope": "Synthetic material/output checks; not retail Skyrim parity or performance acceptance",
+  "device": "Fiji RX 6700 XT, RADV, Mesa 26.2.2",
+  "tests": {
+    "command": "cargo test --workspace --all-targets; cargo test --workspace --doc",
+    "passed": 844,
+    "failed": 0,
+    "ignored": 18
+  },
+  "probes": {
+    "alpha-exterior": {
+      "adapter": "AMD Radeon RX 6700 XT (RADV NAVI22)",
+      "ev100": 9.7,
+      "interior": false,
+      "kind": "alpha-color-depth-shadow",
+      "legacy_prepass": false,
+      "passed": true,
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "actual": [
+            154,
+            130,
+            107
+          ],
+          "case": "discarded_depth",
+          "max_error_u8": 0,
+          "reference": [
+            154,
+            130,
+            107
+          ]
+        },
+        {
+          "actual": [
+            75,
+            150,
+            97
+          ],
+          "case": "visible",
+          "max_error_u8": 0,
+          "reference": [
+            75,
+            150,
+            97
+          ]
+        },
+        {
+          "actual": [
+            154,
+            130,
+            107
+          ],
+          "case": "discarded_shadow",
+          "max_error_u8": 0,
+          "reference": [
+            154,
+            130,
+            107
+          ]
+        },
+        {
+          "actual": [
+            0,
+            0,
+            0
+          ],
+          "case": "cast_shadow",
+          "max_error_u8": 0,
+          "reference": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actual": [
+            146,
+            123,
+            100
+          ],
+          "case": "lit_receiver",
+          "max_error_u8": 0,
+          "reference": [
+            146,
+            123,
+            100
+          ]
+        }
+      ],
+      "tolerance_u8": 2
+    },
+    "alpha-interior": {
+      "adapter": "AMD Radeon RX 6700 XT (RADV NAVI22)",
+      "ev100": 9.7,
+      "interior": true,
+      "kind": "alpha-color-depth-shadow",
+      "legacy_prepass": false,
+      "passed": true,
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "actual": [
+            154,
+            130,
+            107
+          ],
+          "case": "discarded_depth",
+          "max_error_u8": 0,
+          "reference": [
+            154,
+            130,
+            107
+          ]
+        },
+        {
+          "actual": [
+            75,
+            150,
+            97
+          ],
+          "case": "visible",
+          "max_error_u8": 0,
+          "reference": [
+            75,
+            150,
+            97
+          ]
+        },
+        {
+          "actual": [
+            154,
+            130,
+            107
+          ],
+          "case": "discarded_shadow",
+          "max_error_u8": 0,
+          "reference": [
+            154,
+            130,
+            107
+          ]
+        },
+        {
+          "actual": [
+            0,
+            0,
+            0
+          ],
+          "case": "cast_shadow",
+          "max_error_u8": 0,
+          "reference": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actual": [
+            146,
+            123,
+            100
+          ],
+          "case": "lit_receiver",
+          "max_error_u8": 0,
+          "reference": [
+            146,
+            123,
+            100
+          ]
+        }
+      ],
+      "tolerance_u8": 2
+    },
+    "alpha-legacy": {
+      "adapter": "AMD Radeon RX 6700 XT (RADV NAVI22)",
+      "ev100": 9.7,
+      "interior": false,
+      "kind": "alpha-color-depth-shadow",
+      "legacy_prepass": true,
+      "passed": false,
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "actual": [
+            33,
+            48,
+            66
+          ],
+          "case": "discarded_depth",
+          "max_error_u8": 121,
+          "reference": [
+            154,
+            130,
+            107
+          ]
+        },
+        {
+          "actual": [
+            75,
+            150,
+            97
+          ],
+          "case": "visible",
+          "max_error_u8": 0,
+          "reference": [
+            75,
+            150,
+            97
+          ]
+        },
+        {
+          "actual": [
+            0,
+            0,
+            0
+          ],
+          "case": "discarded_shadow",
+          "max_error_u8": 154,
+          "reference": [
+            154,
+            130,
+            107
+          ]
+        },
+        {
+          "actual": [
+            0,
+            0,
+            0
+          ],
+          "case": "cast_shadow",
+          "max_error_u8": 0,
+          "reference": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "actual": [
+            146,
+            123,
+            100
+          ],
+          "case": "lit_receiver",
+          "max_error_u8": 0,
+          "reference": [
+            146,
+            123,
+            100
+          ]
+        }
+      ],
+      "tolerance_u8": 2
+    },
+    "color-exterior": {
+      "adapter": {
+        "backend": "Vulkan",
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 6
+      },
+      "ev100": 9.7,
+      "input_linear": [
+        0.18000000715255737,
+        0.4000000059604645,
+        2.0,
+        1.0
+      ],
+      "kind": "synthetic-output-consistency",
+      "legacy_output": false,
+      "passed": true,
+      "reflection_format": "Rgba16Float",
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": {
+        "background": {
+          "max_error_u8": 0,
+          "pixel": [
+            400,
+            250
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "fog": {
+          "max_error_u8": 0,
+          "pixel": [
+            600,
+            150
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "mesh": {
+          "max_error_u8": 0,
+          "pixel": [
+            200,
+            150
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "terrain": {
+          "max_error_u8": 1,
+          "pixel": [
+            200,
+            450
+          ],
+          "rgb": [
+            114,
+            152,
+            239
+          ]
+        },
+        "water": {
+          "max_error_u8": 0,
+          "pixel": [
+            600,
+            450
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        }
+      },
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "color-interior": {
+      "adapter": {
+        "backend": "Vulkan",
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 6
+      },
+      "ev100": 9.7,
+      "input_linear": [
+        0.18000000715255737,
+        0.4000000059604645,
+        2.0,
+        1.0
+      ],
+      "kind": "synthetic-output-consistency",
+      "legacy_output": false,
+      "passed": true,
+      "reflection_format": "Rgba16Float",
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": {
+        "background": {
+          "max_error_u8": 0,
+          "pixel": [
+            400,
+            250
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "fog": {
+          "max_error_u8": 0,
+          "pixel": [
+            600,
+            150
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "mesh": {
+          "max_error_u8": 0,
+          "pixel": [
+            200,
+            150
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "terrain": {
+          "max_error_u8": 1,
+          "pixel": [
+            200,
+            450
+          ],
+          "rgb": [
+            114,
+            152,
+            239
+          ]
+        },
+        "water": {
+          "max_error_u8": 0,
+          "pixel": [
+            600,
+            450
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        }
+      },
+      "space": "interior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "color-legacy": {
+      "adapter": {
+        "backend": "Vulkan",
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 6
+      },
+      "ev100": 9.7,
+      "input_linear": [
+        0.18000000715255737,
+        0.4000000059604645,
+        2.0,
+        1.0
+      ],
+      "kind": "synthetic-output-consistency",
+      "legacy_output": true,
+      "passed": false,
+      "reflection_format": "Rgba8UnormSrgb",
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": {
+        "background": {
+          "max_error_u8": 19,
+          "pixel": [
+            400,
+            250
+          ],
+          "rgb": [
+            118,
+            170,
+            255
+          ]
+        },
+        "fog": {
+          "max_error_u8": 0,
+          "pixel": [
+            600,
+            150
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "mesh": {
+          "max_error_u8": 0,
+          "pixel": [
+            200,
+            150
+          ],
+          "rgb": [
+            114,
+            151,
+            239
+          ]
+        },
+        "terrain": {
+          "max_error_u8": 1,
+          "pixel": [
+            200,
+            450
+          ],
+          "rgb": [
+            114,
+            152,
+            239
+          ]
+        },
+        "water": {
+          "max_error_u8": 39,
+          "pixel": [
+            600,
+            450
+          ],
+          "rgb": [
+            107,
+            136,
+            200
+          ]
+        }
+      },
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "emission-exterior": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 9
+      },
+      "ev100": 9.7,
+      "glow_rgba_u8": [
+        128,
+        64,
+        255,
+        128
+      ],
+      "kind": "converted-material-emission",
+      "legacy_emission": false,
+      "lights": 0,
+      "loader": [
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "zero",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "multiple": 0.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "dim",
+          "expected_linear": [
+            0.25,
+            0.125,
+            0.0625
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.25,
+            0.125,
+            0.0625
+          ],
+          "multiple": 0.25,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "unit",
+          "expected_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "multiple": 1.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "case": "hdr",
+          "expected_linear": [
+            12.0,
+            6.0,
+            1.5
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            12.0,
+            6.0,
+            1.5
+          ],
+          "multiple": 3.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "case": "hdr_dim",
+          "expected_linear": [
+            0.5,
+            0.25,
+            0.0625
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.5,
+            0.25,
+            0.0625
+          ],
+          "multiple": 0.125,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "case": "black_glow",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "multiple": 2.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            2.0,
+            0.5,
+            0.25
+          ],
+          "case": "untextured_hdr",
+          "expected_linear": [
+            4.0,
+            1.0,
+            0.5
+          ],
+          "glow_format": null,
+          "loaded_linear": [
+            4.0,
+            1.0,
+            0.5
+          ],
+          "multiple": 2.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "case": "own_emit_atlas",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": null,
+          "loaded_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "multiple": 0.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            1.0,
+            -0.25,
+            0.5
+          ],
+          "case": "signed_tint",
+          "expected_linear": [
+            0.5,
+            0.0,
+            0.25
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.5,
+            0.0,
+            0.25
+          ],
+          "multiple": 0.5,
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "resolution": [
+        800,
+        900
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "zero",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "dim",
+          "converted_rgb": [
+            68,
+            21,
+            73
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            68,
+            21,
+            73
+          ]
+        },
+        {
+          "case": "unit",
+          "converted_rgb": [
+            123,
+            49,
+            130
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            123,
+            49,
+            130
+          ]
+        },
+        {
+          "case": "hdr",
+          "converted_rgb": [
+            237,
+            145,
+            203
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 350,
+          "reference_rgb": [
+            237,
+            145,
+            203
+          ]
+        },
+        {
+          "case": "hdr_dim",
+          "converted_rgb": [
+            93,
+            32,
+            72
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 450,
+          "reference_rgb": [
+            93,
+            32,
+            72
+          ]
+        },
+        {
+          "case": "black_glow",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 550,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "untextured_hdr",
+          "converted_rgb": [
+            249,
+            187,
+            157
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 650,
+          "reference_rgb": [
+            249,
+            187,
+            157
+          ]
+        },
+        {
+          "case": "own_emit_atlas",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 750,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "signed_tint",
+          "converted_rgb": [
+            90,
+            15,
+            131
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 850,
+          "reference_rgb": [
+            90,
+            15,
+            131
+          ]
+        }
+      ],
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "emission-interior": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 9
+      },
+      "ev100": 9.7,
+      "glow_rgba_u8": [
+        128,
+        64,
+        255,
+        128
+      ],
+      "kind": "converted-material-emission",
+      "legacy_emission": false,
+      "lights": 0,
+      "loader": [
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "zero",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "multiple": 0.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "dim",
+          "expected_linear": [
+            0.25,
+            0.125,
+            0.0625
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.25,
+            0.125,
+            0.0625
+          ],
+          "multiple": 0.25,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "unit",
+          "expected_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "multiple": 1.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "case": "hdr",
+          "expected_linear": [
+            12.0,
+            6.0,
+            1.5
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            12.0,
+            6.0,
+            1.5
+          ],
+          "multiple": 3.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "case": "hdr_dim",
+          "expected_linear": [
+            0.5,
+            0.25,
+            0.0625
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.5,
+            0.25,
+            0.0625
+          ],
+          "multiple": 0.125,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "case": "black_glow",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "multiple": 2.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            2.0,
+            0.5,
+            0.25
+          ],
+          "case": "untextured_hdr",
+          "expected_linear": [
+            4.0,
+            1.0,
+            0.5
+          ],
+          "glow_format": null,
+          "loaded_linear": [
+            4.0,
+            1.0,
+            0.5
+          ],
+          "multiple": 2.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "case": "own_emit_atlas",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": null,
+          "loaded_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "multiple": 0.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            1.0,
+            -0.25,
+            0.5
+          ],
+          "case": "signed_tint",
+          "expected_linear": [
+            0.5,
+            0.0,
+            0.25
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            0.5,
+            0.0,
+            0.25
+          ],
+          "multiple": 0.5,
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "resolution": [
+        800,
+        900
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "zero",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "dim",
+          "converted_rgb": [
+            68,
+            21,
+            73
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            68,
+            21,
+            73
+          ]
+        },
+        {
+          "case": "unit",
+          "converted_rgb": [
+            123,
+            49,
+            130
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            123,
+            49,
+            130
+          ]
+        },
+        {
+          "case": "hdr",
+          "converted_rgb": [
+            237,
+            145,
+            203
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 350,
+          "reference_rgb": [
+            237,
+            145,
+            203
+          ]
+        },
+        {
+          "case": "hdr_dim",
+          "converted_rgb": [
+            93,
+            32,
+            72
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 450,
+          "reference_rgb": [
+            93,
+            32,
+            72
+          ]
+        },
+        {
+          "case": "black_glow",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 550,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "untextured_hdr",
+          "converted_rgb": [
+            249,
+            187,
+            157
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 650,
+          "reference_rgb": [
+            249,
+            187,
+            157
+          ]
+        },
+        {
+          "case": "own_emit_atlas",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 750,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "signed_tint",
+          "converted_rgb": [
+            90,
+            15,
+            131
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 850,
+          "reference_rgb": [
+            90,
+            15,
+            131
+          ]
+        }
+      ],
+      "space": "interior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "emission-legacy": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 9
+      },
+      "ev100": 9.7,
+      "glow_rgba_u8": [
+        128,
+        64,
+        255,
+        128
+      ],
+      "kind": "converted-material-emission",
+      "legacy_emission": true,
+      "lights": 0,
+      "loader": [
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "zero",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "multiple": 0.0,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "dim",
+          "expected_linear": [
+            0.25,
+            0.125,
+            0.0625
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "multiple": 0.25,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "case": "unit",
+          "expected_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            0.5,
+            0.25
+          ],
+          "multiple": 1.0,
+          "passed": true
+        },
+        {
+          "authored_color": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "case": "hdr",
+          "expected_linear": [
+            12.0,
+            6.0,
+            1.5
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            3.0,
+            3.0,
+            1.5
+          ],
+          "multiple": 3.0,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            4.0,
+            2.0,
+            0.5
+          ],
+          "case": "hdr_dim",
+          "expected_linear": [
+            0.5,
+            0.25,
+            0.0625
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            1.0,
+            0.5
+          ],
+          "multiple": 0.125,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "case": "black_glow",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            2.0,
+            2.0,
+            2.0
+          ],
+          "multiple": 2.0,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            2.0,
+            0.5,
+            0.25
+          ],
+          "case": "untextured_hdr",
+          "expected_linear": [
+            4.0,
+            1.0,
+            0.5
+          ],
+          "glow_format": null,
+          "loaded_linear": [
+            2.0,
+            1.0,
+            0.5
+          ],
+          "multiple": 2.0,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "case": "own_emit_atlas",
+          "expected_linear": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "multiple": 0.0,
+          "passed": false
+        },
+        {
+          "authored_color": [
+            1.0,
+            -0.25,
+            0.5
+          ],
+          "case": "signed_tint",
+          "expected_linear": [
+            0.5,
+            0.0,
+            0.25
+          ],
+          "glow_format": "Rgba8UnormSrgb",
+          "loaded_linear": [
+            1.0,
+            0.0,
+            0.5
+          ],
+          "multiple": 0.5,
+          "passed": false
+        }
+      ],
+      "passed": false,
+      "resolution": [
+        800,
+        900
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "zero",
+          "converted_rgb": [
+            123,
+            49,
+            130
+          ],
+          "max_error_u8": 130,
+          "pixel_y": 50,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "dim",
+          "converted_rgb": [
+            123,
+            49,
+            130
+          ],
+          "max_error_u8": 57,
+          "pixel_y": 150,
+          "reference_rgb": [
+            68,
+            21,
+            73
+          ]
+        },
+        {
+          "case": "unit",
+          "converted_rgb": [
+            123,
+            49,
+            130
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            123,
+            49,
+            130
+          ]
+        },
+        {
+          "case": "hdr",
+          "converted_rgb": [
+            164,
+            113,
+            219
+          ],
+          "max_error_u8": 73,
+          "pixel_y": 350,
+          "reference_rgb": [
+            237,
+            145,
+            203
+          ]
+        },
+        {
+          "case": "hdr_dim",
+          "converted_rgb": [
+            117,
+            68,
+            167
+          ],
+          "max_error_u8": 95,
+          "pixel_y": 450,
+          "reference_rgb": [
+            93,
+            32,
+            72
+          ]
+        },
+        {
+          "case": "black_glow",
+          "converted_rgb": [
+            138,
+            110,
+            231
+          ],
+          "max_error_u8": 231,
+          "pixel_y": 550,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "untextured_hdr",
+          "converted_rgb": [
+            230,
+            189,
+            154
+          ],
+          "max_error_u8": 19,
+          "pixel_y": 650,
+          "reference_rgb": [
+            249,
+            187,
+            157
+          ]
+        },
+        {
+          "case": "own_emit_atlas",
+          "converted_rgb": [
+            111,
+            77,
+            204
+          ],
+          "max_error_u8": 204,
+          "pixel_y": 750,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "signed_tint",
+          "converted_rgb": [
+            117,
+            33,
+            167
+          ],
+          "max_error_u8": 36,
+          "pixel_y": 850,
+          "reference_rgb": [
+            90,
+            15,
+            131
+          ]
+        }
+      ],
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "normal-exterior": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 6
+      },
+      "directional_illuminance": 5000,
+      "ev100": 9.7,
+      "kind": "converted-material-normal-direction",
+      "legacy_normal": false,
+      "loader": [
+        {
+          "scene_bindings": [
+            {
+              "case": "flat",
+              "label": "Material0/nif",
+              "passed": true
+            },
+            {
+              "case": "right",
+              "label": "Material1/nif",
+              "passed": true
+            },
+            {
+              "case": "left",
+              "label": "Material2/nif",
+              "passed": true
+            },
+            {
+              "case": "down",
+              "label": "Material3/nif",
+              "passed": true
+            },
+            {
+              "case": "up",
+              "label": "Material4/nif",
+              "passed": true
+            },
+            {
+              "case": "diagonal",
+              "label": "Material5/nif",
+              "passed": true
+            },
+            {
+              "case": "up",
+              "label": "Material4 (inverted)/nif",
+              "passed": true
+            }
+          ]
+        },
+        {
+          "case": "flat",
+          "passed": true,
+          "pixel": [
+            128,
+            128,
+            255,
+            0
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 0
+        },
+        {
+          "case": "right",
+          "passed": true,
+          "pixel": [
+            204,
+            128,
+            230,
+            37
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 1
+        },
+        {
+          "case": "left",
+          "passed": true,
+          "pixel": [
+            51,
+            128,
+            230,
+            83
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 2
+        },
+        {
+          "case": "down",
+          "passed": true,
+          "pixel": [
+            128,
+            204,
+            230,
+            129
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 3
+        },
+        {
+          "case": "up",
+          "passed": true,
+          "pixel": [
+            128,
+            51,
+            230,
+            193
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 0
+        },
+        {
+          "case": "diagonal",
+          "passed": true,
+          "pixel": [
+            179,
+            51,
+            216,
+            255
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 1
+        },
+        {
+          "retained_root": "Scene0",
+          "scene_dependencies_still_loaded": true
+        }
+      ],
+      "passed": true,
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "flat",
+          "converted_rgb": [
+            172,
+            172,
+            172
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            172,
+            172,
+            172
+          ]
+        },
+        {
+          "case": "right",
+          "converted_rgb": [
+            177,
+            177,
+            177
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            177,
+            177,
+            177
+          ]
+        },
+        {
+          "case": "left",
+          "converted_rgb": [
+            138,
+            138,
+            138
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            138,
+            138,
+            138
+          ]
+        },
+        {
+          "case": "down",
+          "converted_rgb": [
+            122,
+            122,
+            122
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 350,
+          "reference_rgb": [
+            122,
+            122,
+            122
+          ]
+        },
+        {
+          "case": "up",
+          "converted_rgb": [
+            183,
+            183,
+            183
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 450,
+          "reference_rgb": [
+            183,
+            183,
+            183
+          ]
+        },
+        {
+          "case": "diagonal",
+          "converted_rgb": [
+            186,
+            186,
+            186
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 550,
+          "reference_rgb": [
+            186,
+            186,
+            186
+          ]
+        }
+      ],
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "normal-interior": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 6
+      },
+      "directional_illuminance": 5000,
+      "ev100": 9.7,
+      "kind": "converted-material-normal-direction",
+      "legacy_normal": false,
+      "loader": [
+        {
+          "scene_bindings": [
+            {
+              "case": "flat",
+              "label": "Material0/nif",
+              "passed": true
+            },
+            {
+              "case": "right",
+              "label": "Material1/nif",
+              "passed": true
+            },
+            {
+              "case": "left",
+              "label": "Material2/nif",
+              "passed": true
+            },
+            {
+              "case": "down",
+              "label": "Material3/nif",
+              "passed": true
+            },
+            {
+              "case": "up",
+              "label": "Material4/nif",
+              "passed": true
+            },
+            {
+              "case": "diagonal",
+              "label": "Material5/nif",
+              "passed": true
+            },
+            {
+              "case": "up",
+              "label": "Material4 (inverted)/nif",
+              "passed": true
+            }
+          ]
+        },
+        {
+          "case": "flat",
+          "passed": true,
+          "pixel": [
+            128,
+            128,
+            255,
+            0
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 0
+        },
+        {
+          "case": "right",
+          "passed": true,
+          "pixel": [
+            204,
+            128,
+            230,
+            37
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 1
+        },
+        {
+          "case": "left",
+          "passed": true,
+          "pixel": [
+            51,
+            128,
+            230,
+            83
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 2
+        },
+        {
+          "case": "down",
+          "passed": true,
+          "pixel": [
+            128,
+            204,
+            230,
+            129
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 3
+        },
+        {
+          "case": "up",
+          "passed": true,
+          "pixel": [
+            128,
+            51,
+            230,
+            193
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 0
+        },
+        {
+          "case": "diagonal",
+          "passed": true,
+          "pixel": [
+            179,
+            51,
+            216,
+            255
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 1
+        },
+        {
+          "retained_root": "Scene0",
+          "scene_dependencies_still_loaded": true
+        }
+      ],
+      "passed": true,
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "flat",
+          "converted_rgb": [
+            172,
+            172,
+            172
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            172,
+            172,
+            172
+          ]
+        },
+        {
+          "case": "right",
+          "converted_rgb": [
+            177,
+            177,
+            177
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            177,
+            177,
+            177
+          ]
+        },
+        {
+          "case": "left",
+          "converted_rgb": [
+            138,
+            138,
+            138
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            138,
+            138,
+            138
+          ]
+        },
+        {
+          "case": "down",
+          "converted_rgb": [
+            122,
+            122,
+            122
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 350,
+          "reference_rgb": [
+            122,
+            122,
+            122
+          ]
+        },
+        {
+          "case": "up",
+          "converted_rgb": [
+            183,
+            183,
+            183
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 450,
+          "reference_rgb": [
+            183,
+            183,
+            183
+          ]
+        },
+        {
+          "case": "diagonal",
+          "converted_rgb": [
+            186,
+            186,
+            186
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 550,
+          "reference_rgb": [
+            186,
+            186,
+            186
+          ]
+        }
+      ],
+      "space": "interior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "normal-legacy": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 6
+      },
+      "directional_illuminance": 5000,
+      "ev100": 9.7,
+      "kind": "converted-material-normal-direction",
+      "legacy_normal": true,
+      "loader": [
+        {
+          "scene_bindings": [
+            {
+              "case": "flat",
+              "label": "Material0/nif",
+              "passed": true
+            },
+            {
+              "case": "right",
+              "label": "Material1/nif",
+              "passed": true
+            },
+            {
+              "case": "left",
+              "label": "Material2/nif",
+              "passed": true
+            },
+            {
+              "case": "down",
+              "label": "Material3/nif",
+              "passed": true
+            },
+            {
+              "case": "up",
+              "label": "Material4/nif",
+              "passed": true
+            },
+            {
+              "case": "diagonal",
+              "label": "Material5/nif",
+              "passed": true
+            },
+            {
+              "case": "up",
+              "label": "Material4 (inverted)/nif",
+              "passed": true
+            }
+          ]
+        },
+        {
+          "case": "flat",
+          "passed": false,
+          "pixel": [
+            128,
+            128,
+            255,
+            0
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 0
+        },
+        {
+          "case": "right",
+          "passed": false,
+          "pixel": [
+            204,
+            128,
+            230,
+            37
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 1
+        },
+        {
+          "case": "left",
+          "passed": false,
+          "pixel": [
+            51,
+            128,
+            230,
+            83
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 2
+        },
+        {
+          "case": "down",
+          "passed": false,
+          "pixel": [
+            128,
+            204,
+            230,
+            129
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 3
+        },
+        {
+          "case": "up",
+          "passed": false,
+          "pixel": [
+            128,
+            51,
+            230,
+            193
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 0
+        },
+        {
+          "case": "diagonal",
+          "passed": false,
+          "pixel": [
+            179,
+            51,
+            216,
+            255
+          ],
+          "sampler_passed": true,
+          "uv_passed": true,
+          "wrap_mode": 1
+        },
+        {
+          "retained_root": "Scene0",
+          "scene_dependencies_still_loaded": true
+        }
+      ],
+      "passed": false,
+      "resolution": [
+        800,
+        600
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "flat",
+          "converted_rgb": [
+            172,
+            172,
+            172
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            172,
+            172,
+            172
+          ]
+        },
+        {
+          "case": "right",
+          "converted_rgb": [
+            177,
+            177,
+            177
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            177,
+            177,
+            177
+          ]
+        },
+        {
+          "case": "left",
+          "converted_rgb": [
+            139,
+            139,
+            139
+          ],
+          "max_error_u8": 1,
+          "pixel_y": 250,
+          "reference_rgb": [
+            138,
+            138,
+            138
+          ]
+        },
+        {
+          "case": "down",
+          "converted_rgb": [
+            183,
+            183,
+            183
+          ],
+          "max_error_u8": 61,
+          "pixel_y": 350,
+          "reference_rgb": [
+            122,
+            122,
+            122
+          ]
+        },
+        {
+          "case": "up",
+          "converted_rgb": [
+            122,
+            122,
+            122
+          ],
+          "max_error_u8": 61,
+          "pixel_y": 450,
+          "reference_rgb": [
+            183,
+            183,
+            183
+          ]
+        },
+        {
+          "case": "diagonal",
+          "converted_rgb": [
+            133,
+            133,
+            133
+          ],
+          "max_error_u8": 53,
+          "pixel_y": 550,
+          "reference_rgb": [
+            186,
+            186,
+            186
+          ]
+        }
+      ],
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "specular-exterior": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 9
+      },
+      "directional_illuminance": 5000,
+      "ev100": 9.7,
+      "kind": "converted-material-specular",
+      "legacy_specular": false,
+      "loader": [
+        {
+          "scene_bindings": [
+            {
+              "case": "unmasked",
+              "label": "Material2/std",
+              "passed": true
+            },
+            {
+              "case": "disabled",
+              "label": "Material0/nif",
+              "passed": true
+            },
+            {
+              "case": "zero_strength",
+              "label": "Material1/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_full",
+              "label": "Material3/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_thatch",
+              "label": "Material4/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_zero",
+              "label": "Material5/nif",
+              "passed": true
+            },
+            {
+              "case": "gloss_100",
+              "label": "Material6/nif",
+              "passed": true
+            },
+            {
+              "case": "gloss_200",
+              "label": "Material7/nif",
+              "passed": true
+            },
+            {
+              "case": "dim_strength",
+              "label": "Material8/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_thatch",
+              "label": "Material4 (inverted)/nif",
+              "passed": true
+            }
+          ]
+        },
+        {
+          "case": "disabled",
+          "enabled": false,
+          "expected_loaded_reflectance": 0.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "zero_strength",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 0.0
+        },
+        {
+          "case": "unmasked",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.5,
+          "exponent": 80.0,
+          "linear_normal_format": null,
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": null,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_full",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_thatch",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 7,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_zero",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 0,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "gloss_100",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 100.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.3742031753063202,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "gloss_200",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 200.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.3154420852661133,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "dim_strength",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.25,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.25,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 128,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 0.25
+        },
+        {
+          "retained_root": "Scene0",
+          "scene_dependencies_still_loaded": true
+        }
+      ],
+      "passed": true,
+      "resolution": [
+        800,
+        900
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "disabled",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "zero_strength",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "unmasked",
+          "converted_rgb": [
+            178,
+            178,
+            178
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            178,
+            178,
+            178
+          ]
+        },
+        {
+          "case": "mask_full",
+          "converted_rgb": [
+            178,
+            178,
+            178
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 350,
+          "reference_rgb": [
+            178,
+            178,
+            178
+          ]
+        },
+        {
+          "case": "mask_thatch",
+          "converted_rgb": [
+            2,
+            2,
+            2
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 450,
+          "reference_rgb": [
+            2,
+            2,
+            2
+          ]
+        },
+        {
+          "case": "mask_zero",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 550,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "gloss_100",
+          "converted_rgb": [
+            188,
+            188,
+            188
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 650,
+          "reference_rgb": [
+            188,
+            188,
+            188
+          ]
+        },
+        {
+          "case": "gloss_200",
+          "converted_rgb": [
+            216,
+            216,
+            216
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 750,
+          "reference_rgb": [
+            216,
+            216,
+            216
+          ]
+        },
+        {
+          "case": "dim_strength",
+          "converted_rgb": [
+            28,
+            28,
+            28
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 850,
+          "reference_rgb": [
+            28,
+            28,
+            28
+          ]
+        }
+      ],
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "specular-interior": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 9
+      },
+      "directional_illuminance": 5000,
+      "ev100": 9.7,
+      "kind": "converted-material-specular",
+      "legacy_specular": false,
+      "loader": [
+        {
+          "scene_bindings": [
+            {
+              "case": "unmasked",
+              "label": "Material2/std",
+              "passed": true
+            },
+            {
+              "case": "disabled",
+              "label": "Material0/nif",
+              "passed": true
+            },
+            {
+              "case": "zero_strength",
+              "label": "Material1/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_full",
+              "label": "Material3/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_thatch",
+              "label": "Material4/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_zero",
+              "label": "Material5/nif",
+              "passed": true
+            },
+            {
+              "case": "gloss_100",
+              "label": "Material6/nif",
+              "passed": true
+            },
+            {
+              "case": "gloss_200",
+              "label": "Material7/nif",
+              "passed": true
+            },
+            {
+              "case": "dim_strength",
+              "label": "Material8/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_thatch",
+              "label": "Material4 (inverted)/nif",
+              "passed": true
+            }
+          ]
+        },
+        {
+          "case": "disabled",
+          "enabled": false,
+          "expected_loaded_reflectance": 0.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "zero_strength",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 0.0
+        },
+        {
+          "case": "unmasked",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.5,
+          "exponent": 80.0,
+          "linear_normal_format": null,
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": null,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_full",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_thatch",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 7,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_zero",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 0,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "gloss_100",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 100.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.3742031753063202,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "gloss_200",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 200.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 1.0,
+          "loaded_roughness": 0.3154420852661133,
+          "mask_alpha_u8": 255,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "dim_strength",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.25,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.25,
+          "loaded_roughness": 0.39518827199935913,
+          "mask_alpha_u8": 128,
+          "passed": true,
+          "shared_mask": true,
+          "strength": 0.25
+        },
+        {
+          "retained_root": "Scene0",
+          "scene_dependencies_still_loaded": true
+        }
+      ],
+      "passed": true,
+      "resolution": [
+        800,
+        900
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "disabled",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 50,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "zero_strength",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 150,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "unmasked",
+          "converted_rgb": [
+            178,
+            178,
+            178
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 250,
+          "reference_rgb": [
+            178,
+            178,
+            178
+          ]
+        },
+        {
+          "case": "mask_full",
+          "converted_rgb": [
+            178,
+            178,
+            178
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 350,
+          "reference_rgb": [
+            178,
+            178,
+            178
+          ]
+        },
+        {
+          "case": "mask_thatch",
+          "converted_rgb": [
+            2,
+            2,
+            2
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 450,
+          "reference_rgb": [
+            2,
+            2,
+            2
+          ]
+        },
+        {
+          "case": "mask_zero",
+          "converted_rgb": [
+            0,
+            0,
+            0
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 550,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "gloss_100",
+          "converted_rgb": [
+            188,
+            188,
+            188
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 650,
+          "reference_rgb": [
+            188,
+            188,
+            188
+          ]
+        },
+        {
+          "case": "gloss_200",
+          "converted_rgb": [
+            216,
+            216,
+            216
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 750,
+          "reference_rgb": [
+            216,
+            216,
+            216
+          ]
+        },
+        {
+          "case": "dim_strength",
+          "converted_rgb": [
+            28,
+            28,
+            28
+          ],
+          "max_error_u8": 0,
+          "pixel_y": 850,
+          "reference_rgb": [
+            28,
+            28,
+            28
+          ]
+        }
+      ],
+      "space": "interior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    },
+    "specular-legacy": {
+      "adapter": {
+        "driver": "radv",
+        "driver_info": "Mesa 26.2.2",
+        "name": "AMD Radeon RX 6700 XT (RADV NAVI22)"
+      },
+      "ambient_brightness": 0,
+      "camera": {
+        "position": [
+          0,
+          0,
+          10
+        ],
+        "projection": "orthographic",
+        "vertical_size": 9
+      },
+      "directional_illuminance": 5000,
+      "ev100": 9.7,
+      "kind": "converted-material-specular",
+      "legacy_specular": true,
+      "loader": [
+        {
+          "scene_bindings": [
+            {
+              "case": "unmasked",
+              "label": "Material2/std",
+              "passed": true
+            },
+            {
+              "case": "disabled",
+              "label": "Material0/nif",
+              "passed": true
+            },
+            {
+              "case": "zero_strength",
+              "label": "Material1/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_full",
+              "label": "Material3/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_thatch",
+              "label": "Material4/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_zero",
+              "label": "Material5/nif",
+              "passed": true
+            },
+            {
+              "case": "gloss_100",
+              "label": "Material6/nif",
+              "passed": true
+            },
+            {
+              "case": "gloss_200",
+              "label": "Material7/nif",
+              "passed": true
+            },
+            {
+              "case": "dim_strength",
+              "label": "Material8/nif",
+              "passed": true
+            },
+            {
+              "case": "mask_thatch",
+              "label": "Material4 (inverted)/nif",
+              "passed": true
+            }
+          ]
+        },
+        {
+          "case": "disabled",
+          "enabled": false,
+          "expected_loaded_reflectance": 0.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": 255,
+          "passed": false,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "zero_strength",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": 255,
+          "passed": false,
+          "shared_mask": true,
+          "strength": 0.0
+        },
+        {
+          "case": "unmasked",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.5,
+          "exponent": 80.0,
+          "linear_normal_format": null,
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": null,
+          "passed": false,
+          "shared_mask": true,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_full",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": 255,
+          "passed": false,
+          "shared_mask": false,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_thatch",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": 7,
+          "passed": false,
+          "shared_mask": false,
+          "strength": 1.0
+        },
+        {
+          "case": "mask_zero",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": 0,
+          "passed": false,
+          "shared_mask": false,
+          "strength": 1.0
+        },
+        {
+          "case": "gloss_100",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 100.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.0,
+          "mask_alpha_u8": 255,
+          "passed": false,
+          "shared_mask": false,
+          "strength": 1.0
+        },
+        {
+          "case": "gloss_200",
+          "enabled": true,
+          "expected_loaded_reflectance": 1.0,
+          "exponent": 200.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.5,
+          "loaded_roughness": 0.0,
+          "mask_alpha_u8": 255,
+          "passed": false,
+          "shared_mask": false,
+          "strength": 1.0
+        },
+        {
+          "case": "dim_strength",
+          "enabled": true,
+          "expected_loaded_reflectance": 0.25,
+          "exponent": 80.0,
+          "linear_normal_format": "Rgba8Unorm",
+          "loaded_reflectance": 0.125,
+          "loaded_roughness": 0.19999998807907104,
+          "mask_alpha_u8": 128,
+          "passed": false,
+          "shared_mask": false,
+          "strength": 0.25
+        },
+        {
+          "retained_root": "Scene0",
+          "scene_dependencies_still_loaded": true
+        }
+      ],
+      "passed": false,
+      "resolution": [
+        800,
+        900
+      ],
+      "retail_parity": false,
+      "samples": [
+        {
+          "case": "disabled",
+          "converted_rgb": [
+            248,
+            248,
+            248
+          ],
+          "max_error_u8": 248,
+          "pixel_y": 50,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "zero_strength",
+          "converted_rgb": [
+            248,
+            248,
+            248
+          ],
+          "max_error_u8": 248,
+          "pixel_y": 150,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "unmasked",
+          "converted_rgb": [
+            248,
+            248,
+            248
+          ],
+          "max_error_u8": 70,
+          "pixel_y": 250,
+          "reference_rgb": [
+            178,
+            178,
+            178
+          ]
+        },
+        {
+          "case": "mask_full",
+          "converted_rgb": [
+            248,
+            248,
+            248
+          ],
+          "max_error_u8": 70,
+          "pixel_y": 350,
+          "reference_rgb": [
+            178,
+            178,
+            178
+          ]
+        },
+        {
+          "case": "mask_thatch",
+          "converted_rgb": [
+            248,
+            248,
+            248
+          ],
+          "max_error_u8": 246,
+          "pixel_y": 450,
+          "reference_rgb": [
+            2,
+            2,
+            2
+          ]
+        },
+        {
+          "case": "mask_zero",
+          "converted_rgb": [
+            248,
+            248,
+            248
+          ],
+          "max_error_u8": 248,
+          "pixel_y": 550,
+          "reference_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "case": "gloss_100",
+          "converted_rgb": [
+            255,
+            255,
+            255
+          ],
+          "max_error_u8": 67,
+          "pixel_y": 650,
+          "reference_rgb": [
+            188,
+            188,
+            188
+          ]
+        },
+        {
+          "case": "gloss_200",
+          "converted_rgb": [
+            255,
+            255,
+            255
+          ],
+          "max_error_u8": 39,
+          "pixel_y": 750,
+          "reference_rgb": [
+            216,
+            216,
+            216
+          ]
+        },
+        {
+          "case": "dim_strength",
+          "converted_rgb": [
+            175,
+            175,
+            175
+          ],
+          "max_error_u8": 147,
+          "pixel_y": 850,
+          "reference_rgb": [
+            28,
+            28,
+            28
+          ]
+        }
+      ],
+      "space": "exterior",
+      "tolerance_u8": 2,
+      "tonemapping": "TonyMcMapface"
+    }
+  }
+}

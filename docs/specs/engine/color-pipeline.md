@@ -4,7 +4,7 @@ Tracks [L1 #131](https://github.com/Mudcrab-Team/mudcrab/issues/131), under [van
 
 ## Scope and evidence
 
-Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. L1 slices fix output-domain inconsistencies and static emission publication, with controlled probes. They do not establish Skyrim's image-space equations or select its final exposure/tone curve.
+Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. L1 fixes output-domain inconsistencies and NIF surface inputs, with controlled probes. They do not establish Skyrim's image-space equations or select its final exposure/tone curve.
 
 Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source trace below describes actual runtime behavior. Claims in older sky notes about encoded weather interpolation and fog equations still require the L0/L2 retail evidence; this change preserves those inputs.
 
@@ -33,25 +33,30 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
 - V5: Preserve NIF source values and declared unsupported families. Do not compensate for pending material errors with global tint, exposure, ambient or emission changes.
 - V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Non-finite source emission or overflowing energy → contextual conversion error before clamping.
-- V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–17; world database schema unchanged.
+- V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–19 after subsequent slices; world database schema unchanged.
 
 - V8: Finite signed NIF tint & static lighting multiplier ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
 
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
-- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Schema 18 rebuilds all old GLBs; retain verified compatible textures/scripts/archive bytes and accept runtime schemas 15–18.
+- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Schema 18 rebuilds all old GLBs; retain verified compatible textures/scripts/archive bytes and accept runtime schemas 15–19 after subsequent slice.
 - V12: Scene-only glTF loads ! reach and retain recursively loaded state after unused subassets release. Native material override retains stock hook's recorded source dependency; scene cloning preserves source and native handles. Probe ! no root-glTF or explicit material loads that mask dependency lifetime failures.
+
+- V13: Converted tangent-space NIF normals ! DirectX Y convention exactly once at native material construction; generic glTF/model-space maps unchanged. Preserve linear RGB & source alpha. ±X/±Y/asymmetric GPU swatches ! match independent geometric normals ≤2/255; legacy no-flip control ! fail.
+- V14: NiAlphaProperty owns test/blend enable; vertex-alpha/premultiplied/screendoor flags alone ! opaque. Preserve shader-enabled vertex alpha except native tree/LOD exclusions; prepass & shadow ! same discard as color pass.
+- V15: Source UV offset/scale & four S/T clamp modes ! survive conversion. Conflicting wrap or transfer uses ! distinct asset paths; load order cannot change sampler. Alias source mapping ! cache/pruning/restoration consistency.
+- V16: Declared EditorMarker & unsupported Fire_Refraction ! excluded with reason; ordinary visible controls remain. Unsupported shader features ! explicit compatibility inventory, no silent parity claim.
 
 ## Supported response and remaining material work
 
 | Family / path | Current representation | L1 acceptance status |
 |---|---|---|
 | Ordinary lighting / opaque | glTF `StandardMaterial`, PBR lighting | Output consistency can be tested now; Specular enable, tangent mask and roughness corrected by T8; native BRDF/model-space parity remains open. Static emission corrected by T6. |
-| Alpha-tested / blended | glTF alpha modes + existing prepass | #83 and PR #99 remain separate dependencies. Do not declare caster silhouettes accepted before they are integrated and tested. |
-| Tangent-space normal maps | Linear normal samples through glTF; terrain has its own tangent frame | Tangent normal-alpha binding/response verified by T8; direction/handedness retail probes remain required. |
+| Alpha-tested / blended | NiAlphaProperty mode, shader-enabled vertex channels, PR #99 prepass | Synthetic color/depth/shadow silhouettes verified; additive and other nonstandard blend factors still approximated. |
+| Tangent-space normal maps | Linear RGB/alpha; native material applies DirectX Y convention once | Asymmetric mesh directions match geometric-normal references; NIF authored tangents still regenerated. Terrain owns a separate tangent frame and needs separate native-direction evidence. |
 | Model-space normals | No established compatibility path in this slice | Named L1 gap; generic tangent interpretation cannot count as acceptance. |
-| Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | Runtime compatibility inventory and per-family probes still required; retained metadata alone is not shader support. |
-| Effect shader surfaces | Converted material approximation | #84 visibility and shader semantics unresolved. No general effect parity claim. |
+| Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | [Compatibility inventory](../../lighting-l1-compatibility.md) names per-family gaps; retained metadata alone is not shader support. |
+| Effect shader surfaces | Generic approximation with explicit exclusions | Declared EditorMarker and Fire_Refraction excluded with reasons; no general effect, refraction, particle or animation parity claim. |
 | Water / sky | Custom Bevy shader paths | Output-domain test only; authored behavior and full-scene parity remain open. |
 
 ## Verification
@@ -73,11 +78,11 @@ Signed NIF tints remain valid. Negative channels retain previous glTF lower-clam
 
 `material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Nine cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas, signed tint. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×900, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
 
-Converter cache schema 17: schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Runtime accepts complete converter schemas 15–17; world database schemas 3–4 and cell-cache version unchanged. Launcher requires latest converter schema.
+Historical emission migration (schema 17; current converter schema: 19): schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Runtime now accepts complete converter schemas 15–19; world database schemas 3–4 and cell-cache version unchanged. Launcher accepts complete converter schemas 15–19, matching the engine readiness range.
 
 For testing, reconvert to separate output directory with converter built from this branch, then run matching engine against that directory. Existing packs remain valid in engine but retain old emission until reconverted. Preserve old pack for rollback; older #137 engine rejects schema 17, so use new engine for new pack. Retail reconversion ! isolated matching package; delivery evidence recorded after successful conversion/startup.
 
-Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v11_schema_16_and_17_rebuild_meshes_and_reuse_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
+Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v15_old_material_schemas_rebuild_meshes_and_reuse_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
 
 ## Local verification, 2026-10-02
 
@@ -129,6 +134,101 @@ Initial engine ! 224 pending Riverwood instances, no screenshot. Retained source
 RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: final exterior/interior probes pass, paired difference 0/255; legacy specular control exits 1 with difference 248/255. Matched Riverwood captures: 2540×1375; camera `(2048,1176,452)`, target `(2048,-24,-2048)`, worldspace 60, grid (5,-12), stream radius 2, EV100 9.7, TonyMcMapface. Foreground thatch ROI `[110,785,430,1000]`: encoded-RGB display brightness 161.15 → 140.64 (12.73% decrease). Right thatch `[2090,632,2230,770]`: 120.00 → 112.05 (6.63%). Stable terrain control: mean channel difference 0.154/255; 94.92% pixels identical. Geometry/camera alignment inspected; animated water excluded.
 
 Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/riverwood-comparison/{before-matched.png,after-candidate.png,roof-comparison.png,metrics.json}`, `roof-material-audit.json`, final scene-only probe JSON. Before/after compare #139 versus #141 Mudcrab; blue wash, remaining lighting work, native BRDF/model-space gaps remain. Test-profile 20-second smoke benchmarks pass their configured gates; no release performance or vanilla Skyrim parity acceptance.
+
+## Source material completion (schema 19)
+
+`NifMaterialPlugin` extends existing native glTF hook: retain source dependency,
+apply tagged normal Y once, preserve mask compensation, apply common native UV
+transform even without diffuse. Generic glTF remains unchanged. Alias identity
+includes transfer space and S/T clamp mode so shared image loads cannot overwrite
+another material's sampler. UV transform remains per material. Schema 19 rebuilds
+GLBs; verified compatible nonmesh outputs from schemas 12–18 remain reusable.
+
+Riverwood gate source basis: packed NIF tangent follows texture V; split tangent
+components follow U. Bevy-generated tangents negate Mikk handedness. Native shader
+samples `2 * rgb - 1` in source frame. Converted mesh frame therefore requires
+`flip_normal_map_y`; no pixel rewrite, sun reversal or ambient adjustment.
+Community Shaders source revision `2f2919a71bed6132b125e41781304c8f6f73d002`,
+[`Lighting.hlsl`](https://github.com/doodlum/skyrim-community-shaders/blob/2f2919a71bed6132b125e41781304c8f6f73d002/package/Shaders/Lighting.hlsl),
+TBN construction, `TransformNormal`, vertex color and tree/LOD alpha branches.
+Direct retail shader/oracle acceptance remains L0-dependent.
+
+`material_normal_probe`: six asymmetric linear DDS normal swatches → converter
+material publication → KTX2/glTF → production scene-only native loading → rendered
+comparison with geometric normals. Interior/exterior ≤2/255, source alpha preserved,
+inverted-scale variant, scene lifetime, all four wrap modes and no-diffuse UV transforms checked. `--legacy-normal` ! fail.
+`material_alpha_probe`: fading quad vs explicit half-quad geometry; discarded and
+visible color, depth, cast shadow and lit receiver samples. Both backgrounds
+≤2/255; `--legacy-prepass` ! fail. Interior diagnostic background ≠ authored
+interior lighting verification.
+
+Local llvmpipe Mesa 26.2.2: normal six cases and alpha five cases both backgrounds
+match exactly (0/255). Negative controls fail: normal max 61/255, prepass max
+154/255. Unit regressions cover modern NIF RGBA through GLB accessors, source
+channel matrix, NiAlphaProperty modes, UV/wrap identity, alias pruning/restoration,
+cache migration, and exclusion positive/negative controls.
+
+## Fiji GPU verification, 2026-10-03
+
+RX 6700 XT, RADV, Mesa 26.2.2. Both diagnostic backgrounds: normal, alpha,
+specular and emission maximum error 0/255; composition maximum 1/255. All ten
+positive runs pass. Legacy controls fail with exit 1: normal 61/255, alpha
+154/255, specular 248/255, emission 231/255, composition 39/255.
+Recorded settings, loader assertions, samples and verdicts:
+[`lighting-l1-20261003.json`](../../evidence/lighting-l1-20261003.json).
+Synthetic [normal](../../images/l1-normal-comparison.png) and
+[alpha](../../images/l1-alpha-comparison.png) comparisons contain no retail assets.
+
+Final workspace verification: 844 passed, 0 failed, 18 existing ignores across
+`cargo test --workspace --all-targets` plus `cargo test --workspace --doc`.
+Strict workspace Clippy and formatting pass. Independent [CI run 37094801783](https://github.com/Mudcrab-Team/mudcrab/actions/runs/37094801783) passes format, Clippy, tests, security and performance for source commit `dbf048e`. Added sampler/UV assertions in normal
+probe subsequently pass targeted Clippy/build and local/Fiji GPU runs.
+
+## Final L1 delivery, 2026-10-03
+
+[PR #142](https://github.com/Mudcrab-Team/mudcrab/pull/142), source `dbf048e`;
+Fiji launcher `/home/taylor/mudcrab-l1-20261003/run-riverwood.sh`.
+Optimized test-profile engine/converter and probes, bundled runtime libraries.
+Previous #141 pack's manifest/database/cell-cache hashes unchanged.
+
+Schema 19 conversion complete: 25,402 converted, 232,465 cache hits, zero skipped.
+25,388 GLBs; 527 absent-source texture references pruned and recorded. World
+schema 4 integration passes: missing/invalid models 0, missing textures 0.
+Existing source-coverage gaps remain: unavailable model sources 128, unbounded
+models 28, unavailable texture sources 16. No claim that conversion creates
+content absent from installed Data.
+
+Trusted transferred ingestion/output cache reused with `--no-verify-cache`;
+source/configuration checks remain. Post-publication Fiji full size/hash check:
+76,213 primary files, 13.5 GB, all pass. Separately verify all 3,998 generated
+texture aliases by hard-link identity or source hash; the converter manifest's
+primary-file check does not enumerate those aliases. Six differing primary
+textures and affected aliases copied privately after the first hash check caught
+them. Read-only 1,121,325,056-byte SquashFS stores new meshes/world data inside
+package; immutable unchanged textures/scripts share old files by hard link.
+Mount helper remounts after reboot and does not pass its mount lock to the daemon.
+
+Matched Fiji captures: six views of three Riverwood gates, before/after exact
+1280×800 poses; all settle, none time out. Same engine, camera, exposure and sun;
+old schema-18 vs corrected schema-19 material data. Wall normal highlights change
+orientation without changing global light direction. Overview checks roofs and
+foliage. Retail images stay in private evidence, not the repository.
+
+20-second Riverwood smoke runs after 1,200 warmup frames, RX 6700 XT / RADV,
+private Weston GL compositor, 1280×800: before 76.38 FPS / 15.18 ms p95; after
+74.38 FPS / 15.56 ms p95. Both pass configured 60 FPS / 16.67 ms gates. New run:
+25 resident cells, 2,029 ready assets, 3,872 validated materials; pending assets,
+load/material/terrain/water failures and diagnostic fallbacks all 0. Single short
+pair, not release performance acceptance or a causal speed comparison.
+
+Private evidence root `/home/dev/Projects/mudcrab-lighting-l1-evidence`:
+`retail/conversion-report.json`, `retail/material-inventory.json`,
+`fiji/{wall-before,wall-after}`, `fiji/wall-comparison.png`,
+`fiji/wall-comparison-metrics.json`, `fiji/riverwood-{before,after}.json`.
+[Compatibility inventory](../../lighting-l1-compatibility.md) lists shader gaps.
+Implementation T4 delivered; T5 and #131 remain open for L0 matched-reference
+acceptance and required unsupported material cases. L2 owns remaining hardcoded
+sun/ambient/weather behavior. Lighting addons remain out of scope.
 
 ## Emission review audit (2026-10-03)
 
@@ -191,7 +291,7 @@ T1|x|Trace existing color/material owners and name unsupported paths|V5
 T2|x|Use explicit HDR scene composition and linear reflection storage; synchronize exposure|V1,V2
 T3|x|Render paired synthetic probes and record pixel evidence|V3,V4
 T8|x|Adapt Bill roughness/mask corrections; verify native loader, pruning, cache, scene-only lifetime and GPU response|V5,V9,V10,V11,V12
-T4|.|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes|V5
+T4|x|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes and retail deployment|V5,V13,V14,V15,V16
 T7|x|Restore signed-tint NIF compatibility; verify retail reconversion and delivered pack|V5,V6,V8
 T6|x|Fix static emission publication; load converted materials and compare GPU swatches; migrate cache|V5,V6,V7
 T5|.|Compare both scene types against L0 references; accept declared tolerances|V3,V5
@@ -217,8 +317,17 @@ B15|2026-10-02|Probe used pre-0.19 scene/shadow names|Use WorldAsset and shadow_
 B16|2026-10-02|Probe held asset borrow while inserting reference and queried immutable scene guard|Clone normal handle before insertion; mutable WorldAsset guard; compiler catches borrowing, no new invariant
 B17|2026-10-02|Adding scene-binding verification exceeded probe system argument lint|Group related glTF/WorldAsset resources; Clippy covers mechanical shape, no new invariant
 B18|2026-10-03|Native scene override drops stock material handle while stock hook retains dependency ID; 224 Riverwood instances stay pending; small fixture missed streaming lifetime failure|V12; retain source handle in reflected scene component; scene-only probe, scene-clone regression and failing-first Riverwood gate
+B19|2026-10-03|NIF texture Y follows UV V; omitted tangents make Bevy generate opposite bitangent, reversing vertical normal relief|V13; source gate/stonewall frame audit plus independent geometric-normal probe
+B20|2026-10-03|Modern BSTriShape export drops COLOR_0; blanket cutout normalization also discards ordinary authored edge alpha|V14; restore RGBA then gate channels by shader flags/tree/LOD semantics
+B21|2026-10-03|Normal probe's procedural rectangle lacks tangents; all six samples render flat|V13; generate tangent frame before GPU evaluation; geometric references expose omission
+B22|2026-10-03|Exclusion test names Skyrim flags wrapper but parsed source property uses historical Fallout4-named wrapper|Use actual property type; compiler catches mismatch, no new invariant
+B23|2026-10-03|Pinned snapshots and pruning test paths predate per-wrap aliases and schema 19|Reviewed schema/hash, GLB size, metadata, samplers and alias diff; V15 covers behavior, no new invariant
+B24|2026-10-03|Alias helper appended after test module violates strict Clippy item ordering|Move helper before tests; structural lint, no new invariant
+B25|2026-10-03|Desktop compositor changes capture frame then closes window; pixman compositor lacks Vulkan surface support|Private GL headless compositor; six baseline shots settle at exact 1280×800; capture environment only, no new invariant
+B26|2026-10-03|Deployment assumes every old texture is reusable; full hash check finds six changed outputs; scp drops mount-helper executable mode; FUSE daemon inherits mount lock|Replace six files and affected aliases privately; chmod helper; close lock FD in daemon; repeat full check and mount invocation. Deployment-only corrections; V4/V15 verification catches failures
 B27|2026-10-03|Required reflection Exposure query silently drops camera after component removal|V2; restore missing component; regression checks pose, activation and observer/default exposure
 B28|2026-10-03|Review test helper followed test module; strict Clippy rejects item order|Move helper before module; mechanical, no new invariant
 B29|2026-10-03|Lighting multiplier max(0) hid NaN and negative infinity before material validation|V6; reject non-finite source before publication
 B30|2026-10-03|Static lighting multiplier clamped before metadata; mistaken attribution to controller endpoints|V8; preserve raw signed multiplier; clamp only glTF projection; metadata also for nonnegative tint
 B31|2026-10-03|Reference-shot prose omits existing failure counters from settle predicate|Describe zero new failures and failed timeout capture; existing shot-settling tests, no new invariant
+B32|2026-10-03|Emission migration prose retained latest-only launcher requirement after shared compatibility range landed|Align prose with existing 15–19 readiness gate and schema-range tests; documentation-only, no new invariant

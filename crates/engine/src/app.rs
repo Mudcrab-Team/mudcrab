@@ -172,7 +172,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins((
             VercidiumRendererPlugin,
             SkyPlugin,
-            crate::nif_material::NifSpecularPlugin,
+            crate::nif_material::NifMaterialPlugin,
         ))
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
@@ -1681,7 +1681,7 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    18
+    19
 }
 
 fn setup_synthetic_benchmark(
@@ -2231,6 +2231,66 @@ mod tests {
                 image.sampler,
                 ImageSampler::Descriptor(terrain_layer_sampler())
             );
+        }
+    }
+
+    #[test]
+    fn v15_distinct_wrap_aliases_keep_samplers_in_both_load_orders() {
+        use bevy::{
+            gltf::Gltf,
+            image::{ImageAddressMode, ImageSampler},
+        };
+        for clamp_first in [false, true] {
+            let (directory, mut app) = world_normal_loader_fixture(10497, 10497);
+            fs::copy(
+                directory.path().join("shared.png"),
+                directory.path().join("shared.opensky-wrap0.png"),
+            )
+            .unwrap();
+            let mut document: serde_json::Value =
+                serde_json::from_slice(&fs::read(directory.path().join("road.gltf")).unwrap())
+                    .unwrap();
+            document["images"][0]["uri"] = serde_json::json!("shared.opensky-wrap0.png");
+            document["samplers"][0]["wrapS"] = serde_json::json!(33071);
+            document["samplers"][0]["wrapT"] = serde_json::json!(33071);
+            fs::write(
+                directory.path().join("clamp.gltf"),
+                serde_json::to_vec(&document).unwrap(),
+            )
+            .unwrap();
+            let names = if clamp_first {
+                ["clamp.gltf", "road.gltf"]
+            } else {
+                ["road.gltf", "clamp.gltf"]
+            };
+            let mut retained = Vec::new();
+            for name in names {
+                let handle = app.world().resource::<AssetServer>().load::<Gltf>(name);
+                wait_for_world_asset(&mut app, &handle);
+                retained.push((name, handle));
+            }
+            assert_ne!(
+                loaded_world_normal(&app, &retained[0].1),
+                loaded_world_normal(&app, &retained[1].1)
+            );
+            for (name, handle) in &retained {
+                let image_handle = loaded_world_normal(&app, handle);
+                let image = app
+                    .world()
+                    .resource::<Assets<Image>>()
+                    .get(&image_handle)
+                    .unwrap();
+                let ImageSampler::Descriptor(sampler) = &image.sampler else {
+                    panic!("missing sampler")
+                };
+                let expected = if *name == "clamp.gltf" {
+                    ImageAddressMode::ClampToEdge
+                } else {
+                    ImageAddressMode::Repeat
+                };
+                assert_eq!(sampler.address_mode_u, expected);
+                assert_eq!(sampler.address_mode_v, expected);
+            }
         }
     }
 
@@ -3164,7 +3224,7 @@ mod tests {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        for schema in [16, 17, 18] {
+        for schema in [16, 17, 18, 19] {
             std::fs::write(
                 directory.path().join("conversion-manifest.json"),
                 format!(r#"{{"schema_version":{schema},"complete":true}}"#),
