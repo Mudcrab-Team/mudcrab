@@ -157,6 +157,24 @@ multipliers before clamping, all non-finite tint channels and invalid negative
 contract strength. Converter suite: 356 passed, 13 existing ignores; strict Clippy
 and formatting pass. L0 acceptance remains open.
 
+## Review follow-up (2026-10-03)
+
+Reflection recovery: optional component query restores missing `Exposure` before
+rendering; pose/visibility continue. Shared `DEFAULT_SCENE_EV100` owns baseline.
+V1 tests execute five world/visual setup systems plus physics fixture startup;
+V2 regression fails before fix, then passes with observer exposure and fallback.
+232 engine tests pass; strict engine Clippy and formatting pass.
+
+[Existing terrain/water fixture comparison](../../images/l1-color-fixture-comparison.png)
+and [capture conditions](../../evidence/lighting-l1-color-fixture-20261003.json):
+identical camera, materials, lighting, fixed water time; previous output path vs
+HDR/linear reflection. Fixture has no sky; existing composition probe covers sky.
+Private capture-only patch uses WebGPU features and 32 texture/sampler limits on
+llvmpipe, omits production renderer gate from screenshot readiness. Both runs emit
+Xvfb/Vulkan swapchain diagnostics and fail software performance gates. Images are
+review evidence, not production-device or retail-parity acceptance. Capture-only
+changes reverted; shipping renderer requirements unchanged.
+
 ## Tasks
 
 id|status|task|cites
