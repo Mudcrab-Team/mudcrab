@@ -101,6 +101,33 @@ RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: nine-case exterior/interior probes both 
 
 Evidence: package `DEPLOYMENT.json`, `conversion-report.json`, `material-probe/{exterior,interior,legacy}/probe.json`, `asset-check.log`, `smoke-new-assets.log`; local copies under `/home/dev/Projects/mudcrab-lighting-emission-evidence/signed-fix/`. Installed source NIFs stay private. Synthetic GPU/startup proof ≠ matched Skyrim scene acceptance or release performance; L0 comparison and remaining L1 families remain open.
 
+## Emission review audit (2026-10-03)
+
+[Aggregate report](../../evidence/lighting-l1-emission-impact-20261003.json): full schema-19
+conversion, 25,388 GLBs; 58,133 published lighting-material instances. Parse winning
+NIF bytes by manifest source hash (first hash precedes skeleton dependencies), join
+source shader block to material extras, compare pre-#139 and corrected publication
+on identical inputs. Reconstructed corrected energy matches all 58,133 published
+factors/strengths. Effect shaders and excluded shapes outside count; this corpus
+includes installed official DLC/Creation Club content, not a base-game-only sample.
+
+- 3,599 instances lose slot-2 glow eligibility; 0 gain it. Eligibility precedes
+  missing-texture pruning, so this is not a count of visible glowing surfaces.
+- 41 retained glow-eligible instances have black tint; old white fallback removed.
+- 4,177 change energy factor; 4,447 change factor or eligibility across 2,512 files.
+- 3,631 lose nonzero emission factor; 0 gain it. Texture samples not evaluated.
+- No non-finite source emission or strength overflow in counted instances; two
+  finite negative lighting-multiplier endpoints retain static zero behavior.
+
+Malformed emission still fails its asset with source/shape/shader context. Pipeline
+records that failure; no successful complete publication with a skipped bad asset.
+No clamp of non-finite/overflowing energy introduced: audited data does not justify
+one. Finite signed tints retain V8; finite negative lighting-controller endpoints
+remain an explicit animation limitation. Review regression tests cover non-finite
+multipliers before clamping, all non-finite tint channels and invalid negative
+contract strength. Converter suite: 356 passed, 13 existing ignores; strict Clippy
+and formatting pass. L0 acceptance remains open.
+
 ## Tasks
 
 id|status|task|cites
