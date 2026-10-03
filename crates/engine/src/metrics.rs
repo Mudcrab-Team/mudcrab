@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn parses_the_frame_times_path() {
-        let config = EngineConfig::from_args(
+        let config = EngineConfig::run_from_args(
             ["--benchmark-frame-times", "out/frames.csv"]
                 .into_iter()
                 .map(str::to_owned),
