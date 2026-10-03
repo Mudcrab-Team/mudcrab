@@ -558,11 +558,16 @@ fn publish_emissive(
     // NIF can store signed tints (including unused channels with multiplier 0).
     // glTF emission is nonnegative. Retain raw signed values for a future native
     // shader; keep the previous lower clamp in this compatibility projection.
-    if material.emissive_color.iter().any(|value| *value < 0.0) {
+    if material.emissive_color.iter().any(|value| *value < 0.0) || material.emissive_multiple < 0.0
+    {
         output["extras"]["openSkyrim"]["sourceEmission"] = serde_json::json!({
             "color": material.emissive_color,
             "multiple": material.emissive_multiple,
-            "representation": "negative_channels_clamped_for_gltf"
+            "representation": if material.emissive_multiple < 0.0 {
+                "negative_values_clamped_for_gltf"
+            } else {
+                "negative_channels_clamped_for_gltf"
+            }
         });
     }
     let has_color = material.emissive_color.iter().any(|value| *value > 0.0);
@@ -580,7 +585,7 @@ fn publish_emissive(
             "texCoord": 0
         });
     }
-    let strength = material.emissive_multiple * peak;
+    let strength = material.emissive_multiple.max(0.0) * peak;
     if strength != 1.0 {
         output["extensions"]["KHR_materials_emissive_strength"] =
             serde_json::json!({ "emissiveStrength": strength });
@@ -883,7 +888,7 @@ fn build_lighting_material(
         specular_color: property.specular_color.0.to_array(),
         specular_strength: property.specular_strength,
         emissive_color: property.emissive_color.0.to_array(),
-        emissive_multiple: static_emission_multiple(
+        emissive_multiple: source_emission_multiple(
             source,
             shape_block,
             shape_name,
@@ -1157,7 +1162,8 @@ fn validate_material(
     ensure!(
         material.glossiness >= 0.0
             && material.specular_strength >= 0.0
-            && material.emissive_multiple >= 0.0,
+            && (material.shader_family == NifShaderFamily::Lighting
+                || material.emissive_multiple >= 0.0),
         "{}",
         material_error(
             source,
@@ -1173,8 +1179,9 @@ fn validate_material(
         )
     );
     ensure!(
-        (material.emissive_color.into_iter().fold(1.0_f32, f32::max) * material.emissive_multiple)
-            .is_finite(),
+        (material.emissive_color.into_iter().fold(1.0_f32, f32::max)
+            * material.emissive_multiple.max(0.0))
+        .is_finite(),
         "{}",
         material_error(
             source,
@@ -1189,8 +1196,8 @@ fn validate_material(
     Ok(())
 }
 
-/// Keep finite negative controller endpoints dark until emission animation is supported.
-fn static_emission_multiple(
+/// Validate the raw static multiplier; only glTF publication may clamp its sign.
+fn source_emission_multiple(
     source: &Path,
     shape_block: u32,
     shape_name: Option<&str>,
@@ -1207,7 +1214,7 @@ fn static_emission_multiple(
             format!("shader block {shader_block} emissive multiplier is non-finite")
         ),
     );
-    Ok(multiple.max(0.0))
+    Ok(multiple)
 }
 
 fn normalize_alpha(
@@ -1531,9 +1538,9 @@ mod tests {
     }
 
     #[test]
-    fn v6_source_emission_rejects_nonfinite_before_endpoint_clamping() {
+    fn v6_source_emission_rejects_nonfinite_before_projection() {
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let error = static_emission_multiple(
+            let error = source_emission_multiple(
                 Path::new("invalid-emission.nif"),
                 3,
                 Some("glow"),
@@ -1547,16 +1554,16 @@ mod tests {
             assert!(message.contains("shader block 4"));
             assert!(message.contains("non-finite"));
         }
-        for (value, expected) in [(-2.0, 0.0), (0.0, 0.0), (0.25, 0.25), (8.0, 8.0)] {
+        for (value, expected) in [(-2.0, -2.0), (0.0, 0.0), (0.25, 0.25), (8.0, 8.0)] {
             assert_eq!(
-                static_emission_multiple(Path::new("fixture.nif"), 3, None, 4, value).unwrap(),
+                source_emission_multiple(Path::new("fixture.nif"), 3, None, 4, value).unwrap(),
                 expected
             );
         }
     }
 
     #[test]
-    fn v6_emission_contract_rejects_invalid_channels_and_negative_strength() {
+    fn v6_emission_contract_rejects_invalid_channels_and_negative_effect_strength() {
         for channel in 0..3 {
             for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
                 let mut material = fixture(NifAlphaMode::Opaque, true, false, false);
@@ -1566,6 +1573,7 @@ mod tests {
         }
         let mut material = fixture(NifAlphaMode::Opaque, true, false, false);
         material.emissive_multiple = -1.0;
+        material.shader_family = NifShaderFamily::Effect;
         assert!(validate_material(Path::new("fixture.nif"), 3, None, &material).is_err());
     }
 
@@ -1657,6 +1665,33 @@ mod tests {
         assert!(message.contains("invalid-emission.nif"));
         assert!(message.contains("shape block 10"));
         assert!(message.contains("emissive energy"));
+    }
+
+    #[test]
+    fn v8_signed_static_multiplier_survives_source_metadata() {
+        for color in [[1.0, 0.5, 0.25], [-1.0, 0.5, 0.25], [0.0; 3]] {
+            for glow in [false, true] {
+                let mut source = fixture(NifAlphaMode::Opaque, true, false, false);
+                source.emissive_color = color;
+                source.emissive_multiple = -2.0;
+                validate_material(Path::new("signed-multiplier.nif"), 3, None, &source).unwrap();
+                let document = publish_emission_fixture(color, -2.0, glow);
+                let material = &document["materials"][0];
+                let metadata = &material["extras"]["openSkyrim"]["sourceEmission"];
+                assert_eq!(metadata["color"], serde_json::json!(color));
+                assert_eq!(metadata["multiple"], -2.0);
+                if let Some(factor) = material.get("emissiveFactor") {
+                    let strength = material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"].as_f64().unwrap_or(1.0);
+                    assert!(
+                        factor
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|channel| channel.as_f64().unwrap() * strength == 0.0)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

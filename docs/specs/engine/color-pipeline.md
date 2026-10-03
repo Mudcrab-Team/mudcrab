@@ -35,7 +35,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Non-finite source emission or overflowing energy → contextual conversion error before clamping.
 - V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–19 after subsequent slices; world database schema unchanged.
 
-- V8: Finite signed NIF tint ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
+- V8: Finite signed NIF tint & static lighting multiplier ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
 
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
@@ -72,9 +72,9 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 [Emission issue #82](https://github.com/Mudcrab-Team/mudcrab/issues/82): `Own_Emit` declares own emittance; `Glow_Map` declares third-slot glow (`vendor/project-wormhole-nif/src/nif_flags.rs`). Glow shader type also permits slot 2. Own_Emit alone retains slot 2 as unclassified source data; no emissive texture sampling.
 
-Publication: `peak = max(1, max(emissive_color))`; `emissiveFactor = max(0, emissive_color) / peak`; `emissiveStrength = emissive_multiple * peak`. glTF factor remains in [0,1]; reconstructed linear RGB retains nonnegative authored energy. Extension emitted whenever strength ≠ 1, including 0 and values below 1. Black tint stays black with glow present. Bevy 0.19 glTF loader multiplies factor by strength into `StandardMaterial.emissive`; glow uses sRGB decode once, alpha does not scale opaque emission. No camera/ambient compensation.
+Publication: `peak = max(1, max(emissive_color))`; `emissiveFactor = max(0, emissive_color) / peak`; `emissiveStrength = max(0, emissive_multiple) * peak`. glTF factor remains in [0,1]; reconstructed linear RGB retains nonnegative authored energy. Extension emitted whenever strength ≠ 1, including 0 and values below 1. Black tint stays black with glow present. Bevy 0.19 glTF loader multiplies factor by strength into `StandardMaterial.emissive`; glow uses sRGB decode once, alpha does not scale opaque emission. No camera/ambient compensation.
 
-Signed NIF tints remain valid. Negative channels retain previous glTF lower-clamp approximation; raw color/multiplier retained under `extras.openSkyrim.sourceEmission`, with explicit representation label. Signed-emission shader behavior remains unsupported; this projection does not claim Skyrim parity. Strength overflow → contextual conversion error. Source contract retains original valid values. Finite negative lighting-multiplier controller endpoints keep the existing static zero clamp; NaN/±infinity rejected before clamping; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
+Signed NIF tints remain valid. Negative channels retain previous glTF lower-clamp approximation; raw color/multiplier retained under `extras.openSkyrim.sourceEmission`, with explicit representation label. Signed-emission shader behavior remains unsupported; this projection does not claim Skyrim parity. Strength overflow → contextual conversion error. Source contract retains original valid values. Static lighting multipliers retain their raw sign in the contract and `sourceEmission`, including with nonnegative/black tint; only the glTF projection clamps negative values to zero. These are static shader-property values, not proven controller endpoints. NaN/±infinity rejected before publication; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
 
 `material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Nine cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas, signed tint. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×900, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
 
@@ -246,16 +246,25 @@ includes installed official DLC/Creation Club content, not a base-game-only samp
 - 4,177 change energy factor; 4,447 change factor or eligibility across 2,512 files.
 - 3,631 lose nonzero emission factor; 0 gain it. Texture samples not evaluated.
 - No non-finite source emission or strength overflow in counted instances; two
-  finite negative lighting-multiplier endpoints retain static zero behavior.
+  finite negative static lighting multipliers keep a zero glTF projection.
 
 Malformed emission still fails its asset with source/shape/shader context. Pipeline
 records that failure; no successful complete publication with a skipped bad asset.
 No clamp of non-finite/overflowing energy introduced: audited data does not justify
-one. Finite signed tints retain V8; finite negative lighting-controller endpoints
-remain an explicit animation limitation. Review regression tests cover non-finite
+one. Finite signed tints and static lighting multipliers retain V8; signed native
+emission remains unsupported. Earlier endpoint attribution was unverified. Review regression tests cover non-finite
 multipliers before clamping, all non-finite tint channels and invalid negative
-contract strength. Converter suite: 356 passed, 13 existing ignores; strict Clippy
+effect-material strength. Converter suite: 357 passed, 13 existing ignores; strict Clippy
 and formatting pass. L0 acceptance remains open.
+
+Signed-static follow-up: two Volendrung source meshes reconvert successfully in an
+isolated mesh-only fixture. Both retain raw multiplier `-0.6013296842575073` and
+publish zero glTF strength; 14 absent fixture texture references are pruned and
+recorded. This checks source parsing/publication, not rendering or world coverage.
+Synthetic regression covers positive, signed and black tint with and without glow.
+Existing prereview packs retain their old metadata until rebuilt; use a separate
+output or `--invalidate-cache` to refresh it. No new runtime shader behavior or
+asset-format version is introduced by this metadata correction.
 
 ## Review follow-up (2026-10-03)
 
@@ -318,4 +327,6 @@ B25|2026-10-03|Desktop compositor changes capture frame then closes window; pixm
 B26|2026-10-03|Deployment assumes every old texture is reusable; full hash check finds six changed outputs; scp drops mount-helper executable mode; FUSE daemon inherits mount lock|Replace six files and affected aliases privately; chmod helper; close lock FD in daemon; repeat full check and mount invocation. Deployment-only corrections; V4/V15 verification catches failures
 B27|2026-10-03|Required reflection Exposure query silently drops camera after component removal|V2; restore missing component; regression checks pose, activation and observer/default exposure
 B28|2026-10-03|Review test helper followed test module; strict Clippy rejects item order|Move helper before module; mechanical, no new invariant
-B29|2026-10-03|Lighting multiplier max(0) hid NaN and negative infinity before material validation|V6; reject non-finite source before finite negative-endpoint clamp
+B29|2026-10-03|Lighting multiplier max(0) hid NaN and negative infinity before material validation|V6; reject non-finite source before publication
+B30|2026-10-03|Static lighting multiplier clamped before metadata; mistaken attribution to controller endpoints|V8; preserve raw signed multiplier; clamp only glTF projection; metadata also for nonnegative tint
+B31|2026-10-03|Reference-shot prose omits existing failure counters from settle predicate|Describe zero new failures and failed timeout capture; existing shot-settling tests, no new invariant
