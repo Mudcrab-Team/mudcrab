@@ -352,7 +352,7 @@ fn evaluate(
     let report = serde_json::json!({
         "kind": "synthetic-output-consistency", "retail_parity": false,
         "space": if probe.interior { "interior" } else { "exterior" },
-        "input_linear": probe.color.to_f32_array(), "ev100": 9.7,
+        "input_linear": probe.color.to_f32_array(), "ev100": engine::color_pipeline::DEFAULT_SCENE_EV100,
         "tonemapping": "TonyMcMapface", "legacy_output": probe.legacy_output,
         "reflection_format": if probe.legacy_output { "Rgba8UnormSrgb" } else { "Rgba16Float" },
         "resolution": [800,600], "camera": {"position": [0,0,10], "projection": "orthographic", "vertical_size": 6},

@@ -1,5 +1,5 @@
 use crate::{
-    color_pipeline::SceneColorPipeline,
+    color_pipeline::{DEFAULT_SCENE_EV100, SceneColorPipeline},
     profiling::ProfilingState,
     world::{cache::TerrainSnapshot, database::AssetCatalog},
 };
@@ -745,10 +745,11 @@ type WaterReflectionObserverView = (
 );
 
 fn update_water_reflection_camera(
+    mut commands: Commands,
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
     mut reflection_camera: Query<
-        (&mut Transform, &mut Camera, &mut Exposure),
+        (Entity, &mut Transform, &mut Camera, Option<&mut Exposure>),
         With<WaterReflectionCamera>,
     >,
     mut profiler: ResMut<ProfilingState>,
@@ -756,17 +757,19 @@ fn update_water_reflection_camera(
     let started = std::time::Instant::now();
     let (
         Ok((main, frustum, projection, exposure)),
-        Ok((mut reflection, mut camera, mut reflection_exposure)),
+        Ok((entity, mut reflection, mut camera, reflection_exposure)),
     ) = (main_camera.single(), reflection_camera.single_mut())
     else {
         return;
     };
     // PBR lighting is already exposure-scaled when the reflection is sampled by water.
     // Keep both views in the same domain, including explicit diagnostic exposure changes.
-    reflection_exposure.ev100 = exposure.map_or_else(
-        || SceneColorPipeline::default().exposure.ev100,
-        |value| value.ev100,
-    );
+    let ev100 = exposure.map_or(DEFAULT_SCENE_EV100, |value| value.ev100);
+    if let Some(mut reflection_exposure) = reflection_exposure {
+        reflection_exposure.ev100 = ev100;
+    } else {
+        commands.entity(entity).insert(Exposure { ev100 });
+    }
     // The surface nearest the main camera fixes the mirror plane; a further surface would put the
     // reflection at the wrong height when more than one water level is streamed in.
     let mut mirror_surface = None;
@@ -1016,6 +1019,44 @@ mod tests {
                 .ev100,
             9.7
         );
+    }
+
+    #[test]
+    fn v2_reflection_restores_missing_exposure_and_updates_its_pose() {
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        for exposure in [Some(Exposure { ev100: 7.0 }), None] {
+            harness
+                .app
+                .world_mut()
+                .entity_mut(harness.reflection_camera)
+                .remove::<Exposure>();
+            if let Some(exposure) = exposure {
+                harness
+                    .app
+                    .world_mut()
+                    .entity_mut(harness.main_camera)
+                    .insert(exposure);
+            } else {
+                harness
+                    .app
+                    .world_mut()
+                    .entity_mut(harness.main_camera)
+                    .remove::<Exposure>();
+            }
+            let frame = harness.frame();
+            assert!(frame.active);
+            assert_eq!(frame.transform.translation.y, -40.0);
+            assert_eq!(
+                harness
+                    .app
+                    .world()
+                    .get::<Exposure>(harness.reflection_camera)
+                    .unwrap()
+                    .ev100,
+                exposure.map_or(9.7, |value| value.ev100)
+            );
+        }
     }
 
     #[test]
