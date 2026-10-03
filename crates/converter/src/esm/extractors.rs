@@ -8,38 +8,46 @@ use crate::esm::{
 use rkyv::{rancor::Panic, to_bytes};
 use std::str::from_utf8;
 
-pub fn extract_subrecords(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+/// Decode the complete payload, rejecting malformed records instead of publishing a prefix.
+pub fn extract_subrecords(data: &[u8]) -> color_eyre::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    use color_eyre::eyre::ensure;
     let mut subs = Vec::new();
     let mut curr = data;
-
     let mut extended_length = None;
-    while curr.len() >= 6 {
+    while !curr.is_empty() {
+        ensure!(
+            curr.len() >= 6,
+            "truncated subrecord header at byte {}",
+            data.len() - curr.len()
+        );
         let tag = &curr[..4];
         let len = u16::from_le_bytes([curr[4], curr[5]]) as usize;
         curr = &curr[6..];
-
         if tag == b"XXXX" {
-            if len == 4 && curr.len() >= 4 {
-                extended_length = Some(u32::from_le_bytes(curr[..4].try_into().unwrap()) as usize);
-                curr = &curr[4..];
-            } else {
-                break;
-            }
+            ensure!(extended_length.is_none(), "consecutive XXXX subrecords");
+            ensure!(
+                len == 4 && curr.len() >= 4,
+                "invalid or truncated XXXX length"
+            );
+            extended_length = Some(u32::from_le_bytes(curr[..4].try_into().unwrap()) as usize);
+            curr = &curr[4..];
             continue;
         }
-
         let payload_len = extended_length.take().unwrap_or(len);
-        if payload_len > curr.len() {
-            break;
-        }
-        let payload = curr[..payload_len].to_vec();
-
-        subs.push((tag.to_vec(), payload));
-
+        ensure!(
+            payload_len <= curr.len(),
+            "truncated {} subrecord: expected {payload_len} bytes, got {}",
+            String::from_utf8_lossy(tag),
+            curr.len()
+        );
+        subs.push((tag.to_vec(), curr[..payload_len].to_vec()));
         curr = &curr[payload_len..];
     }
-
-    subs
+    ensure!(
+        extended_length.is_none(),
+        "XXXX without a following subrecord"
+    );
+    Ok(subs)
 }
 
 pub fn extract_land_data(subs: &[(Vec<u8>, Vec<u8>)]) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -267,5 +275,44 @@ impl<'a> SubrecordView<'a> {
     /// Helper to parse standard primary model (MODL / MODT / MODS)
     pub fn get_model(&self) -> Option<ModelData> {
         self.get_model_with_tags(b"MODL", b"MODT", b"MODS")
+    }
+}
+
+#[cfg(test)]
+mod subrecord_tests {
+    use super::extract_subrecords;
+
+    #[test]
+    fn rejects_truncation_even_after_a_valid_subrecord() {
+        let valid = b"EDID\x02\x00x\x00";
+        assert_eq!(extract_subrecords(valid).unwrap().len(), 1);
+        for tail in [
+            b"D".as_slice(),
+            b"DATA\x04\x00xy",
+            b"XXXX\x03\x00xyz",
+            b"XXXX\x04\x00\x01\x00\x00\x00",
+        ] {
+            assert!(extract_subrecords(&[valid.as_slice(), tail].concat()).is_err());
+        }
+    }
+
+    #[test]
+    fn extended_lengths_override_the_short_field_and_require_one_follower() {
+        let payload = vec![7; 70_000];
+        let mut bytes = b"XXXX\x04\x00".to_vec();
+        bytes.extend((payload.len() as u32).to_le_bytes());
+        bytes.extend(b"DATA\x00\x00");
+        bytes.extend(&payload);
+        assert_eq!(
+            extract_subrecords(&bytes).unwrap(),
+            vec![(b"DATA".to_vec(), payload)]
+        );
+        bytes.pop();
+        assert!(extract_subrecords(&bytes).is_err());
+        assert!(
+            extract_subrecords(b"XXXX\x04\x00\x00\x00\x00\x00XXXX\x04\x00\x00\x00\x00\x00")
+                .is_err()
+        );
+        assert!(extract_subrecords(&[]).unwrap().is_empty());
     }
 }

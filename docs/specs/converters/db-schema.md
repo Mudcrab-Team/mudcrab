@@ -6,14 +6,15 @@ This specification details the canonical DDL schema, tables, indices, and column
 
 ## 1. Schema Overview
 
-`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`) in priority load order defined by `plugins.txt`.
+`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, its explicit order is validated and preserved. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
 
 The database stamps its own version in `schema_info`; the current one is **4**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`), which added the `lights` table and
 `references.radius_override`. The runtime (engine and `world-inspect`) accepts world database
-schemas **3 through 4** (`engine::world::database::MIN_RUNTIME_DATABASE_SCHEMA_VERSION` through
-`MAX_RUNTIME_DATABASE_SCHEMA_VERSION`); schema 3 loads because every runtime query probes for
-the tables and columns schema 4 added.
+schemas **3 through 4** (`shared::MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION` through
+`shared::WORLD_DATABASE_SCHEMA_VERSION`, checked by `shared::supports_runtime_world_database_schema`);
+schema 3 loads because every runtime query probes for the tables and columns schema 4 added. The
+launcher's "ready to play" check accepts the same range.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -198,15 +199,28 @@ CREATE TABLE IF NOT EXISTS scripts (
 
 ### 10. FormID Translation Map (`formid_map`)
 
-Bridges 32-bit Skyrim FormIDs to 64-bit internal database row IDs across merged plugins.
+Maps each resolved 32-bit FormID to its stable owning plugin and plugin-local
+ID. `plugin_name` is the lowercase owning filename, such as `skyrim.esm`;
+`internal_id` is the low 24 bits for full plugins or the low 12 bits for light
+plugins. Full and light slots are assigned independently. The pair
+`(plugin_name, internal_id)` survives changes to the load-order slots.
+`plugin_name` is the lowercase filename; join to `plugins` with
+`lower(plugins.name) = formid_map.plugin_name`.
+
+Ownership differs from override provenance: `records.load_order` identifies
+the winning plugin's priority. Game settings override by case-insensitive
+EditorID and retain the first definition's identity. A deletion with no EDID
+resolves through any previously encountered non-null FormID alias; an unknown
+header-only deletion is skipped with a warning. Later restorations keep the
+original identity. Ambiguous aliases and live settings without an EDID are
+errors, rather than silently replacing or dropping another record.
 
 ```sql
 CREATE TABLE IF NOT EXISTS formid_map (
-    form_id INTEGER NOT NULL,           -- 32-bit Skyrim FormID
-    plugin_name TEXT NOT NULL,          -- Plugin origin (e.g. 'merged')
-    internal_id INTEGER NOT NULL,       -- Internal database row ID
-    record_type TEXT NOT NULL,          -- Record type ('REFR', 'NPC_', etc.)
-    PRIMARY KEY (form_id, plugin_name)
+    form_id INTEGER PRIMARY KEY,       -- Resolved 32-bit Skyrim FormID
+    plugin_name TEXT NOT NULL,          -- Owning plugin filename
+    internal_id INTEGER NOT NULL,       -- Plugin-local ID (24 or 12 bits)
+    record_type TEXT NOT NULL           -- Record type ('REFR', 'NPC_', etc.)
 );
 ```
 

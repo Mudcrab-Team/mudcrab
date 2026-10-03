@@ -1,0 +1,46 @@
+# Label definitions; see docs/contributing/labels.md. A maintainer creates these once, for example:
+#   gh label create "area: engine" --color 1d76db --description "crates/engine"
+# Lists the labels docs/contributing/labels.md describes: four that exist already (as they are on the repository today) and the ones this proposal adds; the temporary `stack:` labels are created per stack, not here.
+# The repository also keeps GitHub's defaults (duplicate, good first issue, help wanted, invalid, question, wontfix).
+- name: bug
+  color: d73a4a
+  description: Something isn't working
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+- name: documentation
+  color: 0075ca
+  description: Improvements or additions to documentation
+- name: proposal
+  color: 51dc1b
+  description: An additive tag indicating a potential direction seeking more discussion
+- name: "area: converter"
+  color: 1d76db
+  description: crates/converter, crates/dummy-content
+- name: "area: engine"
+  color: 1d76db
+  description: crates/engine
+- name: "area: launcher"
+  color: 1d76db
+  description: crates/launcher
+- name: "area: shared"
+  color: 1d76db
+  description: crates/shared (formats and contracts)
+- name: "area: ci"
+  color: 1d76db
+  description: Workflows, scripts, tooling
+- name: needs reconversion
+  color: e99695
+  description: Merging changes the converted output; players must convert again
+- name: behaviour change
+  color: fbca04
+  description: Something now works differently; see For reviewers
+- name: S-ready-for-review
+  color: 0e8a16
+  description: Done, CI green, waiting for a reviewer
+- name: S-waiting-on-author
+  color: d4c5f9
+  description: Reviewed; the author has to act
+- name: S-blocked
+  color: b60205
+  description: Waits on another PR or a decision

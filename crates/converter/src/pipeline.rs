@@ -51,6 +51,9 @@ pub struct PipelineReport {
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
     pub warnings: Vec<String>,
+    /// advisory messages that do not affect completeness
+    #[serde(default)]
+    pub notices: Vec<String>,
     pub artifacts: Vec<PathBuf>,
     pub inputs_by_kind: BTreeMap<String, u64>,
     pub elapsed_ms: u128,
@@ -377,7 +380,19 @@ impl AssetPipeline {
             entries: Default::default(),
         };
         let files = discover(&config.data_dir)?;
-        let plugins = plugin_paths(config, &files)?;
+        let plugins = plugin_paths(config, &files, &mut report.notices)?;
+        // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
+        // prints them without splicing into its status line and the launcher shows them in its
+        // notice pane. They stay in `report.notices` for the summary and the JSON report.
+        for notice in &report.notices {
+            send_notice(
+                progress_tx,
+                ProgressStage::Discovering,
+                None,
+                &format!("note: {notice}"),
+            )
+            .await;
+        }
         let archives: Vec<_> = files
             .iter()
             .filter(|path| extension(path, &["bsa", "ba2"]))
@@ -563,9 +578,8 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            EsmParser::convert_plugins(&plugins, &db_path)?;
+            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
             validate_database(&Connection::open(&db_path)?)?;
-            let merged = EsmParser::merge_plugins(&plugins)?;
             write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
@@ -628,11 +642,36 @@ impl AssetPipeline {
             batch.report.artifacts.extend(aliases);
             // A reused mesh that still holds its published bytes keeps the prune record of the
             // run that wrote it: a prune only removes references, so an older record stays true.
-            // Captured before the prune pass rewrites any staged GLB, because afterwards a mesh
-            // pruned again no longer matches its published copy.
+            // The published copy proves that, and so does the previous manifest when the staged
+            // mesh has the hash it recorded for the same source: that manifest was published
+            // together with the record and holds the pruned bytes' hash, so the published copy
+            // may be missing. Captured before the prune pass rewrites any staged GLB, because
+            // afterwards a mesh pruned again no longer matches either.
             let mut carried_prunes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            // Resolving an output to the keys that produced it once keeps the scan below linear:
+            // a real pack holds hundreds of thousands of entries, and walking them for every
+            // pruned candidate would be quadratic.
+            // Built only when there are prune records to check, so a fresh run pays nothing.
+            let entries_by_output: BTreeMap<&str, Vec<&str>> = {
+                let mut map: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+                let entries = if previous.pruned_texture_references.is_empty() {
+                    None
+                } else {
+                    Some(&batch.manifest.entries)
+                };
+                for (key, entry) in entries.into_iter().flatten() {
+                    map.entry(entry.output.as_str())
+                        .or_default()
+                        .push(key.as_str());
+                }
+                map
+            };
             for (glb, references) in &previous.pruned_texture_references {
-                if files_are_identical(&staging.join(glb), &config.output_dir.join(glb)) {
+                let staged_glb = staging.join(glb);
+                let published = files_are_identical(&staged_glb, &config.output_dir.join(glb));
+                if published
+                    || staged_matches_previous_entry(&batch, &entries_by_output, glb, &staged_glb)
+                {
                     carried_prunes.insert(glb.clone(), references.iter().cloned().collect());
                 }
             }
@@ -690,15 +729,20 @@ impl AssetPipeline {
                 }
             }
             // The prune rewrote the GLB after its cache entry was recorded, so refresh every
-            // entry and journal record that publishes it from the rewritten bytes. Otherwise the
-            // next run fails the entry's size and hash check and converts the mesh again, and a
-            // resume finds a journal record that no longer matches the staged file.
+            // entry that publishes it from the rewritten bytes. Otherwise the next run fails the
+            // entry's size and hash check and converts the mesh again.
+            //
+            // The staging journal is deliberately left alone. A journal record carries no prune
+            // references, so certifying the pruned bytes would let a resumed run reuse the mesh
+            // with nothing left for the prune pass to find, and the published manifest would lose
+            // the record. The mesh's journal record still holds its pre-prune hash, which the
+            // pruned file no longer matches, so a resume converts it again and prunes it again.
             let pruned_outputs: BTreeSet<String> = pruned
                 .iter()
                 .filter(|file| !file.removed_uris.is_empty())
                 .map(|file| file.glb.clone())
                 .collect();
-            for (key, entry) in batch.manifest.entries.iter_mut() {
+            for entry in batch.manifest.entries.values_mut() {
                 if !pruned_outputs.contains(&entry.output) {
                     continue;
                 }
@@ -707,8 +751,6 @@ impl AssetPipeline {
                     .wrap_err_with(|| format!("failed to inspect pruned {}", path.display()))?
                     .len();
                 entry.output_hash = hash_file(&path)?;
-                let record = staged_output(entry, batch.expected_configuration);
-                batch.journal.record(key, &record)?;
             }
             // The run summary reports what the manifest records, whether this run
             // pruned it or carried the record forward for a reused mesh.
@@ -771,7 +813,12 @@ impl AssetPipeline {
             "Validating generated artifacts",
         )
         .await;
-        validate_artifacts(staging, &report.artifacts, &texture_semantics)?;
+        validate_artifacts(
+            staging,
+            &report.artifacts,
+            &texture_semantics,
+            config.cpu_jobs,
+        )?;
         send(
             progress_tx,
             ProgressStage::Validating,
@@ -1140,7 +1187,12 @@ impl ConversionBatch<'_> {
                         // is reused only when the journal says it was produced
                         // from the current source under the current schema and
                         // configuration and its bytes still match the recorded
-                        // size and hash. Any other output is converted again.
+                        // size and hash, or the `previous_entries` fallback
+                        // finds the previous manifest's entry for the same
+                        // source and its recorded output hash matches the
+                        // staged bytes (a staging tree copied from a published
+                        // pack carries no journal). Any other output is
+                        // converted again.
                         let staged_is_current = !forced
                             && (staged_outputs.get(&key).is_some_and(|record| {
                                 record.is_current(&target, &hash, &expected_configuration)
@@ -1662,51 +1714,109 @@ fn files_are_identical(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Checks the generated artifacts on a pool of `jobs` threads, up to the first failure. Decoding and hashing a KTX2 is
+/// CPU work and reading each file waits on the disk, so one file at a time left most cores idle.
+/// `jobs` is handed to the pool exactly as the conversion stage hands it `cpu_jobs`, where 0
+/// selects rayon's own thread count rather than a single thread.
+///
+/// The failure of the lowest artifact index is returned, so the reported error does not depend on
+/// which thread finished first.
 fn validate_artifacts(
     staging: &Path,
     artifacts: &[PathBuf],
     texture_semantics: &BTreeMap<String, BTreeSet<TextureSemantic>>,
+    jobs: usize,
 ) -> Result<()> {
-    let lua = mlua::Lua::new();
-    for relative in artifacts {
-        let path = staging.join(relative);
-        match path.extension().and_then(|extension| extension.to_str()) {
-            Some("ktx2") => {
-                let bytes = fs::read(&path)?;
-                let key = source_texture_key(&canonical_asset_path(
-                    &relative.to_string_lossy(),
-                    AssetKind::Texture,
-                    "ktx2",
-                )?)?;
-                let known_semantics = texture_semantics.get(&key).cloned().unwrap_or_default();
-                let encoding = TextureEncoding::from_semantics(&known_semantics)?;
-                let metadata = crate::texture::inspect_ktx2(&bytes, encoding)
-                    .wrap_err_with(|| format!("invalid KTX2 {}", path.display()))?;
-                ensure!(
-                    metadata.encoded_bytes == fs::metadata(&path)?.len()
-                        && !metadata.sha256.is_empty()
-                        && metadata.expanded_rgba_bytes > 0,
-                    "KTX2 metadata validation failed for {}",
-                    path.display()
-                );
-            }
-            Some("glb") => {
-                let bytes = fs::read(&path)?;
-                if bytes.len() < 12 || &bytes[..4] != b"glTF" {
-                    bail!("invalid GLB artifact {}", path.display());
+    use rayon::prelude::*;
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .wrap_err("failed to create artifact validation worker pool")?;
+    // Only the lowest-index failure is kept, so memory stays constant however many fail. Once
+    // a failure is known, artifacts after it are skipped; earlier ones are still checked, so
+    // the reported failure is the first in list order whatever the thread count.
+    let lowest_failure = std::sync::atomic::AtomicUsize::new(usize::MAX);
+    let first_failure = Mutex::new(None::<(usize, color_eyre::Report)>);
+    pool.install(|| {
+        artifacts.par_iter().enumerate().for_each_init(
+            // `mlua::Lua` cannot move between threads, so each worker builds its own when it
+            // first meets a script.
+            || None,
+            |lua, (index, relative)| {
+                if index > lowest_failure.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
                 }
-            }
-            Some("luau") => {
-                let source = fs::read_to_string(&path)?;
-                lua.load(&source)
-                    .set_name(path.to_string_lossy())
-                    .into_function()
-                    .map_err(|error| {
-                        color_eyre::eyre::eyre!("invalid Luau artifact {}: {error}", path.display())
-                    })?;
-            }
-            _ => {}
+                if let Err(error) = validate_artifact(staging, relative, texture_semantics, lua) {
+                    lowest_failure.fetch_min(index, std::sync::atomic::Ordering::Relaxed);
+                    let mut first = first_failure.lock().unwrap();
+                    if first.as_ref().is_none_or(|(kept, _)| index < *kept) {
+                        *first = Some((index, error));
+                    }
+                }
+            },
+        );
+    });
+    match first_failure.into_inner().unwrap() {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Checks one generated artifact. `lua` is the compiler for Luau scripts, created on first use so
+/// a caller that never meets a script never builds one.
+fn validate_artifact(
+    staging: &Path,
+    relative: &Path,
+    texture_semantics: &BTreeMap<String, BTreeSet<TextureSemantic>>,
+    lua: &mut Option<mlua::Lua>,
+) -> Result<()> {
+    let path = staging.join(relative);
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("ktx2") => {
+            let bytes = fs::read(&path)?;
+            let key = source_texture_key(&canonical_asset_path(
+                &relative.to_string_lossy(),
+                AssetKind::Texture,
+                "ktx2",
+            )?)?;
+            let known_semantics = texture_semantics.get(&key).cloned().unwrap_or_default();
+            let encoding = TextureEncoding::from_semantics(&known_semantics)?;
+            let metadata = crate::texture::inspect_ktx2(&bytes, encoding)
+                .wrap_err_with(|| format!("invalid KTX2 {}", path.display()))?;
+            ensure!(
+                metadata.encoded_bytes == fs::metadata(&path)?.len()
+                    && !metadata.sha256.is_empty()
+                    && metadata.expanded_rgba_bytes > 0,
+                "KTX2 metadata validation failed for {}",
+                path.display()
+            );
         }
+        Some("glb") => {
+            // Only the 12-byte GLB header is checked, so only the header is read.
+            let mut header = [0_u8; 12];
+            let read = fs::File::open(&path)
+                .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header));
+            match read {
+                Ok(()) if &header[..4] == b"glTF" => {}
+                Ok(()) => bail!("invalid GLB artifact {}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    bail!("invalid GLB artifact {}", path.display())
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Some("luau") => {
+            let source = fs::read_to_string(&path)?;
+            lua.get_or_insert_with(mlua::Lua::new)
+                .load(&source)
+                .set_name(path.to_string_lossy())
+                .into_function()
+                .map_err(|error| {
+                    color_eyre::eyre::eyre!("invalid Luau artifact {}: {error}", path.display())
+                })?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1748,15 +1858,42 @@ fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()
     Ok(())
 }
 
-fn plugin_paths(config: &PipelineConfig, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+/// Select explicit plugins or direct Data children, warning about nested-only discovery.
+fn plugin_paths(
+    config: &PipelineConfig,
+    files: &[PathBuf],
+    notices: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
     if let Some(path) = &config.plugins_file {
         return read_plugins_txt(path, &config.data_dir);
     }
-    let mut plugins: Vec<_> = files
+    let discovered: Vec<_> = files
         .iter()
         .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .collect();
+    let mut plugins: Vec<_> = discovered
+        .iter()
+        .copied()
+        .filter(|path| {
+            path.strip_prefix(&config.data_dir)
+                .is_ok_and(|relative| relative.components().count() == 1)
+        })
         .cloned()
         .collect();
+    if !discovered.is_empty() && plugins.is_empty() {
+        // The caller forwards notices on the progress channel; printing here would splice
+        // into the CLI's status line.
+        notices.push(format!(
+            "found {} plugin {}, but none directly in {}; plugins in subfolders are ignored",
+            discovered.len(),
+            if discovered.len() == 1 {
+                "file"
+            } else {
+                "files"
+            },
+            config.data_dir.display()
+        ));
+    }
     plugins.sort_by_key(|path| {
         let name = path
             .file_name()
@@ -1773,7 +1910,7 @@ fn plugin_paths(config: &PipelineConfig, files: &[PathBuf]) -> Result<Vec<PathBu
         };
         (rank, name)
     });
-    Ok(plugins)
+    crate::esm::load_order::order_discovered_plugins(plugins)
 }
 
 fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
@@ -1909,6 +2046,30 @@ fn parked_journal_path(staging: &Path) -> PathBuf {
     let mut name = staging.file_name().unwrap_or_default().to_os_string();
     name.push(".journal.jsonl");
     staging.with_file_name(name)
+}
+
+/// Whether the staged `glb` holds the bytes the previous manifest recorded for it, converted
+/// from the same source this run found. The previous manifest was published together with its
+/// prune records, so a match means those records describe the staged mesh.
+fn staged_matches_previous_entry(
+    batch: &ConversionBatch<'_>,
+    entries_by_output: &BTreeMap<&str, Vec<&str>>,
+    glb: &str,
+    staged_glb: &Path,
+) -> bool {
+    let Ok(staged_hash) = hash_file(staged_glb) else {
+        return false;
+    };
+    entries_by_output.get(glb).is_some_and(|keys| {
+        keys.iter().any(|key| {
+            let entry = &batch.manifest.entries[*key];
+            batch.previous.entries.get(*key).is_some_and(|previous| {
+                previous.output == glb
+                    && previous.source_hash == entry.source_hash
+                    && previous.output_hash == staged_hash
+            })
+        })
+    })
 }
 
 /// Provenance for a cache entry whose output is now complete inside staging.
@@ -2762,6 +2923,21 @@ mod tests {
         assert!(!conversion_is_complete(&warned));
     }
 
+    /// Notices never hide failures or affect completeness, regardless of insertion order.
+    #[test]
+    fn notices_do_not_affect_completeness() {
+        let mut report = PipelineReport::default();
+        report.notices.push("nested plugins ignored".into());
+        assert!(conversion_is_complete(&report));
+        report.warnings.push("conversion failed".into());
+        assert!(!conversion_is_complete(&report));
+        report.notices.push("another advisory".into());
+        assert!(!conversion_is_complete(&report));
+        report.warnings.clear();
+        report.skipped = 1;
+        assert!(!conversion_is_complete(&report));
+    }
+
     #[tokio::test]
     async fn publishes_meshes_with_missing_textures_and_stays_complete() {
         let temp = tempfile::tempdir().unwrap();
@@ -2990,6 +3166,56 @@ mod tests {
         );
     }
 
+    /// A run that prunes a mesh and stops before publishing must not lose the prune record when
+    /// it is resumed: the staged mesh no longer holds the removed reference, so only converting
+    /// it again lets the prune pass find and record it.
+    #[tokio::test]
+    async fn a_resumed_run_keeps_the_prune_record_of_a_mesh_pruned_before_the_stop() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+        // A stale backup makes the first run fail at publishing, after the prune pass, and keep
+        // its staging directory and journal.
+        let backup = output.with_extension(format!("backup-{}", std::process::id()));
+        fs::create_dir_all(&backup).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:?}").contains("stale backup"));
+        let staging = error.staging.expect("staging directory was kept");
+        let staged_uris = MeshConverter::glb_texture_uris(&staging.join(PRUNED_MESH)).unwrap();
+        assert!(
+            !staged_uris.iter().any(|uri| uri.contains("absent")),
+            "the first run pruned the staged mesh before it stopped: {staged_uris:?}"
+        );
+
+        fs::remove_dir_all(&backup).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let resumed = run_without_progress(config).await;
+
+        assert!(resumed.complete);
+        assert_eq!(resumed.pruned_texture_references, 1);
+        let manifest = published_manifest(&output);
+        assert_eq!(
+            manifest.pruned_texture_references.get(PRUNED_MESH),
+            Some(&BTreeSet::from([PRUNED_REFERENCE.to_owned()])),
+            "the published manifest records the reference the published mesh omits"
+        );
+        let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
+        assert!(!uris.iter().any(|uri| uri.contains("absent")), "{uris:?}");
+
+        // A normal rerun still reuses the pruned mesh and keeps its record.
+        let rerun = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(rerun.complete);
+        assert_eq!(rerun.converted, 0);
+        assert_eq!(rerun.pruned_texture_references, 1);
+    }
+
     #[tokio::test]
     async fn a_tampered_staged_pruned_mesh_is_not_reused() {
         let temp = tempfile::tempdir().unwrap();
@@ -3022,6 +3248,168 @@ mod tests {
         );
     }
 
+    /// A resume whose staged pruned mesh still holds the bytes the previous manifest recorded
+    /// keeps the mesh's prune record even when the published copy is gone: the staged mesh
+    /// already omits the reference, so the prune pass cannot record it again.
+    #[tokio::test]
+    async fn a_verified_staged_pruned_mesh_keeps_its_record_without_a_published_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete);
+        assert_eq!(first.pruned_texture_references, 1);
+        let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
+
+        let staging = temp.path().join("modern.staging-resume");
+        copy_tree(&output, &staging);
+        fs::remove_file(output.join(PRUNED_MESH)).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+
+        let resumed = run_without_progress(config).await;
+
+        assert!(resumed.complete);
+        assert_eq!(
+            fs::read(output.join(PRUNED_MESH)).unwrap(),
+            expected,
+            "the verified staged mesh was published"
+        );
+        assert_eq!(resumed.pruned_texture_references, 1);
+        assert_eq!(
+            published_manifest(&output)
+                .pruned_texture_references
+                .get(PRUNED_MESH),
+            Some(&BTreeSet::from([PRUNED_REFERENCE.to_owned()])),
+            "the published manifest records the reference the published mesh omits"
+        );
+
+        // The record is what brings the reference back once its texture exists.
+        fs::write(
+            data.join("textures/absent_n.dds"),
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 8, 8),
+                &mut dummy_content::rng::Rng::new(9),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let restored = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(restored.complete);
+        assert_eq!(restored.pruned_texture_references, 0);
+        let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
+        assert!(
+            uris.iter().any(|uri| uri.contains("absent_n")),
+            "the restored texture is not referenced: {uris:?}"
+        );
+    }
+
+    /// The published copy of the pruned mesh is not the only evidence for keeping its record:
+    /// when it was replaced by different bytes but the staged mesh still matches the hash the
+    /// previous manifest recorded for the same source, the record still describes what is
+    /// about to be published again.
+    #[tokio::test]
+    async fn a_staged_mesh_matching_the_previous_entry_keeps_its_record_over_a_changed_published_copy()
+     {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete);
+        assert_eq!(first.pruned_texture_references, 1);
+        let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
+
+        // The resume copies the published output into staging, then another build republishes
+        // different bytes at the same path. The published copy no longer matches the staged
+        // mesh, but the staged bytes still match the previous manifest's entry, so the record
+        // describes them and must survive.
+        let staging = temp.path().join("modern.staging-resume");
+        copy_tree(&output, &staging);
+        let mut rebuilt = expected.clone();
+        rebuilt.push(0);
+        fs::write(output.join(PRUNED_MESH), rebuilt).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+
+        let resumed = run_without_progress(config).await;
+
+        assert!(resumed.complete);
+        assert_eq!(
+            fs::read(output.join(PRUNED_MESH)).unwrap(),
+            expected,
+            "the staged bytes the record describes were published again"
+        );
+        assert_eq!(
+            published_manifest(&output)
+                .pruned_texture_references
+                .get(PRUNED_MESH),
+            Some(&BTreeSet::from([PRUNED_REFERENCE.to_owned()])),
+            "the staged mesh matched the previous entry, so its record was kept"
+        );
+        let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
+        assert!(!uris.iter().any(|uri| uri.contains("absent")), "{uris:?}");
+    }
+
+    /// Stopping and resuming twice in a row must leave the prune record intact each time: the
+    /// second stop happens after the first resume published the mesh and its record.
+    #[tokio::test]
+    async fn repeated_stops_and_resumes_keep_the_prune_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_mesh_with_absent_normal(&data);
+        // A stale backup makes the run fail at publishing, after the prune pass, and keep its
+        // staging directory and journal.
+        let backup = output.with_extension(format!("backup-{}", std::process::id()));
+
+        // First cycle: stop before the first publish, then resume to completion.
+        fs::create_dir_all(&backup).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:?}").contains("stale backup"));
+        let staging = error.staging.expect("staging directory was kept");
+        fs::remove_dir_all(&backup).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let first_resume = run_without_progress(config).await;
+        assert!(first_resume.complete);
+        assert_eq!(first_resume.pruned_texture_references, 1);
+
+        // Second cycle: stop once more, resuming this time from the published pack, then resume
+        // again. The published manifest holds the record through both stops.
+        let staging = temp.path().join("modern.staging-again");
+        copy_tree(&output, &staging);
+        fs::create_dir_all(&backup).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        let error = AssetPipeline::run_async(config, tx).await.unwrap_err();
+        assert!(format!("{error:?}").contains("stale backup"));
+        let stopped = error.staging.expect("staging directory was kept");
+        fs::remove_dir_all(&backup).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(stopped);
+        let second_resume = run_without_progress(config).await;
+
+        assert!(second_resume.complete);
+        assert_eq!(second_resume.pruned_texture_references, 1);
+        assert_eq!(
+            published_manifest(&output)
+                .pruned_texture_references
+                .get(PRUNED_MESH),
+            Some(&BTreeSet::from([PRUNED_REFERENCE.to_owned()])),
+            "the record survived two stop-and-resume cycles"
+        );
+        let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
+        assert!(!uris.iter().any(|uri| uri.contains("absent")), "{uris:?}");
+    }
+
     #[tokio::test]
     async fn changed_meshes_do_not_keep_stale_prune_records() {
         let temp = tempfile::tempdir().unwrap();
@@ -3032,11 +3420,32 @@ mod tests {
 
         let staging = temp.path().join("modern.staging-resume");
         copy_tree(&output, &staging);
-        // Another build republished the mesh: the stored record no longer
-        // describes the bytes that would be published again.
-        let mut rebuilt = fs::read(output.join(PRUNED_MESH)).unwrap();
-        rebuilt.push(0);
-        fs::write(output.join(PRUNED_MESH), rebuilt).unwrap();
+        // The mesh's source changed and now names a normal map the game data holds: the stored
+        // record describes the old mesh, not the one this run converts and publishes.
+        let positions = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0]];
+        let shape = dummy_content::nif::StaticShape {
+            name: "DanglingNormalQuad",
+            positions: &positions,
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+            indices: &[[0, 1, 2]],
+            diffuse: "textures/present.dds",
+            normal_texture: "textures/present_n.dds",
+        };
+        fs::write(
+            data.join("meshes/dangling_normal.nif"),
+            dummy_content::nif::static_shape(&shape).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            data.join("textures/present_n.dds"),
+            dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 8, 8),
+                &mut dummy_content::rng::Rng::new(11),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let mut config = PipelineConfig::new(&data, &output);
         config.resume_staging = Some(staging);
 
@@ -3048,6 +3457,11 @@ mod tests {
             published_manifest(&output)
                 .pruned_texture_references
                 .is_empty()
+        );
+        let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
+        assert!(
+            uris.iter().any(|uri| uri.contains("present_n")),
+            "the changed mesh was converted again: {uris:?}"
         );
     }
 
@@ -3673,5 +4087,255 @@ mod tests {
         assert!(remove_staging(&beside, &data));
         assert!(!beside.exists());
         assert!(data.join("Skyrim.esm").is_file());
+    }
+
+    /// A staging folder with `count` valid artifacts of each kind validation checks, the
+    /// artifact list and the texture semantics the KTX2s were encoded for.
+    fn staging_with_valid_artifacts(
+        staging: &Path,
+        count: usize,
+    ) -> (Vec<PathBuf>, BTreeMap<String, BTreeSet<TextureSemantic>>) {
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 4, 4),
+            &mut dummy_content::rng::Rng::new(0),
+        )
+        .unwrap();
+        let uses = BTreeSet::from([TextureSemantic::BaseColor]);
+        let ktx2 = crate::texture::TextureConverter::convert(
+            &dds,
+            TextureEncoding::from_semantics(&uses).unwrap(),
+        )
+        .unwrap();
+        for folder in ["textures", "meshes", "scripts"] {
+            fs::create_dir_all(staging.join(folder)).unwrap();
+        }
+        let mut artifacts = Vec::new();
+        let mut semantics = BTreeMap::new();
+        for index in 0..count {
+            let texture = PathBuf::from(format!("textures/t{index}.ktx2"));
+            fs::write(staging.join(&texture), &ktx2).unwrap();
+            semantics.insert(format!("textures/t{index}.ktx2"), uses.clone());
+            let mesh = PathBuf::from(format!("meshes/m{index}.glb"));
+            fs::write(staging.join(&mesh), b"glTF\x02\x00\x00\x00\x0c\x00\x00\x00").unwrap();
+            let script = PathBuf::from(format!("scripts/s{index}.luau"));
+            fs::write(staging.join(&script), format!("return {index}")).unwrap();
+            artifacts.extend([texture, mesh, script]);
+        }
+        (artifacts, semantics)
+    }
+
+    #[test]
+    fn validates_a_mix_of_good_artifacts_on_one_thread_and_many() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let (artifacts, semantics) = staging_with_valid_artifacts(staging, 16);
+        for jobs in [1, 4] {
+            validate_artifacts(staging, &artifacts, &semantics, jobs)
+                .unwrap_or_else(|error| panic!("jobs {jobs}: {error:#}"));
+        }
+    }
+
+    #[test]
+    fn rejects_one_bad_artifact_of_each_kind_among_good_ones() {
+        let cases: [(&str, &[u8], &str); 3] = [
+            ("textures/bad.ktx2", b"not a texture", "invalid KTX2"),
+            (
+                "meshes/bad.glb",
+                b"glTX\x02\x00\x00\x00\x0c\x00\x00\x00",
+                "invalid GLB artifact",
+            ),
+            ("scripts/bad.luau", b"return (", "invalid Luau artifact"),
+        ];
+        for (relative, bytes, expected) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let staging = directory.path();
+            let (mut artifacts, mut semantics) = staging_with_valid_artifacts(staging, 16);
+            fs::write(staging.join(relative), bytes).unwrap();
+            semantics.insert(
+                "textures/bad.ktx2".to_owned(),
+                BTreeSet::from([TextureSemantic::BaseColor]),
+            );
+            // In the middle of the list, so a parallel run meets good files on both sides.
+            artifacts.insert(artifacts.len() / 2, PathBuf::from(relative));
+            for jobs in [1, 4] {
+                let error =
+                    validate_artifacts(staging, &artifacts, &semantics, jobs).expect_err(relative);
+                let chain = format!("{error:#}");
+                assert!(
+                    chain.contains(expected) && chain.contains("bad."),
+                    "jobs {jobs}: {chain}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reports_the_first_bad_artifact_when_several_fail() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let (artifacts, semantics) = staging_with_valid_artifacts(staging, 16);
+        // `m1` comes before `m10` in the artifact list; both fail the GLB check the same way.
+        for relative in ["meshes/m1.glb", "meshes/m10.glb"] {
+            fs::write(
+                staging.join(relative),
+                b"glTX\x02\x00\x00\x00\x0c\x00\x00\x00",
+            )
+            .unwrap();
+        }
+        let expected = staging.join("meshes/m1.glb").display().to_string();
+        for jobs in [1, 4, 16] {
+            let error = validate_artifacts(staging, &artifacts, &semantics, jobs)
+                .expect_err("both meshes are invalid");
+            let chain = format!("{error:#}");
+            assert!(
+                chain.contains(&expected) && !chain.contains("m10.glb"),
+                "jobs {jobs}: {chain}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_glb_shorter_than_its_header_is_invalid() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let (artifacts, semantics) = staging_with_valid_artifacts(staging, 2);
+        fs::write(staging.join("meshes/m1.glb"), b"glTF\x02\x00").unwrap();
+        let error = validate_artifacts(staging, &artifacts, &semantics, 2)
+            .expect_err("a 6-byte GLB has no full header");
+        assert!(
+            format!("{error:#}").contains("invalid GLB artifact"),
+            "{error:#}"
+        );
+    }
+
+    /// Times artifact validation on a real converted output, for before/after comparisons.
+    ///
+    /// `OPENSKYRIM_VALIDATE_OUTPUT` names a converted output folder, which is only read.
+    /// `OPENSKYRIM_VALIDATE_LIMIT` caps the artifact count; the cap samples the manifest evenly so
+    /// every kind is represented. `OPENSKYRIM_VALIDATE_JOBS` sets the thread count (default: every
+    /// core, as a conversion does). Run with
+    /// `cargo test --release -p converter validation_timing_on_a_real_output -- --ignored --nocapture`.
+    ///
+    /// The timed call is the pipeline's own `validate_artifacts`. If it fails (an output from an
+    /// older converter, say), the failures are counted per kind and the passing artifacts are
+    /// timed again; that second timing runs with the files already in the OS cache.
+    #[test]
+    #[ignore = "needs a converted output; set OPENSKYRIM_VALIDATE_OUTPUT"]
+    fn validation_timing_on_a_real_output() {
+        use std::time::Instant;
+
+        let Some(output) = std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT").map(PathBuf::from) else {
+            eprintln!("OPENSKYRIM_VALIDATE_OUTPUT is not set; nothing to time");
+            return;
+        };
+        let limit = std::env::var("OPENSKYRIM_VALIDATE_LIMIT")
+            .ok()
+            .map(|value| value.parse::<usize>().expect("OPENSKYRIM_VALIDATE_LIMIT"));
+        let jobs = std::env::var("OPENSKYRIM_VALIDATE_JOBS").map_or_else(
+            |_| std::thread::available_parallelism().map_or(1, usize::from),
+            |value| value.parse::<usize>().expect("OPENSKYRIM_VALIDATE_JOBS"),
+        );
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join("conversion-manifest.json")).expect("read manifest"),
+        )
+        .expect("parse manifest");
+        let mut artifacts: Vec<PathBuf> = manifest["entries"]
+            .as_object()
+            .expect("manifest entries")
+            .values()
+            .filter_map(|entry| entry["output"].as_str())
+            .map(PathBuf::from)
+            .filter(|relative| output.join(relative).is_file())
+            .collect();
+        artifacts.sort();
+        artifacts.dedup();
+        if let Some(limit) = limit.filter(|&limit| limit > 0 && limit < artifacts.len()) {
+            let total = artifacts.len();
+            artifacts = (0..limit)
+                .map(|index| {
+                    // Widened to u64: `index * total` would overflow a 32-bit usize.
+                    let sampled = index as u64 * total as u64 / limit as u64;
+                    artifacts[sampled as usize].clone()
+                })
+                .collect();
+        }
+        let mut by_kind = BTreeMap::<String, usize>::new();
+        for relative in &artifacts {
+            *by_kind.entry(artifact_kind(relative)).or_default() += 1;
+        }
+
+        // Collecting semantics reads every GLB and takes minutes on a full install;
+        // `OPENSKYRIM_VALIDATE_SEMANTICS=skip` validates textures without them instead.
+        let started = Instant::now();
+        let texture_semantics =
+            if std::env::var("OPENSKYRIM_VALIDATE_SEMANTICS").is_ok_and(|value| value == "skip") {
+                BTreeMap::new()
+            } else {
+                collect_texture_semantics(&output).unwrap_or_else(|error| {
+                    eprintln!("texture semantics unavailable, validating without them: {error:#}");
+                    BTreeMap::new()
+                })
+            };
+        eprintln!(
+            "texture semantics: {} textures in {:.2} s (not part of the timing)",
+            texture_semantics.len(),
+            started.elapsed().as_secs_f64()
+        );
+
+        eprintln!(
+            "validating {} artifacts from {} on {jobs} threads ({by_kind:?})",
+            artifacts.len(),
+            output.display()
+        );
+        let started = Instant::now();
+        let result = validate_artifacts(&output, &artifacts, &texture_semantics, jobs);
+        let elapsed = started.elapsed().as_secs_f64();
+        match result {
+            Ok(()) => {
+                eprintln!(
+                    "RESULT artifacts={} seconds={elapsed:.2} errors=0",
+                    artifacts.len()
+                );
+                return;
+            }
+            Err(error) => {
+                eprintln!("validation failed after {elapsed:.2} s: {error:#}");
+            }
+        }
+
+        let mut errors = BTreeMap::<String, (usize, String)>::new();
+        let mut passing = Vec::new();
+        let mut lua = None;
+        for relative in &artifacts {
+            match validate_artifact(&output, relative, &texture_semantics, &mut lua) {
+                Ok(()) => passing.push(relative.clone()),
+                Err(error) => {
+                    let slot = errors
+                        .entry(artifact_kind(relative))
+                        .or_insert_with(|| (0, format!("{error:#}")));
+                    slot.0 += 1;
+                }
+            }
+        }
+        for (kind, (count, first)) in &errors {
+            eprintln!("errors[{kind}] = {count}; first: {first}");
+        }
+        let failed: usize = errors.values().map(|(count, _)| count).sum();
+        let started = Instant::now();
+        validate_artifacts(&output, &passing, &texture_semantics, jobs)
+            .expect("the passing artifacts validate");
+        let elapsed = started.elapsed().as_secs_f64();
+        eprintln!(
+            "RESULT artifacts={} seconds={elapsed:.2} errors={failed} (passing set, warm cache)",
+            passing.len()
+        );
+    }
+
+    fn artifact_kind(relative: &Path) -> String {
+        relative
+            .extension()
+            .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
     }
 }

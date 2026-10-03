@@ -5,6 +5,7 @@ use rkyv::rancor::Error;
 use shared::{CELL_CACHE_VERSION, CachedLand, CellCache, LAND_SIDE, TerrainLayer, TerrainWeight};
 use std::{collections::HashMap, fs::File, io::Write, path::Path};
 
+/// Validate and serialize merged LAND records, rejecting invalid terrain before replacing a cache.
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
     let water_by_cell = water_by_cell(records);
     let mut cells_by_id = HashMap::new();
@@ -17,11 +18,36 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
         let cell_id = record.cell_form_id.unwrap_or(record.form_id);
         let (water_height, water_type_form_id) =
             water_by_cell.get(&cell_id).copied().unwrap_or((None, None));
+        if let Some(bytes) = heightmap.get(..4) {
+            let offset = f32::from_le_bytes(bytes.try_into().expect("four-byte VHGT offset"));
+            color_eyre::eyre::ensure!(
+                offset.is_finite(),
+                "LAND {cell_id:08X} contains a non-finite VHGT offset"
+            );
+            color_eyre::eyre::ensure!(
+                (offset * 8.0).is_finite(),
+                "LAND {cell_id:08X} VHGT offset is out of range"
+            );
+        }
         let heights = decode_vhgt(heightmap);
+        color_eyre::eyre::ensure!(
+            heights.iter().all(|height| height.is_finite()),
+            "LAND {cell_id:08X} contains a non-finite VHGT height"
+        );
         let normals = decode_normals(view.find(b"VNML").unwrap_or_default(), &heights);
         let vertex_colors = view.find(b"VCLR").unwrap_or_default().to_vec();
-        let mut layers = extract_texture_layers(&record.subrecords)
+        let (mut layers, dropped_layers) = extract_texture_layers(&record.subrecords)
             .wrap_err_with(|| format!("invalid LAND layers for cell {cell_id:08X}"))?;
+        for DroppedLayer {
+            quadrant: q,
+            layer: s,
+            texture_form_id: id,
+        } in dropped_layers
+        {
+            eprintln!(
+                "warning: LAND {cell_id:08X} quadrant {q} ATXT layer slot {s}: dropped texture FormID {id:08X}; later entry kept"
+            );
+        }
         normalize_texture_layers(&mut layers);
         let vertex_count = usize::from(LAND_SIDE) * usize::from(LAND_SIDE);
         color_eyre::eyre::ensure!(
@@ -173,23 +199,37 @@ fn decode_vhgt(bytes: &[u8]) -> Vec<f32> {
     heights
 }
 
+/// Preserve valid authored VNML samples; reconstruct missing or zero vectors from terrain heights.
 fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
     let side = usize::from(LAND_SIDE);
     let count = side * side;
-    if bytes.len() == count * 3 {
+    if bytes.len() == count * 3
+        && bytes
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|normal| normal != &[0, 0, 0])
+    {
         return bytes.iter().map(|value| *value as i8).collect();
     }
-    if !bytes.is_empty() || heights.len() != count {
+    if (!bytes.is_empty() && bytes.len() != count * 3) || heights.len() != count {
         return Vec::new();
     }
     let mut normals = Vec::with_capacity(count * 3);
     for y in 0..side {
         for x in 0..side {
-            let left = heights[y * side + x.saturating_sub(1)];
-            let right = heights[y * side + (x + 1).min(side - 1)];
-            let down = heights[y.saturating_sub(1) * side + x];
-            let up = heights[(y + 1).min(side - 1) * side + x];
-            let normal = [left - right, down - up, 256.0];
+            let west = x.saturating_sub(1);
+            let east = (x + 1).min(side - 1);
+            let south = y.saturating_sub(1);
+            let north = (y + 1).min(side - 1);
+            // At a border the stencil spans one 128-unit interval, not two.
+            // Divide each axis by its actual distance so a planar slope keeps
+            // the same normal at edges/corners. f64 avoids squared overflow.
+            let dx = (f64::from(heights[y * side + east]) - f64::from(heights[y * side + west]))
+                / ((east - west) as f64 * 128.0);
+            let dy = (f64::from(heights[north * side + x]) - f64::from(heights[south * side + x]))
+                / ((north - south) as f64 * 128.0);
+            let normal = [-dx, -dy, 1.0];
             let length =
                 (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
             normals.extend([
@@ -199,10 +239,33 @@ fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
             ]);
         }
     }
+    // Some shipped LAND records contain zero vectors. Reconstruct only those
+    // invalid vertices from the height field; preserve every valid authored byte.
+    for (normal, authored) in normals
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(bytes.as_chunks::<3>().0)
+    {
+        if authored != &[0, 0, 0] {
+            *normal = authored.map(|value| value as i8);
+        }
+    }
     normals
 }
 
-fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<TerrainLayer>> {
+/// An earlier non-null ATXT assignment discarded because a later entry uses the same slot.
+#[derive(Debug, PartialEq, Eq)]
+struct DroppedLayer {
+    quadrant: u8,
+    layer: u16,
+    texture_form_id: u32,
+}
+
+/// Validate every LAND payload and return retained layers plus discarded duplicate assignments.
+fn extract_texture_layers(
+    subrecords: &[(Vec<u8>, Vec<u8>)],
+) -> Result<(Vec<TerrainLayer>, Vec<DroppedLayer>)> {
     let mut layers = Vec::new();
     let mut active: Option<usize> = None;
     for (tag, data) in subrecords {
@@ -257,14 +320,6 @@ fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<Terra
             _ => active = None,
         }
     }
-    layers.sort_by_key(|layer| {
-        (
-            layer.quadrant,
-            !layer.is_base,
-            layer.layer,
-            layer.texture_form_id,
-        )
-    });
     for layer in layers.iter().filter(|layer| !layer.is_base) {
         let mut vertices = std::collections::HashSet::new();
         color_eyre::eyre::ensure!(
@@ -277,6 +332,34 @@ fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<Terra
             layer.layer
         );
     }
+    // Validate even discarded payloads above. Resolve slots in reverse record order before
+    // sorting, so the later non-null assignment (including its weights) always wins.
+    let mut slots = std::collections::HashSet::new();
+    let mut dropped_layers = Vec::new();
+    layers.reverse();
+    layers.retain(|layer| {
+        if layer.is_base
+            || layer.texture_form_id == 0
+            || slots.insert((layer.quadrant, layer.layer))
+        {
+            return true;
+        }
+        dropped_layers.push(DroppedLayer {
+            quadrant: layer.quadrant,
+            layer: layer.layer,
+            texture_form_id: layer.texture_form_id,
+        });
+        false
+    });
+    layers.reverse();
+    layers.sort_by_key(|layer| {
+        (
+            layer.quadrant,
+            !layer.is_base,
+            layer.layer,
+            layer.texture_form_id,
+        )
+    });
     for quadrant in 0..4 {
         let bases = layers
             .iter()
@@ -287,7 +370,7 @@ fn extract_texture_layers(subrecords: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<Terra
             "quadrant {quadrant} has {bases} BTXT base layers"
         );
     }
-    Ok(layers)
+    Ok((layers, dropped_layers))
 }
 
 fn normalize_texture_layers(layers: &mut Vec<TerrainLayer>) {
@@ -360,6 +443,23 @@ mod tests {
     use crate::test_strategies::{arbitrary_bytes, config};
     use proptest::prelude::*;
 
+    /// Validate an explicitly supplied local plugin set without publishing into its asset pack.
+    #[test]
+    #[ignore = "requires explicit MUDCRAB_GRASS_DATA and MUDCRAB_GRASS_PLUGINS paths"]
+    fn local_load_order_terrain_cache_passes_validation() {
+        let data = std::path::PathBuf::from(std::env::var_os("MUDCRAB_GRASS_DATA").unwrap());
+        let list = std::path::PathBuf::from(std::env::var_os("MUDCRAB_GRASS_PLUGINS").unwrap());
+        let paths = crate::esm::read_plugins_txt(&list, &data).unwrap();
+        let records = crate::esm::EsmParser::merge_plugins(&paths).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let count = write_cell_cache(&records, &output.path().join("cell_cache.rkyv")).unwrap();
+        assert!(count > 0);
+        eprintln!(
+            "Validated {count} terrain cells from {} plugins",
+            paths.len()
+        );
+    }
+
     #[test]
     fn decodes_vhgt_deltas_into_absolute_heights() {
         let count = usize::from(LAND_SIDE) * usize::from(LAND_SIDE);
@@ -393,6 +493,254 @@ mod tests {
         let heights = vec![0.0; usize::from(LAND_SIDE).pow(2)];
         assert!(decode_vhgt(&[0; 16]).is_empty());
         assert!(decode_normals(&[0; 16], &heights).is_empty());
+    }
+
+    /// Reconstructed border normals must match the plane, while authored samples stay untouched.
+    #[test]
+    fn generated_normals_preserve_planar_slopes_at_edges_and_corners() {
+        for (dx, dy) in [(64.0, 0.0), (0.0, -32.0), (64.0, -32.0)] {
+            let heights: Vec<_> = (0..33)
+                .flat_map(|y| (0..33).map(move |x| x as f32 * dx + y as f32 * dy))
+                .collect();
+            let normals = decode_normals(&[], &heights);
+            let interior = &normals[(16 * 33 + 16) * 3..(16 * 33 + 16) * 3 + 3];
+            assert!(
+                normals
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .all(|normal| normal == interior)
+            );
+            assert!(interior[2] > 0);
+            // Authored VNML must not be regenerated or normalized.
+            let authored = vec![42; 33 * 33 * 3];
+            assert_eq!(decode_normals(&authored, &heights), vec![42i8; 33 * 33 * 3]);
+        }
+    }
+
+    /// Invalid geometry must fail before any bytes of a previous valid cache are replaced.
+    #[test]
+    fn invalid_land_fails_before_replacing_an_existing_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        let valid = record(0x1234, b"LAND", None, &[]);
+        let mut records = HashMap::from([(valid.form_id, valid)]);
+        write_cell_cache(&records, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut bad_fields = Vec::new();
+        for offset in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
+            let mut height = offset.to_le_bytes().to_vec();
+            height.extend(vec![0; 33 * 33]);
+            bad_fields.push((b"VHGT", height));
+        }
+        bad_fields.push((b"VNML", vec![127; 33 * 33 * 3 - 1]));
+        for (tag, bytes) in bad_fields {
+            let expected = if tag == b"VNML" {
+                "incomplete VNML"
+            } else if f32::from_le_bytes(bytes[..4].try_into().unwrap()).is_finite() {
+                "out of range"
+            } else {
+                "non-finite"
+            };
+            records.get_mut(&0x1234).unwrap().subrecords = vec![(tag.to_vec(), bytes)];
+            let error = write_cell_cache(&records, &path).unwrap_err().to_string();
+            assert!(error.contains("00001234"), "{error}");
+            assert!(error.contains(expected), "{error}");
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    /// Assigned overlay indices are unique within a quadrant, not across the entire cell.
+    #[test]
+    fn overlay_indices_are_unique_within_each_quadrant() {
+        let overlay = |texture: u32, quadrant: u8| {
+            let mut bytes = texture.to_le_bytes().to_vec();
+            bytes.extend([quadrant, 0, 2, 0]);
+            (b"ATXT".to_vec(), bytes)
+        };
+        let (layers, dropped) = extract_texture_layers(&[overlay(1, 0), overlay(2, 0)]).unwrap();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].texture_form_id, 2);
+        assert_eq!(
+            dropped,
+            [DroppedLayer {
+                quadrant: 0,
+                layer: 2,
+                texture_form_id: 1,
+            }]
+        );
+        for subrecords in [
+            [overlay(1, 0), overlay(1, 1)],
+            [overlay(0, 0), overlay(1, 0)],
+        ] {
+            let (_, dropped) = extract_texture_layers(&subrecords).unwrap();
+            assert!(dropped.is_empty());
+        }
+        let (_, dropped) =
+            extract_texture_layers(&[overlay(1, 0), overlay(2, 1), overlay(3, 1), overlay(4, 0)])
+                .unwrap();
+        assert_eq!(
+            dropped,
+            [
+                DroppedLayer {
+                    quadrant: 1,
+                    layer: 2,
+                    texture_form_id: 2,
+                },
+                DroppedLayer {
+                    quadrant: 0,
+                    layer: 2,
+                    texture_form_id: 1,
+                },
+            ]
+        );
+    }
+
+    /// Publication retains the later record's texture and weights regardless of FormID order.
+    #[test]
+    fn duplicate_overlay_slots_publish_the_later_entry_deterministically() {
+        let overlay = |texture: u32, quadrant: u8| {
+            let mut bytes = texture.to_le_bytes().to_vec();
+            bytes.extend([quadrant, 0, 2, 0]);
+            (b"ATXT".to_vec(), bytes)
+        };
+        let weight = |vertex: u16, opacity: f32| {
+            let mut bytes = vertex.to_le_bytes().to_vec();
+            bytes.extend([0, 0]);
+            bytes.extend(opacity.to_le_bytes());
+            (b"VTXT".to_vec(), bytes)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        for textures in [[1, 2, 3], [3, 2, 1], [1, 1, 1]] {
+            let mut land = record(0x1234, b"LAND", None, &[]);
+            land.cell_form_id = Some(0x5678);
+            land.subrecords = vec![
+                overlay(textures[0], 0),
+                weight(5, 0.25),
+                overlay(textures[1], 0),
+                weight(6, 0.5),
+                overlay(textures[2], 0),
+                weight(7, 0.75),
+                overlay(0, 0), // A later null assignment must not replace a real texture.
+                overlay(4, 1), // The same slot in another quadrant is independent.
+            ];
+            let (_, dropped) = extract_texture_layers(&land.subrecords).unwrap();
+            assert_eq!(
+                dropped,
+                [
+                    DroppedLayer {
+                        quadrant: 0,
+                        layer: 2,
+                        texture_form_id: textures[1],
+                    },
+                    DroppedLayer {
+                        quadrant: 0,
+                        layer: 2,
+                        texture_form_id: textures[0],
+                    },
+                ]
+            );
+            let records = HashMap::from([(land.form_id, land)]);
+            assert_eq!(write_cell_cache(&records, &path).unwrap(), 1);
+            let original = std::fs::read(&path).unwrap();
+            {
+                let mmap = validate_cell_cache(&path).unwrap();
+                let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+                assert_eq!(cache.cells[0].cell_id, 0x5678);
+                let layers = &cache.cells[0].layers;
+                assert_eq!(layers.len(), 4, "two implicit bases and two overlays");
+                let kept = &layers[1];
+                assert!(!kept.is_base);
+                assert_eq!(kept.quadrant, 0);
+                assert_eq!(kept.layer, 2);
+                assert_eq!(kept.texture_form_id, textures[2]);
+                assert_eq!(kept.weights.len(), 1);
+                assert_eq!(kept.weights[0].vertex, 7);
+                assert_eq!(kept.weights[0].opacity, 0.75);
+                assert_eq!(layers[3].texture_form_id, 4);
+                assert_eq!(layers[3].quadrant, 1);
+            }
+            write_cell_cache(&records, &path).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    /// Dropping a duplicate must not hide a malformed payload on the earlier assignment.
+    #[test]
+    fn discarded_duplicate_overlay_payloads_still_fail_validation() {
+        let overlay = (b"ATXT".to_vec(), vec![1, 0, 0, 0, 0, 0, 2, 0]);
+        let weight = [0u8; 8];
+        assert!(
+            extract_texture_layers(&[
+                overlay.clone(),
+                (b"VTXT".to_vec(), [weight, weight].concat()),
+                overlay,
+            ])
+            .is_err()
+        );
+    }
+
+    /// Null overlays may reuse an assigned layer index, but their payloads must still be valid.
+    #[test]
+    fn null_overlay_indices_are_ignored_when_publishing_the_cache() {
+        let overlay = |texture: u32| {
+            let mut bytes = texture.to_le_bytes().to_vec();
+            bytes.extend([0, 0, 2, 0]);
+            (b"ATXT".to_vec(), bytes)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        for textures in [[0, 1, 0], [1, 0, 0], [0, 0, 1]] {
+            let mut land = record(0x1234, b"LAND", None, &[]);
+            land.subrecords = textures.into_iter().map(overlay).collect();
+            write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).unwrap();
+            let mmap = validate_cell_cache(&path).unwrap();
+            let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+            let layers = &cache.cells[0].layers;
+            assert_eq!(layers.len(), 2, "implicit base plus the assigned overlay");
+            assert!(layers[0].is_base);
+            assert_eq!(layers[0].texture_form_id, 0);
+            assert!(!layers[1].is_base);
+            assert_eq!(layers[1].texture_form_id, 1);
+            assert_eq!(layers[1].layer, 2);
+        }
+        let original = std::fs::read(&path).unwrap();
+        // Malformed null assignments remain fatal even though normalization drops them.
+        for subrecords in [
+            vec![overlay(0), (b"VTXT".to_vec(), vec![0; 7])],
+            vec![overlay(0), (b"VTXT".to_vec(), vec![0; 16])],
+        ] {
+            let mut land = record(0x1234, b"LAND", None, &[]);
+            land.subrecords = subrecords;
+            assert!(write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    /// Repair individual invalid normals without overwriting neighboring authored values.
+    #[test]
+    fn zero_authored_normals_are_repaired_without_changing_valid_neighbors() {
+        let heights = vec![0.0; 33 * 33];
+        let mut authored = vec![42; 33 * 33 * 3];
+        authored[300..303].fill(0);
+        let repaired = decode_normals(&authored, &heights);
+        assert_eq!(&repaired[300..303], &[0, 0, 127]);
+        for (index, &normal) in repaired.iter().enumerate() {
+            if !(300..303).contains(&index) {
+                assert_eq!(normal, 42);
+            }
+        }
+        let output = tempfile::tempdir().unwrap();
+        let land = record(0x1234, b"LAND", None, &[(b"VNML", authored)]);
+        assert_eq!(
+            write_cell_cache(
+                &HashMap::from([(land.form_id, land)]),
+                &output.path().join("cache.rkyv")
+            )
+            .unwrap(),
+            1
+        );
     }
 
     fn record(
@@ -496,12 +844,13 @@ mod tests {
         let mut weight = 18u16.to_le_bytes().to_vec();
         weight.extend([0, 0]);
         weight.extend(0.75f32.to_le_bytes());
-        let layers = extract_texture_layers(&[
+        let (layers, dropped) = extract_texture_layers(&[
             (b"BTXT".to_vec(), base),
             (b"ATXT".to_vec(), alpha),
             (b"VTXT".to_vec(), weight),
         ])
         .unwrap();
+        assert!(dropped.is_empty());
         assert!(layers[0].is_base);
         assert_eq!(layers[1].layer, 0x0102);
         assert_eq!(layers[1].weights[0].vertex, 18);
@@ -615,7 +964,9 @@ mod tests {
             let decoded = decode_vhgt(&heights);
             let _ = decode_normals(&normals, &decoded);
             let _ = decode_normals(&[], &decoded);
-            let _ = extract_texture_layers(&crate::esm::extractors::extract_subrecords(&subrecords));
+            if let Ok(decoded) = crate::esm::extractors::extract_subrecords(&subrecords) {
+                let _ = extract_texture_layers(&decoded);
+            }
         }
     }
 }
