@@ -1335,6 +1335,12 @@ mod simulation_tests {
     }
 
     #[test]
+    fn v1_physics_fixture_camera_has_explicit_hdr_output() {
+        let mut app = headless::fixture_app();
+        crate::color_pipeline::assert_scene_camera_output(app.world_mut(), 1);
+    }
+
+    #[test]
     fn tankards_fall_and_settle_on_fixture_ground() {
         let mut app = headless::fixture_app();
         let start: Vec<f32> = {
