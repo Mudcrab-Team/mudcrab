@@ -972,7 +972,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         best_astc = min(best_astc, c.err);
     }
     // basisu compares RMS errors: sqrt(e) <= 1.3 * sqrt(best) <=> e <= 1.69 * best.
-    // Room for quality (texbench: ~0.3-0.5 dB below basisu UASTC level 2):
+    // Room for quality (the author's out-of-tree benchmark: ~0.3-0.5 dB below
+    // basisu UASTC level 2):
     // - fit_plane's refinement is least squares on unquantized endpoints; a
     //   search over +-1 quantization steps per endpoint channel is where most
     //   of the gap is, and would make `quality` above 2 worthwhile.

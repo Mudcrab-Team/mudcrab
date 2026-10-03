@@ -85,8 +85,8 @@ const QUEUED_BATCHES: u64 = 2;
 const PENDING_WRITE_BYTES: u64 = 2 << 30;
 /// Bytes per UASTC 4x4 block.
 const UASTC_BLOCK_BYTES: usize = 16;
-/// Default refinement passes; texbench measured q2 within ~0.4 dB of the CPU
-/// encoder's UASTC level 2 at ~1/130 of the time.
+/// Default refinement passes; the author's out-of-tree benchmark put q2
+/// within ~0.4 dB of the CPU encoder's UASTC level 2 at ~1/130 of the time.
 pub const DEFAULT_QUALITY: u32 = 2;
 /// Source (DDS) megabytes packed into one GPU batch.
 pub const DEFAULT_BATCH_MB: u64 = 256;

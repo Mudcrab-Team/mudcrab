@@ -101,14 +101,14 @@ The converter copies textures whose DDS blocks a GPU can sample directly (DXT1�
 cargo run --release -p converter -- "<Skyrim Data>" "<output directory>" --texture-encoder gpu
 ```
 
-Measured on a full Skyrim SE conversion (Ryzen 5 5600G, RTX 5090, NVMe), from scratch:
+Measured by the encoder's author on a full Skyrim SE conversion (Ryzen 5 5600G, RTX 5090, NVMe), from scratch:
 
 | | CPU encoder | GPU encoder |
 | --- | --- | --- |
 | Whole conversion | 28 min 08 s | 8 min 55 s |
 | Texture stage (10,236 encoded, 22,709 copied) | 20 min 37 s | 1 min 29 s |
 
-Measured on 20 sample textures, quality is about 0.3–0.5 dB PSNR below the CPU encoder's UASTC level 2, both after BC7 transcoding (desktop) and as ASTC (mobile).
+On the author's 20 sample textures, quality was about 0.3–0.5 dB PSNR below the CPU encoder's UASTC level 2, both after BC7 transcoding (desktop) and as ASTC (mobile). The comparison tool is not part of this repository, so treat these figures as indicative.
 
 - `--gpu-quality N` — endpoint refinement passes, 0–8 (default 2).
 - `--gpu-batch-mb N` — source megabytes packed into one GPU dispatch (default 256).
