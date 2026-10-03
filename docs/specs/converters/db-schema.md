@@ -206,7 +206,8 @@ CREATE TABLE IF NOT EXISTS lod_build (
 );
 ```
 
-This replaces the unused pre-schema-5 `lod` blob placeholder. See
+The unused pre-schema-5 `lod` blob placeholder is retained. Terrain LOD
+uses `lod_chunks` for indexing and external GLB files for payloads. See
 [ADR-0010](../../adr/0010-lod-chunk-payload-format.md).
 
 ---
