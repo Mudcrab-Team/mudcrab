@@ -14,7 +14,7 @@
     "emission_energy_factor_changes": 4177,
     "changed_glow_eligibility_or_energy_factor": 4447,
     "overflowing_strength": 0,
-    "negative_source_multiplier_endpoints": 2,
+    "negative_static_source_multipliers": 2,
     "nonfinite_source_emission": 0
   },
   "affected_source_files": 2512,
