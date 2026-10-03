@@ -3,7 +3,7 @@
 use bevy::{
     camera::{RenderTarget, ScalingMode},
     core_pipeline::tonemapping::DebandDither,
-    gltf::{Gltf, GltfMaterialName},
+    gltf::{GltfAssetLabel, GltfMaterialName},
     prelude::*,
     render::{
         RenderPlugin,
@@ -55,7 +55,7 @@ struct Probe {
     interior: bool,
     legacy: bool,
     started: Instant,
-    gltf: Handle<Gltf>,
+    scene: Handle<WorldAsset>,
     materials: Vec<Handle<StandardMaterial>>,
     target: Handle<Image>,
     spawned: bool,
@@ -178,12 +178,13 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
         });
         document["materials"][index]["name"] = serde_json::json!(CASES[index].0);
     }
-    document["nodes"] = serde_json::json!(
-        (0..CASES.len())
-            .map(|i| serde_json::json!({"mesh":i}))
-            .collect::<Vec<_>>()
-    );
-    document["scenes"] = serde_json::json!([{"nodes":(0..CASES.len()).collect::<Vec<_>>() }]);
+    let mut nodes: Vec<_> = (0..CASES.len())
+        .map(|i| serde_json::json!({"mesh":i}))
+        .collect();
+    // Bevy generates inverted-scale material variants inside the scene load context.
+    nodes.push(serde_json::json!({"mesh":4,"scale":[-1,1,1]}));
+    document["nodes"] = serde_json::json!(nodes);
+    document["scenes"] = serde_json::json!([{"nodes":(0..nodes.len()).collect::<Vec<_>>() }]);
     document["scene"] = serde_json::json!(0);
     if legacy {
         for (index, (_, exponent, strength, _, _)) in CASES.iter().enumerate() {
@@ -264,21 +265,11 @@ fn main() {
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
     ));
-    let gltf = app.world().resource::<AssetServer>().load("materials.gltf");
-    // Exercise the native tagged-mask handler and the stock /std handler.
-    let loaded_materials = (0..CASES.len())
-        .map(|index| {
-            let (_, _, strength, enabled, mask) = CASES[index];
-            let label = if !legacy && enabled && strength > 0.0 && mask.is_some() {
-                "nif"
-            } else {
-                "std"
-            };
-            app.world()
-                .resource::<AssetServer>()
-                .load(format!("materials.gltf#Material{index}/{label}"))
-        })
-        .collect();
+    // Match production: retain only the scene label, not the entire glTF root.
+    let scene = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("materials.gltf"));
     let target = app
         .world_mut()
         .resource_mut::<Assets<Image>>()
@@ -294,8 +285,8 @@ fn main() {
             interior,
             legacy,
             started: Instant::now(),
-            gltf,
-            materials: loaded_materials,
+            scene,
+            materials: vec![],
             target,
             spawned: false,
             frames: 0,
@@ -313,22 +304,48 @@ fn main() {
 fn render_and_capture(
     mut commands: Commands,
     mut probe: ResMut<Probe>,
-    scene_assets: (Res<Assets<Gltf>>, ResMut<Assets<WorldAsset>>),
+    scene_assets: (Res<AssetServer>, ResMut<Assets<WorldAsset>>),
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     images: Res<Assets<Image>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let (gltfs, mut scenes) = scene_assets;
+    let (asset_server, mut scenes) = scene_assets;
     if probe.started.elapsed() > Duration::from_secs(90) {
-        eprintln!("material load/render timed out");
+        eprintln!(
+            "material load/render timed out; scene states: {:?}",
+            asset_server.get_load_states(probe.scene.id())
+        );
         exit.write(AppExit::error());
         return;
     }
     if !probe.spawned {
-        let Some(gltf) = gltfs.get(&probe.gltf) else {
+        if probe.materials.is_empty() {
+            let Some(mut scene) = scenes.get_mut(&probe.scene) else {
+                return;
+            };
+            let mut query = scene
+                .world
+                .query::<(&GltfMaterialName, &MeshMaterial3d<StandardMaterial>)>();
+            let mut handles: Vec<_> = query
+                .iter(&scene.world)
+                .filter(|(_, material)| {
+                    !asset_server
+                        .get_path(material.id())
+                        .is_some_and(|path| path.label().unwrap_or("").contains(" (inverted)"))
+                })
+                .map(|(name, material)| {
+                    let index = CASES.iter().position(|case| case.0 == name.0).unwrap();
+                    (index, material.0.clone())
+                })
+                .collect();
+            handles.sort_by_key(|(index, _)| *index);
+            assert_eq!(handles.len(), CASES.len());
+            probe.materials = handles.into_iter().map(|(_, handle)| handle).collect();
+        }
+        if !asset_server.is_loaded_with_dependencies(probe.scene.id()) {
             return;
-        };
+        }
         if probe.materials.iter().any(|h| materials.get(h).is_none()) {
             return;
         }
@@ -340,8 +357,7 @@ fn render_and_capture(
         {
             return;
         }
-        assert_eq!(gltf.materials.len(), CASES.len());
-        let Some(mut scene) = scenes.get_mut(&gltf.scenes[0]) else {
+        let Some(mut scene) = scenes.get_mut(&probe.scene) else {
             return;
         };
         let mut query = scene
@@ -351,12 +367,23 @@ fn render_and_capture(
             .iter(&scene.world)
             .map(|(name, material)| {
                 let index = CASES.iter().position(|case| case.0 == name.0).unwrap();
-                let passed = material.0 == probe.materials[index];
-                serde_json::json!({"case":name.0,"passed":passed})
+                let (_, _, strength, enabled, mask) = CASES[index];
+                let suffix = if !probe.legacy && enabled && strength > 0.0 && mask.is_some() {
+                    "nif"
+                } else {
+                    "std"
+                };
+                let label = format!("Material{index}/{suffix}");
+                let actual = asset_server.get_path(material.id());
+                let inverted = format!("Material{index} (inverted)/{suffix}");
+                let actual_label = actual.as_ref().and_then(|path| path.label());
+                let passed =
+                    actual_label == Some(label.as_str()) || actual_label == Some(inverted.as_str());
+                serde_json::json!({"case":name.0,"label":actual_label,"passed":passed})
             })
             .collect();
         probe.loader_passed &=
-            bindings.len() == CASES.len() && bindings.iter().all(|b| b["passed"] == true);
+            bindings.len() == CASES.len() + 1 && bindings.iter().all(|b| b["passed"] == true);
         probe
             .loaded
             .push(serde_json::json!({"scene_bindings":bindings}));
@@ -435,6 +462,14 @@ fn render_and_capture(
     }
     probe.frames += 1;
     if probe.frames >= 90 && !probe.requested {
+        // The scene must stay fully loaded after unused labeled assets are released.
+        if !asset_server.is_loaded_with_dependencies(probe.scene.id()) {
+            return;
+        }
+        probe.loaded.push(serde_json::json!({
+            "scene_dependencies_still_loaded": true,
+            "retained_root": "Scene0"
+        }));
         probe.requested = true;
         commands
             .spawn(Screenshot::image(probe.target.clone()))

@@ -40,6 +40,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
 - V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Schema 18 rebuilds all old GLBs; retain verified compatible textures/scripts/archive bytes and accept runtime schemas 15–18.
+- V12: Scene-only glTF loads ! reach and retain recursively loaded state after unused subassets release. Native material override retains stock hook's recorded source dependency; scene cloning preserves source and native handles. Probe ! no root-glTF or explicit material loads that mask dependency lifetime failures.
 
 ## Supported response and remaining material work
 
@@ -119,13 +120,23 @@ cmd: `material_specular_probe --output <dir> [--interior] [--legacy-specular]` �
 
 Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/{exterior,interior,legacy,emission-regression}`. Probe holds camera/exposure/tone map, directional illuminance 5000, zero ambient and no shadows; background varies only exterior/interior. Both native scene binding and independently computed scalar-response references exercised. Retail roof appearance and full-pack delivery remain separate gates; no Skyrim BRDF/parity claim.
 
+## Specular target-hardware verification, 2026-10-03
+
+Full Fiji schema-18 reconversion: 25388 NIFs converted, 232479 cache hits, zero skipped; inputs DDS 35663 / NIF 25388 / PEX 15162. Schema-4 integration passes with missing/invalid models 0; quick asset check passes (76213 files, 13.1 GB). Original schema-16 and prior #139 manifest/database/cell-cache hashes unchanged. Farmhouse audit: 24 thatch materials; `farmlonghouse01.glb` material 1 roughness 0.20 → 0.395188; normal-alpha mask now shares normal texture index 3.
+
+Initial engine ! 224 pending Riverwood instances, no screenshot. Retained source-material dependency fixes scene readiness: 0 pending, 0 load/material validation failures, screenshot captured. Small synthetic fixtures passed even without retention; full Riverwood run supplies failing-first lifetime evidence. `v12_scene_cloning_retains_source_and_native_material_handles` checks reflected scene cloning; probe loads only Scene0, includes inverted-scale variant, and checks recursive readiness again after 90 rendered frames. Engine library 232 passed; updated Clippy/formatting/build pass.
+
+RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: final exterior/interior probes pass, paired difference 0/255; legacy specular control exits 1 with difference 248/255. Matched Riverwood captures: 2540×1375; camera `(2048,1176,452)`, target `(2048,-24,-2048)`, worldspace 60, grid (5,-12), stream radius 2, EV100 9.7, TonyMcMapface. Foreground thatch ROI `[110,785,430,1000]`: encoded-RGB display brightness 161.15 → 140.64 (12.73% decrease). Right thatch `[2090,632,2230,770]`: 120.00 → 112.05 (6.63%). Stable terrain control: mean channel difference 0.154/255; 94.92% pixels identical. Geometry/camera alignment inspected; animated water excluded.
+
+Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/riverwood-comparison/{before-matched.png,after-candidate.png,roof-comparison.png,metrics.json}`, `roof-material-audit.json`, final scene-only probe JSON. Before/after compare #139 versus #141 Mudcrab; blue wash, remaining lighting work, native BRDF/model-space gaps remain. Test-profile 20-second smoke benchmarks pass their configured gates; no release performance or vanilla Skyrim parity acceptance.
+
 ## Tasks
 
 id|status|task|cites
 T1|x|Trace existing color/material owners and name unsupported paths|V5
 T2|x|Use explicit HDR scene composition and linear reflection storage; synchronize exposure|V1,V2
 T3|x|Render paired synthetic probes and record pixel evidence|V3,V4
-T8|x|Adapt Bill roughness/mask corrections; verify native loader, pruning, cache and GPU response|V5,V9,V10,V11
+T8|x|Adapt Bill roughness/mask corrections; verify native loader, pruning, cache, scene-only lifetime and GPU response|V5,V9,V10,V11,V12
 T4|.|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes|V5
 T7|x|Restore signed-tint NIF compatibility; verify retail reconversion and delivered pack|V5,V6,V8
 T6|x|Fix static emission publication; load converted materials and compare GPU swatches; migrate cache|V5,V6,V7
@@ -158,3 +169,4 @@ B15|2026-10-02|Probe used pre-0.19 scene/shadow names|Use WorldAsset and shadow_
 B16|2026-10-02|Probe held asset borrow while inserting reference and queried immutable scene guard|Clone normal handle before insertion; mutable WorldAsset guard; compiler catches borrowing, no new invariant
 
 B17|2026-10-02|Adding scene-binding verification exceeded probe system argument lint|Group related glTF/WorldAsset resources; Clippy covers mechanical shape, no new invariant
+B18|2026-10-03|Native scene override drops stock material handle while stock hook retains dependency ID; 224 Riverwood instances stay pending; small fixture missed streaming lifetime failure|V12; retain source handle in reflected scene component; scene-only probe, scene-clone regression and failing-first Riverwood gate

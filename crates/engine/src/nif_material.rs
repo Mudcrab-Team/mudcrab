@@ -14,6 +14,7 @@ pub struct NifSpecularPlugin;
 
 impl Plugin for NifSpecularPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<NifSourceMaterial>();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
@@ -24,6 +25,12 @@ impl Plugin for NifSpecularPlugin {
 
 #[derive(Clone)]
 struct NormalAlphaMask;
+
+/// The stock hook records this dependency before our hook replaces its render binding.
+/// Keep its strong handle in the scene so scene-only loads remain fully loaded.
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
+struct NifSourceMaterial(Handle<StandardMaterial>);
 
 fn has_normal_alpha_mask(material: &gltf::Material<'_>) -> bool {
     material
@@ -91,8 +98,16 @@ impl GltfExtensionHandler for NormalAlphaMask {
         label: &str,
     ) {
         if has_normal_alpha_mask(material) {
-            entity.insert(MeshMaterial3d(
-                context.get_label_handle::<StandardMaterial>(format!("{label}/nif")),
+            let source = entity
+                .get::<MeshMaterial3d<StandardMaterial>>()
+                .expect("NifSpecularPlugin requires the stock PBR glTF handler before it")
+                .0
+                .clone();
+            entity.insert((
+                NifSourceMaterial(source),
+                MeshMaterial3d(
+                    context.get_label_handle::<StandardMaterial>(format!("{label}/nif")),
+                ),
             ));
         }
     }
@@ -101,6 +116,34 @@ impl GltfExtensionHandler for NormalAlphaMask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v12_scene_cloning_retains_source_and_native_material_handles() {
+        let mut app = App::new();
+        app.init_resource::<GltfExtensionHandlers>()
+            .add_plugins(NifSpecularPlugin)
+            .register_type::<MeshMaterial3d<StandardMaterial>>();
+        let mut assets = Assets::<StandardMaterial>::default();
+        let source = assets.add(StandardMaterial::default());
+        let native = assets.add(StandardMaterial::default());
+        let mut world = World::new();
+        world.spawn((
+            NifSourceMaterial(source.clone()),
+            MeshMaterial3d(native.clone()),
+        ));
+        let mut cloned = WorldAsset::new(world)
+            .clone_with(
+                app.world()
+                    .resource::<bevy::ecs::reflect::AppTypeRegistry>(),
+            )
+            .unwrap();
+        let mut query = cloned
+            .world
+            .query::<(&NifSourceMaterial, &MeshMaterial3d<StandardMaterial>)>();
+        let (retained, rendered) = query.single(&cloned.world).unwrap();
+        assert_eq!(retained.0, source);
+        assert_eq!(rendered.0, native);
+    }
 
     #[test]
     fn v10_native_compensation_requires_tag_and_loaded_mask_and_does_not_compound() {
