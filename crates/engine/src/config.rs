@@ -430,7 +430,9 @@ impl EngineConfig {
         for pair in args.windows(2) {
             if pair[0] == "--ini" {
                 let path = PathBuf::from(take_raw(
-                    "--ini", "a Skyrim INI file path", Some(pair[1].clone())
+                    "--ini",
+                    "a Skyrim INI file path",
+                    Some(pair[1].clone()),
                 )?);
                 if let Err(error) = ini.merge_file(&path) {
                     eprintln!("warning: ignoring --ini {}: {error}", path.display());
@@ -870,29 +872,38 @@ mod tests {
     /// scripts goes to the engine. None of the audit tools starts the engine,
     /// so their own options must not be mistaken for engine options.
     const NON_ENGINE_FLAGS: &[&str] = &[
-        "--all",               // cargo fmt
-        "--all-targets",       // cargo test, cargo clippy
-        "--bin",               // cargo test
-        "--bins",              // cargo build
-        "--check",             // cargo fmt
-        "--release",           // cargo build
-        "--workspace",         // cargo build, cargo test, cargo clippy
-        "--ignore-submodules", // git diff
-        "--quiet",             // git diff
-        "--short",             // git rev-parse
-        "--output",            // world-inspect
-        "--radius",            // world-inspect
-        "--library-path",      // ld-linux
-        "--meshes",            // audit-collision.py
-        "--min-x",             // audit-collision.py
-        "--max-x",             // audit-collision.py
-        "--min-y",             // audit-collision.py
-        "--max-y",             // audit-collision.py
-        "--out",               // audit-collision.py
-        "--expect-solid",      // audit-collision.py
-        "--expect-passable",   // audit-collision.py
-        "--original",          // audit_asset_sizes.py
-        "--json",              // audit_asset_sizes.py
+        "--all",                 // cargo fmt
+        "--all-targets",         // cargo test, cargo clippy
+        "--bin",                 // cargo test
+        "--bins",                // cargo build
+        "--check",               // cargo fmt
+        "--release",             // cargo build
+        "--workspace",           // cargo build, cargo test, cargo clippy
+        "--ignore-submodules",   // git diff
+        "--quiet",               // git diff
+        "--short",               // git rev-parse
+        "--output",              // world-inspect
+        "--radius",              // world-inspect
+        "--library-path",        // ld-linux
+        "--meshes",              // audit-collision.py
+        "--min-x",               // audit-collision.py
+        "--max-x",               // audit-collision.py
+        "--min-y",               // audit-collision.py
+        "--max-y",               // audit-collision.py
+        "--out",                 // audit-collision.py
+        "--expect-solid",        // audit-collision.py
+        "--expect-passable",     // audit-collision.py
+        "--original",            // audit_asset_sizes.py
+        "--json",                // audit_asset_sizes.py
+        "--candidate-inventory", // audit-riverwood-reuse.py
+        "--reference-inventory", // audit-riverwood-reuse.py
+        "--manifest",            // audit-riverwood-reuse.py
+        "--locked",              // cargo run
+        "--manifest-path",       // cargo run
+        "--cpu-jobs",            // converter
+        "--io-jobs",             // converter
+        "--binary",              // git diff
+        "--porcelain",           // git status
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -1201,8 +1212,7 @@ mod tests {
         )
         .unwrap();
         let path = |path: &std::path::Path| path.display().to_string();
-        let layered =
-            run_config(&["--ini", &path(&skyrim), "--ini", &path(&prefs)]);
+        let layered = run_config(&["--ini", &path(&skyrim), "--ini", &path(&prefs)]);
         assert_eq!((layered.stream_radius, layered.unload_radius), (4, 5));
         assert_eq!(layered.terrain_lod.split_distance_mult, 1.5);
 
@@ -1210,7 +1220,11 @@ mod tests {
         assert_eq!((overridden.stream_radius, overridden.unload_radius), (1, 2));
         assert_eq!(overridden.terrain_lod.split_distance_mult, 1.5);
 
-        let missing = run_config(&["--ini", &path(&directory.path().join("absent.ini")), "--headless"]);
+        let missing = run_config(&[
+            "--ini",
+            &path(&directory.path().join("absent.ini")),
+            "--headless",
+        ]);
         assert!(missing.headless, "a missing file is reported and skipped");
         assert_eq!(missing.terrain_lod, TerrainLodDistances::default());
     }
@@ -1341,6 +1355,23 @@ mod tests {
             parse_error(&["riverwood"]).to_string(),
             "unexpected argument 'riverwood'. Run with --help to list every option."
         );
+    }
+
+    #[test]
+    fn ini_v88_refuses_missing_or_option_shaped_paths() {
+        for args in [&["--ini"][..], &["--ini", "--headless"]] {
+            assert!(matches!(
+                parse_error(args),
+                ConfigError::InvalidValue {
+                    option: "--ini",
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            EngineConfig::from_args(["--ini".into(), "--help".into()]),
+            Ok(ConfigAction::Help)
+        ));
     }
 
     #[test]
@@ -1596,8 +1627,8 @@ mod tests {
         scripts.is_dir().then_some(scripts)
     }
 
-    /// Every `.ps1`, `.sh` and `.py` file under `root`, subdirectories included,
-    /// in a stable order.
+    /// Utility `.ps1`, `.sh` and `.py` files under `root`, subdirectories included,
+    /// in a stable order. Hidden directories and script tests are excluded.
     fn script_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut paths = Vec::new();
         let mut pending = vec![root.to_owned()];
@@ -1610,7 +1641,10 @@ mod tests {
                 // `file_type` does not follow links, so a linked folder cannot
                 // loop the walk; hidden folders (`.venv`) hold no project scripts.
                 if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    if !entry.file_name().to_string_lossy().starts_with('.') {
+                    let name = entry.file_name();
+                    // Tests inspect script text, including deliberately unsupported engine
+                    // options; they are not utility command lines.
+                    if !name.to_string_lossy().starts_with('.') && name != "tests" {
                         pending.push(path);
                     }
                 } else if matches!(
@@ -1625,7 +1659,7 @@ mod tests {
         paths
     }
 
-    /// Every `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
+    /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
     /// included, is read from disk, so a script added later cannot pass an
     /// option the parser refuses without failing this test. The scan is skipped
     /// when the repository's `scripts/` is not next to this crate.
@@ -1719,12 +1753,35 @@ mod tests {
                 character.is_whitespace()
                     || matches!(
                         character,
-                        '"' | '\'' | '(' | ')' | ',' | ';' | '=' | '[' | ']' | '`'
+                        '"' | '\'' | '(' | ')' | ';' | '=' | '[' | ']' | '`'
                     )
             })
+            // Commas at the edges delimit PowerShell lists. Internal commas belong
+            // to a CSV value such as a camera offset and must stay together.
+            .map(|token| token.trim_matches(','))
             .filter(|token| !token.is_empty())
             .map(str::to_owned)
             .collect()
+    }
+
+    #[test]
+    fn script_v89_token_scan_preserves_csv_values_and_list_delimiters() {
+        assert_eq!(
+            script_tokens(r#"--screenshot-camera-offset "0,6000,8000""#),
+            ["--screenshot-camera-offset", "0,6000,8000"]
+        );
+        assert_eq!(script_tokens("('--grid-x',5)"), ["--grid-x", "5"]);
+    }
+
+    #[test]
+    fn script_v89_scan_excludes_tests_and_keeps_nested_utilities() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("tests")).unwrap();
+        std::fs::create_dir(directory.path().join("utils")).unwrap();
+        std::fs::write(directory.path().join("tests/check.py"), "--log-file").unwrap();
+        let utility = directory.path().join("utils/capture.sh");
+        std::fs::write(&utility, "--headless").unwrap();
+        assert_eq!(script_paths(directory.path()), vec![utility]);
     }
 
     /// True when a script spells out a finite number.

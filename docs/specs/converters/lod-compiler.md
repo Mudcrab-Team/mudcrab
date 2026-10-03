@@ -127,6 +127,8 @@ settings cannot survive in staged metadata or payloads.
   Legacy pre-prune hash accepted only with matching raw NIF hash, exact
   regenerated original hash/size, exact recorded prune set, and exact
   retained post-prune hash/size. Record replay provenance; reject other edits.
+  Published packs omit raw `vfs/` sources; legacy replay without raw NIFs
+  fails with an actionable normal-conversion instruction before publication.
 - LOD-V6: normalize XESP parent FormIDs with owning plugin/master load order,
   including ESL index; preserve inversion flags and reference header flags.
 - LOD-V7: metadata-only migration preserves the original mesh cache contract

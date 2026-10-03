@@ -55,9 +55,9 @@ expression: report
     "unbounded_model_count": 0,
     "waters_with_flow_normal": 0
   },
-  "notices": [],
   "lod_chunks": 6,
   "lod_warnings": [],
+  "notices": [],
   "pruned_texture_references": 0,
   "skipped": 0,
   "warnings": []

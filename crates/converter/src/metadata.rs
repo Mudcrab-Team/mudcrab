@@ -303,8 +303,7 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    let merged = EsmParser::merge_plugins(plugins)?;
-    EsmParser::export_plugins(plugins, &database, &merged)?;
+    let merged = EsmParser::convert_plugins_with_records(plugins, &database)?;
     validate_database(&Connection::open(&database)?)?;
     write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
     drop(merged);
@@ -376,7 +375,7 @@ async fn rebuild_into(
         .filter(|path| path.starts_with("lod"))
         .cloned()
         .collect::<Vec<_>>();
-    validate_artifacts(staging, &payloads, &BTreeMap::new())?;
+    validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;
     for path in retained.keys().filter(|path| path.ends_with(".glb")) {
         for dependency in MeshConverter::glb_texture_dependencies(&staging.join(path))? {
             ensure!(
@@ -540,6 +539,11 @@ fn verify_legacy_prune(
         .get_mut(&source_key)
         .ok_or_else(|| color_eyre::eyre::eyre!("missing pruned source provenance: {glb}"))?;
     let nif = source.join("vfs").join(&source_key);
+    ensure!(
+        nif.is_file(),
+        "legacy pruned GLB replay requires raw source NIF {} for {glb}; this runtime package omits the source. Run a normal conversion into a new package, then reuse that package instead",
+        nif.display()
+    );
     ensure!(
         nif_source_hash(&nif)? == entry.source_hash,
         "pruned GLB source checksum mismatch: {glb}"

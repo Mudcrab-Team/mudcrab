@@ -44,7 +44,7 @@ P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passe
 
 ## §I INTERFACES
 
-- I.launcher_lod: planned launcher LOD reporting and existing-assets build action; contract and gates in `docs/specs/modding/launcher-lod.md`. Current Fiji RC excludes this follow-up.
+- I.launcher_lod: implemented launcher LOD reporting; planned existing-assets build action; contract and gates in `docs/specs/modding/launcher-lod.md`. Fiji RC excludes build action.
 - cmd: `--physics-fixture` → interactive primitive hill/wall arena, WALK/NOCLIP toggle, auto-spawned debug tankards; no Skyrim asset install required.
 - runtime: P1+ interactive exterior → first-person NOCLIP at start-cell view; fixture supports both modes from P1. P2 enables WALK over streamed terrain.
 - key: NOCLIP `W/A/S/D` fly relative to view; `Space` rise; `Ctrl` descend; `Shift` accelerate.
@@ -186,7 +186,7 @@ V72: Launcher conversion runs existing terrain LOD stage exactly once before fin
 V73: Launcher retains LOD chunk count & LOD warnings; zero chunks, partial world coverage & compiler failure remain distinct. LOD stage label/count accurate; no invented ETA or benchmark acceptance.
 V74: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-17/5 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
 V75: Existing-assets LOD build unavailable until cancellable metadata API & worker/state tests pass; cancellation checked between retained files & worlds and before publication; in-flight file/world allowed to finish; never reports resumable staging without journal support. Engine-running/path/asset-lock guards retained.
-V76: Publication backups identified by full output name; recovery restores only complete supported manifests with verified retained output sizes/hashes; invalid or symlink backups remain untouched.
+V76: Publication backups identified by full output name; record-owned recovery restores supported manifests with verified retained output sizes/hashes; incomplete status retained; invalid or symlink backups remain untouched.
 V77: Equivalent existing asset paths share one canonical lock; acquisition fails on resolution errors; missing-tail paths normalized before report containment checks.
 V78: LOD readiness counts unique queued, loading & scheduled retry work; current unrecovered failures block screenshot; recovered failures retain cumulative diagnostics; smoke capture still rejects historical failures.
 V79: Shared commit cap unchanged; continuous near-cell work cannot starve queued LOD & LOD cannot starve near cells; center changes retain only in-world/in-range immutable metadata; queries retry at most three times with 1/2/4-second backoff.
@@ -196,6 +196,12 @@ V82: Schema-16 compatible mesh producers reused with verified source/output/conf
 V83: Near/baked terrain use shared repeats-per-cell; tiling change participates in LOD build identity. World-local compiler content failure skips world with explicit warning; input mutation/cancellation/publication/DB errors fatal.
 V84: Completed launcher summary & bounded conversion notices survive; post-run notices bounded separately. Generic smoke rejects historical query failures & pending queries. Atlas documentation states actual UASTC encoding & native loader limits.
 V85: Interrupted publication cleanup ! validated replacement plus sealed generated files before deleting owned prior package; ownership record atomically published before directory rename.
+
+V86: Record-owned publication recovery accepts sealed structurally valid incomplete packages at every directory-swap boundary; completeness/failures/integration pass status retained, never promoted; schema/hash/cache/DB/LOD checks unchanged.
+V87: Legacy pre-prune GLB replay ! manifest-matched raw NIF & dependencies; unavailable raw source → actionable rejection before publication; retained source bytes unchanged.
+V88: `--ini` retains strict CLI missing/option-shaped value rejection, help precedence & file-layer/CLI override order; INI loaded-grid radius ≤ `MAX_STREAM_RADIUS`.
+
+V89: Script CLI drift checks cover utility commands, excluding script-test assertions; non-engine flags classified by owner; comma-separated values remain whole and PowerShell list delimiters still split.
 
 ## §T TASKS
 
@@ -300,3 +306,9 @@ B53|2026-10-01|schema17 invalidated unchanged schema16 GLBs; all tiers loaded la
 B54|2026-10-01|generic capture omitted query failures; launcher replaced progress notices then allowed unbounded post-run growth; ADR misstated UASTC encoding; PR91 tiling diverged|V83,V84
 B55|2026-10-01|new preflight IO used `?` across `PipelineFailure` boundary without `Report` conversion|named `WrapErr` context; compile oracle catches mechanical error; no new invariant
 B56|2026-10-01|interrupted replacement cleanup trusted next manifest alone; missing generated files could discard last-good backup|V85
+B57|2026-10-03|record-owned recovery applied Play-readiness completeness gate to structurally valid incomplete packs|V86
+B58|2026-10-03|legacy prune replay assumed published packs retained raw `vfs/` NIFs; missing source produced opaque hash IO error|V87
+B59|2026-10-03|INI integration bypassed strict CLI value contract & loaded-grid overflow bound; GPU result channel omitted fatal cleanup flag|V88,V83; preserve upstream parser & shared cleanup semantics
+B60|2026-10-03|metadata payload validation retained old three-argument API after main parallelized validation; new recovery test used absent runner; compiler fixture retained removed export helper|pass configured CPU jobs; reuse existing runners/merged-record exporter; compile oracle, no new invariant
+B61|2026-10-03|script drift scanner mistook audit/Cargo/Git flags & negative test assertions for engine arguments; comma splitting turned camera CSV into scalar|V89
+B62|2026-10-03|conflict splice placed `notices` before LOD keys in sorted JSON snapshot|restore observed sorted order; fixture oracle, no new invariant

@@ -17,7 +17,7 @@
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | level-16 terrain LOD distance, before the multiplier |
 //! | `[TerrainManager]` | `fSplitDistanceMult` | terrain LOD multiplier on the three block distances |
 
-use crate::config::EngineConfig;
+use crate::config::{EngineConfig, MAX_STREAM_RADIUS};
 use std::{collections::HashMap, path::Path};
 
 /// Values from one or more INI files, keyed by lower-cased section and key.
@@ -72,12 +72,15 @@ impl SkyrimIni {
         if let Some(raw) = self.get("General", "uGridsToLoad") {
             match raw.parse::<i32>() {
                 // Skyrim centres the grid on the player's cell, so only odd sizes are a grid.
-                Ok(grids) if grids >= 1 && grids % 2 == 1 => {
+                Ok(grids)
+                    if grids >= 1 && grids % 2 == 1 && (grids - 1) / 2 <= MAX_STREAM_RADIUS =>
+                {
                     config.stream_radius = (grids - 1) / 2;
                     config.unload_radius = config.stream_radius + 1;
                 }
                 _ => eprintln!(
-                    "warning: ignoring uGridsToLoad={raw:?}; expected an odd whole number of at least 1"
+                    "warning: ignoring uGridsToLoad={raw:?}; expected an odd whole number from 1 to {}",
+                    MAX_STREAM_RADIUS * 2 + 1
                 ),
             }
         }
@@ -110,6 +113,20 @@ mod tests {
         let mut config = EngineConfig::default();
         ini.apply(&mut config);
         config
+    }
+
+    #[test]
+    fn ini_v88_preserves_the_cli_stream_radius_bound() {
+        let widest = apply(&format!(
+            "[General]\nuGridsToLoad={}\n",
+            MAX_STREAM_RADIUS * 2 + 1
+        ));
+        assert_eq!(widest.stream_radius, MAX_STREAM_RADIUS);
+        let overflowing = apply("[General]\nuGridsToLoad=2147483647\n");
+        assert_eq!(
+            overflowing.stream_radius,
+            EngineConfig::default().stream_radius
+        );
     }
 
     #[test]

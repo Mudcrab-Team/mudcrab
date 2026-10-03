@@ -548,8 +548,13 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
 }
 
 #[tokio::test]
-async fn metadata_rebuild_accepts_old_prune_hashes_only_after_exact_source_replay() {
-    for (corrupt, with_skeleton) in [(false, false), (true, false), (false, true)] {
+async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_replay() {
+    for (corrupt, with_skeleton, with_vfs) in [
+        (false, false, true),
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -595,9 +600,19 @@ async fn metadata_rebuild_accepts_old_prune_hashes_only_after_exact_source_repla
         if corrupt {
             fs::write(source.join("meshes/generated.glb"), b"tampered").unwrap();
         }
+        if !with_vfs {
+            fs::remove_dir_all(source.join("vfs")).unwrap();
+        }
         let retained = hash_file(&source.join("meshes/generated.glb")).unwrap();
         let result = rebuild(&data, &source, &output).await;
-        if corrupt {
+        if !with_vfs {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("legacy pruned GLB replay requires raw source NIF"),
+                "{error}"
+            );
+            assert!(!output.exists());
+        } else if corrupt {
             assert!(
                 result
                     .unwrap_err()

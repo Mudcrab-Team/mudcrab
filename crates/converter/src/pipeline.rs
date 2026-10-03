@@ -1117,12 +1117,13 @@ impl ConversionBatch<'_> {
                             publish_ktx2_file(&target, &encoded.bytes)?;
                             Ok((encoded.bytes.len() as u64, encoded.sha256))
                         });
-                        let (hash, result) = match written {
+                        let (hash, result, fatal) = match written {
                             Ok(digest) => (
                                 hash,
                                 Ok(Produced::Converted {
                                     digest: Some(digest),
                                 }),
+                                false,
                             ),
                             Err(error) => {
                                 eprintln!(
@@ -1131,24 +1132,33 @@ impl ConversionBatch<'_> {
                                 );
                                 // A CPU-encoded fallback does not carry the GPU
                                 // label, so the next GPU run retries the GPU.
+                                let (result, fatal) = match remove_invalid_staged_output(&target) {
+                                    Err(error) => (Err(error), true),
+                                    Ok(()) => remove_partial_output_after_failure(
+                                        &target,
+                                        TextureConverter::convert_dds_to_ktx2_with_options(
+                                            &source,
+                                            &target,
+                                            encoding,
+                                            etc1s_quality,
+                                            uastc_level,
+                                            zstd_level,
+                                        )
+                                        .map(|_| ()),
+                                    ),
+                                };
                                 (
                                     hash.replace(&gpu_label, ""),
-                                    TextureConverter::convert_dds_to_ktx2_with_options(
-                                        &source,
-                                        &target,
-                                        encoding,
-                                        etc1s_quality,
-                                        uastc_level,
-                                        zstd_level,
-                                    )
-                                    .map(|_| Produced::Converted { digest: None }),
+                                    result.map(|_| Produced::Converted { digest: None }),
+                                    fatal,
                                 )
                             }
                         };
                         let result = result
                             .wrap_err_with(|| format!("failed to convert {}", relative.display()));
-                        let _ = gpu_outcomes
-                            .send((index, key, hash, target_rel, relative, result, target, false));
+                        let _ = gpu_outcomes.send((
+                            index, key, hash, target_rel, relative, result, target, fatal,
+                        ));
                     };
                     let stats = texture_gpu::run_batcher(&gpu, receiver, cpu_jobs, stopped, finish);
                     eprintln!(
@@ -1295,6 +1305,19 @@ impl ConversionBatch<'_> {
                             && let Some(encoding) = encoding
                             && let Ok(texture) = PreparedTexture::from_dds(bytes, encoding)
                         {
+                            if let Err(error) = remove_invalid_staged_output(&target) {
+                                let _ = outcome_tx.send((
+                                    index,
+                                    key,
+                                    hash,
+                                    target_rel,
+                                    relative,
+                                    Err(error),
+                                    target,
+                                    true,
+                                ));
+                                return;
+                            }
                             let tag = GpuTag {
                                 index,
                                 key: key.clone(),
@@ -3001,7 +3024,7 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
                     &record.next_manifest_hash,
                     &record.next_generated_artifacts,
                 )?;
-                validate_publication_backup(output)?;
+                validate_publication_package(output)?;
                 verify_publication_seal(&backup, &record)?;
                 crate::config::check_output_dir(&backup)?;
                 fs::remove_dir_all(&backup)?;
@@ -3014,7 +3037,7 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         }
     } else {
         verify_publication_seal(&backup, &record)?;
-        validate_publication_backup(&backup)?;
+        validate_publication_package(&backup)?;
         fs::rename(&backup, output).wrap_err("failed to restore owned last-good assets")?;
     }
     fs::remove_file(record_path)?;
@@ -3061,7 +3084,9 @@ fn publication_backup_prefix(output: &Path) -> Result<String> {
     Ok(format!("{}.backup-", name.to_string_lossy()))
 }
 
-fn validate_publication_backup(backup: &Path) -> Result<()> {
+/// Checks structural integrity for record-owned recovery. A published pack may
+/// be incomplete; recovery preserves that status rather than enforcing Play readiness.
+fn validate_publication_package(backup: &Path) -> Result<()> {
     let root = fs::canonicalize(backup)?;
     for entry in WalkDir::new(&root).follow_links(false) {
         ensure!(
@@ -3072,11 +3097,9 @@ fn validate_publication_backup(backup: &Path) -> Result<()> {
     let manifest: ConversionManifest =
         serde_json::from_slice(&fs::read(root.join("conversion-manifest.json"))?)?;
     ensure!(
-        manifest.complete
-            && manifest.failures.is_empty()
-            && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION..=CONVERTER_SCHEMA_VERSION)
-                .contains(&manifest.schema_version),
-        "backup has an incomplete or unsupported conversion manifest"
+        (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION..=CONVERTER_SCHEMA_VERSION)
+            .contains(&manifest.schema_version),
+        "backup has an unsupported conversion manifest"
     );
     ensure!(
         !manifest.entries.is_empty() || root.join("scripts/papyrus_runtime.luau").is_file(),
@@ -3126,7 +3149,7 @@ fn validate_publication_backup(backup: &Path) -> Result<()> {
         let integration: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join("integration-report.json"))?)?;
         ensure!(
-            integration["passed"] == true && integration["schema_version"] == version,
+            integration["passed"].is_boolean() && integration["schema_version"] == version,
             "backup integration report is invalid"
         );
         if version >= 5 {
@@ -3424,6 +3447,77 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn recovery_v86_handles_incomplete_owned_packages_at_each_boundary() {
+        for boundary in 0..=3 {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let output = directory.path().join("assets");
+            let backup = directory.path().join("assets.backup-123");
+            let staging = directory.path().join("staging");
+            dummy_content::layout::prepare_directory(&data, false).unwrap();
+            dummy_content::layout::generate(
+                &data,
+                dummy_content::layout::DEFAULT_SEED,
+                dummy_content::layout::Formats::parse("dds,nif,pex,esm,lodsettings").unwrap(),
+            )
+            .unwrap();
+            let mut config = PipelineConfig::new(&data, &output);
+            config.cpu_jobs = 2;
+            let report = run_without_progress(config).await;
+            assert!(report.complete);
+            for root in [&output, &staging] {
+                if root == &staging {
+                    fs::create_dir_all(root).unwrap();
+                    for entry in WalkDir::new(&output) {
+                        let entry = entry.unwrap();
+                        let destination = root.join(entry.path().strip_prefix(&output).unwrap());
+                        if entry.file_type().is_dir() {
+                            fs::create_dir_all(destination).unwrap();
+                        } else {
+                            fs::copy(entry.path(), destination).unwrap();
+                        }
+                    }
+                }
+                let mut manifest = published_manifest(root);
+                manifest.configuration_hash =
+                    if root == &output { "previous" } else { "next" }.into();
+                manifest.complete = false;
+                manifest
+                    .failures
+                    .insert("textures/missing.dds".into(), "missing texture".into());
+                manifest
+                    .save(&root.join("conversion-manifest.json"))
+                    .unwrap();
+                let report_path = root.join("integration-report.json");
+                let mut report: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+                report["passed"] = serde_json::json!(false);
+                fs::write(report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+            }
+            write_publication_record(&output, &backup, &staging).unwrap();
+            if boundary >= 1 {
+                fs::rename(&output, &backup).unwrap();
+            }
+            if boundary >= 2 {
+                fs::rename(&staging, &output).unwrap();
+            }
+            if boundary >= 3 {
+                fs::remove_dir_all(&backup).unwrap();
+            }
+            recover_interrupted_publication(&output).unwrap();
+            assert!(output.is_dir());
+            assert!(!published_manifest(&output).complete);
+            assert_eq!(
+                published_manifest(&output).configuration_hash,
+                if boundary < 2 { "previous" } else { "next" }
+            );
+            assert_eq!(published_manifest(&output).failures.len(), 1);
+            assert!(!backup.exists());
+            assert!(!publication_record_path(&output).unwrap().exists());
+        }
+    }
+
     #[test]
     fn recovery_v85_preserves_backup_when_replacement_generated_file_is_missing() {
         let directory = tempfile::tempdir().unwrap();
@@ -3477,7 +3571,7 @@ mod tests {
         }
         .save(&backup.join("conversion-manifest.json"))
         .unwrap();
-        assert!(validate_publication_backup(&backup).is_ok());
+        assert!(validate_publication_package(&backup).is_ok());
         assert!(recover_interrupted_publication(&output).is_err());
         assert!(backup.is_dir());
         assert!(!output.exists());
@@ -3661,8 +3755,9 @@ mod tests {
         fs::create_dir_all(staging.join("vfs")).unwrap();
         overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
         let plugins = vec![data.join("Skyrim.esm")];
-        let records = EsmParser::merge_plugins(&plugins).unwrap();
-        EsmParser::export_plugins(&plugins, &staging.join("skyrim_world.db"), &records).unwrap();
+        let records =
+            EsmParser::convert_plugins_with_records(&plugins, &staging.join("skyrim_world.db"))
+                .unwrap();
         write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
         let bytes = fs::read(staging.join("cell_cache.rkyv")).unwrap();
         let mut cache = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(&bytes).unwrap();
