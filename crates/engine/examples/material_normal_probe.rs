@@ -1,5 +1,5 @@
-//! Converter → Bevy glTF loader → GPU specular check. No Skyrim assets required.
-//! --output <directory> [--interior] [--legacy-specular] (negative control).
+//! Converter → Bevy glTF loader → GPU normal-direction check. No Skyrim assets required.
+//! --output <directory> [--interior] [--legacy-normal] (negative control).
 use bevy::{
     camera::{RenderTarget, ScalingMode},
     core_pipeline::tonemapping::DebandDither,
@@ -27,27 +27,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Name, exponent, source strength, Specular flag, normal-alpha mask.
-const CASES: [(&str, f32, f32, bool, Option<u8>); 9] = [
-    ("disabled", 80.0, 1.0, false, Some(255)),
-    ("zero_strength", 80.0, 0.0, true, Some(255)),
-    ("unmasked", 80.0, 1.0, true, None),
-    ("mask_full", 80.0, 1.0, true, Some(255)),
-    ("mask_thatch", 80.0, 1.0, true, Some(7)),
-    ("mask_zero", 80.0, 1.0, true, Some(0)),
-    ("gloss_100", 100.0, 1.0, true, Some(255)),
-    ("gloss_200", 200.0, 1.0, true, Some(255)),
-    ("dim_strength", 80.0, 0.25, true, Some(128)),
+// DirectX texture vectors: the green-positive direction follows downward UV V.
+const CASES: [(&str, [u8; 4]); 6] = [
+    ("flat", [128, 128, 255, 0]),
+    ("right", [204, 128, 230, 37]),
+    ("left", [51, 128, 230, 83]),
+    ("down", [128, 204, 230, 129]),
+    ("up", [128, 51, 230, 193]),
+    ("diagonal", [179, 51, 216, 255]),
 ];
-
-fn reference_roughness(exponent: f32) -> f32 {
-    match exponent as u32 {
-        80 => 0.395_188_28,
-        100 => 0.374_203_18,
-        200 => 0.315_442_1,
-        _ => unreachable!(),
-    }
-}
 
 #[derive(Resource)]
 struct Probe {
@@ -68,10 +56,7 @@ struct Probe {
 fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
     let assets = output.join("fixtures");
     std::fs::create_dir_all(assets.join("textures")).unwrap();
-    for (index, (_, _, _, _, alpha)) in CASES.iter().enumerate() {
-        let Some(alpha) = alpha else {
-            continue;
-        };
+    for (index, (_, pixel)) in CASES.iter().enumerate() {
         let mut dds = Dds::new_dxgi(NewDxgiParams {
             height: 4,
             width: 4,
@@ -85,7 +70,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
             alpha_mode: AlphaMode::Straight,
         })
         .unwrap();
-        dds.data = [128, 128, 255, *alpha].repeat(16);
+        dds.data = pixel.repeat(16);
         let mut bytes = Vec::new();
         dds.write(&mut bytes).unwrap();
         std::fs::write(
@@ -97,38 +82,34 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
     let contract: Vec<_> = CASES
         .iter()
         .enumerate()
-        .map(|(index, (name, exponent, strength, enabled, mask))| {
+        .map(|(index, (name, _))| {
             let material = ValidatedNifMaterial {
-                uv_offset: [0.0; 2],
-                uv_scale: [1.0; 2],
-                texture_clamp_mode: 3,
+                uv_offset: [0.25, -0.5],
+                uv_scale: [2.0, 3.0],
+                texture_clamp_mode: (index % 4) as u8,
                 shader_family: NifShaderFamily::Lighting,
                 lighting_shader_type: Some(LightingShaderType::Default),
                 shader_block: index as u32,
                 texture_set_block: None,
                 alpha_property_block: None,
-                shader_flags_1: u32::from(*enabled),
+                shader_flags_1: 0,
                 shader_flags_2: 0,
-                base_color: [0.0, 0.0, 0.0, 1.0],
+                base_color: [0.5, 0.5, 0.5, 1.0],
                 alpha: 1.0,
                 alpha_mode: NifAlphaMode::Opaque,
                 alpha_threshold: None,
-                glossiness: *exponent,
+                glossiness: 20.0,
                 specular_color: [1.0; 3],
-                specular_strength: *strength,
+                specular_strength: 0.0,
                 emissive_color: [0.0; 3],
                 emissive_multiple: 0.0,
                 double_sided: false,
-                textures: if mask.is_some() {
-                    vec![NifTextureSlot {
-                        slot: 1,
-                        semantic: NifTextureSemantic::Normal,
-                        path: format!("textures/mask{index}_n.dds"),
-                        required: false,
-                    }]
-                } else {
-                    vec![]
-                },
+                textures: vec![NifTextureSlot {
+                    slot: 1,
+                    semantic: NifTextureSemantic::Normal,
+                    path: format!("textures/mask{index}_n.dds"),
+                    required: false,
+                }],
             };
             NifShapeMaterial {
                 shape_block: index as u32,
@@ -147,6 +128,18 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
         std::path::Path::new("materials.glb"),
     )
     .unwrap();
+    // Production publication gives each sampler a distinct external image identity.
+    // Material-only probe fixtures provide those immutable aliases directly.
+    for index in 0..CASES.len() {
+        let mode = index % 4;
+        if mode != 3 {
+            std::fs::copy(
+                assets.join(format!("textures/mask{index}_n.ktx2")),
+                assets.join(format!("textures/mask{index}_n.opensky-wrap{mode}.ktx2")),
+            )
+            .unwrap();
+        }
+    }
     // A minimal indexed triangle also exercises the production scene-material binding.
     let mut geometry = Vec::new();
     for values in [
@@ -190,22 +183,11 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
     document["scenes"] = serde_json::json!([{"nodes":(0..nodes.len()).collect::<Vec<_>>() }]);
     document["scene"] = serde_json::json!(0);
     if legacy {
-        for (index, (_, exponent, strength, _, _)) in CASES.iter().enumerate() {
-            let material = &mut document["materials"][index];
-            material["pbrMetallicRoughness"]["roughnessFactor"] =
-                serde_json::json!(1.0 - (exponent / 100.0).clamp(0.0, 1.0));
+        for material in document["materials"].as_array_mut().unwrap() {
             material["extras"]["openSkyrim"]
                 .as_object_mut()
                 .unwrap()
-                .remove("specularMask");
-            let extensions = material["extensions"].as_object_mut().unwrap();
-            if *strength == 0.0 {
-                extensions.remove("KHR_materials_specular");
-            } else {
-                extensions.insert("KHR_materials_specular".into(),serde_json::json!({
-                    "specularFactor": strength.clamp(0.0,1.0),"specularColorFactor":[1.0,1.0,1.0]
-                }));
-            }
+                .remove("normalConvention");
         }
     }
     std::fs::write(
@@ -217,7 +199,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
 }
 
 fn main() {
-    let mut output = PathBuf::from("material-specular-probe");
+    let mut output = PathBuf::from("material-normal-probe");
     let mut interior = false;
     let mut legacy = false;
     let mut args = std::env::args().skip(1);
@@ -225,7 +207,7 @@ fn main() {
         match arg.as_str() {
             "--output" => output = args.next().expect("--output requires a directory").into(),
             "--interior" => interior = true,
-            "--legacy-specular" => legacy = true,
+            "--legacy-normal" => legacy = true,
             _ => panic!("unknown option {arg}"),
         }
     }
@@ -370,8 +352,7 @@ fn render_and_capture(
             .iter(&scene.world)
             .map(|(name, material)| {
                 let index = CASES.iter().position(|case| case.0 == name.0).unwrap();
-                let (_, _, _, _, mask) = CASES[index];
-                let suffix = if mask.is_some() { "nif" } else { "std" };
+                let suffix = "nif"; // Both controls still need native UV construction.
                 let label = format!("Material{index}/{suffix}");
                 let actual = asset_server.get_path(material.id());
                 let inverted = format!("Material{index} (inverted)/{suffix}");
@@ -386,43 +367,62 @@ fn render_and_capture(
         probe
             .loaded
             .push(serde_json::json!({"scene_bindings":bindings}));
-        let quad = meshes.add(Rectangle::new(3.0, 0.8));
-        for (index, (name, exponent, strength, enabled, mask)) in CASES.iter().enumerate() {
+        let mut quad = Rectangle::new(3.0, 0.8).mesh().build();
+        quad.generate_tangents()
+            .expect("probe quad needs a tangent frame");
+        let quad = meshes.add(quad);
+        for (index, (name, pixel)) in CASES.iter().enumerate() {
             let handle = probe.materials[index].clone();
             let loaded = materials.get(&handle).unwrap();
-            let source_strength = if *enabled { *strength } else { 0.0 };
-            let has_mask = source_strength > 0.0 && mask.is_some();
-            let expected_loaded = source_strength * if has_mask { 1.0 } else { 0.5 };
-            let format = loaded
-                .normal_map_texture
-                .as_ref()
-                .map(|h| format!("{:?}", images.get(h).unwrap().texture_descriptor.format));
-            let shared = !has_mask || loaded.specular_texture == loaded.normal_map_texture;
-            let passed = (loaded.reflectance - expected_loaded).abs() <= 1e-6
-                && (loaded.perceptual_roughness - reference_roughness(*exponent)).abs() <= 1e-5
-                && loaded.specular_texture.is_some() == has_mask
-                && shared
-                && (mask.is_none() || format.as_deref() == Some("Rgba8Unorm"));
+            let image = images
+                .get(loaded.normal_map_texture.as_ref().unwrap())
+                .unwrap();
+            let mode = index % 4;
+            let sampler_passed = match &image.sampler {
+                bevy::image::ImageSampler::Descriptor(sampler) => {
+                    use bevy::image::ImageAddressMode::{ClampToEdge, Repeat};
+                    sampler.address_mode_u == if mode & 2 == 0 { ClampToEdge } else { Repeat }
+                        && sampler.address_mode_v
+                            == if mode & 1 == 0 { ClampToEdge } else { Repeat }
+                }
+                _ => false,
+            };
+            let uv_passed =
+                loaded.uv_transform.transform_point2(Vec2::new(0.5, 0.5)) == Vec2::new(1.25, 1.0);
+            let passed = sampler_passed
+                && uv_passed
+                && loaded.flip_normal_map_y
+                && loaded.reflectance == 0.0
+                && image.texture_descriptor.format
+                    == bevy::render::render_resource::TextureFormat::Rgba8Unorm
+                && image.data.as_ref().unwrap()[..4] == pixel[..];
             probe.loader_passed &= passed;
-            probe.loaded.push(serde_json::json!({
-                "case":name,"exponent":exponent,"strength":strength,"enabled":enabled,
-                "mask_alpha_u8":mask,"expected_loaded_reflectance":expected_loaded,
-                "loaded_reflectance":loaded.reflectance,"loaded_roughness":loaded.perceptual_roughness,
-                "linear_normal_format":format,"shared_mask":shared,"passed":passed
-            }));
-            // Same normal sample, independently computed scalar response; no specular texture.
-            let normal_map_texture = loaded.normal_map_texture.clone();
+            probe
+                .loaded
+                .push(serde_json::json!({"case":name,"pixel":pixel,"wrap_mode":mode,"sampler_passed":sampler_passed,"uv_passed":uv_passed,"passed":passed}));
+            // Independent geometric normal: X follows U; Y follows downward V.
+            // No normal texture or channel-flip flag on the reference material.
+            let n = Vec3::new(
+                pixel[0] as f32 / 127.5 - 1.0,
+                -(pixel[1] as f32 / 127.5 - 1.0),
+                pixel[2] as f32 / 127.5 - 1.0,
+            )
+            .normalize();
+            let mut reference_mesh = Rectangle::new(3.0, 0.8).mesh().build();
+            reference_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![n.to_array(); 4]);
+            let reference_mesh = meshes.add(reference_mesh);
             let reference = materials.add(StandardMaterial {
-                base_color: Color::BLACK,
-                reflectance: 0.5 * source_strength * mask.map_or(1.0, |a| a as f32 / 255.0),
-                perceptual_roughness: reference_roughness(*exponent),
-                normal_map_texture,
-                flip_normal_map_y: true,
+                base_color: Color::linear_rgb(0.5, 0.5, 0.5),
+                perceptual_roughness: 0.549_100_5,
+                reflectance: 0.0,
                 ..default()
             });
-            for (x, material) in [(-2.0, handle.clone()), (2.0, reference)] {
+            for (x, mesh, material) in [
+                (-2.0, quad.clone(), handle),
+                (2.0, reference_mesh, reference),
+            ] {
                 commands.spawn((
-                    Mesh3d(quad.clone()),
+                    Mesh3d(mesh),
                     MeshMaterial3d(material),
                     Transform::from_xyz(x, (CASES.len() as f32 - 1.0) * 0.5 - index as f32, 0.0),
                 ));
@@ -434,7 +434,7 @@ fn render_and_capture(
                 shadow_maps_enabled: false,
                 ..default()
             },
-            Transform::from_translation(Vec3::Z * 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+            Transform::from_xyz(2.0, 3.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
         ));
         commands.spawn((
             Camera3d::default(),
@@ -487,7 +487,7 @@ fn evaluate(
     image.save(probe.output.join("probe.png")).unwrap();
     let mut passed = probe.loader_passed;
     let mut samples = Vec::new();
-    for (index, (name, _, _, _, _)) in CASES.iter().enumerate() {
+    for (index, (name, _)) in CASES.iter().enumerate() {
         let y = 50 + index as u32 * 100;
         let mut error = 0;
         for dy in -2i32..=2 {
@@ -506,18 +506,10 @@ fn evaluate(
         let actual = image.get_pixel(200, y).0;
         let expected = image.get_pixel(600, y).0;
         passed &= error <= 2;
-        // Guard against a blank render satisfying a pairwise comparison.
-        passed &= if [0, 1, 5].contains(&index) {
-            expected == [0; 3]
-        } else if index == 4 {
-            // Very low mask energy can quantize to black; bright cases guard blank renders.
-            expected.iter().all(|v| *v <= 10)
-        } else {
-            expected.iter().any(|v| *v > 5 && *v < 250)
-        };
+        passed &= expected.iter().any(|v| *v > 5 && *v < 250);
         samples.push(serde_json::json!({"case":name,"pixel_y":y,"converted_rgb":actual,"reference_rgb":expected,"max_error_u8":error}));
     }
-    let report = serde_json::json!({"kind":"converted-material-specular","retail_parity":false,"space":if probe.interior {"interior"} else {"exterior"},"legacy_specular":probe.legacy,"ev100":9.7,"tonemapping":"TonyMcMapface","resolution":[800,CASES.len()*100],"camera":{"position":[0,0,10],"projection":"orthographic","vertical_size":CASES.len()},"ambient_brightness":0,"directional_illuminance":5000,"tolerance_u8":2,"loader":probe.loaded,"samples":samples,"adapter":{"name":adapter.name,"driver":adapter.driver,"driver_info":adapter.driver_info},"passed":passed});
+    let report = serde_json::json!({"kind":"converted-material-normal-direction","retail_parity":false,"space":if probe.interior {"interior"} else {"exterior"},"legacy_normal":probe.legacy,"ev100":9.7,"tonemapping":"TonyMcMapface","resolution":[800,CASES.len()*100],"camera":{"position":[0,0,10],"projection":"orthographic","vertical_size":CASES.len()},"ambient_brightness":0,"directional_illuminance":5000,"tolerance_u8":2,"loader":probe.loaded,"samples":samples,"adapter":{"name":adapter.name,"driver":adapter.driver,"driver_info":adapter.driver_info},"passed":passed});
     std::fs::write(
         probe.output.join("probe.json"),
         serde_json::to_vec_pretty(&report).unwrap(),

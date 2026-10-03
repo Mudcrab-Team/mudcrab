@@ -62,12 +62,12 @@ expression: manifest
     }
   },
   "complete": true,
-  "configuration_hash": "c2c8f012524647edc8490feeb6e28cccb20583f8738652eeccab5d0fa59c0c31",
+  "configuration_hash": "f402d1be3001e497651b9ce629e87aced11731e650577095f33055cf4d49b20a",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 1868,
+      "output_size": 2312,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {
@@ -120,5 +120,5 @@ expression: manifest
     "pex": 2
   },
   "pruned_texture_references": {},
-  "schema_version": 18
+  "schema_version": 19
 }

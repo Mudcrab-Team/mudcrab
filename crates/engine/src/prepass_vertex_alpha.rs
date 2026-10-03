@@ -9,10 +9,9 @@
 //! passes use the same function, so the same fragments cast shadows they do not draw.
 //!
 //! Skyrim's alpha-tested shapes fade this way wherever their shader reads vertex alpha: the gravel
-//! skirts around rocks and the moss and plaster decals on walls. The converter currently forces
-//! vertex alpha to opaque on alpha-tested shapes, so its own output does not reach this yet; an
-//! asset set that keeps the fade does. So the prepass is made to test the same alpha as the main
-//! pass: one line is inserted into Bevy's shader library when it loads
+//! skirts around rocks and the moss and plaster decals on walls. Schema 19 preserves enabled
+//! vertex alpha except for the native tree/LOD exclusions. The prepass tests the same alpha as
+//! the main pass: one line is inserted into Bevy's shader library when it loads
 //! ([`patch_prepass_functions`]). If a Bevy upgrade moves the anchor, the patch logs an error and
 //! the prepass keeps Bevy's test.
 

@@ -34,6 +34,7 @@ mlua.workspace = true
 zstd = "0.13"
 
 [dev-dependencies]
+gltf = { version = "1.4", default-features = false, features = ["utils"] }
 tempfile = "3.20"
 insta = { version = "1.48", features = ["json", "redactions"] }
 proptest = { version = "1.11", default-features = false, features = ["std"] }

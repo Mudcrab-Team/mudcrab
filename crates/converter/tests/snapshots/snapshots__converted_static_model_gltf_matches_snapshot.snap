@@ -79,10 +79,10 @@ expression: document
   ],
   "images": [
     {
-      "uri": "../textures/generated_color.opensky-srgb.ktx2"
+      "uri": "../textures/generated_color.opensky-srgb.opensky-wrap0.ktx2"
     },
     {
-      "uri": "../textures/generated_normal.ktx2"
+      "uri": "../textures/generated_normal.opensky-wrap0.ktx2"
     }
   ],
   "materials": [
@@ -100,7 +100,12 @@ expression: document
       },
       "extras": {
         "openSkyrim": {
+          "lightingShaderType": "default",
+          "normalConvention": "directx",
           "shaderBlock": 2,
+          "shaderFamily": "lighting",
+          "shaderFlags1": 0,
+          "shaderFlags2": 0,
           "shapeBlock": 1
         }
       },
@@ -165,6 +170,32 @@ expression: document
       ]
     }
   ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 33071,
+      "wrapT": 33071
+    },
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 33071,
+      "wrapT": 10497
+    },
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 33071
+    },
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
   "scene": 0,
   "scenes": [
     {
@@ -183,9 +214,11 @@ expression: document
   ],
   "textures": [
     {
+      "sampler": 0,
       "source": 0
     },
     {
+      "sampler": 0,
       "source": 1
     }
   ]

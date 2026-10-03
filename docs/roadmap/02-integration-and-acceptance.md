@@ -8,7 +8,7 @@ owned Skyrim Special Edition installation is required only for the final real-wo
 - The engine accepts converter manifest schemas from `MIN_RUNTIME_CONVERTER_SCHEMA_VERSION` through
   the current `CONVERTER_SCHEMA_VERSION`, cell cache version 3, and world database schemas from
   `MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION` through the current `WORLD_DATABASE_SCHEMA_VERSION`
-  (15–18 and 3–4 when this was written), and rejects stale or incompatible outputs with the accepted
+  (15–19 and 3–4 when this was written), and rejects stale or incompatible outputs with the accepted
   range in the message. The oldest accepted schemas are defined once in `crates/shared`, with
   `supports_runtime_world_database_schema`. The
   launcher's "ready to play" check uses the same ranges, so it calls ready every output the engine
