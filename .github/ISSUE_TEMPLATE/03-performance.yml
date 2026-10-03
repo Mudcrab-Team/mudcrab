@@ -20,7 +20,7 @@ body:
       label: Reproduction
       description: Steps or commands to reproduce the performance bottleneck.
       placeholder: |
-        1. Run `cargo run -p engine -- --scenario world`
+        1. Run `cargo run --release -p engine`
         2. Walk towards cell (0, 0)...
     validations:
       required: true
