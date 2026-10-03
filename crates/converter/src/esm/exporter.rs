@@ -86,6 +86,7 @@ fn optional_race_movement_link(
     Ok((value != 0).then_some(value))
 }
 
+/// Creates any missing world-database tables and stamps an empty database with the current schema.
 pub fn create_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"PRAGMA foreign_keys = ON;
@@ -723,6 +724,7 @@ pub fn validate_database(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The schema has the interior index, the exterior spatial table and every projection table.
     #[test]
     fn creates_hybrid_spatial_schema() {
         let conn = Connection::open_in_memory().unwrap();

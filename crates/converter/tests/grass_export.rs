@@ -7,10 +7,12 @@ use converter::esm::{
 use rusqlite::Connection;
 use std::{fs, path::Path, process::Command};
 
+/// Encodes one subrecord: tag, little-endian u16 size, payload.
 fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
     [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
 }
 
+/// Encodes one uncompressed record header followed by its subrecord payload.
 fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
     [
         tag.as_slice(),
@@ -23,6 +25,7 @@ fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
     .concat()
 }
 
+/// Writes a plugin file with a TES4 header naming `masters`, followed by `records`.
 fn plugin(
     root: &Path,
     name: &str,
@@ -61,6 +64,7 @@ fn grass(id: u32, density: u8) -> Vec<u8> {
     )
 }
 
+/// Builds an LTEX record whose repeated GNAM subrecords list `grasses` in order.
 fn landscape(id: u32, grasses: &[u32]) -> Vec<u8> {
     record(
         b"LTEX",
@@ -73,6 +77,7 @@ fn landscape(id: u32, grasses: &[u32]) -> Vec<u8> {
     )
 }
 
+/// Reads every texture-grass association, sorted by texture then grass.
 fn associations(conn: &Connection) -> Vec<(u32, u32)> {
     conn.prepare("SELECT ltex_id, gras_id FROM landscape_texture_grasses ORDER BY ltex_id, gras_id")
         .unwrap()
@@ -82,6 +87,7 @@ fn associations(conn: &Connection) -> Vec<(u32, u32)> {
         .unwrap()
 }
 
+/// Every GRAS field is projected, and the winning LTEX list resolves full and light-plugin IDs.
 #[test]
 fn exports_all_grass_fields_and_winning_full_and_light_links() {
     let dir = tempfile::tempdir().unwrap();
@@ -155,6 +161,7 @@ fn exports_all_grass_fields_and_winning_full_and_light_links() {
         ("base.esm".into(),0x801,3));
 }
 
+/// Deleted grass, replaced lists and deleted textures leave no stale rows after a complete export.
 #[test]
 fn deleted_grass_and_replaced_or_deleted_texture_lists_do_not_survive_refresh() {
     let dir = tempfile::tempdir().unwrap();
@@ -231,6 +238,7 @@ fn deleted_grass_and_replaced_or_deleted_texture_lists_do_not_survive_refresh() 
     );
 }
 
+/// Short DATA and an unsafe model path become NULL columns while the raw subrecords are kept.
 #[test]
 fn incomplete_rules_and_unsafe_model_paths_are_nullable_without_losing_raw_data() {
     let dir = tempfile::tempdir().unwrap();
@@ -300,6 +308,7 @@ fn complete_export_into_a_schema_four_database_stamps_the_current_schema() {
     assert_eq!(associations(&conn), [(0x901, 0x801)]);
 }
 
+/// Out-of-range authored values are kept as written; NaN and infinite floats become NULL.
 #[test]
 fn unusual_authored_values_are_not_clamped_and_nonfinite_fields_are_nullable() {
     let dir = tempfile::tempdir().unwrap();
@@ -335,6 +344,7 @@ fn unusual_authored_values_are_not_clamped_and_nonfinite_fields_are_nullable() {
     }).unwrap();
 }
 
+/// Runs the movement annotator on a database stamped `version` and checks grass and stamp survive.
 fn movement_annotation_preserves_grass(version: u32) {
     let dir = tempfile::tempdir().unwrap();
     let speeds: Vec<u8> = (1..=10)
@@ -422,16 +432,19 @@ fn movement_annotation_preserves_grass(version: u32) {
     );
 }
 
+/// Annotating a current-schema database keeps its grass projections.
 #[test]
 fn movement_annotation_does_not_erase_grass() {
     movement_annotation_preserves_grass(shared::WORLD_DATABASE_SCHEMA_VERSION);
 }
 
+/// Annotating a schema-4 database still works and keeps its schema-4 stamp.
 #[test]
 fn movement_annotation_still_accepts_schema_four() {
     movement_annotation_preserves_grass(4);
 }
 
+/// A subset export keeps unrelated grass and replaces only the lists of the textures it includes.
 #[test]
 fn partial_grass_updates_preserve_unrelated_definitions_and_replace_only_their_texture_list() {
     let dir = tempfile::tempdir().unwrap();

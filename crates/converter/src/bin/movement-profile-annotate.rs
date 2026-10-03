@@ -13,6 +13,7 @@ use converter::esm::{
 use rusqlite::{Connection, params};
 use std::{collections::HashMap, path::PathBuf};
 
+/// Rebuilds the movement projection of the database named on the command line.
 fn main() -> Result<()> {
     color_eyre::install()?;
     let path = PathBuf::from(std::env::args_os().nth(1).ok_or_else(|| {

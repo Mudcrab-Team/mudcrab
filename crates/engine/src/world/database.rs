@@ -826,6 +826,7 @@ mod tests {
         assert!(validate(&path).is_err());
     }
 
+    /// Schema-4 and schema-5 databases validate and load; a schema newer than the current one does not.
     #[test]
     fn accepts_schema_four_and_five_databases_with_legacy_query_columns() {
         let directory = tempfile::tempdir().unwrap();
