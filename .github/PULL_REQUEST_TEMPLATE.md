@@ -1,3 +1,7 @@
+<!-- One sentence: what changes, in plain words, with the headline number. See docs/contributing/writing-prs.md. -->
+
+<!-- Only if this PR needs another one merged first: **Merge after:** #N -->
+
 ## Objective
 
 <!-- Briefly describe the purpose of this PR and what problem or feature it addresses. -->
@@ -20,3 +24,8 @@
 
 <!-- If applicable, attach screenshots, GIFs, or benchmark results below. -->
 ### Visual / Benchmark Proof (Optional)
+<!-- Leave the section out if there is nothing to show. -->
+
+## For reviewers
+
+<!-- Behaviour change first, if any; then risks, overlaps with other open PRs, follow-ups. Four bullets at most. -->

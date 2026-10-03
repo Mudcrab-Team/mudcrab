@@ -2,10 +2,6 @@ use color_eyre::{Result, eyre::WrapErr};
 use engine::world::{
     cache::CellCache,
     components::{InstanceBounds, WorldPosition},
-    database::{
-        MAX_RUNTIME_DATABASE_SCHEMA_VERSION, MIN_RUNTIME_DATABASE_SCHEMA_VERSION,
-        supports_runtime_database_schema,
-    },
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
@@ -248,9 +244,11 @@ fn inspect_world(options: &Options) -> Result<InspectionReport> {
         })
         .wrap_err("world database has no schema version")?;
     color_eyre::eyre::ensure!(
-        supports_runtime_database_schema(database_schema),
+        shared::supports_runtime_world_database_schema(database_schema),
         "world database schema {database_schema} is unsupported; reconvert assets for a schema \
-         from {MIN_RUNTIME_DATABASE_SCHEMA_VERSION} through {MAX_RUNTIME_DATABASE_SCHEMA_VERSION}"
+         from {} through {}",
+        shared::MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION,
+        shared::WORLD_DATABASE_SCHEMA_VERSION
     );
     let cache = CellCache::open(&assets.join("cell_cache.rkyv"))?;
     let mut cells = Vec::new();
@@ -839,7 +837,7 @@ mod tests {
             .execute_batch(&format!(
                 "CREATE TABLE schema_info(version INTEGER NOT NULL);
                  INSERT INTO schema_info VALUES({});",
-                MAX_RUNTIME_DATABASE_SCHEMA_VERSION + 1
+                shared::WORLD_DATABASE_SCHEMA_VERSION + 1
             ))
             .unwrap();
         drop(connection);
