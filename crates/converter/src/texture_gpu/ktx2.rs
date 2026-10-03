@@ -106,3 +106,52 @@ fn kvd() -> Vec<u8> {
     }
     kvd
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::texture::{TextureEncoding, inspect_ktx2, supercompress_ktx2_levels};
+
+    /// A cubemap mip chain survives the writer, Zstandard supercompression
+    /// and `inspect_ktx2`: every level index points at its own blocks.
+    #[test]
+    fn uastc_cubemap_mips_round_trip_through_supercompression() {
+        // 8x8 -> 2x2 blocks, 4x4 and 2x2 -> 1 block each; six faces per level.
+        let blocks_per_face = [4usize, 1, 1];
+        let levels: Vec<Vec<u8>> = blocks_per_face
+            .iter()
+            .enumerate()
+            .map(|(mip, blocks)| {
+                (0..6 * blocks * 16)
+                    .map(|byte| (mip * 64 + byte) as u8)
+                    .collect()
+            })
+            .collect();
+        let raw = write_uastc(8, 8, 6, &levels, true, true);
+        let packed = supercompress_ktx2_levels(&raw, 3).unwrap();
+        let metadata = inspect_ktx2(&packed, TextureEncoding::ColorSrgb).unwrap();
+        assert_eq!(
+            (
+                metadata.width,
+                metadata.height,
+                metadata.faces,
+                metadata.levels
+            ),
+            (8, 8, 6, 3)
+        );
+        let reader = ::ktx2::Reader::new(&packed[..]).unwrap();
+        assert_eq!(
+            reader.header().supercompression_scheme,
+            Some(::ktx2::SupercompressionScheme::Zstandard)
+        );
+        for (level, expected) in reader.levels().zip(&levels) {
+            assert_eq!(level.uncompressed_byte_length, expected.len() as u64);
+            assert_eq!(&zstd::decode_all(level.data).unwrap(), expected);
+        }
+        // Uncompressed, the levels are stored as written.
+        let reader = ::ktx2::Reader::new(&raw[..]).unwrap();
+        for (level, expected) in reader.levels().zip(&levels) {
+            assert_eq!(level.data, &expected[..]);
+        }
+    }
+}

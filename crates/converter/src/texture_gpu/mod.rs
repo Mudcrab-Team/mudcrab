@@ -53,7 +53,6 @@ use std::{
     fs::File,
     future::Future,
     io::{Cursor, Read},
-    ops::Range,
     path::Path,
     pin::pin,
     sync::{
@@ -188,21 +187,21 @@ pub(crate) struct PreparedTexture {
     faces: u32,
     /// `images[mip * faces + face]`.
     images: Vec<SourceImage>,
+    /// Exactly the bytes to upload, so the queue's byte budget counts
+    /// everything a queued texture holds.
     bytes: Vec<u8>,
-    data: Range<usize>,
 }
 
 impl PreparedTexture {
     /// Bytes to upload (the DDS payload, or RGBA for CPU-decoded formats).
     fn upload(&self) -> &[u8] {
-        &self.bytes[self.data.clone()]
+        &self.bytes
     }
 
     /// Frees the upload bytes once they are on their way to the GPU; the
     /// layout is all the readback needs.
     fn release_upload(&mut self) {
         self.bytes = Vec::new();
-        self.data = 0..0;
     }
 
     /// Number of 4x4 blocks across every mip and face.
@@ -214,7 +213,7 @@ impl PreparedTexture {
     /// referenced in place; anything else `image_dds` can read is decoded to
     /// RGBA on the CPU. Volumes and arrays return an error (callers use the
     /// CPU converter for them).
-    pub(crate) fn from_dds(bytes: Vec<u8>, encoding: TextureEncoding) -> Result<Self> {
+    pub(crate) fn from_dds(mut bytes: Vec<u8>, encoding: TextureEncoding) -> Result<Self> {
         let dds = read_header(&bytes)?;
         let faces = gpu_faces(&dds, encoding)?;
         let data_start = 4 + 124 + if dds.header10.is_some() { 20 } else { 0 };
@@ -234,12 +233,16 @@ impl PreparedTexture {
                     (0..faces as usize).map(move |face| face_major[face * mips + mip].clone())
                 })
                 .collect();
+            // Keep only the payload: the header is not uploaded, and data
+            // after the payload would otherwise sit in the queue unbudgeted.
+            bytes.truncate(data_end);
+            bytes.drain(..data_start);
+            bytes.shrink_to_fit();
             return Ok(Self {
                 width,
                 height,
                 faces,
                 images,
-                data: data_start..data_end,
                 bytes,
             });
         }
@@ -256,14 +259,12 @@ impl PreparedTexture {
             });
             rgba.extend_from_slice(pixels);
         }
-        let len = rgba.len();
         Ok(Self {
             width: decoded.width,
             height: decoded.height,
             faces: decoded.faces,
             images,
             bytes: rgba,
-            data: 0..len,
         })
     }
 }
@@ -756,7 +757,6 @@ impl GpuUastc {
                 pitch: 16,
             }],
             bytes: vec![0; 64],
-            data: 0..64,
         };
         let mut batch = Batch::new(gpu.new_slot(1 << 10, 16, 16)?);
         gpu.place(&mut batch, warm_up, TextureEncoding::ColorSrgb, ())
@@ -1373,14 +1373,18 @@ mod tests {
         assert!(stored_layout(SourceFormat::Bgr8, u32::MAX, u32::MAX, 6, 1).is_none());
     }
 
-    /// A well-formed uncompressed DDS is referenced in place, mip by mip.
+    /// A well-formed uncompressed DDS keeps only its payload, mip by mip:
+    /// trailing data is dropped, so it never sits in the queue unbudgeted.
     #[test]
-    fn prepares_an_uncompressed_dds_in_place() {
-        let texture =
-            PreparedTexture::from_dds(bgra_dds(4, 4, 2, 64 + 16), TextureEncoding::ColorSrgb)
-                .unwrap();
+    fn prepares_an_uncompressed_dds_from_its_payload_only() {
+        let mut dds = bgra_dds(4, 4, 2, 64 + 16);
+        dds[128] = 7;
+        dds.extend(std::iter::repeat_n(0xAB, 1 << 20));
+        let texture = PreparedTexture::from_dds(dds, TextureEncoding::ColorSrgb).unwrap();
         assert_eq!((texture.width, texture.height, texture.faces), (4, 4, 1));
         assert_eq!(texture.upload().len(), 80);
+        assert_eq!(texture.upload()[0], 7);
+        assert!(texture.bytes.capacity() < 1 << 20);
         assert_eq!(texture.images.len(), 2);
         assert_eq!(texture.block_count(), 2);
     }
