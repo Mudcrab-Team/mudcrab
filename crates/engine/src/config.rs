@@ -46,6 +46,12 @@ pub struct EngineConfig {
     pub profile_hardware: String,
     pub acceptance_screenshot: Option<PathBuf>,
     pub screenshot_camera_offset: Option<(f32, f32, f32)>,
+    /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
+    /// running interactively. See [`crate::shots`].
+    pub shots: Option<PathBuf>,
+    /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
+    /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
+    pub shots_out: Option<PathBuf>,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -103,6 +109,8 @@ impl Default for EngineConfig {
             profile_hardware: "unspecified".into(),
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
+            shots: None,
+            shots_out: None,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -159,6 +167,8 @@ Benchmark and profiling:
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
+  --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
   --profile-run-id <id>                 run id recorded in the profile (default: run-1)
@@ -311,6 +321,7 @@ impl EngineConfig {
             && self.benchmark_frames.is_none()
             && self.benchmark_duration_secs.is_none()
             && self.acceptance_screenshot.is_none()
+            && self.shots.is_none()
             && self.auto_fly_speed <= 0.0
             && !self.material_fixture
             && !self.terrain_water_fixture
@@ -331,6 +342,8 @@ impl EngineConfig {
             Some("benchmark")
         } else if self.streaming_fixture {
             Some("streaming fixture")
+        } else if self.shots.is_some() {
+            Some("shots")
         } else {
             None
         };
@@ -560,6 +573,19 @@ impl EngineConfig {
                                 EXPECTED,
                             )
                         })?);
+                }
+                // A path left out is an error, and must not swallow the next option: a `--shots`
+                // with no path is no mode at all, and continuing would silently launch an ordinary
+                // interactive run.
+                "--shots" => {
+                    config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
+                }
+                "--shots-out" => {
+                    config.shots_out = Some(take_value(
+                        "--shots-out",
+                        "a directory for the shots' images and log",
+                        args.next(),
+                    )?);
                 }
                 "--diagnostic-asset-fallbacks" => config.diagnostic_asset_fallbacks = true,
                 "--material-fixture" => config.material_fixture = true,
@@ -971,7 +997,23 @@ mod tests {
             args(&["--streaming-fixture"]).window_title(),
             "OpenSkyrim - streaming fixture"
         );
+        assert_eq!(
+            args(&["--shots", "poses.json", "--run-label", "riverwood"]).window_title(),
+            "OpenSkyrim - shots: riverwood"
+        );
         assert_eq!(args(&[]).window_title(), "OpenSkyrim");
+    }
+
+    /// A shots path left out does not swallow the next option, and it is an error rather than a
+    /// silent fallback: continuing would run the engine interactively, a mode nobody asked for.
+    #[test]
+    fn a_valueless_shots_flag_is_an_error() {
+        let error = parse_error(&["--shots", "--shots-out", "--lights"]).to_string();
+        assert!(error.contains("--shots"), "{error}");
+        let error = parse_error(&["--shots-out", "--lights"]).to_string();
+        assert!(error.contains("--shots-out"), "{error}");
+        let error = parse_error(&["--shots"]).to_string();
+        assert!(error.contains("--shots"), "{error}");
     }
 
     #[test]
@@ -1013,6 +1055,10 @@ mod tests {
             "evidence/rural.png",
             "--screenshot-camera-offset",
             "0,6000,12000",
+            "--shots",
+            "reference/riverwood_shots.json",
+            "--shots-out",
+            "evidence/riverwood",
             "--diagnostic-asset-fallbacks",
             "--material-fixture",
             "--terrain-water-fixture",
@@ -1053,6 +1099,11 @@ mod tests {
             config.screenshot_camera_offset,
             Some((0.0, 6000.0, 12000.0))
         );
+        assert_eq!(
+            config.shots,
+            Some(PathBuf::from("reference/riverwood_shots.json"))
+        );
+        assert_eq!(config.shots_out, Some(PathBuf::from("evidence/riverwood")));
         assert!(config.diagnostic_asset_fallbacks);
         assert!(config.material_fixture);
         assert!(config.terrain_water_fixture);
@@ -1097,6 +1148,10 @@ mod tests {
             },
             EngineConfig {
                 streaming_fixture: true,
+                ..EngineConfig::default()
+            },
+            EngineConfig {
+                shots: Some("poses.json".into()),
                 ..EngineConfig::default()
             },
             EngineConfig {

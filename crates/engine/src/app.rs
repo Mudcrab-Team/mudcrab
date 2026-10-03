@@ -8,6 +8,7 @@ use crate::{
         VercidiumRendererPlugin, WATER_LAYER, WaterExtension, WaterMaterial,
         WaterReflectionTexture, terrain_layer_sampler,
     },
+    shots::{ShotsFile, ShotsPlugin, ShotsRun, default_output_dir},
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
         AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, StreamingWorld,
@@ -54,6 +55,8 @@ struct InitialCameraGroundHeight(f32);
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
+    let shots = prepare_shots(&mut config)?;
+    let shots_active = shots.is_some();
     configure_io_task_pool();
     let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
@@ -100,12 +103,17 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let benchmark_active =
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
     configure_benchmark_priority(benchmark_active)?;
-    let window = (!config.headless).then(|| Window {
+    let window = (!config.headless || shots_active).then(|| Window {
         title: config.window_title(),
-        resolution: (1600, 900).into(),
-        // A timing run opens on screen, in the middle, so whoever is at the machine can see what
-        // is measuring and not disturb it.
-        position: if benchmark_active {
+        // A shots file's frame is the size its reference screenshots were taken at, so the window,
+        // and every PNG taken of it, is exactly that many pixels.
+        resolution: match &shots {
+            Some(run) => run.file.window_resolution(),
+            None => (1600, 900).into(),
+        },
+        // A timing or shots run opens on screen, in the middle, so whoever is at the machine can
+        // see what is running and not disturb it.
+        position: if benchmark_active || shots_active {
             WindowPosition::Centered(MonitorSelection::Primary)
         } else {
             WindowPosition::Automatic
@@ -122,11 +130,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some(tuning) = movement_tuning {
         app.insert_resource(tuning);
     }
-    if benchmark_active {
+    if benchmark_active || shots_active {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
         // unfocused window to 60 Hz, which makes a 16.67 ms P95 gate measure the
-        // event-loop sleep instead of renderer performance.
+        // event-loop sleep instead of renderer performance. A shots run left
+        // behind other windows would likewise starve its settle rule of frames.
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
@@ -205,10 +214,33 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         app.add_systems(Startup, setup_synthetic_benchmark);
     }
-    app.run();
+    if let Some(run) = shots {
+        info!(
+            shots = run.file.shots.len(),
+            frame = format_args!("{}x{}", run.file.width, run.file.height),
+            output = %run.output_dir.display(),
+            "rendering camera poses"
+        );
+        app.add_plugins(ShotsPlugin { run });
+    }
+    let exit = app.run();
     drop(app);
     drop(streaming_fixture_dir);
-    Ok(())
+    finished(&exit)
+}
+
+/// What the process reports after an [`App`] has run.
+///
+/// A shots run that could not write an image, and an acceptance run whose gates did not pass, end
+/// with [`AppExit::Error`]; dropping that would report success to whatever ran the process - the
+/// acceptance script reads the exit code - so the error is handed back to `main` instead.
+fn finished(exit: &AppExit) -> Result<()> {
+    match exit {
+        AppExit::Success => Ok(()),
+        AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
+            "the run failed (exit code {code:?})"
+        )),
+    }
 }
 
 /// Bevy's per-frame render-asset byte budget, seeded from the run's option.
@@ -223,6 +255,47 @@ fn upload_budget(config: &EngineConfig) -> RenderAssetBytesPerFrame {
     RenderAssetBytesPerFrame {
         max_bytes: config.max_upload_bytes_per_frame(),
     }
+}
+
+/// Reads the `--shots` file, if one was given, and points the run at its first exterior pose: that
+/// shot's worldspace and grid square are where streaming starts, so the first view does not wait
+/// for cells around a start the file never looks at.
+fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
+    let Some(path) = config.shots.clone() else {
+        return Ok(None);
+    };
+    let other_mode = config.benchmark_only
+        || config.benchmark_frames.is_some()
+        || config.benchmark_duration_secs.is_some()
+        || config.acceptance_screenshot.is_some()
+        || config.auto_fly_speed > 0.0
+        || config.material_fixture
+        || config.terrain_water_fixture
+        || config.transform_bounds_fixture
+        || config.renderer_fixture
+        || config.streaming_fixture
+        || config.physics_fixture;
+    color_eyre::eyre::ensure!(
+        !other_mode,
+        "--shots renders the converted world on its own: it cannot be combined with a benchmark, \
+         an acceptance screenshot, --auto-fly-speed or a fixture"
+    );
+    if config.headless {
+        // The logger is not installed yet, so a `warn!` here would never be seen.
+        eprintln!("warning: --shots photographs the window, so --headless is ignored");
+    }
+    let file = ShotsFile::load(&path)?;
+    if let Some((worldspace_id, grid)) = file.start() {
+        if let Some(worldspace_id) = worldspace_id {
+            config.worldspace_id = worldspace_id;
+        }
+        config.start_grid = grid;
+    }
+    let output_dir = config
+        .shots_out
+        .clone()
+        .unwrap_or_else(|| default_output_dir(&path));
+    Ok(Some(ShotsRun::new(file, output_dir, config.worldspace_id)))
 }
 
 fn validate_fixture_selection(config: &EngineConfig) -> Result<()> {
@@ -1876,8 +1949,9 @@ fn fly_camera(
     mut profiler: ResMut<ProfilingState>,
     mut auto_flight: Local<AutoFlightState>,
 ) {
-    // Interactive player paths own the camera; automated camera paths keep legacy controls.
-    if config.physics_fixture || config.interactive_world_physics() {
+    // Interactive player paths own the camera; automated camera paths keep legacy controls. A
+    // shots run poses the camera itself, and a key press must not move a pose.
+    if config.physics_fixture || config.interactive_world_physics() || config.shots.is_some() {
         return;
     }
     let started = std::time::Instant::now();
@@ -2005,6 +2079,15 @@ mod tests {
     use super::*;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
+
+    #[test]
+    fn a_failed_run_is_an_error_and_a_successful_one_is_not() {
+        assert!(finished(&AppExit::Success).is_ok());
+        let message = finished(&AppExit::error())
+            .expect_err("a failed run must not report success")
+            .to_string();
+        assert!(message.contains("exit code"), "{message}");
+    }
 
     /// The streaming fixture's own systems over its own fixture database, with no window, GPU or
     /// game data: the camera crosses exteriors, the fixture loads its interior by id, and the
