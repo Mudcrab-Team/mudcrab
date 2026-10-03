@@ -162,7 +162,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ProfilingPlugin,
             RenderDiagnosticsPlugin,
         ))
-        .add_plugins((VercidiumRendererPlugin, SkyPlugin))
+        .add_plugins((
+            VercidiumRendererPlugin,
+            SkyPlugin,
+            crate::nif_material::NifSpecularPlugin,
+        ))
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
@@ -1596,13 +1600,13 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 
 /// The oldest converter manifest schema the runtime accepts. Schema 15 sets were written before
 /// the merge that brought converter schema 16 and world database schema 4, and still load.
-/// Schema 17 changes material emission without changing runtime asset structure.
+/// Schemas 17–18 change material response without changing runtime asset structure.
 const MIN_RUNTIME_CONVERTER_SCHEMA_VERSION: u32 = 15;
 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    17
+    18
 }
 
 fn setup_synthetic_benchmark(
@@ -2862,7 +2866,7 @@ mod tests {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        for schema in [16, 17] {
+        for schema in [16, 17, 18] {
             std::fs::write(
                 directory.path().join("conversion-manifest.json"),
                 format!(r#"{{"schema_version":{schema},"complete":true}}"#),

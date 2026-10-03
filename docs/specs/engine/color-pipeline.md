@@ -37,13 +37,17 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 - V8: Finite signed NIF tint ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
 
+- V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
+- V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
+- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Schema 18 rebuilds all old GLBs; retain verified compatible textures/scripts/archive bytes and accept runtime schemas 15–18.
+
 ## Supported response and remaining material work
 
 | Family / path | Current representation | L1 acceptance status |
 |---|---|---|
-| Ordinary lighting / opaque | glTF `StandardMaterial`, PBR lighting | Output consistency can be tested now; NIF specular fixes pending #81; static emission corrected by T6. |
+| Ordinary lighting / opaque | glTF `StandardMaterial`, PBR lighting | Output consistency can be tested now; Specular enable, tangent mask and roughness corrected by T8; native BRDF/model-space parity remains open. Static emission corrected by T6. |
 | Alpha-tested / blended | glTF alpha modes + existing prepass | #83 and PR #99 remain separate dependencies. Do not declare caster silhouettes accepted before they are integrated and tested. |
-| Tangent-space normal maps | Linear normal samples through glTF; terrain has its own tangent frame | Direction, handedness and specular-alpha probe still required. |
+| Tangent-space normal maps | Linear normal samples through glTF; terrain has its own tangent frame | Tangent normal-alpha binding/response verified by T8; direction/handedness retail probes remain required. |
 | Model-space normals | No established compatibility path in this slice | Named L1 gap; generic tangent interpretation cannot count as acceptance. |
 | Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | Runtime compatibility inventory and per-family probes still required; retained metadata alone is not shader support. |
 | Effect shader surfaces | Converted material approximation | #84 visibility and shader semantics unresolved. No general effect parity claim. |
@@ -72,7 +76,7 @@ Converter cache schema 17: schemas 12–16 retain verified non-GLB entries/archi
 
 For testing, reconvert to separate output directory with converter built from this branch, then run matching engine against that directory. Existing packs remain valid in engine but retain old emission until reconverted. Preserve old pack for rollback; older #137 engine rejects schema 17, so use new engine for new pack. Retail reconversion ! isolated matching package; delivery evidence recorded after successful conversion/startup.
 
-Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v7_schema_16_rebuilds_meshes_and_reuses_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
+Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v11_schema_16_and_17_rebuild_meshes_and_reuse_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
 
 ## Local verification, 2026-10-02
 
@@ -101,12 +105,27 @@ RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: nine-case exterior/interior probes both 
 
 Evidence: package `DEPLOYMENT.json`, `conversion-report.json`, `material-probe/{exterior,interior,legacy}/probe.json`, `asset-check.log`, `smoke-new-assets.log`; local copies under `/home/dev/Projects/mudcrab-lighting-emission-evidence/signed-fix/`. Installed source NIFs stay private. Synthetic GPU/startup proof ≠ matched Skyrim scene acceptance or release performance; L0 comparison and remaining L1 families remain open.
 
+## Specular integration plan
+
+Sources: Bill's `5a116e79c1bc6327b4bd6bdf0c65635464701236` (exponent mapping) & `92d60dc64bcfa0cb210ec0fe4349668ec7c0ce97` (normal-alpha mask/pruning). Adapt owners; do not copy unrelated fork changes. NIF Specular bit 0 and Model_Space_Normals bit 12 traced in vendored flag definitions. Bevy 0.19 glTF loader scales factor by 0.5; fragment multiplies reflectance by mask alpha × 0.5; F0 ! `0.16 * reflectance^2`. Scalar/native response remains declared approximation.
+
+Review: fork factor doubling exceeds glTF domain → reject; native glTF extension handler owns compensation. Tagged masks ! private `/nif` material label & scene binding; no duplicate standard label. Missing/pruned mask ! no compensation. Independent converter publication/pruning tests + runtime loader/GPU comparisons ! pass; legacy behavior ! fail. Gate: GO with V9–V11. No unrelated prepass/sampler integration in this slice.
+
+cmd: `material_specular_probe --output <dir> [--interior] [--legacy-specular]` → PNG/JSON, deterministic paired PBR samples, nonzero failure. Existing camera/exposure settings unchanged; no retail parity claim. Converter marker: `extras.openSkyrim.specularMask = "normal_alpha"`; native handler consumes only marker and actual loaded mask. Native factor compensation ! 2× only at material construction; reloads do not compound.
+
+## Specular local verification, 2026-10-03
+
+358 converter tests pass (13 existing ignores); 231 engine library tests pass; formatting and converter/engine Clippy libraries/tests/examples pass with warnings denied. Nine-case exterior/interior `material_specular_probe`: loaded scene bindings, native factors and shared linear textures pass; maximum paired difference 0/255 on Vulkan llvmpipe / Mesa 26.2.2. Legacy control ! exit 1; maximum difference 248/255. Cases: disabled flag, zero strength, unmasked, full/thatch/zero mask, exponents 100/200, dim strength. Emission regression probe passes ≤1/255.
+
+Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/{exterior,interior,legacy,emission-regression}`. Probe holds camera/exposure/tone map, directional illuminance 5000, zero ambient and no shadows; background varies only exterior/interior. Both native scene binding and independently computed scalar-response references exercised. Retail roof appearance and full-pack delivery remain separate gates; no Skyrim BRDF/parity claim.
+
 ## Tasks
 
 id|status|task|cites
 T1|x|Trace existing color/material owners and name unsupported paths|V5
 T2|x|Use explicit HDR scene composition and linear reflection storage; synchronize exposure|V1,V2
 T3|x|Render paired synthetic probes and record pixel evidence|V3,V4
+T8|x|Adapt Bill roughness/mask corrections; verify native loader, pruning, cache and GPU response|V5,V9,V10,V11
 T4|.|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes|V5
 T7|x|Restore signed-tint NIF compatibility; verify retail reconversion and delivered pack|V5,V6,V8
 T6|x|Fix static emission publication; load converted materials and compare GPU swatches; migrate cache|V5,V6,V7
@@ -124,3 +143,18 @@ B6|2026-10-02|Probe assumed glTF material handles were StandardMaterial in Bevy 
 B7|2026-10-02|Schema bump changes pinned manifest configuration hash|Snapshot diff reviewed: schema 17 and corresponding configuration hash only; V7
 B8|2026-10-02|Rejecting signed NIF tint applies glTF domain to source data; Fiji reconversion skips 18 base/DLC/CC assets|V8; retain source tint; glTF lower clamp remains named approximation
 B9|2026-10-02|Narrowed overflow regression left single-element test loop|Clippy catches mechanical shape; remove loop; no new invariant
+
+B10|2026-10-02|Roof specularity ignores source enable/mask; glossiness treated as percentage|V9,V10,V11
+B11|2026-10-02|Fork mask compensation publishes glTF factor >1; pruning can retain invalid texture indices|V10,V11; bounded glTF plus native loader compensation
+
+B12|2026-10-02|Pinned snapshots predate schema 18 and specular response|Reviewed diff: schema/hash, flag-disabled factor 0, exponent-derived roughness; V9–V11
+
+B13|2026-10-02|Bevy standard-material conversion helper public fn resides in private module|Clone stock `/std` labeled asset through public LoadContext API; preserve full field mapping; compiler/probe catch wiring, no new invariant
+
+B14|2026-10-02|Native helper retained GltfMaterial parameter after switching to StandardMaterial clone|Correct parameter type; compiler catches mechanical mismatch, no new invariant
+
+B15|2026-10-02|Probe used pre-0.19 scene/shadow names|Use WorldAsset and shadow_maps_enabled; compiler catches API mismatch, no new invariant
+
+B16|2026-10-02|Probe held asset borrow while inserting reference and queried immutable scene guard|Clone normal handle before insertion; mutable WorldAsset guard; compiler catches borrowing, no new invariant
+
+B17|2026-10-02|Adding scene-binding verification exceeded probe system argument lint|Group related glTF/WorldAsset resources; Clippy covers mechanical shape, no new invariant

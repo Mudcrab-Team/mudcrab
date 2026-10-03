@@ -2919,54 +2919,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v7_schema_16_rebuilds_meshes_and_reuses_compatible_assets() {
-        let temp = tempfile::tempdir().unwrap();
-        let data = temp.path().join("Data");
-        let output = temp.path().join("modern");
-        write_mesh_with_absent_normal(&data);
-        fs::create_dir_all(data.join("scripts")).unwrap();
-        fs::write(
-            data.join("scripts/one.pex"),
-            dummy_content::pex::minimal("One").unwrap(),
-        )
-        .unwrap();
-        let config = PipelineConfig::new(&data, &output);
-        assert!(run_without_progress(config.clone()).await.complete);
-        let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
-        let manifest_path = output.join("conversion-manifest.json");
-        let mut manifest = published_manifest(&output);
-        manifest.schema_version = 16;
-        manifest.configuration_hash = configuration_hash_for_schema(&config, 16).unwrap();
-        // A verified old GLB must still be rebuilt: its publication semantics changed.
-        let old_bytes = b"old material publication";
-        fs::write(output.join(PRUNED_MESH), old_bytes).unwrap();
-        let entry = manifest
-            .entries
-            .values_mut()
-            .find(|entry| entry.output == PRUNED_MESH)
+    async fn v11_schema_16_and_17_rebuild_meshes_and_reuse_compatible_assets() {
+        for old_schema in [16, 17] {
+            let temp = tempfile::tempdir().unwrap();
+            let data = temp.path().join("Data");
+            let output = temp.path().join("modern");
+            write_mesh_with_absent_normal(&data);
+            fs::create_dir_all(data.join("scripts")).unwrap();
+            fs::write(
+                data.join("scripts/one.pex"),
+                dummy_content::pex::minimal("One").unwrap(),
+            )
             .unwrap();
-        entry.output_size = old_bytes.len() as u64;
-        entry.output_hash = crate::cache::hash_bytes(old_bytes);
-        manifest.save(&manifest_path).unwrap();
+            let config = PipelineConfig::new(&data, &output);
+            assert!(run_without_progress(config.clone()).await.complete);
+            let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
+            let manifest_path = output.join("conversion-manifest.json");
+            let mut manifest = published_manifest(&output);
+            manifest.schema_version = old_schema;
+            manifest.configuration_hash =
+                configuration_hash_for_schema(&config, old_schema).unwrap();
+            // A verified old GLB must still be rebuilt: its publication semantics changed.
+            let old_bytes = b"old material publication";
+            fs::write(output.join(PRUNED_MESH), old_bytes).unwrap();
+            let entry = manifest
+                .entries
+                .values_mut()
+                .find(|entry| entry.output == PRUNED_MESH)
+                .unwrap();
+            entry.output_size = old_bytes.len() as u64;
+            entry.output_hash = crate::cache::hash_bytes(old_bytes);
+            manifest.save(&manifest_path).unwrap();
 
-        let report = run_without_progress(config.clone()).await;
-        assert!(report.complete);
-        assert_eq!(report.converted, 1);
-        assert_eq!(report.cache_hits, 2); // Unchanged DDS and PEX.
-        assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
-        assert_eq!(published_manifest(&output).schema_version, 17);
+            let report = run_without_progress(config.clone()).await;
+            assert!(report.complete);
+            assert_eq!(report.converted, 1);
+            assert_eq!(report.cache_hits, 2); // Unchanged DDS and PEX.
+            assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
+            assert_eq!(published_manifest(&output).schema_version, 18);
 
-        // Schema migration must not erase a real configuration change.
-        let mut manifest = published_manifest(&output);
-        manifest.schema_version = 16;
-        manifest.configuration_hash = configuration_hash_for_schema(&config, 16).unwrap();
-        manifest.save(&manifest_path).unwrap();
-        let mut changed_config = config;
-        changed_config.texture_zstd_level = 0;
-        let report = run_without_progress(changed_config).await;
-        assert!(report.complete);
-        assert_eq!(report.cache_hits, 0);
-        assert_eq!(report.converted, 3);
+            // Schema migration must not erase a real configuration change.
+            let mut manifest = published_manifest(&output);
+            manifest.schema_version = old_schema;
+            manifest.configuration_hash =
+                configuration_hash_for_schema(&config, old_schema).unwrap();
+            manifest.save(&manifest_path).unwrap();
+            let mut changed_config = config;
+            changed_config.texture_zstd_level = 0;
+            let report = run_without_progress(changed_config).await;
+            assert!(report.complete);
+            assert_eq!(report.cache_hits, 0);
+            assert_eq!(report.converted, 3);
+        }
     }
 
     #[tokio::test]

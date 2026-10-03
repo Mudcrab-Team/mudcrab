@@ -95,7 +95,7 @@ expression: document
             1.0,
             1.0
           ],
-          "specularFactor": 1.0
+          "specularFactor": 0.0
         }
       },
       "extras": {
@@ -122,7 +122,7 @@ expression: document
           "texCoord": 0
         },
         "metallicFactor": 0.0,
-        "roughnessFactor": 0.19999998807907104
+        "roughnessFactor": 0.39518827199935913
       }
     }
   ],
