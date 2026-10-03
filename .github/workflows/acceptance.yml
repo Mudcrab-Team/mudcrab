@@ -28,8 +28,9 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           components: clippy, rustfmt
       - name: Execute acceptance campaign
         shell: pwsh
