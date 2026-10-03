@@ -185,7 +185,11 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
         .map(|i| serde_json::json!({"mesh":i}))
         .collect();
     // Bevy generates inverted-scale material variants inside the scene load context.
-    nodes.push(serde_json::json!({"mesh":4,"scale":[-1,1,1]}));
+    let mask_thatch = CASES
+        .iter()
+        .position(|case| case.0 == "mask_thatch")
+        .expect("inverted-scale probe requires mask_thatch");
+    nodes.push(serde_json::json!({"mesh":mask_thatch,"scale":[-1,1,1]}));
     document["nodes"] = serde_json::json!(nodes);
     document["scenes"] = serde_json::json!([{"nodes":(0..nodes.len()).collect::<Vec<_>>() }]);
     document["scene"] = serde_json::json!(0);
