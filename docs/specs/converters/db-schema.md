@@ -11,9 +11,10 @@ This specification details the canonical DDL schema, tables, indices, and column
 The database stamps its own version in `schema_info`; the current one is **4**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`), which added the `lights` table and
 `references.radius_override`. The runtime (engine and `world-inspect`) accepts world database
-schemas **3 through 4** (`engine::world::database::MIN_RUNTIME_DATABASE_SCHEMA_VERSION` through
-`MAX_RUNTIME_DATABASE_SCHEMA_VERSION`); schema 3 loads because every runtime query probes for
-the tables and columns schema 4 added.
+schemas **3 through 4** (`shared::MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION` through
+`shared::WORLD_DATABASE_SCHEMA_VERSION`, checked by `shared::supports_runtime_world_database_schema`);
+schema 3 loads because every runtime query probes for the tables and columns schema 4 added. The
+launcher's "ready to play" check accepts the same range.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
