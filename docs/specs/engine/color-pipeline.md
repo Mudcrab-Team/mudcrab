@@ -28,11 +28,11 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 ## Invariants
 
 - V1: Every production scene camera and existing visual fixture uses explicit `SceneColorPipeline`: HDR, EV100 9.7, TonyMcMapface. These values remain provisional; defaults are not evidence of vanilla parity.
-- V2: Reflection storage preserves linear values above 1; no tone map or sRGB target view before water sampling. Reflection exposure matches the main camera before rendering, including after exposure changes while water is invisible.
+- V2: Reflection storage preserves linear values above 1; no tone map or sRGB target view before water sampling. Reflection exposure matches the main camera before rendering, including after exposure changes while water is invisible. Missing reflection exposure ! restore before rendering; pose/visibility updates continue.
 - V3: Sky, unlit mesh, fully fogged mesh, terrain emission and unit-reflecting water given equal composition-domain RGB produce matching output within 2/255 per channel. Exterior includes sky; interior has a black background. Test neutral gray and saturated HDR inputs.
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
 - V5: Preserve NIF source values and declared unsupported families. Do not compensate for pending material errors with global tint, exposure, ambient or emission changes.
-- V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Overflowing energy → contextual conversion error.
+- V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Non-finite source emission or overflowing energy → contextual conversion error before clamping.
 - V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–19 after subsequent slices; world database schema unchanged.
 
 - V8: Finite signed NIF tint ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
@@ -74,7 +74,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 Publication: `peak = max(1, max(emissive_color))`; `emissiveFactor = max(0, emissive_color) / peak`; `emissiveStrength = emissive_multiple * peak`. glTF factor remains in [0,1]; reconstructed linear RGB retains nonnegative authored energy. Extension emitted whenever strength ≠ 1, including 0 and values below 1. Black tint stays black with glow present. Bevy 0.19 glTF loader multiplies factor by strength into `StandardMaterial.emissive`; glow uses sRGB decode once, alpha does not scale opaque emission. No camera/ambient compensation.
 
-Signed NIF tints remain valid. Negative channels retain previous glTF lower-clamp approximation; raw color/multiplier retained under `extras.openSkyrim.sourceEmission`, with explicit representation label. Signed-emission shader behavior remains unsupported; this projection does not claim Skyrim parity. Strength overflow → contextual conversion error. Source contract retains original valid values. Existing negative-multiplier controller endpoint handling unchanged; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
+Signed NIF tints remain valid. Negative channels retain previous glTF lower-clamp approximation; raw color/multiplier retained under `extras.openSkyrim.sourceEmission`, with explicit representation label. Signed-emission shader behavior remains unsupported; this projection does not claim Skyrim parity. Strength overflow → contextual conversion error. Source contract retains original valid values. Finite negative lighting-multiplier controller endpoints keep the existing static zero clamp; NaN/±infinity rejected before clamping; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
 
 `material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Nine cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas, signed tint. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×900, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
 
@@ -230,6 +230,51 @@ Implementation T4 delivered; T5 and #131 remain open for L0 matched-reference
 acceptance and required unsupported material cases. L2 owns remaining hardcoded
 sun/ambient/weather behavior. Lighting addons remain out of scope.
 
+## Emission review audit (2026-10-03)
+
+[Aggregate report](../../evidence/lighting-l1-emission-impact-20261003.json): full schema-19
+conversion, 25,388 GLBs; 58,133 published lighting-material instances. Parse winning
+NIF bytes by manifest source hash (first hash precedes skeleton dependencies), join
+source shader block to material extras, compare pre-#139 and corrected publication
+on identical inputs. Reconstructed corrected energy matches all 58,133 published
+factors/strengths. Effect shaders and excluded shapes outside count; this corpus
+includes installed official DLC/Creation Club content, not a base-game-only sample.
+
+- 3,599 instances lose slot-2 glow eligibility; 0 gain it. Eligibility precedes
+  missing-texture pruning, so this is not a count of visible glowing surfaces.
+- 41 retained glow-eligible instances have black tint; old white fallback removed.
+- 4,177 change energy factor; 4,447 change factor or eligibility across 2,512 files.
+- 3,631 lose nonzero emission factor; 0 gain it. Texture samples not evaluated.
+- No non-finite source emission or strength overflow in counted instances; two
+  finite negative lighting-multiplier endpoints retain static zero behavior.
+
+Malformed emission still fails its asset with source/shape/shader context. Pipeline
+records that failure; no successful complete publication with a skipped bad asset.
+No clamp of non-finite/overflowing energy introduced: audited data does not justify
+one. Finite signed tints retain V8; finite negative lighting-controller endpoints
+remain an explicit animation limitation. Review regression tests cover non-finite
+multipliers before clamping, all non-finite tint channels and invalid negative
+contract strength. Converter suite: 356 passed, 13 existing ignores; strict Clippy
+and formatting pass. L0 acceptance remains open.
+
+## Review follow-up (2026-10-03)
+
+Reflection recovery: optional component query restores missing `Exposure` before
+rendering; pose/visibility continue. Shared `DEFAULT_SCENE_EV100` owns baseline.
+V1 tests execute five world/visual setup systems plus physics fixture startup;
+V2 regression fails before fix, then passes with observer exposure and fallback.
+232 engine tests pass; strict engine Clippy and formatting pass.
+
+[Existing terrain/water fixture comparison](../../images/l1-color-fixture-comparison.png)
+and [capture conditions](../../evidence/lighting-l1-color-fixture-20261003.json):
+identical camera, materials, lighting, fixed water time; previous output path vs
+HDR/linear reflection. Fixture has no sky; existing composition probe covers sky.
+Private capture-only patch uses WebGPU features and 32 texture/sampler limits on
+llvmpipe, omits production renderer gate from screenshot readiness. Both runs emit
+Xvfb/Vulkan swapchain diagnostics and fail software performance gates. Images are
+review evidence, not production-device or retail-parity acceptance. Capture-only
+changes reverted; shipping renderer requirements unchanged.
+
 ## Tasks
 
 id|status|task|cites
@@ -254,32 +299,23 @@ B6|2026-10-02|Probe assumed glTF material handles were StandardMaterial in Bevy 
 B7|2026-10-02|Schema bump changes pinned manifest configuration hash|Snapshot diff reviewed: schema 17 and corresponding configuration hash only; V7
 B8|2026-10-02|Rejecting signed NIF tint applies glTF domain to source data; Fiji reconversion skips 18 base/DLC/CC assets|V8; retain source tint; glTF lower clamp remains named approximation
 B9|2026-10-02|Narrowed overflow regression left single-element test loop|Clippy catches mechanical shape; remove loop; no new invariant
-
 B10|2026-10-02|Roof specularity ignores source enable/mask; glossiness treated as percentage|V9,V10,V11
 B11|2026-10-02|Fork mask compensation publishes glTF factor >1; pruning can retain invalid texture indices|V10,V11; bounded glTF plus native loader compensation
-
 B12|2026-10-02|Pinned snapshots predate schema 18 and specular response|Reviewed diff: schema/hash, flag-disabled factor 0, exponent-derived roughness; V9–V11
-
 B13|2026-10-02|Bevy standard-material conversion helper public fn resides in private module|Clone stock `/std` labeled asset through public LoadContext API; preserve full field mapping; compiler/probe catch wiring, no new invariant
-
 B14|2026-10-02|Native helper retained GltfMaterial parameter after switching to StandardMaterial clone|Correct parameter type; compiler catches mechanical mismatch, no new invariant
-
 B15|2026-10-02|Probe used pre-0.19 scene/shadow names|Use WorldAsset and shadow_maps_enabled; compiler catches API mismatch, no new invariant
-
 B16|2026-10-02|Probe held asset borrow while inserting reference and queried immutable scene guard|Clone normal handle before insertion; mutable WorldAsset guard; compiler catches borrowing, no new invariant
-
 B17|2026-10-02|Adding scene-binding verification exceeded probe system argument lint|Group related glTF/WorldAsset resources; Clippy covers mechanical shape, no new invariant
 B18|2026-10-03|Native scene override drops stock material handle while stock hook retains dependency ID; 224 Riverwood instances stay pending; small fixture missed streaming lifetime failure|V12; retain source handle in reflected scene component; scene-only probe, scene-clone regression and failing-first Riverwood gate
-
 B19|2026-10-03|NIF texture Y follows UV V; omitted tangents make Bevy generate opposite bitangent, reversing vertical normal relief|V13; source gate/stonewall frame audit plus independent geometric-normal probe
-
 B20|2026-10-03|Modern BSTriShape export drops COLOR_0; blanket cutout normalization also discards ordinary authored edge alpha|V14; restore RGBA then gate channels by shader flags/tree/LOD semantics
 B21|2026-10-03|Normal probe's procedural rectangle lacks tangents; all six samples render flat|V13; generate tangent frame before GPU evaluation; geometric references expose omission
-
 B22|2026-10-03|Exclusion test names Skyrim flags wrapper but parsed source property uses historical Fallout4-named wrapper|Use actual property type; compiler catches mismatch, no new invariant
-
 B23|2026-10-03|Pinned snapshots and pruning test paths predate per-wrap aliases and schema 19|Reviewed schema/hash, GLB size, metadata, samplers and alias diff; V15 covers behavior, no new invariant
 B24|2026-10-03|Alias helper appended after test module violates strict Clippy item ordering|Move helper before tests; structural lint, no new invariant
 B25|2026-10-03|Desktop compositor changes capture frame then closes window; pixman compositor lacks Vulkan surface support|Private GL headless compositor; six baseline shots settle at exact 1280×800; capture environment only, no new invariant
-
 B26|2026-10-03|Deployment assumes every old texture is reusable; full hash check finds six changed outputs; scp drops mount-helper executable mode; FUSE daemon inherits mount lock|Replace six files and affected aliases privately; chmod helper; close lock FD in daemon; repeat full check and mount invocation. Deployment-only corrections; V4/V15 verification catches failures
+B27|2026-10-03|Required reflection Exposure query silently drops camera after component removal|V2; restore missing component; regression checks pose, activation and observer/default exposure
+B28|2026-10-03|Review test helper followed test module; strict Clippy rejects item order|Move helper before module; mechanical, no new invariant
+B29|2026-10-03|Lighting multiplier max(0) hid NaN and negative infinity before material validation|V6; reject non-finite source before finite negative-endpoint clamp
