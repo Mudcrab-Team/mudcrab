@@ -407,7 +407,9 @@ impl TextureRegistry {
         if clamp != 3 {
             runtime_path = format!(
                 "{}.opensky-wrap{clamp}.ktx2",
-                runtime_path.strip_suffix(".ktx2").unwrap()
+                runtime_path.strip_suffix(".ktx2").ok_or_else(|| {
+                    color_eyre::eyre::eyre!("runtime texture is not KTX2: {runtime_path}")
+                })?
             );
         }
         self.images.push(serde_json::json!({
