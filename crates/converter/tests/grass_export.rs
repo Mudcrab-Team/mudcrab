@@ -1,7 +1,7 @@
 //! Synthetic grass plugins exercise the merged database, without game assets.
 use converter::esm::{
     EsmParser,
-    exporter::{export_to_db, export_to_db_with_load_order},
+    exporter::{create_tables, export_to_db, export_to_db_with_load_order, validate_database},
     load_order::LoadOrder,
 };
 use rusqlite::Connection;
@@ -264,6 +264,40 @@ fn incomplete_rules_and_unsafe_model_paths_are_nullable_without_losing_raw_data(
             (b"MODL".to_vec(), b"..\\outside.nif\0".to_vec()),
         ])
     );
+}
+
+/// A complete export into a reused schema-4 file stamps the current schema, so
+/// the database it produces passes the converter's own validation.
+#[test]
+fn complete_export_into_a_schema_four_database_stamps_the_current_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(
+        dir.path(),
+        "Base.esm",
+        &[],
+        0,
+        [grass(0x801, 22), landscape(0x901, &[0x801])].concat(),
+    );
+    let db = dir.path().join("world.db");
+    {
+        let conn = Connection::open(&db).unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute("UPDATE schema_info SET version=4", [])
+            .unwrap();
+        assert!(validate_database(&conn).is_err());
+    }
+    EsmParser::convert_plugins(&[base], &db).unwrap();
+    let conn = Connection::open(db).unwrap();
+    let versions: Vec<u32> = conn
+        .prepare("SELECT version FROM schema_info")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(versions, [shared::WORLD_DATABASE_SCHEMA_VERSION]);
+    validate_database(&conn).unwrap();
+    assert_eq!(associations(&conn), [(0x901, 0x801)]);
 }
 
 #[test]

@@ -241,8 +241,15 @@ fn export_records(
     tx.execute("DELETE FROM movement_game_settings", [])?;
     tx.execute("DELETE FROM race_movement_links", [])?;
     // Only the load-order export owns a complete snapshot. The movement
-    // annotator uses export_to_db with a subset and must retain unrelated grass.
+    // annotator uses export_to_db with a subset and must retain unrelated grass
+    // and the database's existing schema stamp.
     if order.is_some() {
+        // A reused older database gains the current tables in create_tables;
+        // stamp it inside this transaction so a failed export keeps the old one.
+        tx.execute(
+            "UPDATE schema_info SET version=?1",
+            [shared::WORLD_DATABASE_SCHEMA_VERSION],
+        )?;
         tx.execute("DELETE FROM landscape_texture_grasses", [])?;
         tx.execute("DELETE FROM grass_types", [])?;
     }
