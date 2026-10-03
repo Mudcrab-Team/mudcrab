@@ -122,8 +122,8 @@ client would consume; the [ADRs](../../adr/README.md) record the reasoning:
 - The generated worldspace is intentionally minimal: flat terrain (no `VNML`/`VCLR`/`VTXT`),
   a single static and one reference per cell.
 - The `--with-interior` preset writes each `DOOR` base record with the `MODL` a retail plugin
-  carries. The exporter includes `DOOR` in `statics`, so the door references resolve to their
-  model paths in `skyrim_world.db`. `crates/converter/tests/fixture_interior_pipeline.rs`
+  carries. The existing exporter already includes `DOOR` in `statics`, so the door references
+  resolve to their model paths in `skyrim_world.db`. `crates/converter/tests/fixture_interior_pipeline.rs`
   verifies that the static and both door references have exported models.
 - `XTEL` destination FormIDs are written as the fixture's own local IDs. The converter's
   load-order remap rewrites them into load-order numbering like each reference's own FormID,

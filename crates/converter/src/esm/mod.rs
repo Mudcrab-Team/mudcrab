@@ -142,6 +142,8 @@ struct RemapWarnings {
     /// IDs whose master index lies past the plugin's master list, keyed by the plugin that
     /// contains them; the example keeps its record type.
     out_of_range: RefCell<OutOfRangeCounts>,
+    /// Invalid optional links, counted per containing plugin with the first diagnostic.
+    skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
 }
 
 impl RemapWarnings {
@@ -161,6 +163,13 @@ impl RemapWarnings {
         entry.0 += 1;
     }
 
+    /// Retain one example per plugin rather than logging every broken optional link.
+    fn skipped_optional(&self, plugin: &str, example: String) {
+        let mut counts = self.skipped_optional.borrow_mut();
+        let entry = counts.entry(plugin.to_owned()).or_insert((0, example));
+        entry.0 += 1;
+    }
+
     /// Emit one deterministic summary per affected plugin after a successful merge.
     fn report(&self) {
         for (owner, (count, example)) in self.truncations.borrow().iter() {
@@ -172,6 +181,11 @@ impl RemapWarnings {
             eprintln!(
                 "warning: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
                 String::from_utf8_lossy(record_type)
+            );
+        }
+        for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
+            eprintln!(
+                "warning: {plugin}: skipped {count} invalid optional FormID links (set to zero; first: {example})"
             );
         }
     }
@@ -384,6 +398,8 @@ fn remap_record_form_ids(
     // Enforce strict reference validation for landscape and grass record kinds.
     // Preserve legacy handling elsewhere until their record-specific exceptions
     // (including shipped GMST IDs outside the master table) have been audited.
+    // Optional link fields in `form_id_layout` clear invalid IDs instead, even on
+    // these record kinds; see the layout branch below.
     let strict = matches!(
         &record.record_type,
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
@@ -425,6 +441,7 @@ fn remap_record_form_ids(
         Ok((index << 24) | (form_id & 0x00FF_FFFF))
     };
     let remap = |form_id| remap_with_validation(form_id, strict);
+    let source_id = record.form_id;
     record.form_id = remap(record.form_id)?;
     record.cell_form_id = record.cell_form_id.map(&remap).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap).transpose()?;
@@ -501,11 +518,23 @@ fn remap_record_form_ids(
             };
             for offset in offsets {
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-                data[offset..offset + 4].copy_from_slice(
-                    &remap_with_validation(value, true)
-                        .wrap_err_with(|| format!("{name} reference"))?
-                        .to_le_bytes(),
-                );
+                // A broken optional link must not block unrelated content. Do not keep
+                // a plugin-local value or guess an owner: publish a null link and report it.
+                let resolved = match remap_with_validation(value, true) {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        warnings.skipped_optional(
+                            plugin_name,
+                            format!(
+                                "{} record source {source_id:08X} (load-order {:08X}) {name} reference {value:08X}: {error}",
+                                String::from_utf8_lossy(&record_type),
+                                record.form_id
+                            ),
+                        );
+                        0
+                    }
+                };
+                data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
             }
             continue;
         }
@@ -524,6 +553,61 @@ fn remap_record_form_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_optional_links_are_cleared_and_warnings_are_aggregated() {
+        let indices = HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]);
+        let warnings = RemapWarnings::default();
+        let mut record = RawRecord {
+            form_id: 0x0100_0800,
+            record_type: *b"REFR",
+            flags: 0,
+            subrecords: vec![
+                (
+                    b"XESP".to_vec(),
+                    [0x0200_0900u32.to_le_bytes(), [1, 2, 3, 4]].concat(),
+                ),
+                (
+                    b"XAPR".to_vec(),
+                    [0x0300_0901u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat(),
+                ),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        remap_record_form_ids(
+            &mut record,
+            "patch.esp",
+            &["base.esm".into()],
+            &indices,
+            &HashMap::new(),
+            &warnings,
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords[0].1,
+            [0u32.to_le_bytes(), [1, 2, 3, 4]].concat()
+        );
+        assert_eq!(
+            record.subrecords[1].1,
+            [0u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat()
+        );
+        let counts = warnings.skipped_optional.borrow();
+        assert_eq!(counts.len(), 1);
+        let (count, example) = &counts["patch.esp"];
+        assert_eq!(*count, 2);
+        for expected in [
+            "REFR",
+            "source 01000800",
+            "load-order 02000800",
+            "XESP",
+            "02000900",
+            "invalid master index",
+        ] {
+            assert!(example.contains(expected), "{example}");
+        }
+    }
 
     #[test]
     fn remaps_optional_race_movement_links() {

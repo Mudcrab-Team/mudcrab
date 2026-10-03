@@ -743,7 +743,7 @@ fn reference_error_reports_source_and_load_order_record_ids() {
     let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
     let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
     let mut xesp = 0x0200_0900u32.to_le_bytes().to_vec();
-    xesp.extend([0u8; 4]);
+    xesp.extend([0u8; 8]); // Invalid length still reports the record and field.
     let patch = plugin(
         dir.path(),
         "Patch.esm",
@@ -761,7 +761,7 @@ fn reference_error_reports_source_and_load_order_record_ids() {
         "source 01000800",
         "load-order 02000800",
         "XESP",
-        "invalid master index",
+        "must be 8 bytes",
     ] {
         assert!(error.contains(expected), "{error}");
     }
@@ -795,10 +795,9 @@ fn light_plugin_reference_fields_use_the_light_slot() {
     );
 }
 
-/// CELL is strictly validated: a cell field naming a master the plugin does not have is
-/// rejected, naming the field, instead of being claimed as the plugin's own.
+/// An invalid optional cell link is cleared without rejecting an otherwise valid cell.
 #[test]
-fn cell_fields_reject_out_of_range_master_indices() {
+fn cell_fields_skip_out_of_range_master_indices() {
     let dir = tempfile::tempdir().unwrap();
     let path = plugin(
         dir.path(),
@@ -812,17 +811,17 @@ fn cell_fields_reject_out_of_range_master_indices() {
             sub(b"LTMP", &0x0500_0001u32.to_le_bytes()),
         ),
     );
-    let error = format!("{:?}", EsmParser::merge_plugins(&[path]).unwrap_err());
-    assert!(
-        error.contains("invalid master index") && error.contains("LTMP"),
-        "{error}"
+    let merged = EsmParser::merge_plugins(&[path]).unwrap();
+    assert_eq!(
+        SubrecordView::new(&merged[&0x800].subrecords).get_form_id(b"LTMP"),
+        Some(0)
     );
 }
 
-/// Newly covered fields reject invalid indices and oversized light IDs even on
-/// record types whose headers still permit legacy shipped-data exceptions.
+/// Invalid optional links do not block other records or corrupt the payload's
+/// remaining bytes. Cover both bad master indices and wide light-master IDs.
 #[test]
-fn reference_fields_reject_invalid_master_and_light_ids() {
+fn reference_fields_skip_invalid_master_and_light_ids() {
     for (tag, len, offset) in [
         (b"XTEL", 32, 0),
         (b"XESP", 8, 0),
@@ -830,35 +829,89 @@ fn reference_fields_reject_invalid_master_and_light_ids() {
         (b"XNDP", 8, 0),
         (b"XAPR", 8, 0),
     ] {
-        for (name, flags, value, diagnostic) in [
-            ("Patch.esp", 0, 0x0200_0801u32, "invalid master index"),
-            ("Patch.esl", 0x200, 0x0100_1801, "exceeds 12 bits"),
+        for (name, flags, value, record_id) in [
+            ("Patch.esp", 0, 0x0200_0801u32, 0x0200_0800),
+            ("Patch.esl", 0x200, 0x0100_1801, 0xFE00_0800),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
-            let mut payload = vec![0; len];
+            let filler = plugin(dir.path(), "Filler.esm", &[], 1, Vec::new());
+            let mut payload = vec![0xAB; len];
+            if tag == b"XLKR" {
+                payload[..4].copy_from_slice(&0x0000_0042u32.to_le_bytes());
+            }
             payload[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            let mut expected = payload.clone();
+            expected[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
             let patch = plugin(
                 dir.path(),
                 name,
                 &["Base.esm"],
                 flags,
-                record(b"REFR", 0x0100_0800, 0, sub(tag, &payload)),
+                [
+                    record(b"REFR", 0x0100_0800, 0, sub(tag, &payload)),
+                    record(
+                        b"REFR",
+                        0x0100_0802,
+                        0,
+                        sub(b"XEMI", &0x42u32.to_le_bytes()),
+                    ),
+                ]
+                .concat(),
             );
-            let error = format!(
-                "{:#}",
-                EsmParser::merge_plugins(&[base, patch]).unwrap_err()
+            let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
+            assert_eq!(merged[&record_id].subrecords[0].1, expected);
+            assert_eq!(
+                SubrecordView::new(&merged[&(record_id + 2)].subrecords).get_form_id(b"XEMI"),
+                Some(0x42)
             );
-            for expected in [
-                name.to_ascii_lowercase(),
-                "REFR".into(),
-                String::from_utf8_lossy(tag).into_owned(),
-                diagnostic.into(),
-            ] {
-                assert!(error.contains(&expected), "{error}");
-            }
         }
     }
+}
+
+/// A broken link to a light master is skipped without truncating it to another
+/// light record. Other array elements still resolve using the containing plugin.
+#[test]
+fn optional_links_to_wide_light_master_ids_preserve_valid_array_elements() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = vec![
+        plugin(dir.path(), "Base.esm", &[], 1, Vec::new()),
+        plugin(dir.path(), "First.esl", &[], 0x201, Vec::new()),
+        plugin(dir.path(), "Second.esl", &[], 0x201, Vec::new()),
+        plugin(dir.path(), "Filler.esm", &[], 1, Vec::new()),
+        plugin(
+            dir.path(),
+            "Patch.esp",
+            &["Second.esl", "Base.esm"],
+            0,
+            record(
+                b"REFR",
+                0x0200_0800,
+                0,
+                sub(
+                    b"XLRT",
+                    &[
+                        0x0000_1801u32.to_le_bytes(), // Too wide for Second.esl.
+                        0x0000_0802u32.to_le_bytes(), // Valid light master reference.
+                        0x0200_0903u32.to_le_bytes(), // Valid plugin-local reference.
+                        0u32.to_le_bytes(),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ),
+    ];
+    let merged = EsmParser::merge_plugins(&paths).unwrap();
+    assert_eq!(
+        merged[&0x0200_0800].subrecords[0].1,
+        [
+            0u32.to_le_bytes(),
+            0xFE00_1802u32.to_le_bytes(),
+            0x0200_0903u32.to_le_bytes(),
+            0u32.to_le_bytes(),
+        ]
+        .concat()
+    );
 }
 
 /// Null links stay null; unrelated record kinds sharing a tag remain opaque.
@@ -963,18 +1016,30 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                 group(
                     9,
                     cell,
-                    record(
-                        b"REFR",
-                        0x0200_0800,
-                        0,
-                        [
-                            sub(b"XTEL", &xtel),
-                            sub(b"XESP", &xesp),
-                            sub(b"XAPR", &xapr),
-                            sub(b"XAPR", &xapr),
-                        ]
-                        .concat(),
-                    ),
+                    [
+                        record(
+                            b"REFR",
+                            0x0200_0800,
+                            0,
+                            [
+                                sub(b"XTEL", &xtel),
+                                sub(b"XESP", &xesp),
+                                sub(b"XAPR", &xapr),
+                                sub(b"XAPR", &xapr),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0806,
+                            0,
+                            sub(
+                                b"XESP",
+                                &[0x0300_0802u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+                            ),
+                        ),
+                    ]
+                    .concat(),
                 ),
             ),
         ]
@@ -1041,6 +1106,10 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         let mut expected_xtel = xtel.clone();
         expected_xtel[..4].copy_from_slice(&0x0300_0804u32.to_le_bytes());
         for table in ["records", "references"] {
+            assert_eq!(
+                database_field(&conn, table, 0x0300_0806, b"XESP"),
+                [0u32.to_le_bytes(), [2, 0, 0, 0]].concat()
+            );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XTEL"),
                 expected_xtel

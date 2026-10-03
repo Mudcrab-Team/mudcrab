@@ -12,8 +12,8 @@
 //! ESM parser, exporter and cell cache are produced.
 //!
 //! The `DOOR` bases carry a `MODL` the way retail data does. The converter's
-//! exporter includes them in `statics`, so their placement references resolve
-//! to the model paths; see [`Door::model_path`].
+//! exporter already includes them in `statics`, so their placement references
+//! resolve to the model paths; see [`Door::model_path`].
 
 use crate::path::split_asset_name;
 use color_eyre::{
@@ -118,7 +118,7 @@ pub struct Door<'a> {
     pub editor_id: &'a str,
     /// `MODL` model path of the `DOOR` base record.
     ///
-    /// The path is written to the base record and exported through `statics`,
+    /// The existing exporter writes the base record's path to `statics`,
     /// so a `REFR` that places this door resolves to its model path.
     /// `crates/converter/tests/fixture_interior_pipeline.rs` verifies that both
     /// door references have exported models.
@@ -789,8 +789,8 @@ pub const PRESET_EXTERIOR_CELL: Cell = Cell {
 /// the only model the crate's default data tree writes); to exercise a marker
 /// model's own path a caller has to describe its own [`Interior`].
 ///
-/// Both doors carry a `MODL` exported through `statics`, so their placement
-/// references resolve to the generated model path; see [`Door::model_path`].
+/// The existing exporter writes both doors' `MODL` paths to `statics`, so their
+/// placement references resolve to the generated model path; see [`Door::model_path`].
 pub const PRESET_INTERIOR: Interior<'static> = Interior {
     editor_id: "GeneratedInterior",
     full_name: "Generated Interior",
