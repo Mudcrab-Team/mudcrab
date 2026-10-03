@@ -4,7 +4,7 @@ Tracks [L1 #131](https://github.com/Mudcrab-Team/mudcrab/issues/131), under [van
 
 ## Scope and evidence
 
-Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. L1 slices fix output-domain inconsistencies and static emission publication, with controlled probes. They do not establish Skyrim's image-space equations or select its final exposure/tone curve.
+Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. L1 fixes output-domain inconsistencies and NIF surface inputs, with controlled probes. They do not establish Skyrim's image-space equations or select its final exposure/tone curve.
 
 Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source trace below describes actual runtime behavior. Claims in older sky notes about encoded weather interpolation and fog equations still require the L0/L2 retail evidence; this change preserves those inputs.
 
@@ -55,7 +55,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 | Alpha-tested / blended | NiAlphaProperty mode, shader-enabled vertex channels, PR #99 prepass | Synthetic color/depth/shadow silhouettes verified; additive and other nonstandard blend factors still approximated. |
 | Tangent-space normal maps | Linear RGB/alpha; native material applies DirectX Y convention once | Asymmetric mesh directions match geometric-normal references; NIF authored tangents still regenerated. Terrain owns a separate tangent frame and needs separate native-direction evidence. |
 | Model-space normals | No established compatibility path in this slice | Named L1 gap; generic tangent interpretation cannot count as acceptance. |
-| Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | Runtime compatibility inventory and per-family probes still required; retained metadata alone is not shader support. |
+| Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | [Compatibility inventory](../../lighting-l1-compatibility.md) names per-family gaps; retained metadata alone is not shader support. |
 | Effect shader surfaces | Generic approximation with explicit exclusions | Declared EditorMarker and Fire_Refraction excluded with reasons; no general effect, refraction, particle or animation parity claim. |
 | Water / sky | Custom Bevy shader paths | Output-domain test only; authored behavior and full-scene parity remain open. |
 
@@ -181,8 +181,54 @@ Synthetic [normal](../../images/l1-normal-comparison.png) and
 
 Final workspace verification: 844 passed, 0 failed, 18 existing ignores across
 `cargo test --workspace --all-targets` plus `cargo test --workspace --doc`.
-Strict workspace Clippy and formatting pass. Added sampler/UV assertions in normal
+Strict workspace Clippy and formatting pass. Independent [CI run 37094801783](https://github.com/Mudcrab-Team/mudcrab/actions/runs/37094801783) passes format, Clippy, tests, security and performance for source commit `dbf048e`. Added sampler/UV assertions in normal
 probe subsequently pass targeted Clippy/build and local/Fiji GPU runs.
+
+## Final L1 delivery, 2026-10-03
+
+[PR #142](https://github.com/Mudcrab-Team/mudcrab/pull/142), source `dbf048e`;
+Fiji launcher `/home/taylor/mudcrab-l1-20261003/run-riverwood.sh`.
+Optimized test-profile engine/converter and probes, bundled runtime libraries.
+Previous #141 pack's manifest/database/cell-cache hashes unchanged.
+
+Schema 19 conversion complete: 25,402 converted, 232,465 cache hits, zero skipped.
+25,388 GLBs; 527 absent-source texture references pruned and recorded. World
+schema 4 integration passes: missing/invalid models 0, missing textures 0.
+Existing source-coverage gaps remain: unavailable model sources 128, unbounded
+models 28, unavailable texture sources 16. No claim that conversion creates
+content absent from installed Data.
+
+Trusted transferred ingestion/output cache reused with `--no-verify-cache`;
+source/configuration checks remain. Post-publication Fiji full size/hash check:
+76,213 primary files, 13.5 GB, all pass. Separately verify all 3,998 generated
+texture aliases by hard-link identity or source hash; the converter manifest's
+primary-file check does not enumerate those aliases. Six differing primary
+textures and affected aliases copied privately after the first hash check caught
+them. Read-only 1,121,325,056-byte SquashFS stores new meshes/world data inside
+package; immutable unchanged textures/scripts share old files by hard link.
+Mount helper remounts after reboot and does not pass its mount lock to the daemon.
+
+Matched Fiji captures: six views of three Riverwood gates, before/after exact
+1280×800 poses; all settle, none time out. Same engine, camera, exposure and sun;
+old schema-18 vs corrected schema-19 material data. Wall normal highlights change
+orientation without changing global light direction. Overview checks roofs and
+foliage. Retail images stay in private evidence, not the repository.
+
+20-second Riverwood smoke runs after 1,200 warmup frames, RX 6700 XT / RADV,
+private Weston GL compositor, 1280×800: before 76.38 FPS / 15.18 ms p95; after
+74.38 FPS / 15.56 ms p95. Both pass configured 60 FPS / 16.67 ms gates. New run:
+25 resident cells, 2,029 ready assets, 3,872 validated materials; pending assets,
+load/material/terrain/water failures and diagnostic fallbacks all 0. Single short
+pair, not release performance acceptance or a causal speed comparison.
+
+Private evidence root `/home/dev/Projects/mudcrab-lighting-l1-evidence`:
+`retail/conversion-report.json`, `retail/material-inventory.json`,
+`fiji/{wall-before,wall-after}`, `fiji/wall-comparison.png`,
+`fiji/wall-comparison-metrics.json`, `fiji/riverwood-{before,after}.json`.
+[Compatibility inventory](../../lighting-l1-compatibility.md) lists shader gaps.
+Implementation T4 delivered; T5 and #131 remain open for L0 matched-reference
+acceptance and required unsupported material cases. L2 owns remaining hardcoded
+sun/ambient/weather behavior. Lighting addons remain out of scope.
 
 ## Tasks
 
@@ -191,7 +237,7 @@ T1|x|Trace existing color/material owners and name unsupported paths|V5
 T2|x|Use explicit HDR scene composition and linear reflection storage; synchronize exposure|V1,V2
 T3|x|Render paired synthetic probes and record pixel evidence|V3,V4
 T8|x|Adapt Bill roughness/mask corrections; verify native loader, pruning, cache, scene-only lifetime and GPU response|V5,V9,V10,V11,V12
-T4|~|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes and retail deployment|V5,V13,V14,V15,V16
+T4|x|Integrate existing material/prepass/sampler fixes, add converted-NIF response probes and retail deployment|V5,V13,V14,V15,V16
 T7|x|Restore signed-tint NIF compatibility; verify retail reconversion and delivered pack|V5,V6,V8
 T6|x|Fix static emission publication; load converted materials and compare GPU swatches; migrate cache|V5,V6,V7
 T5|.|Compare both scene types against L0 references; accept declared tolerances|V3,V5
@@ -235,3 +281,5 @@ B22|2026-10-03|Exclusion test names Skyrim flags wrapper but parsed source prope
 B23|2026-10-03|Pinned snapshots and pruning test paths predate per-wrap aliases and schema 19|Reviewed schema/hash, GLB size, metadata, samplers and alias diff; V15 covers behavior, no new invariant
 B24|2026-10-03|Alias helper appended after test module violates strict Clippy item ordering|Move helper before tests; structural lint, no new invariant
 B25|2026-10-03|Desktop compositor changes capture frame then closes window; pixman compositor lacks Vulkan surface support|Private GL headless compositor; six baseline shots settle at exact 1280×800; capture environment only, no new invariant
+
+B26|2026-10-03|Deployment assumes every old texture is reusable; full hash check finds six changed outputs; scp drops mount-helper executable mode; FUSE daemon inherits mount lock|Replace six files and affected aliases privately; chmod helper; close lock FD in daemon; repeat full check and mount invocation. Deployment-only corrections; V4/V15 verification catches failures
