@@ -69,6 +69,24 @@ Headless Vulkan on llvmpipe / Mesa 26.2.2, LLVM 21.1.8. No renderer errors in th
 
 HDR mesh/sky/fog/water samples: `(114,151,239)`; terrain: `(114,152,239)`. Previous-path sky: `(118,170,255)`; water: `(107,136,200)`. All new-path gray samples: `(115,115,115)`. Interior background: black. Pixel tolerance was fixed at 2/255 before running; the negative controls returned exit code 1.
 
+## Review follow-up (2026-10-03)
+
+Reflection recovery: optional component query restores missing `Exposure` before
+rendering; pose/visibility continue. Shared `DEFAULT_SCENE_EV100` owns baseline.
+V1 tests execute five world/visual setup systems plus physics fixture startup;
+V2 regression fails before fix, then passes with observer exposure and fallback.
+232 engine tests pass; strict engine Clippy and formatting pass.
+
+[Existing terrain/water fixture comparison](../../images/l1-color-fixture-comparison.png)
+and [capture conditions](../../evidence/lighting-l1-color-fixture-20261003.json):
+identical camera, materials, lighting, fixed water time; previous output path vs
+HDR/linear reflection. Fixture has no sky; existing composition probe covers sky.
+Private capture-only patch uses WebGPU features and 32 texture/sampler limits on
+llvmpipe, omits production renderer gate from screenshot readiness. Both runs emit
+Xvfb/Vulkan swapchain diagnostics and fail software performance gates. Images are
+review evidence, not production-device or retail-parity acceptance. Capture-only
+changes reverted; shipping renderer requirements unchanged.
+
 ## Tasks
 
 id|status|task|cites
