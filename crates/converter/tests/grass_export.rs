@@ -119,9 +119,8 @@ fn exports_all_grass_fields_and_winning_full_and_light_links() {
         conn.query_row("SELECT version FROM schema_info", [], |row| row
             .get::<_, u32>(0))
             .unwrap(),
-        5
+        shared::WORLD_DATABASE_SCHEMA_VERSION
     );
-    assert_eq!(shared::WORLD_DATABASE_SCHEMA_VERSION, 5);
     // Base.esm is slot 1 globally but master 0 in Patch.esp.
     let id = 0x01000801u32;
     conn.query_row(

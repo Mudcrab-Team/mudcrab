@@ -318,6 +318,10 @@ and [CommonLibSSE-NG's TESGrass definition](https://github.com/CharmedBaryon/Com
 The converter preserves authored values without clamping to vanilla ranges. A field
 whose bytes are missing, or a non-finite float, becomes NULL. Missing, empty or unsafe
 model paths also become NULL; the original subrecords remain available for diagnostics.
+Path normalization does not verify that the referenced asset exists. Even vanilla
+records can name an absent mesh, so a non-NULL `model_path` is not an availability
+guarantee. Grass consumers must tolerate missing models, skip the unavailable
+model with a useful diagnostic, and continue processing other grass types.
 
 ```sql
 CREATE TABLE IF NOT EXISTS grass_types (
