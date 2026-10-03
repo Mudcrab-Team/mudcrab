@@ -1,0 +1,93 @@
+{
+  "scope": "Full schema-19 conversion; one count per published lighting material instance. Effect shaders and excluded shapes are outside these counts. Counts compare pre-139 publication equations with 139 static emission equations on the same source values; they do not measure rendered visibility or texture pixel energy. Glow eligibility counts precede missing-texture pruning.",
+  "source_manifest_sha256": "9b17e68c6ee50a5f978bc52982eb59de64466afddf10a810ed8aeea2d318cd35",
+  "raw_lighting_shader_blocks_scanned": 83391,
+  "counts": {
+    "glb_files": 25388,
+    "published_lighting_material_instances": 58133,
+    "published_energy_verified": 58133,
+    "lose_slot2_glow_eligibility": 3599,
+    "gain_slot2_glow_eligibility": 0,
+    "retained_glow_eligibility_with_black_tint": 41,
+    "lose_nonzero_emission_factor": 3631,
+    "gain_nonzero_emission_factor": 0,
+    "emission_energy_factor_changes": 4177,
+    "changed_glow_eligibility_or_energy_factor": 4447,
+    "overflowing_strength": 0,
+    "negative_static_source_multipliers": 2,
+    "nonfinite_source_emission": 0
+  },
+  "affected_source_files": 2512,
+  "examples": {
+    "lose_slot2_glow_eligibility": {
+      "source": "meshes/_byoh/architecture/byohhouse/byohbyohwrhubext01.nif",
+      "shader_block": 17,
+      "before_factor_energy": [
+        1,
+        1,
+        1
+      ],
+      "after_factor_energy": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "lose_nonzero_emission_factor": {
+      "source": "meshes/_byoh/architecture/byohhouse/byohbyohwrhubext01.nif",
+      "shader_block": 17,
+      "before_factor_energy": [
+        1,
+        1,
+        1
+      ],
+      "after_factor_energy": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "emission_energy_factor_changes": {
+      "source": "meshes/_byoh/architecture/byohhouse/byohbyohwrhubext01.nif",
+      "shader_block": 17,
+      "before_factor_energy": [
+        1,
+        1,
+        1
+      ],
+      "after_factor_energy": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "changed_glow_eligibility_or_energy_factor": {
+      "source": "meshes/_byoh/architecture/byohhouse/byohbyohwrhubext01.nif",
+      "shader_block": 17,
+      "before_factor_energy": [
+        1,
+        1,
+        1
+      ],
+      "after_factor_energy": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "retained_glow_eligibility_with_black_tint": {
+      "source": "meshes/_byoh/architecture/byohhouse/trophy/byohhousetrophyspriggan01.nif",
+      "shader_block": 8,
+      "before_factor_energy": [
+        10.0,
+        10.0,
+        10.0
+      ],
+      "after_factor_energy": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

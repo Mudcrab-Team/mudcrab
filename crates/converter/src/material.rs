@@ -15,7 +15,6 @@ const NULL_BLOCK: u32 = u32::MAX;
 const SLSF1_ENVIRONMENT_MAPPING: u32 = 1 << 7;
 const SLSF1_VERTEX_ALPHA: u32 = 1 << 3;
 const SLSF1_SCREENDOOR_ALPHA_FADE: u32 = 1 << 19;
-const SLSF1_OWN_EMIT: u32 = 1 << 22;
 const SLSF2_DOUBLE_SIDED: u32 = 1 << 4;
 const SLSF2_GLOW_MAP: u32 = 1 << 6;
 const SLSF2_PREMULTIPLIED_ALPHA: u32 = 1 << 19;
@@ -491,15 +490,29 @@ fn publish_emissive(
     registry: &mut TextureRegistry,
     used_extensions: &mut BTreeSet<String>,
 ) -> Result<()> {
+    // NIF can store signed tints (including unused channels with multiplier 0).
+    // glTF emission is nonnegative. Retain raw signed values for a future native
+    // shader; keep the previous lower clamp in this compatibility projection.
+    if material.emissive_color.iter().any(|value| *value < 0.0) || material.emissive_multiple < 0.0
+    {
+        output["extras"]["openSkyrim"]["sourceEmission"] = serde_json::json!({
+            "color": material.emissive_color,
+            "multiple": material.emissive_multiple,
+            "representation": if material.emissive_multiple < 0.0 {
+                "negative_values_clamped_for_gltf"
+            } else {
+                "negative_channels_clamped_for_gltf"
+            }
+        });
+    }
     let has_color = material.emissive_color.iter().any(|value| *value > 0.0);
     if glow.is_none() && !has_color {
         return Ok(());
     }
-    let color = if has_color {
-        material.emissive_color.map(|value| value.clamp(0.0, 1.0))
-    } else {
-        [1.0; 3]
-    };
+    // glTF bounds the tint to [0, 1], but the extension preserves its authored
+    // linear energy. Keep black tints black, and permit strengths below one.
+    let peak = material.emissive_color.into_iter().fold(1.0_f32, f32::max);
+    let color = material.emissive_color.map(|value| value.max(0.0) / peak);
     output["emissiveFactor"] = serde_json::json!(color);
     if let Some(slot) = glow {
         output["emissiveTexture"] = serde_json::json!({
@@ -507,8 +520,8 @@ fn publish_emissive(
             "texCoord": 0
         });
     }
-    let strength = material.emissive_multiple.max(1.0);
-    if strength > 1.0 {
+    let strength = material.emissive_multiple.max(0.0) * peak;
+    if strength != 1.0 {
         output["extensions"]["KHR_materials_emissive_strength"] =
             serde_json::json!({ "emissiveStrength": strength });
         used_extensions.insert("KHR_materials_emissive_strength".to_owned());
@@ -780,10 +793,13 @@ fn build_lighting_material(
         specular_color: property.specular_color.0.to_array(),
         specular_strength: property.specular_strength,
         emissive_color: property.emissive_color.0.to_array(),
-        // Animated Bethesda materials can ship with a negative base value and
-        // drive it positive through a controller. The static runtime has no
-        // controller evaluation yet, so use the non-emissive endpoint.
-        emissive_multiple: property.emissive_multiple.max(0.0),
+        emissive_multiple: source_emission_multiple(
+            source,
+            shape_block,
+            shape_name,
+            shader_block,
+            property.emissive_multiple,
+        )?,
         double_sided: flags_2 & SLSF2_DOUBLE_SIDED != 0,
         textures: textures.map(|(_, slots)| slots).unwrap_or_default(),
     })
@@ -897,9 +913,7 @@ fn lighting_texture_slots(
             | LightingShaderType::EyeEnvironmentMap
             | LightingShaderType::MultiLayerParallax
     ) || flags_1 & SLSF1_ENVIRONMENT_MAPPING != 0;
-    let glow = matches!(shader_type, LightingShaderType::Glow)
-        || flags_1 & SLSF1_OWN_EMIT != 0
-        || flags_2 & SLSF2_GLOW_MAP != 0;
+    let glow = matches!(shader_type, LightingShaderType::Glow) || flags_2 & SLSF2_GLOW_MAP != 0;
     let height = matches!(
         shader_type,
         LightingShaderType::Parallax
@@ -1047,7 +1061,8 @@ fn validate_material(
     ensure!(
         material.glossiness >= 0.0
             && material.specular_strength >= 0.0
-            && material.emissive_multiple >= 0.0,
+            && (material.shader_family == NifShaderFamily::Lighting
+                || material.emissive_multiple >= 0.0),
         "{}",
         material_error(
             source,
@@ -1062,7 +1077,43 @@ fn validate_material(
             )
         )
     );
+    ensure!(
+        (material.emissive_color.into_iter().fold(1.0_f32, f32::max)
+            * material.emissive_multiple.max(0.0))
+        .is_finite(),
+        "{}",
+        material_error(
+            source,
+            shape_block,
+            shape_name,
+            format!(
+                "shader block {} contains overflowing emissive energy",
+                material.shader_block
+            )
+        )
+    );
     Ok(())
+}
+
+/// Validate the raw static multiplier; only glTF publication may clamp its sign.
+fn source_emission_multiple(
+    source: &Path,
+    shape_block: u32,
+    shape_name: Option<&str>,
+    shader_block: u32,
+    multiple: f32,
+) -> Result<f32> {
+    ensure!(
+        multiple.is_finite(),
+        "{}",
+        material_error(
+            source,
+            shape_block,
+            shape_name,
+            format!("shader block {shader_block} emissive multiplier is non-finite")
+        ),
+    );
+    Ok(multiple)
 }
 
 fn normalize_alpha(
@@ -1103,6 +1154,8 @@ fn material_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SLSF1_OWN_EMIT: u32 = 1 << 22;
 
     fn fixture(
         mode: NifAlphaMode,
@@ -1184,6 +1237,46 @@ mod tests {
     }
 
     #[test]
+    fn v6_source_emission_rejects_nonfinite_before_projection() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let error = source_emission_multiple(
+                Path::new("invalid-emission.nif"),
+                3,
+                Some("glow"),
+                4,
+                value,
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("invalid-emission.nif"));
+            assert!(message.contains("shape block 3"));
+            assert!(message.contains("shader block 4"));
+            assert!(message.contains("non-finite"));
+        }
+        for (value, expected) in [(-2.0, -2.0), (0.0, 0.0), (0.25, 0.25), (8.0, 8.0)] {
+            assert_eq!(
+                source_emission_multiple(Path::new("fixture.nif"), 3, None, 4, value).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn v6_emission_contract_rejects_invalid_channels_and_negative_effect_strength() {
+        for channel in 0..3 {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut material = fixture(NifAlphaMode::Opaque, true, false, false);
+                material.emissive_color[channel] = value;
+                assert!(validate_material(Path::new("fixture.nif"), 3, None, &material).is_err());
+            }
+        }
+        let mut material = fixture(NifAlphaMode::Opaque, true, false, false);
+        material.emissive_multiple = -1.0;
+        material.shader_family = NifShaderFamily::Effect;
+        assert!(validate_material(Path::new("fixture.nif"), 3, None, &material).is_err());
+    }
+
+    #[test]
     fn clamps_only_small_serialization_overshoot_in_alpha() {
         assert_eq!(
             normalize_alpha(Path::new("fixture.nif"), 3, None, 4, -0.001).unwrap(),
@@ -1253,6 +1346,188 @@ mod tests {
             .path,
             "textures/creationclub/cbhsse001/glass/gaunts2.dds"
         );
+    }
+
+    #[test]
+    fn v6_rejects_overflowing_emission_with_context() {
+        let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
+        material.emissive_color = [f32::MAX; 3];
+        material.emissive_multiple = 2.0;
+        let error = validate_material(
+            Path::new("invalid-emission.nif"),
+            10,
+            Some("emitter"),
+            &material,
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("invalid-emission.nif"));
+        assert!(message.contains("shape block 10"));
+        assert!(message.contains("emissive energy"));
+    }
+
+    #[test]
+    fn v8_signed_static_multiplier_survives_source_metadata() {
+        for color in [[1.0, 0.5, 0.25], [-1.0, 0.5, 0.25], [0.0; 3]] {
+            for glow in [false, true] {
+                let mut source = fixture(NifAlphaMode::Opaque, true, false, false);
+                source.emissive_color = color;
+                source.emissive_multiple = -2.0;
+                validate_material(Path::new("signed-multiplier.nif"), 3, None, &source).unwrap();
+                let document = publish_emission_fixture(color, -2.0, glow);
+                let material = &document["materials"][0];
+                let metadata = &material["extras"]["openSkyrim"]["sourceEmission"];
+                assert_eq!(metadata["color"], serde_json::json!(color));
+                assert_eq!(metadata["multiple"], -2.0);
+                if let Some(factor) = material.get("emissiveFactor") {
+                    let strength = material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"].as_f64().unwrap_or(1.0);
+                    assert!(
+                        factor
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|channel| channel.as_f64().unwrap() * strength == 0.0)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels() {
+        for (color, multiple) in [
+            ([1.0, -0.25, 0.5], 0.5),
+            ([-0.67, -1.0, 1.0], 0.2),
+            ([-0.1; 3], 1.5),
+            ([-1.12e38, 1.0e-39, -1.12e38], 0.0),
+        ] {
+            let mut source = fixture(NifAlphaMode::Opaque, false, false, false);
+            source.emissive_color = color;
+            source.emissive_multiple = multiple;
+            validate_material(Path::new("signed-tint.nif"), 10, None, &source).unwrap();
+            assert_eq!(source.emissive_color, color);
+            for glow in [false, true] {
+                let document = publish_emission_fixture(color, multiple, glow);
+                let material = &document["materials"][0];
+                let saved = &material["extras"]["openSkyrim"]["sourceEmission"];
+                assert_eq!(saved["color"], serde_json::json!(color));
+                assert_eq!(saved["multiple"], serde_json::json!(multiple));
+                assert_eq!(
+                    saved["representation"],
+                    "negative_channels_clamped_for_gltf"
+                );
+                let strength =
+                    material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
+                        .as_f64()
+                        .unwrap_or(1.0);
+                for (channel, value) in color.into_iter().enumerate() {
+                    let factor = material["emissiveFactor"][channel].as_f64().unwrap_or(0.0);
+                    assert!((0.0..=1.0).contains(&factor));
+                    assert!(
+                        (factor * strength - f64::from(value.max(0.0) * multiple)).abs() < 1e-6
+                    );
+                }
+            }
+        }
+    }
+
+    fn publish_emission_fixture(color: [f32; 3], multiple: f32, glow: bool) -> serde_json::Value {
+        let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
+        material.emissive_color = color;
+        material.emissive_multiple = multiple;
+        if glow {
+            material.textures.push(NifTextureSlot {
+                slot: 2,
+                semantic: NifTextureSemantic::Glow,
+                path: "textures/glow.dds".to_owned(),
+                required: false,
+            });
+        }
+        let mut document = gltf(1);
+        publish_gltf_materials(
+            &mut document,
+            &[shape(10, material)],
+            &[10],
+            Path::new("meshes/test.glb"),
+        )
+        .unwrap();
+        document
+    }
+
+    #[test]
+    fn v6_emission_preserves_zero_dim_hdr_and_black_glow_energy() {
+        for (color, multiple) in [
+            ([1.0, 0.5, 0.25], 0.0),
+            ([1.0, 0.5, 0.25], 0.25),
+            ([4.0, 2.0, 0.5], 3.0),
+            ([4.0, 2.0, 0.5], 0.125),
+            ([0.0; 3], 2.0),
+        ] {
+            for glow in [false, true] {
+                let document = publish_emission_fixture(color, multiple, glow);
+                let material = &document["materials"][0];
+                let strength =
+                    material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
+                        .as_f64()
+                        .unwrap_or(1.0);
+                for (channel, source) in color.into_iter().enumerate() {
+                    let factor = material["emissiveFactor"][channel].as_f64().unwrap_or(0.0);
+                    assert!((0.0..=1.0).contains(&factor));
+                    assert!(
+                        (factor * strength - f64::from(source * multiple)).abs() < 1e-6,
+                        "color={color:?}, multiple={multiple}, glow={glow}, channel={channel}"
+                    );
+                }
+                assert_eq!(material.get("emissiveTexture").is_some(), glow);
+            }
+        }
+    }
+
+    #[test]
+    fn v6_own_emit_does_not_enable_slot_two_glow() {
+        let set = BSShaderTextureSet {
+            textures: vec![None, None, Some("textures/atlas.dds".to_owned())],
+            diffuse: None,
+            normal: None,
+            glow: None,
+            height_or_detail: None,
+            environment: None,
+            environment_mask: None,
+            inner_layer: None,
+            specular: None,
+        };
+        for (shader, flags_1, flags_2, expected) in [
+            (
+                LightingShaderType::Default,
+                SLSF1_OWN_EMIT,
+                0,
+                NifTextureSemantic::Unclassified,
+            ),
+            (LightingShaderType::Glow, 0, 0, NifTextureSemantic::Glow),
+            (
+                LightingShaderType::Default,
+                0,
+                SLSF2_GLOW_MAP,
+                NifTextureSemantic::Glow,
+            ),
+        ] {
+            let slots = lighting_texture_slots(&set, shader, flags_1, flags_2).unwrap();
+            assert_eq!(slots[0].semantic, expected);
+            let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
+            material.textures = slots;
+            let mut document = gltf(1);
+            publish_gltf_materials(
+                &mut document,
+                &[shape(10, material)],
+                &[10],
+                Path::new("meshes/test.glb"),
+            )
+            .unwrap();
+            assert_eq!(
+                document["materials"][0].get("emissiveTexture").is_some(),
+                expected == NifTextureSemantic::Glow
+            );
+        }
     }
 
     #[test]
