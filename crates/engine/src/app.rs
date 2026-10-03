@@ -149,6 +149,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                     file_path: asset_path,
                     ..default()
                 })
+                .set(world_gltf_plugin())
                 .set(WindowPlugin {
                     primary_window: window,
                     ..default()
@@ -254,6 +255,15 @@ fn finished(exit: &AppExit) -> Result<()> {
 fn upload_budget(config: &EngineConfig) -> RenderAssetBytesPerFrame {
     RenderAssetBytesPerFrame {
         max_bytes: config.max_upload_bytes_per_frame(),
+    }
+}
+
+/// Matches LAND's sampler for shared repeating images before either loader caches them.
+/// Bevy retains authored U/V wrapping and requires linear filters for anisotropy.
+fn world_gltf_plugin() -> bevy::gltf::GltfPlugin {
+    bevy::gltf::GltfPlugin {
+        default_sampler: terrain_layer_sampler(),
+        ..default()
     }
 }
 
@@ -2079,6 +2089,189 @@ mod tests {
     use super::*;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
+
+    /// Uses real loaders with a generated external normal image, without game assets or a GPU.
+    fn world_normal_loader_fixture(wrap_s: u32, wrap_t: u32) -> (tempfile::TempDir, App) {
+        use bevy::{
+            image::{CompressedImageFormats, ImageLoader, ImagePlugin},
+            scene::ScenePlugin,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        Image::new_fill(
+            Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[128, 128, 255, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::MAIN_WORLD,
+        )
+        .try_into_dynamic()
+        .unwrap()
+        .save(directory.path().join("shared.png"))
+        .unwrap();
+        fs::write(
+            directory.path().join("road.gltf"),
+            serde_json::to_vec(&serde_json::json!({
+                "asset": {"version": "2.0"},
+                "images": [{"uri": "shared.png"}],
+                "samplers": [{
+                    "wrapS": wrap_s, "wrapT": wrap_t,
+                    "magFilter": 9728, "minFilter": 9984
+                }],
+                "textures": [{"source": 0, "sampler": 0}],
+                "materials": [{"normalTexture": {"index": 0}}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                file_path: directory.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+            ImagePlugin::default(),
+            ScenePlugin,
+            world_gltf_plugin(),
+        ))
+        .init_asset::<Mesh>()
+        .register_asset_loader(ImageLoader::new(CompressedImageFormats::NONE));
+        app.finish();
+        app.cleanup();
+        (directory, app)
+    }
+
+    /// Waits for dependencies too, so each test controls which consumer finishes loading first.
+    fn wait_for_world_asset<A: Asset>(app: &mut App, handle: &Handle<A>) {
+        use bevy::asset::LoadState;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.update();
+            let server = app.world().resource::<AssetServer>();
+            if let LoadState::Failed(error) = server.load_state(handle.id()) {
+                panic!("fixture load failed: {error}");
+            }
+            if server.is_loaded_with_dependencies(handle.id()) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture load timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn loaded_world_normal(app: &App, handle: &Handle<bevy::gltf::Gltf>) -> Handle<Image> {
+        use bevy::gltf::{Gltf, GltfMaterial};
+
+        let gltf = app.world().resource::<Assets<Gltf>>().get(handle).unwrap();
+        app.world()
+            .resource::<Assets<GltfMaterial>>()
+            .get(&gltf.materials[0])
+            .unwrap()
+            .normal_map_texture
+            .as_ref()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn shared_world_normal_sampler_is_independent_of_first_consumer() {
+        use bevy::{
+            gltf::Gltf,
+            image::{ImageLoaderSettings, ImageSampler},
+        };
+
+        for land_first in [false, true] {
+            let (_directory, mut app) = world_normal_loader_fixture(10497, 10497);
+            let server = app.world().resource::<AssetServer>().clone();
+            let load_land = || {
+                server
+                    .load_builder()
+                    .with_settings(|settings: &mut ImageLoaderSettings| {
+                        settings.is_srgb = false;
+                        settings.sampler = ImageSampler::Descriptor(terrain_layer_sampler());
+                    })
+                    .load::<Image>("shared.png")
+            };
+            let (land, road) = if land_first {
+                let land = load_land();
+                wait_for_world_asset(&mut app, &land);
+                let road = server.load::<Gltf>("road.gltf");
+                wait_for_world_asset(&mut app, &road);
+                (land, road)
+            } else {
+                let road = server.load::<Gltf>("road.gltf");
+                wait_for_world_asset(&mut app, &road);
+                let land = load_land();
+                wait_for_world_asset(&mut app, &land);
+                (land, road)
+            };
+            assert_eq!(loaded_world_normal(&app, &road), land);
+            let image = app.world().resource::<Assets<Image>>().get(&land).unwrap();
+            assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+            assert_eq!(
+                image.sampler,
+                ImageSampler::Descriptor(terrain_layer_sampler())
+            );
+        }
+    }
+
+    #[test]
+    fn world_gltf_sampler_preserves_authored_wrapping_with_linear_anisotropy() {
+        use bevy::{
+            gltf::Gltf,
+            image::{ImageAddressMode, ImageFilterMode, ImageSampler},
+        };
+
+        for (wrap_s, wrap_t, expected_u, expected_v) in [
+            (
+                33071,
+                33648,
+                ImageAddressMode::ClampToEdge,
+                ImageAddressMode::MirrorRepeat,
+            ),
+            (
+                33648,
+                33071,
+                ImageAddressMode::MirrorRepeat,
+                ImageAddressMode::ClampToEdge,
+            ),
+        ] {
+            let (_directory, mut app) = world_normal_loader_fixture(wrap_s, wrap_t);
+            let road = app
+                .world()
+                .resource::<AssetServer>()
+                .load::<Gltf>("road.gltf");
+            wait_for_world_asset(&mut app, &road);
+            let normal = loaded_world_normal(&app, &road);
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&normal)
+                .unwrap();
+            let ImageSampler::Descriptor(sampler) = &image.sampler else {
+                panic!("glTF image sampler descriptor missing");
+            };
+            let default_sampler = terrain_layer_sampler();
+            assert_eq!(sampler.address_mode_u, expected_u);
+            assert_eq!(sampler.address_mode_v, expected_v);
+            assert_eq!(sampler.anisotropy_clamp, default_sampler.anisotropy_clamp);
+            assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
+            assert_eq!(sampler.min_filter, ImageFilterMode::Linear);
+            assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
+            assert_eq!(sampler.lod_min_clamp, default_sampler.lod_min_clamp);
+            assert_eq!(sampler.lod_max_clamp, default_sampler.lod_max_clamp);
+        }
+    }
 
     #[test]
     fn a_failed_run_is_an_error_and_a_successful_one_is_not() {

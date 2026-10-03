@@ -2367,6 +2367,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "walkdir",
+ "wgpu",
  "zstd",
 ]
 
@@ -7305,12 +7306,14 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
+ "parking_lot",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "wgpu-core",
  "wgpu-hal",
