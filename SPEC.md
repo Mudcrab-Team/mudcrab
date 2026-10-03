@@ -246,7 +246,7 @@ T36|~|Launcher LOD A: focused report/status/worker tests; tiny conversion verifi
 T37|.|Launcher LOD B: add cooperative metadata cancellation with typed failure & no-resume contract; tests cover preflight, retained-file copy, world boundary, pre-publication, source preservation|V74,V75,I.launcher_lod
 T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source & new destination; reuse worker/messages/state ownership; verify reuse hashes, plugin mismatch, busy/engine/path guards & publication|V74,V75,I.launcher_lod
 T39|x|PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V73,V76,V77,V78,V79,V80,V81,V82,V83,V84,V85
-T40|.|PR105 final-head Fiji scripted stationary/moving/recovery/launcher captures & schema-range integration with PR95; report native limits before merge|V73,V78,V79,V80,V82,V83,V84
+T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & converter-17/world-5 range tests pass. Prior candidate approval ≠ final-head native evidence; native limits retained|V73,V78,V79,V80,V82,V83,V84
 
 ## §B BUGS
 
