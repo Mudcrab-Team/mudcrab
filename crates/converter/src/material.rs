@@ -815,10 +815,13 @@ fn build_lighting_material(
         specular_color: property.specular_color.0.to_array(),
         specular_strength: property.specular_strength,
         emissive_color: property.emissive_color.0.to_array(),
-        // Animated Bethesda materials can ship with a negative base value and
-        // drive it positive through a controller. The static runtime has no
-        // controller evaluation yet, so use the non-emissive endpoint.
-        emissive_multiple: property.emissive_multiple.max(0.0),
+        emissive_multiple: static_emission_multiple(
+            source,
+            shape_block,
+            shape_name,
+            shader_block,
+            property.emissive_multiple,
+        )?,
         double_sided: flags_2 & SLSF2_DOUBLE_SIDED != 0,
         textures: textures.map(|(_, slots)| slots).unwrap_or_default(),
     })
@@ -1112,6 +1115,27 @@ fn validate_material(
     Ok(())
 }
 
+/// Keep finite negative controller endpoints dark until emission animation is supported.
+fn static_emission_multiple(
+    source: &Path,
+    shape_block: u32,
+    shape_name: Option<&str>,
+    shader_block: u32,
+    multiple: f32,
+) -> Result<f32> {
+    ensure!(
+        multiple.is_finite(),
+        "{}",
+        material_error(
+            source,
+            shape_block,
+            shape_name,
+            format!("shader block {shader_block} emissive multiplier is non-finite")
+        ),
+    );
+    Ok(multiple.max(0.0))
+}
+
 fn normalize_alpha(
     source: &Path,
     shape_block: u32,
@@ -1332,6 +1356,45 @@ mod tests {
         assert!(message.contains("broken.nif"));
         assert!(message.contains("shape block 7"));
         assert!(message.contains("non-finite"));
+    }
+
+    #[test]
+    fn v6_source_emission_rejects_nonfinite_before_endpoint_clamping() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let error = static_emission_multiple(
+                Path::new("invalid-emission.nif"),
+                3,
+                Some("glow"),
+                4,
+                value,
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("invalid-emission.nif"));
+            assert!(message.contains("shape block 3"));
+            assert!(message.contains("shader block 4"));
+            assert!(message.contains("non-finite"));
+        }
+        for (value, expected) in [(-2.0, 0.0), (0.0, 0.0), (0.25, 0.25), (8.0, 8.0)] {
+            assert_eq!(
+                static_emission_multiple(Path::new("fixture.nif"), 3, None, 4, value).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn v6_emission_contract_rejects_invalid_channels_and_negative_strength() {
+        for channel in 0..3 {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut material = fixture(NifAlphaMode::Opaque, true, false, false);
+                material.emissive_color[channel] = value;
+                assert!(validate_material(Path::new("fixture.nif"), 3, None, &material).is_err());
+            }
+        }
+        let mut material = fixture(NifAlphaMode::Opaque, true, false, false);
+        material.emissive_multiple = -1.0;
+        assert!(validate_material(Path::new("fixture.nif"), 3, None, &material).is_err());
     }
 
     #[test]

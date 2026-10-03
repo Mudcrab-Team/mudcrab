@@ -9,6 +9,9 @@ use bevy::{
     prelude::*,
 };
 
+/// Pinned Bevy exposure baseline; not a calibrated Skyrim image-space value.
+pub const DEFAULT_SCENE_EV100: f32 = 9.7;
+
 /// Explicit camera settings for scene composition. A reflection uses the same exposure but no
 /// display transform: the receiving water surface joins it to the main view before tone mapping.
 #[derive(Bundle)]
@@ -22,19 +25,37 @@ impl Default for SceneColorPipeline {
     fn default() -> Self {
         Self {
             hdr: Hdr,
-            exposure: Exposure { ev100: 9.7 },
+            exposure: Exposure {
+                ev100: DEFAULT_SCENE_EV100,
+            },
             tonemapping: Tonemapping::TonyMcMapface,
         }
     }
 }
 
 impl SceneColorPipeline {
+    /// Compose reflected radiance without applying the main view's display transform.
     pub fn reflection() -> Self {
         Self {
             tonemapping: Tonemapping::None,
             ..default()
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn assert_scene_camera_output(world: &mut World, expected_count: usize) {
+    let mut cameras = world
+        .query_filtered::<(Option<&Hdr>, Option<&Exposure>, Option<&Tonemapping>), With<Camera3d>>(
+        );
+    let mut count = 0;
+    for (hdr, exposure, tonemapping) in cameras.iter(world) {
+        assert!(hdr.is_some(), "scene camera must compose in HDR");
+        assert_eq!(exposure.unwrap().ev100, DEFAULT_SCENE_EV100);
+        assert_eq!(*tonemapping.unwrap(), Tonemapping::TonyMcMapface);
+        count += 1;
+    }
+    assert_eq!(count, expected_count);
 }
 
 #[cfg(test)]

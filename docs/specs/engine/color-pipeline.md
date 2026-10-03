@@ -28,11 +28,11 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 ## Invariants
 
 - V1: Every production scene camera and existing visual fixture uses explicit `SceneColorPipeline`: HDR, EV100 9.7, TonyMcMapface. These values remain provisional; defaults are not evidence of vanilla parity.
-- V2: Reflection storage preserves linear values above 1; no tone map or sRGB target view before water sampling. Reflection exposure matches the main camera before rendering, including after exposure changes while water is invisible.
+- V2: Reflection storage preserves linear values above 1; no tone map or sRGB target view before water sampling. Reflection exposure matches the main camera before rendering, including after exposure changes while water is invisible. Missing reflection exposure ! restore before rendering; pose/visibility updates continue.
 - V3: Sky, unlit mesh, fully fogged mesh, terrain emission and unit-reflecting water given equal composition-domain RGB produce matching output within 2/255 per channel. Exterior includes sky; interior has a black background. Test neutral gray and saturated HDR inputs.
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
 - V5: Preserve NIF source values and declared unsupported families. Do not compensate for pending material errors with global tint, exposure, ambient or emission changes.
-- V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Overflowing energy → contextual conversion error.
+- V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Non-finite source emission or overflowing energy → contextual conversion error before clamping.
 - V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–17; world database schema unchanged.
 
 - V8: Finite signed NIF tint ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
@@ -69,7 +69,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 Publication: `peak = max(1, max(emissive_color))`; `emissiveFactor = max(0, emissive_color) / peak`; `emissiveStrength = emissive_multiple * peak`. glTF factor remains in [0,1]; reconstructed linear RGB retains nonnegative authored energy. Extension emitted whenever strength ≠ 1, including 0 and values below 1. Black tint stays black with glow present. Bevy 0.19 glTF loader multiplies factor by strength into `StandardMaterial.emissive`; glow uses sRGB decode once, alpha does not scale opaque emission. No camera/ambient compensation.
 
-Signed NIF tints remain valid. Negative channels retain previous glTF lower-clamp approximation; raw color/multiplier retained under `extras.openSkyrim.sourceEmission`, with explicit representation label. Signed-emission shader behavior remains unsupported; this projection does not claim Skyrim parity. Strength overflow → contextual conversion error. Source contract retains original valid values. Existing negative-multiplier controller endpoint handling unchanged; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
+Signed NIF tints remain valid. Negative channels retain previous glTF lower-clamp approximation; raw color/multiplier retained under `extras.openSkyrim.sourceEmission`, with explicit representation label. Signed-emission shader behavior remains unsupported; this projection does not claim Skyrim parity. Strength overflow → contextual conversion error. Source contract retains original valid values. Finite negative lighting-multiplier controller endpoints keep the existing static zero clamp; NaN/±infinity rejected before clamping; animation and shader-family compatibility remain L1 gaps. Contributor reference inspected at `BimingtonBill/wah-krah-jol:ff96ac2b91bec0765d9ce59b2890449923f9d3ed`; emission publisher there retains old defects, so this slice uses current material owner directly.
 
 `material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Nine cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas, signed tint. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×900, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
 
@@ -130,6 +130,33 @@ RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: final exterior/interior probes pass, pai
 
 Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/riverwood-comparison/{before-matched.png,after-candidate.png,roof-comparison.png,metrics.json}`, `roof-material-audit.json`, final scene-only probe JSON. Before/after compare #139 versus #141 Mudcrab; blue wash, remaining lighting work, native BRDF/model-space gaps remain. Test-profile 20-second smoke benchmarks pass their configured gates; no release performance or vanilla Skyrim parity acceptance.
 
+## Emission review audit (2026-10-03)
+
+[Aggregate report](../../evidence/lighting-l1-emission-impact-20261003.json): full schema-19
+conversion, 25,388 GLBs; 58,133 published lighting-material instances. Parse winning
+NIF bytes by manifest source hash (first hash precedes skeleton dependencies), join
+source shader block to material extras, compare pre-#139 and corrected publication
+on identical inputs. Reconstructed corrected energy matches all 58,133 published
+factors/strengths. Effect shaders and excluded shapes outside count; this corpus
+includes installed official DLC/Creation Club content, not a base-game-only sample.
+
+- 3,599 instances lose slot-2 glow eligibility; 0 gain it. Eligibility precedes
+  missing-texture pruning, so this is not a count of visible glowing surfaces.
+- 41 retained glow-eligible instances have black tint; old white fallback removed.
+- 4,177 change energy factor; 4,447 change factor or eligibility across 2,512 files.
+- 3,631 lose nonzero emission factor; 0 gain it. Texture samples not evaluated.
+- No non-finite source emission or strength overflow in counted instances; two
+  finite negative lighting-multiplier endpoints retain static zero behavior.
+
+Malformed emission still fails its asset with source/shape/shader context. Pipeline
+records that failure; no successful complete publication with a skipped bad asset.
+No clamp of non-finite/overflowing energy introduced: audited data does not justify
+one. Finite signed tints retain V8; finite negative lighting-controller endpoints
+remain an explicit animation limitation. Review regression tests cover non-finite
+multipliers before clamping, all non-finite tint channels and invalid negative
+contract strength. Converter suite: 356 passed, 13 existing ignores; strict Clippy
+and formatting pass. L0 acceptance remains open.
+
 ## Tasks
 
 id|status|task|cites
@@ -170,3 +197,8 @@ B16|2026-10-02|Probe held asset borrow while inserting reference and queried imm
 
 B17|2026-10-02|Adding scene-binding verification exceeded probe system argument lint|Group related glTF/WorldAsset resources; Clippy covers mechanical shape, no new invariant
 B18|2026-10-03|Native scene override drops stock material handle while stock hook retains dependency ID; 224 Riverwood instances stay pending; small fixture missed streaming lifetime failure|V12; retain source handle in reflected scene component; scene-only probe, scene-clone regression and failing-first Riverwood gate
+
+B29|2026-10-03|Lighting multiplier max(0) hid NaN and negative infinity before material validation|V6; reject non-finite source before finite negative-endpoint clamp
+
+B27|2026-10-03|Required reflection Exposure query silently drops camera after component removal|V2; restore missing component; regression checks pose, activation and observer/default exposure
+B28|2026-10-03|Review test helper followed test module; strict Clippy rejects item order|Move helper before module; mechanical, no new invariant

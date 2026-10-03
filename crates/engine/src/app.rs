@@ -2474,6 +2474,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn v1_world_and_visual_fixture_cameras_have_explicit_hdr_output() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<TerrainMaterial>>()
+            .init_resource::<Assets<WaterMaterial>>()
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .add_systems(
+                Startup,
+                (
+                    setup_world,
+                    setup_material_fixture,
+                    setup_terrain_water_fixture,
+                    setup_transform_bounds_fixture,
+                    setup_renderer_fixture,
+                ),
+            );
+        app.update();
+        crate::color_pipeline::assert_scene_camera_output(app.world_mut(), 5);
+    }
+
     /// The engine's startup path is `setup_world`, not the helper above, so the sun it spawns is
     /// what has to carry the cascades - along with the shadow map size they are drawn at.
     #[test]
