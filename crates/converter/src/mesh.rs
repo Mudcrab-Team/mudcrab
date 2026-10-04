@@ -1,7 +1,6 @@
 use crate::collision;
 use crate::material::{
-    NifAlphaMode, NifMaterialDisposition, NifShapeMaterial, build_nif_material_contract,
-    publish_gltf_materials,
+    NifMaterialDisposition, NifShapeMaterial, build_nif_material_contract, publish_gltf_materials,
 };
 use crate::texture::TextureSemantic;
 use color_eyre::{
@@ -92,7 +91,7 @@ impl MeshConverter {
         model
             .validate()
             .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
-        normalize_cutout_vertex_alpha(&mut model, &nif, &material_contract)?;
+        apply_vertex_color_contract(&mut model, &nif, &material_contract)?;
         let name = nif_path
             .file_stem()
             .unwrap_or_default()
@@ -124,7 +123,7 @@ impl MeshConverter {
                 .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))?;
             static_model.scene_root_rotation =
                 Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
-            normalize_cutout_vertex_alpha(&mut static_model, &nif, &material_contract)?;
+            apply_vertex_color_contract(&mut static_model, &nif, &material_contract)?;
             ensure!(
                 !static_model.static_meshes.is_empty(),
                 "NIF contains no supported mesh geometry"
@@ -389,13 +388,9 @@ fn texture_source_exists(
         return false;
     };
     let relative = relative.to_string_lossy().replace('\\', "/");
-    let Some(stem) = relative
-        .strip_suffix(".opensky-srgb.ktx2")
-        .or_else(|| relative.strip_suffix(".ktx2"))
-    else {
+    let Some(source) = crate::asset_path::runtime_texture_source(&relative) else {
         return false;
     };
-    let source = format!("{stem}.dds");
     crate::asset_path::canonical_asset_path(&source, crate::asset_path::AssetKind::Texture, "dds")
         .is_ok_and(|key| source_textures.contains(&key))
 }
@@ -465,6 +460,15 @@ fn prune_document_images(document: &mut serde_json::Value, removed: &HashSet<usi
         }
         for slot in ["normalTexture", "occlusionTexture", "emissiveTexture"] {
             remap_texture_info(object, slot, "index", &texture_remap);
+        }
+        if let Some(extension) = object
+            .get_mut("extensions")
+            .and_then(|extensions| extensions.get_mut("KHR_materials_specular"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for slot in ["specularTexture", "specularColorTexture"] {
+                remap_texture_info(extension, slot, "index", &texture_remap);
+            }
         }
         if let Some(slots) = object
             .get_mut("extensions")
@@ -674,13 +678,26 @@ fn exported_shape_blocks(
     Ok(blocks)
 }
 
-/// Forces vertex-color alpha to opaque on alpha-tested (Cutout) shapes.
-///
-/// Bethesda stores edge fade in vertex alpha on foliage cards. The runtime
-/// multiplies vertex alpha into the alpha test, so minified distant texels
-/// fall below the authored cutoff and whole forests discard to sky. The
-/// cutout decision must come from the texture alpha alone.
-fn normalize_cutout_vertex_alpha(
+/// Preserve only the vertex channels read by the source shader. Tree/LOD
+/// lighting uses alpha for animation/fade data rather than ordinary cutout alpha.
+fn vertex_color_channels(material: &crate::material::ValidatedNifMaterial) -> (bool, bool) {
+    use crate::material::LightingShaderType;
+    let tree_or_lod = material.shader_flags_2 & (1 << 29) != 0
+        || matches!(
+            material.lighting_shader_type,
+            Some(
+                LightingShaderType::TreeAnimation
+                    | LightingShaderType::LodObjects
+                    | LightingShaderType::LodObjectsHd
+            )
+        );
+    (
+        material.shader_flags_2 & (1 << 5) != 0,
+        material.shader_flags_1 & (1 << 3) != 0 && !tree_or_lod,
+    )
+}
+
+fn apply_vertex_color_contract(
     model: &mut project_wormhole_nif::model::all::Model,
     nif: &NifFile,
     contract: &[NifShapeMaterial],
@@ -696,17 +713,23 @@ fn normalize_cutout_vertex_alpha(
                     "exported mesh references shape block {block} without a material contract"
                 )
             })?;
-        let cutout = matches!(
-            &shape.disposition,
-            NifMaterialDisposition::Validated { material }
-                if material.alpha_mode == NifAlphaMode::Cutout
-        );
-        if !cutout {
+        let NifMaterialDisposition::Validated { material } = &shape.disposition else {
             continue;
-        }
+        };
+        let (use_rgb, use_alpha) = vertex_color_channels(material);
+        let apply = |color: &mut project_wormhole_shared::prelude::BSVec4| {
+            if !use_rgb {
+                color.0.x = 1.0;
+                color.0.y = 1.0;
+                color.0.z = 1.0;
+            }
+            if !use_alpha {
+                color.0.w = 1.0;
+            }
+        };
         if mesh_index < static_count {
             for color in &mut model.static_meshes[mesh_index].colors {
-                color.0.w = 1.0;
+                apply(color);
             }
         } else if let Some(inner) = model
             .skeletal_meshes
@@ -714,7 +737,7 @@ fn normalize_cutout_vertex_alpha(
             .and_then(|mesh| mesh.mesh.as_mut())
         {
             for color in &mut inner.colors {
-                color.0.w = 1.0;
+                apply(color);
             }
         }
     }
@@ -1441,6 +1464,11 @@ fn texture_dependencies(document: &serde_json::Value) -> Vec<TextureDependency> 
                     false,
                 ),
                 (
+                    "/extensions/KHR_materials_specular/specularTexture/index",
+                    TextureSemantic::SpecularGlossiness,
+                    false,
+                ),
+                (
                     "/extensions/KHR_materials_specular/specularColorTexture/index",
                     TextureSemantic::SpecularGlossiness,
                     false,
@@ -1598,6 +1626,7 @@ fn actor_root(path: &Path) -> Option<(PathBuf, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::material::NifAlphaMode;
     use crate::test_strategies::{arbitrary_bytes, config, corrupted};
     use proptest::prelude::*;
 
@@ -1957,6 +1986,33 @@ mod tests {
     }
 
     #[test]
+    fn v11_prunes_and_remaps_both_specular_textures_without_changing_strength() {
+        let mut document = serde_json::json!({
+            "images": [{"uri":"a.ktx2"},{"uri":"gone.ktx2"},{"uri":"b.ktx2"}],
+            "textures": [{"source":0},{"source":1},{"source":2}],
+            "materials": [
+                {"normalTexture":{"index":2},"extensions":{"KHR_materials_specular":{
+                    "specularFactor":0.8,"specularTexture":{"index":2},"specularColorTexture":{"index":0}
+                }}},
+                {"extensions":{"KHR_materials_specular":{
+                    "specularFactor":0.8,"specularTexture":{"index":1},"specularColorTexture":{"index":2}
+                }}}
+            ]
+        });
+        prune_document_images(&mut document, &HashSet::from([1]));
+        let retained = &document["materials"][0];
+        let specular = &retained["extensions"]["KHR_materials_specular"];
+        assert_eq!(specular["specularTexture"]["index"], 1);
+        assert_eq!(specular["specularColorTexture"]["index"], 0);
+        assert_eq!(retained["normalTexture"]["index"], 1);
+        assert_eq!(specular["specularFactor"], 0.8);
+        let dropped = &document["materials"][1]["extensions"]["KHR_materials_specular"];
+        assert!(dropped.get("specularTexture").is_none());
+        assert_eq!(dropped["specularColorTexture"]["index"], 1);
+        assert_eq!(dropped["specularFactor"], 0.8);
+    }
+
+    #[test]
     fn leaves_clean_trees_untouched() {
         let document = serde_json::json!({
             "asset": {"version": "2.0"},
@@ -2001,7 +2057,7 @@ mod tests {
     }
 
     #[test]
-    fn cutout_shapes_get_opaque_vertex_alpha() {
+    fn v14_vertex_channels_follow_flags_and_tree_exclusions() {
         use crate::material::{LightingShaderType, NifShaderFamily, ValidatedNifMaterial};
         use project_wormhole_nif::model::all::{Model, StaticMesh, StaticSceneNode};
         use project_wormhole_shared::glam::{Mat3, Vec3, Vec4};
@@ -2027,13 +2083,20 @@ mod tests {
                 alpha_property_block: None,
                 disposition: NifMaterialDisposition::Validated {
                     material: ValidatedNifMaterial {
+                        uv_offset: [0.0; 2],
+                        uv_scale: [1.0; 2],
+                        texture_clamp_mode: 3,
                         shader_family: NifShaderFamily::Lighting,
                         lighting_shader_type: Some(LightingShaderType::Default),
                         shader_block: 0,
                         texture_set_block: None,
                         alpha_property_block: None,
-                        shader_flags_1: 0,
-                        shader_flags_2: 0,
+                        shader_flags_1: if alpha_mode == NifAlphaMode::Opaque {
+                            1 << 3
+                        } else {
+                            0
+                        },
+                        shader_flags_2: 1 << 5,
                         base_color: [1.0, 1.0, 1.0, 1.0],
                         alpha: 1.0,
                         alpha_mode,
@@ -2047,6 +2110,30 @@ mod tests {
                         textures: Vec::new(),
                     },
                 },
+            }
+        }
+
+        for rgb in [false, true] {
+            for alpha in [false, true] {
+                for tree in [false, true] {
+                    let mut contract = shape(7, NifAlphaMode::Cutout);
+                    let NifMaterialDisposition::Validated { material } = &mut contract.disposition
+                    else {
+                        unreachable!()
+                    };
+                    material.shader_flags_1 = if alpha { 1 << 3 } else { 0 };
+                    material.shader_flags_2 =
+                        if rgb { 1 << 5 } else { 0 } | if tree { 1 << 29 } else { 0 };
+                    assert_eq!(vertex_color_channels(material), (rgb, alpha && !tree));
+                    for family in [
+                        LightingShaderType::TreeAnimation,
+                        LightingShaderType::LodObjects,
+                        LightingShaderType::LodObjectsHd,
+                    ] {
+                        material.lighting_shader_type = Some(family);
+                        assert_eq!(vertex_color_channels(material), (rgb, false));
+                    }
+                }
             }
         }
 
@@ -2100,7 +2187,7 @@ mod tests {
             shape(9, NifAlphaMode::Opaque),
         ];
 
-        normalize_cutout_vertex_alpha(&mut model, &nif, &contract).unwrap();
+        apply_vertex_color_contract(&mut model, &nif, &contract).unwrap();
 
         let cutout = &model.static_meshes[0].colors;
         assert_eq!(cutout.len(), 2);
@@ -2113,6 +2200,125 @@ mod tests {
         let opaque = &model.static_meshes[1].colors;
         assert_eq!(opaque.len(), 1);
         assert_eq!(opaque[0].0.w, 0.0);
+    }
+
+    #[test]
+    fn v16_only_declared_markers_and_refraction_are_excluded() {
+        use nom_derive::Parse;
+        use project_wormhole_nif::nif_block::{BSXFlags, Fallout4ShaderPropertyFlags1};
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        for marker_name in [false, true] {
+            for marker_flag in [false, true] {
+                for refraction in [false, true] {
+                    let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+                    nif.header.strings[0] = SizedString32(
+                        if marker_name {
+                            "EditorMarker"
+                        } else {
+                            "Visible"
+                        }
+                        .into(),
+                    );
+                    nif.blocks.push(NifBlock::BSXFlags(BSXFlags {
+                        ni_extra_data: 0,
+                        integer_data: if marker_flag { 1 << 5 } else { 0 },
+                    }));
+                    let NifBlock::BSLightingShaderProperty(p) = &mut nif.blocks[2] else {
+                        unreachable!()
+                    };
+                    p.shader_flags_1 = Fallout4ShaderPropertyFlags1::parse(
+                        &(if refraction { 1u32 << 16 } else { 0 }).to_le_bytes(),
+                    )
+                    .unwrap()
+                    .1;
+                    let contract = build_nif_material_contract(&nif, &input).unwrap();
+                    assert_eq!(
+                        matches!(
+                            &contract[0].disposition,
+                            NifMaterialDisposition::Excluded { .. }
+                        ),
+                        refraction || (marker_name && marker_flag)
+                    );
+                    let mut document = serde_json::json!({"asset":{"version":"2.0"},"meshes":[{"primitives":[{}]}]});
+                    publish_gltf_materials(&mut document, &contract, &[1], Path::new("mesh.glb"))
+                        .unwrap();
+                    if refraction || (marker_name && marker_flag) {
+                        assert_eq!(document["materials"][0]["alphaMode"], "MASK");
+                        assert_eq!(
+                            document["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"][3],
+                            0.0
+                        );
+                        assert!(document["meshes"][0]["primitives"][0]["extras"]["openSkyrim"]["materialExclusion"].as_str().is_some());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v15_source_uv_fields_survive_nif_contract() {
+        use project_wormhole_nif::nif_enum::TexClampMode;
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("uv.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::BSLightingShaderProperty(p) = &mut nif.blocks[2] else {
+            unreachable!()
+        };
+        p.uv_offset.0 = project_wormhole_shared::glam::Vec2::new(0.25, -0.125);
+        p.uv_scale.0 = project_wormhole_shared::glam::Vec2::new(2.0, -3.0);
+        p.texture_clamp_mode = TexClampMode::WrapSClampT;
+        let contract = build_nif_material_contract(&nif, &input).unwrap();
+        let NifMaterialDisposition::Validated { material } = &contract[0].disposition else {
+            unreachable!()
+        };
+        assert_eq!(material.uv_offset, [0.25, -0.125]);
+        assert_eq!(material.uv_scale, [2.0, -3.0]);
+        assert_eq!(material.texture_clamp_mode, 2);
+    }
+
+    #[test]
+    fn v14_modern_nif_colors_survive_export_with_authored_alpha() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("colors.nif");
+        let output = directory.path().join("colors.glb");
+        let colors = [[64, 128, 192, 0], [255, 32, 16, 96], [10, 20, 30, 255]];
+        let bytes = dummy_content::nif::static_shape_with_colors(
+            &dummy_content::nif::StaticShape {
+                name: "Colors",
+                positions: &[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+                normals: &[[0., 0., 1.]; 3],
+                uvs: &[[0., 0.], [1., 0.], [0., 1.]],
+                indices: &[[0, 1, 2]],
+                diffuse: "textures/color.dds",
+                normal_texture: "textures/normal.dds",
+            },
+            &colors,
+        )
+        .unwrap();
+        fs::write(&input, bytes).unwrap();
+        MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+        let bytes = fs::read(output).unwrap();
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        let mesh = gltf.meshes().next().unwrap();
+        let primitive = mesh.primitives().next().unwrap();
+        let actual: Vec<_> = primitive
+            .reader(|_| gltf.blob.as_deref())
+            .read_colors(0)
+            .unwrap()
+            .into_rgba_f32()
+            .collect();
+        for (actual, source) in actual.iter().zip(colors) {
+            for (a, b) in actual.iter().zip(source) {
+                assert!((a - f32::from(b) / 255.).abs() < 1e-6);
+            }
+        }
+        assert_eq!(
+            primitive.material().alpha_mode(),
+            gltf::material::AlphaMode::Opaque
+        );
     }
 
     fn static_nif() -> Vec<u8> {

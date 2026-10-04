@@ -1,6 +1,6 @@
 # ADR-0009: Normalize vertex alpha on Cutout shapes during conversion
 
-- **Status:** Accepted
+- **Status:** Superseded for schema 19 by the source-channel rule below
 - **Date:** 2026-09-26
 
 ## Context
@@ -32,3 +32,24 @@ uses texture alpha alone. The change ships with the schema 14 to 15 migration
 - Revisit when engine LOD billboards exist: scope the normalization by material
   semantics, or replace the converter-side normalization with a renderer-side
   rule that preserves edge fade without the distance collapse.
+
+## Schema 19 correction (L1)
+
+The original workaround applied one foliage observation to every cutout. Native
+lighting reads vertex RGB only with `Vertex_Colors` and vertex alpha only with
+`Vertex_Alpha`; tree animation and object LOD paths do not multiply vertex alpha
+into their material alpha. `apply_vertex_color_contract` now follows those rules
+on both export paths. Ordinary cutouts retain enabled authored alpha. The vendored
+BSTriShape adapter also copies the source RGBA bytes that it previously dropped.
+
+The engine integrates PR #99 so depth and shadow alpha tests include the same
+vertex alpha as the visible pass. The `material_alpha_probe` compares a fading
+quad with explicit reference geometry in all three passes; the legacy prepass
+is a failing control. This supersedes blanket cutout normalization without
+claiming tree-animation or LOD shader parity.
+
+Source: Community Shaders `Lighting.hlsl`, revision
+`2f2919a71bed6132b125e41781304c8f6f73d002`, vertex color output and pixel alpha
+expression excluding `TREE_ANIM`, `LODOBJECTS`, and `LODOBJECTSHD`. This is reverse
+engineering evidence about native shader structure, not an enhanced-rendering
+target. Schema 19 rebuilds GLBs; unchanged textures and scripts remain reusable.

@@ -451,8 +451,8 @@ async fn generated_data_directory_converts_end_to_end() {
         drain.await.unwrap();
         assert!(report.complete, "schema {schema}");
         // Historical migrations deliberately rebuild the one model, retaining
-        // five textures and two scripts; schema 16 also retains the model.
-        assert_eq!(report.converted, u64::from(schema < 16), "schema {schema}");
+        // five textures and two scripts. Schema 17 changes material publication.
+        assert_eq!(report.converted, 1, "schema {schema}");
         assert!(report.cache_hits >= 7, "schema {schema}: {report:?}");
         let mmap = converter::esm::cell_cache::validate_cell_cache(&cache_path).unwrap();
         let cache = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&mmap).unwrap();

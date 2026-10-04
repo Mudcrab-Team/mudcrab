@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 233
 expression: report
 ---
 {
@@ -20,10 +21,11 @@ expression: report
     "scripts/second.luau",
     "skyrim_world.db",
     "textures/generated_color.ktx2",
-    "textures/generated_color.opensky-srgb.ktx2",
+    "textures/generated_color.opensky-srgb.opensky-wrap0.ktx2",
     "textures/generated_color_x8.ktx2",
     "textures/generated_cube.ktx2",
     "textures/generated_normal.ktx2",
+    "textures/generated_normal.opensky-wrap0.ktx2",
     "textures/generated_volume.ktx2"
   ],
   "cache_hits": 0,

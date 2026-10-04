@@ -213,6 +213,12 @@ pub struct ConversionManifest {
     pub entries: BTreeMap<String, CacheEntry>,
 }
 
+/// These schema changes affect GLBs/world data, leaving texture/script/archive
+/// bytes compatible. Configuration and source hashes still have to match.
+pub(crate) fn can_reuse_non_mesh_outputs(schema: u32) -> bool {
+    matches!(schema, 12..=18)
+}
+
 impl ConversionManifest {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.is_file() {

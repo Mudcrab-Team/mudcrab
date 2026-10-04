@@ -714,7 +714,7 @@ impl AssetPipeline {
                     &BTreeSet::new(),
                 )
                 .await?;
-            let aliases = publish_srgb_texture_aliases(staging)?;
+            let aliases = publish_texture_aliases(staging)?;
             batch.report.artifacts.extend(aliases);
             // A reused mesh that still holds its published bytes keeps the prune record of the
             // run that wrote it: a prune only removes references, so an older record stays true.
@@ -1720,10 +1720,8 @@ fn texture_source_keys(staging: &Path, files: &[PathBuf]) -> BTreeSet<String> {
 /// its `.opensky-srgb` alias both map to `textures/foo.dds`. Returns `None` for references that
 /// are not converted texture paths.
 fn texture_reference_source_key(reference: &str) -> Option<String> {
-    let stem = reference
-        .strip_suffix(".opensky-srgb.ktx2")
-        .or_else(|| reference.strip_suffix(".ktx2"))?;
-    canonical_asset_path(&format!("{stem}.dds"), AssetKind::Texture, "dds").ok()
+    let source = crate::asset_path::runtime_texture_source(reference)?;
+    canonical_asset_path(&source, AssetKind::Texture, "dds").ok()
 }
 
 /// Target outputs of meshes that must be converted again: one of their pruned references has
@@ -1747,13 +1745,11 @@ fn restored_mesh_outputs(
 }
 
 fn source_texture_key(runtime_key: &str) -> Result<String> {
-    if let Some(stem) = runtime_key.strip_suffix(".opensky-srgb.ktx2") {
-        return Ok(format!("{stem}.ktx2"));
-    }
-    Ok(runtime_key.to_owned())
+    crate::asset_path::runtime_texture_source(runtime_key)
+        .ok_or_else(|| color_eyre::eyre::eyre!("invalid runtime texture path: {runtime_key}"))
 }
 
-fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
+fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
     let mut aliases = BTreeSet::new();
     for entry in WalkDir::new(staging)
         .follow_links(false)
@@ -1767,7 +1763,7 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
             let relative = destination.strip_prefix(staging)?.to_owned();
             let runtime_key =
                 canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, "ktx2")?;
-            if runtime_key.ends_with(".opensky-srgb.ktx2") {
+            if source_texture_key(&runtime_key)? != runtime_key {
                 aliases.insert(PathBuf::from(runtime_key));
             }
         }
@@ -1787,7 +1783,7 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
         }
         link_or_copy(&source, &destination).wrap_err_with(|| {
             format!(
-                "failed to publish sRGB alias {} to {}",
+                "failed to publish texture alias {} to {}",
                 source.display(),
                 destination.display()
             )
@@ -3519,6 +3515,42 @@ mod tests {
     }
 
     #[test]
+    fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
+        for mode in 0..3 {
+            for transfer in ["", ".opensky-srgb"] {
+                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+                assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
+                assert_eq!(
+                    texture_reference_source_key(&alias).as_deref(),
+                    Some("textures/shared.dds")
+                );
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path();
+                fs::create_dir_all(root.join("textures")).unwrap();
+                fs::create_dir_all(root.join("meshes")).unwrap();
+                fs::write(root.join("textures/shared.ktx2"), b"source").unwrap();
+                let document = serde_json::json!({"asset":{"version":"2.0"},"images":[{"uri":format!("../{alias}")}],"textures":[{"source":0}],"materials":[{"normalTexture":{"index":0}}]});
+                let mut json = serde_json::to_vec(&document).unwrap();
+                while !json.len().is_multiple_of(4) {
+                    json.push(b' ');
+                }
+                let mut glb = b"glTF".to_vec();
+                glb.extend_from_slice(&2u32.to_le_bytes());
+                glb.extend_from_slice(&(20u32 + json.len() as u32).to_le_bytes());
+                glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+                glb.extend_from_slice(b"JSON");
+                glb.extend_from_slice(&json);
+                fs::write(root.join("meshes/alias.glb"), glb).unwrap();
+                assert_eq!(
+                    publish_texture_aliases(root).unwrap(),
+                    vec![PathBuf::from(&alias)]
+                );
+                assert_eq!(fs::read(root.join(alias)).unwrap(), b"source");
+            }
+        }
+    }
+
+    #[test]
     fn recovery_v85_preserves_backup_when_replacement_generated_file_is_missing() {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("assets");
@@ -4075,7 +4107,7 @@ mod tests {
         glb.extend_from_slice(&json);
         fs::write(staging.join("meshes/fire.glb"), glb).unwrap();
 
-        let aliases = publish_srgb_texture_aliases(staging).unwrap();
+        let aliases = publish_texture_aliases(staging).unwrap();
 
         assert_eq!(
             aliases,
@@ -4668,14 +4700,16 @@ mod tests {
                 .pruned_texture_references
                 .get("meshes/missing_diffuse.glb"),
             Some(&BTreeSet::from([
-                "textures/absent.opensky-srgb.ktx2".to_owned()
+                "textures/absent.opensky-srgb.opensky-wrap0.ktx2".to_owned()
             ]))
         );
         assert_eq!(
             manifest
                 .pruned_texture_references
                 .get("meshes/missing_normal.glb"),
-            Some(&BTreeSet::from(["textures/absent_n.ktx2".to_owned()]))
+            Some(&BTreeSet::from([
+                "textures/absent_n.opensky-wrap0.ktx2".to_owned()
+            ]))
         );
         for (glb, kept) in [
             ("meshes/missing_diffuse.glb", "present_n"),
@@ -4723,7 +4757,7 @@ mod tests {
     }
 
     const PRUNED_MESH: &str = "meshes/dangling_normal.glb";
-    const PRUNED_REFERENCE: &str = "textures/absent_n.ktx2";
+    const PRUNED_REFERENCE: &str = "textures/absent_n.opensky-wrap0.ktx2";
 
     /// Writes one NIF whose normal map is absent from the game data, next to the
     /// base-color DDS the game data does contain.
@@ -4762,6 +4796,61 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v15_old_material_schemas_rebuild_meshes_and_reuse_compatible_assets() {
+        for old_schema in [16, 17, 18] {
+            let temp = tempfile::tempdir().unwrap();
+            let data = temp.path().join("Data");
+            let output = temp.path().join("modern");
+            write_mesh_with_absent_normal(&data);
+            fs::create_dir_all(data.join("scripts")).unwrap();
+            fs::write(
+                data.join("scripts/one.pex"),
+                dummy_content::pex::minimal("One").unwrap(),
+            )
+            .unwrap();
+            let config = PipelineConfig::new(&data, &output);
+            assert!(run_without_progress(config.clone()).await.complete);
+            let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
+            let manifest_path = output.join("conversion-manifest.json");
+            let mut manifest = published_manifest(&output);
+            manifest.schema_version = old_schema;
+            manifest.configuration_hash =
+                configuration_hash_for_schema(&config, old_schema).unwrap();
+            // A verified old GLB must still be rebuilt: its publication semantics changed.
+            let old_bytes = b"old material publication";
+            fs::write(output.join(PRUNED_MESH), old_bytes).unwrap();
+            let entry = manifest
+                .entries
+                .values_mut()
+                .find(|entry| entry.output == PRUNED_MESH)
+                .unwrap();
+            entry.output_size = old_bytes.len() as u64;
+            entry.output_hash = crate::cache::hash_bytes(old_bytes);
+            manifest.save(&manifest_path).unwrap();
+
+            let report = run_without_progress(config.clone()).await;
+            assert!(report.complete);
+            assert_eq!(report.converted, 1);
+            assert_eq!(report.cache_hits, 2); // Unchanged DDS and PEX.
+            assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
+            assert_eq!(published_manifest(&output).schema_version, 19);
+
+            // Schema migration must not erase a real configuration change.
+            let mut manifest = published_manifest(&output);
+            manifest.schema_version = old_schema;
+            manifest.configuration_hash =
+                configuration_hash_for_schema(&config, old_schema).unwrap();
+            manifest.save(&manifest_path).unwrap();
+            let mut changed_config = config;
+            changed_config.texture_zstd_level = 0;
+            let report = run_without_progress(changed_config).await;
+            assert!(report.complete);
+            assert_eq!(report.cache_hits, 0);
+            assert_eq!(report.converted, 3);
+        }
     }
 
     #[tokio::test]
@@ -5223,8 +5312,8 @@ mod tests {
                 .pruned_texture_references
                 .get(PRUNED_MESH),
             Some(&BTreeSet::from([
-                "textures/absent_n.ktx2".to_owned(),
-                "textures/present.opensky-srgb.ktx2".to_owned(),
+                "textures/absent_n.opensky-wrap0.ktx2".to_owned(),
+                "textures/present.opensky-srgb.opensky-wrap0.ktx2".to_owned(),
             ]))
         );
     }
