@@ -245,9 +245,16 @@ class CorpusManifestTests(unittest.TestCase):
                 nonlocal calls
                 calls += 1
                 if calls == 2:
+                    before_mutation = source.stat()
                     changed = bytearray(source.read_bytes())
                     changed[-1] ^= 0x01
                     source.write_bytes(changed)
+                    # Same-tick rewrites can retain mtime/ctime on this host.
+                    # Make the metadata drift under test deterministic.
+                    manifest_tool.os.utime(
+                        source,
+                        ns=(before_mutation.st_atime_ns, before_mutation.st_mtime_ns + 1_000_000_000),
+                    )
                 return original_fstat(fd)
 
             with mock.patch.object(manifest_tool.os, "fstat", side_effect=mutate_before_final_fstat):

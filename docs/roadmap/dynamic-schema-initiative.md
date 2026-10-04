@@ -1,8 +1,8 @@
 # Mudcrab Dynamic Schema Initiative — implementation plan
 
-Status: P0 source inventory and corpus/validator tooling started; phase gate pending. Revised on 2026-10-04: newest-version Skyrim SE first; earlier SE and VR next, then LE, then other games. No parser implementation or phase acceptance claimed.
+Status: P0 source inventory and corpus/validator tooling started; phase gate pending. Revised on 2026-10-04: newest-version Skyrim SE first; earlier SE and VR next, then LE, then other games. No parser implementation or phase acceptance claimed. The [research directory](../research/dynamic-schema/README.md) records current evidence and gaps.
 
-Baseline: `5579f007ad296c2e7134f1dbf2b8eb8cec5369fd`, inspected 2026-10-04. This plan extends offline plugin ingestion. The root [SPEC.md](../../SPEC.md) currently controls player movement; its existing goals and task states remain intact. The scoped spec handoff is now adopted in root SPEC; its planning snapshot below remains the phase contract reference.
+Baseline: `5579f007ad296c2e7134f1dbf2b8eb8cec5369fd`, inspected 2026-10-04. This plan extends offline plugin ingestion. The root [SPEC.md](../../SPEC.md) owns current movement and dynamic-ingestion task states; existing movement goals and task states remain intact. The scoped spec handoff is now adopted in root SPEC; its planning snapshot below remains the phase contract reference.
 
 ## Goal and scope
 
@@ -209,7 +209,7 @@ The reverse-engineering backlog records signature/field/span, pinned SE profile/
 
 ### Independent validation for newest SE
 
-P0 qualifies newest-SE xEdit and Mutagen adapters; P4 compares the entire acceptance corpus, not only pilots or selected runtime fields. Pins in the research register are inspected source evidence; re-pin applicable current tools at kickoff. No adapter has been executed for this plan.
+P0 qualifies newest-SE xEdit and Mutagen adapters; P4 compares the entire acceptance corpus, not only pilots or selected runtime fields. Pins in the research register are inspected source evidence; executable/package pins remain separate. The research directory records current pilot execution and unavailable runners; no full-catalog qualification is claimed.
 
 | Source | Role | Required limits/proof |
 | --- | --- | --- |

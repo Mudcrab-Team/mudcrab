@@ -1,6 +1,8 @@
 # P0 installed corpus observation
 
-The standard-library tool in [`scripts/schema/corpus_manifest.py`](../../../scripts/schema/corpus_manifest.py) records a versioned JSON manifest outside the game install. Its source digests and TES4 observations come from the same verified file descriptor. Runtime mismatch, missing required input, malformed TES4 metadata, duplicate plugin names, unresolved masters, or source drift prevents a successful pin.
+The standard-library tool in [`scripts/schema/corpus_manifest.py`](../../../scripts/schema/corpus_manifest.py) records a versioned JSON manifest outside the game install. Its source digests and TES4 observations come from the same verified file descriptor. Runtime mismatch, missing required input, malformed TES4 metadata, duplicate plugin names, unresolved masters, or detected source drift prevents a successful pin.
+
+The read checks file identity, size, modification time and change time before and after hashing. It is not an immutable snapshot: concurrent same-size rewrites can retain both timestamps on this host. The manifest records the bytes read; immutable source retention remains separate P1 work.
 
 The 2026-10-04 observation targeted Steam Skyrim SE/AE `1.7.104.0`, build `24914197`, from `/home/dev/skyrim/Skyrim Special Edition`. `SkyrimSE.exe` matched the target SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f` and expected size `37,910,440` bytes.
 

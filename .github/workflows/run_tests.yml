@@ -63,9 +63,11 @@ jobs:
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '\.ps1$'
+          check_pattern "check_schema_tools" '^(scripts/schema/|\.github/workflows/run_tests\.yml$)'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
+      check_schema_tools: ${{ steps.filter.outputs.check_schema_tools }}
 
   format:
     needs: [orchestrate]
@@ -110,6 +112,25 @@ jobs:
             fi
           done < <(git ls-files '*.ps1')
           exit "$failed"
+
+  schema_tools:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_schema_tools == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test corpus and validator tooling without retail inputs
+        run: python3 -m unittest discover -s scripts/schema -p 'test_*.py' -v
 
   clippy:
     needs: [orchestrate]
@@ -236,6 +257,7 @@ jobs:
       - orchestrate
       - format
       - scripts
+      - schema_tools
       - clippy
       - test
       - security
@@ -259,6 +281,7 @@ jobs:
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
+          check_result "schema_tools" "$RESULT_SCHEMA_TOOLS"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -269,6 +292,7 @@ jobs:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
+          RESULT_SCHEMA_TOOLS: ${{ needs.schema_tools.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}

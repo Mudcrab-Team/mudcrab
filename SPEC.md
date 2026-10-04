@@ -237,8 +237,10 @@ V97: Dynamic ingestion: Newest-SE runtime/distribution/data/tool pins and corpus
 V98: Dynamic ingestion: P0–P6 have no earlier-SE/VR/LE/other-game implementation, corpus, native-key, adapter or framework prerequisite; newest-game-compatible older serialized forms remain part of the newest-SE input contract.
 V99: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs, digest/size + observed header/master metadata from same verified read; source drift → fail pin. Installed filename ≠ official-content proof; unresolved load order/locale remain explicit.
 V100: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
-V101: P0 fixtures ! unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
+V101: P0 fixtures ! positive header counts/hierarchy match physical occurrences; unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
 V102: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
+V103: P0 oracle artifacts/temp/build/cache ! outside Mudcrab source, active RE checkout/store & supplied oracle roots; validate destination before any write. Protected-path fixtures guard both CLI & runner.
+V104: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
 
 ## §T TASKS
 
@@ -294,7 +296,7 @@ T46|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evide
 T47|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V78,V84,V89,V90,V91,V96
 T48|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V78,V84,V89,V90,V91,V93
 T49|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V73,V84,V90,V91,V92,V93,V94
-T50|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V84,V90,V99,V100,V101,R26
+T50|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V84,V90,V99,V100,V101,V103,V104,R26
 
 ## §B BUGS
 
@@ -345,3 +347,18 @@ B43|2026-10-03|resume cleanup exempted historical prune-record GLBs without sche
 B44|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V102; stdlib iterative dependency traversal + chain/cycle fixtures
 B45|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V99; explicit completion blockers + matched-runtime base-only regression
 B46|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V99; shared source provenance + custom missing-descriptor regression
+B47|2026-10-04|P0 hand-authored CELL fixtures omitted interior block/subblock & type-6 children groups; skipped references could mask invalid qualification inputs|V101; legal sourced hierarchy + exact expected typed record/reference checks
+B48|2026-10-04|P0 localization fixture used unsupported `STAT/FULL`; absence could masquerade as a string-resolution observation|V100,V101; translated `ARMO/FULL` fixture + exact ID & explicit missing-table outcome
+B49|2026-10-04|P0 inspect redirected library stdout but discarded captured diagnostics|V100; retain library output in observation/error evidence
+B50|2026-10-04|P0 runner appended helper to Program.cs & also wrote helper `.cs` under SDK default compile glob|V100; keep one compiled helper definition
+B51|2026-10-04|P0 runner guarded only current repo; CLI could create artifacts inside protected RE/store/source roots|V103; shared destination guard before writes + protected-path fixtures
+B52|2026-10-04|P0 runner subprocess calls had no timeouts; hung tool could prevent qualification failure reporting|V104; bounded supervised calls + timeout fixture
+B53|2026-10-04|renamed unknown-subrecord fixture expected original full-plugin FormKeys instead of actual source filename|V100,V101; current-plugin owner/reference expectations
+B54|2026-10-04|negative-case classifier accepted exit `-9`/startup failure as expected malformed rejection|V100; require managed rejection exit 2 + diagnostic marker; signal/startup/timeout regressions
+B55|2026-10-04|P0 runner saved parsed JSON before validation while reporting no completed verdict on rejection|V100; raw diagnostic logs first, validated observation JSON only after contract passes
+B56|2026-10-04|P0 typed model-path check compared wire backslashes with Mutagen slash normalization|V100,V101; declared path comparison normalization; raw fixture bytes/digest unchanged
+B57|2026-10-04|P0 localized check assumed typed printer exposed `FULL` ID; missing table yielded blank Name output|V100; fixture wire ID provenance separate from typed ID/text availability
+B58|2026-10-04|optional typed StringsKey null could convert to empty string under available status|V100; nullable-key guard before reporting availability
+B59|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader success masked inconsistent source fixtures|V101; include major + group occurrences, independent physical count checks & regenerated golden digest
+B60|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V100; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
+B61|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V99; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
