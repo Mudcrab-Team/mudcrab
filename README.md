@@ -93,6 +93,18 @@ Wah Krah Jol is being built systematically across 5 core phases. Explore the ful
    cargo run -p launcher
    ```
 
+Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** to overlay a Mod Organizer 2 profile. Open **MO2 settings**, drop the instance folder containing `ModOrganizer.ini`, and select a detected profile from the dropdown (the first profile is selected by default). The Skyrim Data folder is still required as the base. Close settings before dropping the output folder. Source settings apply to Start and Resume and are selected per launcher session. MO2 sources are read in place; native SKSE plugins are not supported.
+
+### Repair a failed conversion without rebuilding the world
+
+```bash
+cargo run -p converter --bin converter -- repair-failed "<Skyrim Data>" "<output directory>" --mo2-instance "<MO2 instance>" --mo2-profile "<profile>"
+```
+
+This reads the original manifest and stages only failed inputs, assets from failed archives, and necessary texture dependencies in `<output>.repair-<pid>`. Loose MO2 files are read in place. It does **not** rebuild `skyrim_world.db` or `cell_cache.rkyv`. Omit the MO2 options for physical Data.
+
+The default is a preview: inspect `repair-report.json` and the staged `assets/` folder; the published pack is unchanged. Repeat with `--apply` to validate existing artifact hashes and publish the repairs. The manifest is updated last; overwritten files and the previous manifest are retained under the repair folder's `backup/`. The configuration must match the original conversion, and unresolved failures prevent publication.
+
 ### GPU texture encoding
 
 The converter copies textures whose DDS blocks a GPU can sample directly (DXT1–DXT5, BC1–BC7) into KTX2 unchanged. Everything else, mainly Skyrim's uncompressed terrain and LOD textures, is encoded to UASTC. That encoding runs on the CPU (Basis Universal) by default; with `--texture-encoder gpu` a wgpu compute shader does it instead, writing the same UASTC KTX2 with the same Zstandard supercompression, so the engine needs no changes:

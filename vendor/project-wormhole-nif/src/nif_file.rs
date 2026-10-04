@@ -213,8 +213,11 @@ impl Parse<&[u8]> for NifFile {
             let (i, raw) =
                 take::<u32, &[u8], nom::error::Error<&[u8]>>(header.block_size_index[index])(data)?;
             data = i;
-            let (_, block) =
-                NifBlock::parse(raw, header.get_block_type(index).unwrap().to_string())?;
+            let (_, block) = NifBlock::parse_with_version(
+                raw,
+                header.get_block_type(index).unwrap().to_string(),
+                header.bethesda_version,
+            )?;
             blocks.push(block);
         }
 
@@ -536,6 +539,18 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                 push_modern_static_shape(nif, model, block_index, &shape.bs_tri_shape)?;
             }
             NifBlock::NiTriShape(shape) => {
+                if shape.data == u32::MAX {
+                    model.static_nodes.push(StaticSceneNode {
+                        block_index,
+                        name: nif.header.get_string(shape.name as usize).ok().map(str::to_owned),
+                        translation: shape.translation,
+                        rotation: shape.rotation,
+                        scale: shape.scale,
+                        children: Vec::new(),
+                        mesh: None,
+                    });
+                    continue;
+                }
                 let data = nif
                     .blocks
                     .get(shape.data as usize)
@@ -587,7 +602,7 @@ fn push_modern_static_shape(
         .map(str::to_owned);
     let mesh_index = model.static_meshes.len();
     let mut mesh = tri_shape_to_mesh(shape, name.clone());
-    if mesh.positions.is_empty() {
+    if mesh.positions.is_empty() || mesh.triangles.is_empty() {
         if let Some(partition) = nif
             .blocks
             .get(shape.skin as usize)
@@ -602,11 +617,13 @@ fn push_modern_static_shape(
                 _ => None,
             })
         {
-            mesh.positions = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.position)
-                .collect();
+            if mesh.positions.is_empty() {
+                mesh.positions = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.position)
+                    .collect();
+            }
             mesh.normals = partition
                 .vertex_data
                 .iter()
@@ -1365,8 +1382,11 @@ impl Parse<&[u8]> for NifFileV3 {
             );
             let (i, raw) = nom::bytes::complete::take(header.block_size_index[index])(data)?;
             data = i;
-            let (_, block) =
-                NifBlock::parse(raw, header.get_block_type(index).unwrap().to_string())?;
+            let (_, block) = NifBlock::parse_with_version(
+                raw,
+                header.get_block_type(index).unwrap().to_string(),
+                header.bethesda_version,
+            )?;
             println!(
                 "Parsed block type: {:?}",
                 header.get_block_type(index).unwrap().to_string()

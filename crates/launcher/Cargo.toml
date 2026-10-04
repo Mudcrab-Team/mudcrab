@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 converter = { path = "../converter/" }
+mo2 = { path = "../mo2/" }
 shared = { path = "../shared/" }
 bevy.workspace = true
 serde_json.workspace = true

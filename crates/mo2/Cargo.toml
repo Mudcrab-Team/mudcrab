@@ -1,0 +1,12 @@
+[package]
+name = "mo2"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+color-eyre.workspace = true
+serde.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3.20"

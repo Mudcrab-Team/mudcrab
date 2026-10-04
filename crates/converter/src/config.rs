@@ -30,6 +30,9 @@ pub struct PipelineConfig {
     #[serde(skip)]
     pub cache_dir: Option<PathBuf>,
     pub plugins_file: Option<PathBuf>,
+    /// Resolve this MO2 profile over physical Data; incompatible with plugins_file.
+    #[serde(default)]
+    pub mo2: Option<mo2::Selection>,
     pub cpu_jobs: usize,
     pub io_jobs: usize,
     pub enable_ba2: bool,
@@ -63,6 +66,7 @@ impl PipelineConfig {
             resume_staging: None,
             cache_dir: None,
             plugins_file: None,
+            mo2: None,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
             io_jobs: 2,
             enable_ba2: true,
@@ -123,6 +127,21 @@ impl PipelineConfig {
         // on publish, staging is deleted after it, and the cache is pruned, so
         // none of them may be, hold, or sit inside the game data.
         let data = std::fs::canonicalize(&self.data_dir)?;
+        let mut sources = vec![data.clone()];
+        if let Some(selection) = &self.mo2 {
+            color_eyre::eyre::ensure!(
+                self.plugins_file.is_none(),
+                "MO2 selection cannot be combined with plugins_file"
+            );
+            let instance = mo2::Instance::open(&selection.instance_path)?;
+            instance.profile_dir(&selection.profile)?;
+            sources.extend(
+                instance
+                    .source_roots()
+                    .iter()
+                    .map(|path| path.to_path_buf()),
+            );
+        }
         let mut written = vec![
             ("output directory", self.output_dir.clone()),
             ("ingestion cache directory", self.ingestion_cache_dir()),
@@ -132,12 +151,14 @@ impl PipelineConfig {
         }
         for (role, path) in written {
             let resolved = resolve_path(&path)?;
-            color_eyre::eyre::ensure!(
-                !(resolved.starts_with(&data) || data.starts_with(&resolved)),
-                "the {role} {} overlaps the Skyrim Data directory {}; choose a folder outside it that does not contain it",
-                path.display(),
-                self.data_dir.display()
-            );
+            for source in &sources {
+                color_eyre::eyre::ensure!(
+                    !(resolved.starts_with(source) || source.starts_with(&resolved)),
+                    "the {role} {} overlaps the Skyrim Data directory or MO2 source {}; choose a folder outside it that does not contain it",
+                    path.display(),
+                    source.display()
+                );
+            }
         }
         check_output_dir(&self.output_dir)?;
         if let Some(staging) = &self.resume_staging {
@@ -277,10 +298,14 @@ fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
     loop {
         match std::fs::canonicalize(existing) {
             Ok(resolved) => {
-                return Ok(missing
-                    .iter()
-                    .rev()
-                    .fold(resolved, |resolved, part| resolved.join(part)));
+                return Ok(missing.iter().rev().fold(resolved, |mut resolved, part| {
+                    if *part == std::ffi::OsStr::new("..") {
+                        resolved.pop();
+                    } else if *part != std::ffi::OsStr::new(".") {
+                        resolved.push(part);
+                    }
+                    resolved
+                }));
             }
             Err(error) => match (existing.parent(), existing.file_name()) {
                 (Some(parent), Some(name)) => {

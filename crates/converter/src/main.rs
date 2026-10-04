@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 struct Cli {
     data: PathBuf,
     output: PathBuf,
+    mo2: Option<mo2::Selection>,
     resume_staging: Option<PathBuf>,
     report_json: Option<PathBuf>,
     cpu_jobs: Option<usize>,
@@ -43,6 +44,7 @@ struct CheckCli {
 enum Command {
     Convert(Cli),
     Check(CheckCli),
+    Repair(Cli, bool),
 }
 
 /// Problem lines printed before "and N more".
@@ -150,9 +152,20 @@ async fn main() -> Result<()> {
     let cli = match parse_command(args)? {
         Command::Convert(cli) => cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
+        Command::Repair(cli, apply) => {
+            let mut config = PipelineConfig::new(cli.data, cli.output);
+            config.mo2 = cli.mo2;
+            let report = converter::repair::repair_failed(&config, apply)?;
+            println!("Repair {}: {} converted, {} classified/excluded, {} failures. Files/report: {}",
+                if report.published { "published" } else { "staged (original pack unchanged)" },
+                report.converted, report.excluded, report.failures.len(), report.directory.display());
+            if !report.failures.is_empty() { std::process::exit(1); }
+            return Ok(());
+        }
     };
     let mut config = PipelineConfig::new(cli.data.clone(), cli.output.clone());
     config.resume_staging = cli.resume_staging.clone();
+    config.mo2 = cli.mo2.clone();
     config.fail_fast = cli.fail_fast;
     config.invalidate_cache = cli.invalidate_cache;
     config.verify_cache = cli.verify_cache;
@@ -421,6 +434,13 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
         cli.output.display(),
         staging.display()
     );
+    if let Some(selection) = &cli.mo2 {
+        command.push_str(&format!(
+            " --mo2-instance \"{}\" --mo2-profile \"{}\"",
+            selection.instance_path.display(),
+            selection.profile
+        ));
+    }
     // A resumed run must keep the texture encoder: GPU-encoded textures are cached under their
     // own label, so resuming on the CPU would convert them again.
     if let TextureEncoder::Gpu { quality, batch_mb } = cli.texture_encoder {
@@ -587,6 +607,16 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
     }
+    if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
+        let apply = args.iter().any(|argument| argument == "--apply");
+        let cli = parse_cli(args.into_iter().skip(1).filter(|argument| argument != "--apply").collect())?;
+        if cli.resume_staging.is_some() || cli.invalidate_cache || cli.fail_fast || cli.report_json.is_some()
+            || cli.cpu_jobs.is_some() || cli.io_jobs.is_some() || !cli.verify_cache
+            || cli.verbose || !matches!(cli.texture_encoder, TextureEncoder::Cpu) {
+            bail!("repair-failed accepts Data/output, MO2 selection and --apply only");
+        }
+        return Ok(Command::Repair(cli, apply));
+    }
     parse_cli(args).map(Command::Convert)
 }
 
@@ -613,6 +643,8 @@ fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
 /// Parses the arguments of a conversion run.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut positional = Vec::new();
+    let mut mo2_instance = None;
+    let mut mo2_profile = None;
     let mut report_json = None;
     let mut resume_staging = None;
     let mut cpu_jobs = None;
@@ -627,6 +659,16 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.to_str() {
+            Some("--mo2-instance") => {
+                mo2_instance = Some(PathBuf::from(next_value(&mut args, "--mo2-instance")?));
+            }
+            Some("--mo2-profile") => {
+                mo2_profile = Some(
+                    next_value(&mut args, "--mo2-profile")?
+                        .into_string()
+                        .map_err(|_| color_eyre::eyre::eyre!("--mo2-profile must be UTF-8"))?,
+                );
+            }
             Some("--report-json") => {
                 report_json = Some(PathBuf::from(next_value(&mut args, "--report-json")?))
             }
@@ -688,7 +730,25 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         }
         TextureEncoder::Cpu
     };
+    let mo2 = match mo2_instance {
+        Some(instance_path) => {
+            let instance = mo2::Instance::open(&instance_path)?;
+            let profile = mo2_profile.unwrap_or_else(|| instance.profiles[0].clone());
+            instance.profile_dir(&profile)?;
+            Some(mo2::Selection {
+                instance_path: instance.instance_path,
+                profile,
+            })
+        }
+        None => {
+            if mo2_profile.is_some() {
+                bail!("--mo2-profile requires --mo2-instance");
+            }
+            None
+        }
+    };
     Ok(Cli {
+        mo2,
         data: positional.remove(0),
         output: positional
             .pop()
@@ -742,9 +802,19 @@ fn usage() -> &'static str {
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose]
+                 [--mo2-instance DIR] [--mo2-profile NAME]
        converter check <output directory> [--full]
+       converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
+                 [--mo2-profile NAME] [--apply]
+
+repair-failed stages only manifest failures and missing dependencies in a sibling repair directory.
+It never rebuilds the database or cell cache. --apply validates the pack's existing hashes,
+publishes validated repairs with backups, and updates the manifest last.
 
 Converts a Skyrim Data directory into runtime assets.
+--mo2-instance overlays enabled MO2 mods and overwrite over physical Data, using the profile's
+active plugins and loadorder.txt. --mo2-profile defaults to the first sorted profile.
+MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are not supported.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -764,6 +834,47 @@ the existence and size of every file, and with --full their hashes too. Exit cod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mo2_cli_defaults_validates_and_preserves_selection_on_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        for folder in ["mods", "profiles/Zed", "profiles/Alpha", "overwrite"] {
+            fs::create_dir_all(dir.path().join(folder)).unwrap();
+        }
+        fs::write(
+            dir.path().join("ModOrganizer.ini"),
+            "[General]\ngameName=Skyrim\n",
+        )
+        .unwrap();
+        let instance = dir.path().to_str().unwrap();
+        let cli = parse_cli(args(&["Data", "out", "--mo2-instance", instance])).unwrap();
+        assert_eq!(cli.mo2.as_ref().unwrap().profile, "Alpha");
+        let cli = parse_cli(args(&[
+            "Data",
+            "out",
+            "--mo2-instance",
+            instance,
+            "--mo2-profile",
+            "Zed",
+        ]))
+        .unwrap();
+        let resume = resume_command("converter", &cli, Path::new("out.staging-1-2"));
+        assert!(resume.contains("--mo2-instance"));
+        assert!(resume.ends_with("--mo2-profile \"Zed\""));
+        assert!(parse_cli(args(&["Data", "--mo2-profile", "Zed"])).is_err());
+        assert!(
+            parse_cli(args(&[
+                "Data",
+                "--mo2-instance",
+                instance,
+                "--mo2-profile",
+                "Missing"
+            ]))
+            .is_err()
+        );
+        assert!(parse_cli(args(&["Data", "--mo2-instance"])).is_err());
+        assert!(parse_cli(args(&["Data", "--mo2-profile"])).is_err());
+    }
 
     #[test]
     fn stage_clock_keeps_first_and_last_event_of_overlapping_stages() {
@@ -909,6 +1020,7 @@ mod tests {
     #[test]
     fn names_the_exact_command_that_resumes_a_kept_staging_folder() {
         let cli = Cli {
+            mo2: None,
             data: PathBuf::from("C:/Games/Skyrim/Data"),
             output: PathBuf::from("C:/Modding/SkyrimConverted"),
             resume_staging: None,

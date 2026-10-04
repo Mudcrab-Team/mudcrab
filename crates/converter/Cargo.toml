@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
+mo2 = { path = "../mo2" }
 mesh-tools.workspace = true
 basis-universal.workspace = true
 ddsfile.workspace = true

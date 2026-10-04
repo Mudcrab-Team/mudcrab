@@ -1,0 +1,120 @@
+---
+source: crates/converter/tests/snapshots.rs
+assertion_line: 215
+expression: manifest
+---
+{
+  "archives": {
+    "skyrim - meshes.bsa": {
+      "files": [
+        {
+          "hash": "[hash]",
+          "path": "meshes/generated.nif",
+          "size": 724
+        }
+      ],
+      "source_hash": "[source_hash]"
+    },
+    "skyrim - misc.bsa": {
+      "files": [
+        {
+          "hash": "[hash]",
+          "path": "scripts/generated.pex",
+          "size": 134
+        },
+        {
+          "hash": "[hash]",
+          "path": "scripts/second.pex",
+          "size": 131
+        }
+      ],
+      "source_hash": "[source_hash]"
+    },
+    "skyrim - textures.ba2": {
+      "files": [
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_color.dds",
+          "size": 2892
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_normal.dds",
+          "size": 5636
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_color_x8.dds",
+          "size": 5588
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_cube.dds",
+          "size": 4324
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/generated_volume.dds",
+          "size": 2876
+        }
+      ],
+      "source_hash": "[source_hash]"
+    }
+  },
+  "complete": false,
+  "configuration_hash": "ebc4fe2f7d531e796e6a5e22b70a1f6a877c01e963b54b416b789d0f64312427",
+  "entries": {
+    "meshes/generated.nif": {
+      "output": "meshes/generated.glb",
+      "output_hash": "[output_hash]",
+      "output_size": 1868,
+      "source_hash": "[source_hash]"
+    },
+    "scripts/generated.pex": {
+      "output": "scripts/generated.luau",
+      "output_hash": "[output_hash]",
+      "output_size": 1113,
+      "source_hash": "[source_hash]"
+    },
+    "scripts/second.pex": {
+      "output": "scripts/second.luau",
+      "output_hash": "[output_hash]",
+      "output_size": 1110,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_color.dds": {
+      "output": "textures/generated_color.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 3169,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_color_x8.dds": {
+      "output": "textures/generated_color_x8.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 1785,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_normal.dds": {
+      "output": "textures/generated_normal.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 5913,
+      "source_hash": "[source_hash]"
+    },
+    "textures/generated_volume.dds": {
+      "output": "textures/generated_volume.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 2689,
+      "source_hash": "[source_hash]"
+    }
+  },
+  "failures": {
+    "textures/generated_cube.dds": "textures\\generated_cube.dds: failed to convert textures\\generated_cube.dds: DDS texture arrays are not supported"
+  },
+  "inputs_by_kind": {
+    "dds": 5,
+    "nif": 1,
+    "pex": 2
+  },
+  "pruned_texture_references": {},
+  "schema_version": 16
+}

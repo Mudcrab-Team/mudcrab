@@ -9,6 +9,7 @@ mod conversion;
 mod engine_process;
 mod game_detection;
 mod handlers;
+mod mo2_settings;
 mod ui;
 
 use bevy::{prelude::*, window::WindowResolution};
@@ -76,6 +77,7 @@ impl Plugin for LauncherPlugin {
         )
         .add_systems(Update, watch_engine_process)
         .add_systems(OnEnter(LauncherState::LaunchingEngine), launch_engine);
+        mo2_settings::install(app);
     }
 }
 

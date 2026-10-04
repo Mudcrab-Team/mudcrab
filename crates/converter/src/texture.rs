@@ -199,20 +199,29 @@ impl TextureConverter {
                 .header10
                 .as_ref()
                 .is_some_and(|header| header.misc_flag.contains(MiscFlag::TEXTURECUBE));
-        let layer_count = dds.get_num_array_layers();
+        // DX10 array_size counts cubes, whereas legacy DDS reports faces.
+        let layer_count = if is_cubemap && dds.header10.is_some() {
+            dds.get_num_array_layers().checked_mul(6)
+                .ok_or_else(|| color_eyre::eyre::eyre!("DDS cube array size overflow"))?
+        } else {
+            dds.get_num_array_layers()
+        };
         ensure!(
             layer_count <= 1 || (is_cubemap && layer_count == 6),
             "DDS texture arrays are not supported"
         );
+        ensure!(
+            !is_cubemap || layer_count == 6,
+            "DDS cubemap does not contain exactly six faces"
+        );
+        if is_cubemap && dds.header10.is_none() {
+            ensure!(dds.header.caps2.contains(Caps2::CUBEMAP_ALLFACES), "DDS cubemap has missing face flags");
+        }
         if let Some(format) = native_ktx2_format(&dds, encoding) {
             let result = assemble_native_ktx2(&dds, format, is_cubemap, zstd_level)?;
             validate_ktx2_against_dds(&result, &dds, encoding, is_cubemap)?;
             return Ok(result);
         }
-        ensure!(
-            !is_cubemap || layer_count == 6,
-            "DDS cubemap does not contain exactly six faces"
-        );
         if depth > 1 {
             ensure!(!is_cubemap, "DDS cannot be both a volume and a cubemap");
             ensure!(layer_count <= 1, "volume DDS arrays are not supported");
@@ -1867,15 +1876,14 @@ mod tests {
             depth: None,
             format: DxgiFormat::BC3_UNorm,
             mipmap_levels: Some(2),
-            array_layers: None,
+            array_layers: Some(6),
             caps2: None,
             is_cubemap: true,
             resource_dimension: D3D10ResourceDimension::Texture2D,
             alpha_mode: AlphaMode::Straight,
         })
         .unwrap();
-        let face = dds.data.clone();
-        dds.data = face.repeat(6);
+        assert_eq!(dds.header10.as_ref().unwrap().array_size, 1);
         for (index, byte) in dds.data.iter_mut().enumerate() {
             *byte = (index % 251) as u8;
         }
@@ -1906,6 +1914,15 @@ mod tests {
         let metadata = inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
         assert_eq!(metadata.faces, 6);
         assert_eq!(metadata.levels, 2);
+        dds.header10.as_mut().unwrap().array_size = 2;
+        bytes.clear();
+        dds.write(&mut bytes).unwrap();
+        assert!(TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).is_err());
+        dds.header10.as_mut().unwrap().array_size = 1;
+        dds.data.truncate(face_stride * 5);
+        bytes.clear();
+        dds.write(&mut bytes).unwrap();
+        assert!(TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).is_err());
     }
 
     #[test]
