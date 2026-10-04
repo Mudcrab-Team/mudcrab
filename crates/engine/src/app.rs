@@ -1681,7 +1681,7 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    18
+    22
 }
 
 fn setup_synthetic_benchmark(
@@ -3171,7 +3171,7 @@ mod tests {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        for schema in [16, 17, 18] {
+        for schema in [16, 17, 18, 19, 20, 21, 22] {
             std::fs::write(
                 directory.path().join("conversion-manifest.json"),
                 format!(r#"{{"schema_version":{schema},"complete":true}}"#),

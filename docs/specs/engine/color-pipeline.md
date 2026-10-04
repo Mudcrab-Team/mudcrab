@@ -39,7 +39,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
-- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Schema 18 rebuilds all old GLBs; retain verified compatible textures/scripts/archive bytes and accept runtime schemas 15–18.
+- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Combined schema 22 rebuilds all legacy GLBs/KTX2/world outputs; retain only verified compatible scripts/archive bytes. Native-BC and specular both previously allocated 18; ambiguous staged identities require regeneration. Runtime accepts complete converter schemas 15–22 with world schemas 3–5.
 - V12: Scene-only glTF loads ! reach and retain recursively loaded state after unused subassets release. Native material override retains stock hook's recorded source dependency; scene cloning preserves source and native handles. Probe ! no root-glTF or explicit material loads that mask dependency lifetime failures.
 
 ## Supported response and remaining material work
@@ -77,7 +77,7 @@ Converter cache schema 17: schemas 12–16 retain verified non-GLB entries/archi
 
 For testing, reconvert to separate output directory with converter built from this branch, then run matching engine against that directory. Existing packs remain valid in engine but retain old emission until reconverted. Preserve old pack for rollback; older #137 engine rejects schema 17, so use new engine for new pack. Retail reconversion ! isolated matching package; delivery evidence recorded after successful conversion/startup.
 
-Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v11_schema_16_and_17_rebuild_meshes_and_reuse_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
+Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `legacy_producers_rebuild_meshes_and_textures_and_reuse_scripts`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
 
 ## Local verification, 2026-10-02
 

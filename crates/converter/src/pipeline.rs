@@ -3,8 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        can_reuse_non_mesh_outputs, configuration_hash, configuration_hash_for_schema, hash_file,
-        link_or_copy, load_staged_outputs,
+        can_reuse_scripts_and_archives, configuration_hash, configuration_hash_for_schema,
+        hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
@@ -230,7 +230,7 @@ impl AssetPipeline {
         let expected_configuration = configuration_hash(&config)?;
         let configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
-            || (can_reuse_non_mesh_outputs(loaded_manifest.schema_version)
+            || (can_reuse_scripts_and_archives(loaded_manifest.schema_version)
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
         let previous_manifest = if configuration_is_compatible {
@@ -2517,23 +2517,12 @@ mod tests {
 
     #[tokio::test]
     async fn resume_does_not_publish_unverified_staged_meshes_for_any_manifest_schema() {
-        let manifests = [
-            ("absent", None),
-            (
-                "schema-14",
-                Some(
-                    br#"{"schema_version":14,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-            (
-                "schema-15",
-                Some(
-                    br#"{"schema_version":15,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-        ];
+        let manifests = std::iter::once(("absent".to_owned(), None)).chain(
+            (14..=21).map(|schema| (
+                format!("schema-{schema}"),
+                Some(format!(r#"{{"schema_version":{schema},"complete":true,"configuration_hash":"","entries":{{}}}}"#)),
+            )),
+        );
 
         for (name, manifest) in manifests {
             let temp = tempfile::tempdir().unwrap();
@@ -3086,8 +3075,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v11_schema_16_and_17_rebuild_meshes_and_reuse_compatible_assets() {
-        for old_schema in [16, 17] {
+    async fn legacy_producers_rebuild_meshes_and_textures_and_reuse_scripts() {
+        for old_schema in [16, 17, 18, 19, 20, 21] {
             let temp = tempfile::tempdir().unwrap();
             let data = temp.path().join("Data");
             let output = temp.path().join("modern");
@@ -3101,6 +3090,8 @@ mod tests {
             let config = PipelineConfig::new(&data, &output);
             assert!(run_without_progress(config.clone()).await.complete);
             let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
+            let texture_path = output.join("textures/present.ktx2");
+            let expected_texture = fs::read(&texture_path).unwrap();
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest = published_manifest(&output);
             manifest.schema_version = old_schema;
@@ -3116,14 +3107,28 @@ mod tests {
                 .unwrap();
             entry.output_size = old_bytes.len() as u64;
             entry.output_hash = crate::cache::hash_bytes(old_bytes);
+            // Valid old cache proof cannot establish the new texture contract.
+            let old_texture = b"old texture encoding contract";
+            fs::write(&texture_path, old_texture).unwrap();
+            let entry = manifest
+                .entries
+                .values_mut()
+                .find(|entry| entry.output == "textures/present.ktx2")
+                .unwrap();
+            entry.output_size = old_texture.len() as u64;
+            entry.output_hash = crate::cache::hash_bytes(old_texture);
             manifest.save(&manifest_path).unwrap();
 
             let report = run_without_progress(config.clone()).await;
             assert!(report.complete);
-            assert_eq!(report.converted, 1);
-            assert_eq!(report.cache_hits, 2); // Unchanged DDS and PEX.
+            assert_eq!(report.converted, 2);
+            assert_eq!(report.cache_hits, 1); // Only unchanged PEX.
             assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
-            assert_eq!(published_manifest(&output).schema_version, 18);
+            assert_eq!(fs::read(&texture_path).unwrap(), expected_texture);
+            assert_eq!(
+                published_manifest(&output).schema_version,
+                CONVERTER_SCHEMA_VERSION
+            );
 
             // Schema migration must not erase a real configuration change.
             let mut manifest = published_manifest(&output);
