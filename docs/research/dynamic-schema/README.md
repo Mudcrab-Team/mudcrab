@@ -45,6 +45,22 @@ The [installed corpus observation](p0-corpus-manifest.md) now records hashes and
 
 The [validator starter tooling](../../../scripts/schema/README.md) extends a verified temporary copy of the existing Mutagen oracle and keeps synthetic inputs/build outputs outside the active RE checkout and store. CI is configured to run the Python contract tests; local .NET execution is a separate qualification step requiring the pinned oracle source and SDK. No pinned xEdit executable, usable Wine/Delphi runner or reachable runtime VM was available on this host. Source declarations therefore remain xEdit evidence; its execution gate remains open.
 
+The [selected field and variant ledger](native-field-ledger.md) adds current base/main converter projection, SQL, load-order identity, and terrain-cache anchors, plus targeted static loader observations for `REFR`, `CELL`, and `STAT`. It is a bounded sample: target-corpus field lengths/occurrences, full catalog coverage, downstream runtime consumers, and runtime behavior remain open. Regenerate and check its source report with:
+
+```sh
+python3 docs/research/dynamic-schema/pilot_code_evidence.py \
+  --repo . \
+  --base 97ddf6966310061c859f9eb3db84e279121d23b4 \
+  --current 5579f007ad296c2e7134f1dbf2b8eb8cec5369fd \
+  --output docs/research/dynamic-schema/pilot-code-evidence.json
+python3 docs/research/dynamic-schema/pilot_code_evidence.py \
+  --repo . \
+  --base 97ddf6966310061c859f9eb3db84e279121d23b4 \
+  --current 5579f007ad296c2e7134f1dbf2b8eb8cec5369fd \
+  --output docs/research/dynamic-schema/pilot-code-evidence.json \
+  --check
+```
+
 Final local verification on 2026-10-04 passed all 35 offline tests and the separate Mutagen `0.54.4` / SDK `9.0.318` qualification: six positive hand-encoded fixtures, four managed malformed-input rejections, and the original `placed`/`placed-lo` commands. The build reported zero warnings and errors. Positive `HEDR` counts include major records and group headers, with independent physical-count assertions. The full fixture SHA-256 is `2b6a56869dfb17fb41e1fc5faa58f529afd98818515b1c632b072492fb0f50c8`.
 
 The final local evidence is `/tmp/mudcrab-p0-mutagen-bde01061228f4ace8ad28f3bd5691688/qualification.json` (6,808 bytes; SHA-256 `47ef80c1e99271edbdce609240a15698a4416406f48949a14cb6f3d0352e9e70`). Its localized ARMO observation independently exposes Mutagen's `StringsKey` as `305419896`, matching fixture wire ID `0x12345678`; printable Name and translated text remain unavailable without a string table. Physical offsets/order, opaque payloads, complete source-occurrence coverage, retail/native behavior and full-catalog acceptance remain unavailable. Workflow lint passed with actionlint `1.7.12`; no local Rust or engine runtime tests ran for this tooling slice.
