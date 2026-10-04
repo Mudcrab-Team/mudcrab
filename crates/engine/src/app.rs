@@ -809,6 +809,7 @@ fn setup_material_fixture(
     }
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(0.0, 5.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1050,6 +1051,7 @@ fn setup_terrain_water_fixture(
     let target = Vec3::new(CELL_SIZE_HALF, 0.0, -CELL_SIZE_HALF);
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(CELL_SIZE_HALF, 1800.0, 2600.0).looking_at(target, Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1224,6 +1226,7 @@ fn setup_transform_bounds_fixture(
         });
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(2.0, 5.5, 16.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1431,6 +1434,7 @@ fn setup_renderer_fixture(
     ));
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Transform::from_xyz(0.0, 1.5, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
         StreamingCamera,
         FogCamera,
@@ -1673,7 +1677,7 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    16
+    18
 }
 
 fn setup_synthetic_benchmark(
@@ -1842,6 +1846,7 @@ fn setup_world(
     };
     commands.spawn((
         Camera3d::default(),
+        crate::color_pipeline::SceneColorPipeline::default(),
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
         camera_transform,
         StreamingCamera,
@@ -2736,6 +2741,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn v1_world_and_visual_fixture_cameras_have_explicit_hdr_output() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<TerrainMaterial>>()
+            .init_resource::<Assets<WaterMaterial>>()
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .add_systems(
+                Startup,
+                (
+                    setup_world,
+                    setup_material_fixture,
+                    setup_terrain_water_fixture,
+                    setup_transform_bounds_fixture,
+                    setup_renderer_fixture,
+                ),
+            );
+        app.update();
+        crate::color_pipeline::assert_scene_camera_output(app.world_mut(), 5);
+    }
+
     /// The engine's startup path is `setup_world`, not the helper above, so the sun it spawns is
     /// what has to carry the cascades - along with the shadow map size they are drawn at.
     #[test]
@@ -3051,6 +3080,7 @@ mod tests {
         }
     }
 
+    /// Current, complete assets load, and an integration report newer than the engine is rejected.
     #[test]
     fn accepts_current_complete_runtime_assets() {
         let directory = tempfile::tempdir().unwrap();
@@ -3079,14 +3109,20 @@ mod tests {
         validate_runtime_assets(&config).unwrap();
         std::fs::write(
             directory.path().join("integration-report.json"),
-            br#"{"schema_version":5,"passed":true}"#,
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION + 1
+            ),
         )
         .unwrap();
         assert!(
             validate_runtime_assets(&config)
                 .unwrap_err()
                 .to_string()
-                .contains("schema 5 is unsupported")
+                .contains(&format!(
+                    "schema {} is unsupported",
+                    shared::WORLD_DATABASE_SCHEMA_VERSION + 1
+                ))
         );
     }
 
@@ -3111,6 +3147,34 @@ mod tests {
             ..default()
         };
         validate_runtime_assets(&config).unwrap();
+    }
+
+    #[test]
+    fn v7_accepts_unchanged_schema_16_and_new_emission_schema_17() {
+        assert_eq!(
+            converter_schema_version(),
+            converter::cache::CONVERTER_SCHEMA_VERSION
+        );
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
+        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":4,"passed":true}"#,
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        for schema in [16, 17] {
+            std::fs::write(
+                directory.path().join("conversion-manifest.json"),
+                format!(r#"{{"schema_version":{schema},"complete":true}}"#),
+            )
+            .unwrap();
+            validate_runtime_assets(&config).unwrap();
+        }
     }
 
     #[test]

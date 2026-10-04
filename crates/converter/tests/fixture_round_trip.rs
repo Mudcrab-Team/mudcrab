@@ -406,6 +406,11 @@ async fn generated_data_directory_converts_end_to_end() {
             16,
             "ebc4fe2f7d531e796e6a5e22b70a1f6a877c01e963b54b416b789d0f64312427",
         ),
+        // Pinned from main's schema 17 manifest snapshot, not generated here.
+        (
+            17,
+            "508de5874ce448ff192e55520bc249f44a2416b9e259b7797e53cdbd5ec0a3c0",
+        ),
     ];
     let manifest_path = output.join("conversion-manifest.json");
     let published: serde_json::Value =
@@ -430,10 +435,15 @@ async fn generated_data_directory_converts_end_to_end() {
             .unwrap();
         drain.await.unwrap();
         assert!(report.complete, "schema {schema}");
-        // Historical migrations deliberately rebuild the one model, retaining
-        // five textures and two scripts; schema 16 also retains the model.
-        assert_eq!(report.converted, u64::from(schema < 16), "schema {schema}");
-        assert!(report.cache_hits >= 7, "schema {schema}: {report:?}");
+        // Migrating to schema 18 rebuilds the five textures (uncompressed DDS
+        // now become native BC7) and, before schema 17, the one model; the two
+        // scripts are retained, and from schema 17 the model too.
+        assert_eq!(
+            report.converted,
+            5 + u64::from(schema < 17),
+            "schema {schema}"
+        );
+        assert!(report.cache_hits >= 2, "schema {schema}: {report:?}");
         let mmap = converter::esm::cell_cache::validate_cell_cache(&cache_path).unwrap();
         let cache = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&mmap).unwrap();
         assert_eq!(

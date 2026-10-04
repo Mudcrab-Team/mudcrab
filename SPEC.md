@@ -181,6 +181,8 @@ V69: Active airborne WALK with no downward collision ray continues descending ac
 V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
 V71: Runtime accepts passed integration report & world database schema 3 or additive schema 4; rejects older/newer schemas; schema 4 Riverwood package reaches world loading without `--allow-incomplete-assets`.
 
+V72: ∀ staged GLB used by texture pruning or world integration → accepted current-run mesh artifact with current schema/configuration, source/dependency hash & output-byte proof; prune audit record alone grants no provenance. Removed source → no bounds update or published GLB; unavailable-source accounting preserved. Same-schema verified pruned resume retains mesh & audit record.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -264,3 +266,4 @@ B39|2026-09-29|NOCLIP→WALK rejected free high-altitude capsule because ground 
 B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; report & database gates rejected valid package|V71
 B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings failed unchanged workspace under `-D warnings`|§C fixed Rust toolchain; restore 1.98.1
 B42|2026-10-01|PR #102 merge retained local LAND tiling constant alongside shared import; engine failed E0255|reuse shared constant; workspace compile + Clippy gates
+B43|2026-10-03|resume cleanup exempted historical prune-record GLBs without schema/source/output proof; removed NIF let unpublished stale mesh supply world bounds & hide unavailable source|V72
