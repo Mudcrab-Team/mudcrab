@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: OpenSkyrim Documentation & Specs
-    url: https://github.com/realfakenerd/OpenSkyrim/tree/main/docs/specs
+  - name: Mudcrab Documentation & Specs
+    url: https://github.com/Mudcrab-Team/mudcrab/tree/main/docs/specs
     about: Review engine specifications and architectural goals before submitting proposals.
   - name: Community Discussions
-    url: https://github.com/realfakenerd/OpenSkyrim/discussions
+    url: https://github.com/Mudcrab-Team/mudcrab/discussions
     about: Ask questions, share ideas, and chat with other contributors.

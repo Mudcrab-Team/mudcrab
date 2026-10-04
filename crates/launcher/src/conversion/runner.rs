@@ -337,11 +337,11 @@ mod tests {
     /// as a failure message rather than a panic or a silent thread.
     #[test]
     fn a_run_that_cannot_start_reports_a_failure() {
-        let missing = std::env::temp_dir().join("openskyrim-launcher-no-such-data-folder");
+        let missing = std::env::temp_dir().join("mudcrab-launcher-no-such-data-folder");
         assert!(!missing.exists(), "{missing:?} exists");
         let (tx, rx) = unbounded();
         let cancellation = spawn(
-            PipelineConfig::new(missing, PathBuf::from("openskyrim-launcher-test-output")),
+            PipelineConfig::new(missing, PathBuf::from("mudcrab-launcher-test-output")),
             tx,
         );
         assert!(!cancellation.is_cancelled());

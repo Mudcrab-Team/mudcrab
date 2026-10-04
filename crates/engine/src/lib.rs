@@ -1,9 +1,12 @@
 pub mod app;
+pub mod color_pipeline;
 pub mod config;
 pub mod lights;
 pub mod metrics;
+pub mod nif_material;
 pub mod papyrus_runtime;
 pub mod physics;
+pub mod prepass_vertex_alpha;
 pub mod profiling;
 pub mod render;
 pub mod render_timing;

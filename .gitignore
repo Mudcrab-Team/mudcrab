@@ -23,7 +23,6 @@ Thumbs.db
 *.fuz
 vendor/project-wormhole-nif/Materials/
 
-openskyrim.cfg
 .env
 .env.local
 config.local.toml

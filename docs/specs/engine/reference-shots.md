@@ -63,14 +63,17 @@ worldspace per run.
 For each shot in order, the run places the camera at the pose (the streamer then loads the cells
 around it) and waits until the view has settled: no cell loading, no database request in flight,
 no model or surface waiting for its assets, no model waiting to be armed, no out-of-range cell
-still waiting to be unloaded, and the renderer's final path running, for `SETTLE_QUIET_FRAMES`
+still waiting to be unloaded, no new failed cells, asset-load failures or material, terrain,
+water, transform-bounds or renderer validation failures since the shot was posed, and the
+renderer's final path running, for `SETTLE_QUIET_FRAMES`
 (10) frames in a row, and not before `WARM_UP_SECONDS` (2 s) after start-up, while the first
 pipelines compile. The frame count is exact: a view that has been quiet for ten frames running is
 photographed on the tenth, and the `frames=` of its log line is then 10 - the count of quiet
 frames is advanced before it is read, so it is not one more than the constant. The run then saves
 the primary window to `<out>/<name>.png`. A shot that has not settled after
 `SETTLE_TIMEOUT_SECONDS` (30 s) is still captured, and the log says the timeout took it and what
-was still pending.
+was still pending or which failures prevented settling. A new failure prevents that shot from
+settling even after pending work drains; its timeout capture fails the run.
 
 `--shots-out` defaults to a `<file stem>-shots/` folder beside the shots file. `shots.log` there
 has one line per shot: its name, the frames it waited, whether it settled or timed out, the image's
@@ -88,4 +91,4 @@ visible in a campaign report instead of being read as a pass.
 
 `--headless` is ignored during a shots run, since the image is taken of the window. `--shots`
 cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-speed` or a fixture.
-`--run-label` names the run in the window title (`OpenSkyrim - shots: <label>`).
+`--run-label` names the run in the window title (`Mudcrab - shots: <label>`).

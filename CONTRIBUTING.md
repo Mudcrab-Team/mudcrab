@@ -1,6 +1,6 @@
-# Contributing to OpenSkyrim
+# Contributing to Mudcrab
 
-Thank you for your interest in contributing to **OpenSkyrim**! We welcome contributions from developers, reverse engineers, 3D graphics enthusiasts, modders, and documentation writers of all experience levels.
+Thank you for your interest in contributing to **Mudcrab**! We welcome contributions from developers, reverse engineers, 3D graphics enthusiasts, modders, and documentation writers of all experience levels.
 
 ---
 
@@ -117,7 +117,7 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
 
 ## ⚖️ License & Legal
 
-By contributing to OpenSkyrim, you agree that your contributions will be dual-licensed under the **MIT License** and **Apache License (Version 2.0)**.
+By contributing to Mudcrab, you agree that your contributions will be dual-licensed under the **MIT License** and **Apache License (Version 2.0)**.
 
 ### Legal Disclaimer
-OpenSkyrim is a clean-room engine reimplementation. **Do NOT upload, distribute, or submit copyrighted game assets** (`.bsa`, `.esm`, `.nif`, `.dds`, etc.) owned by Bethesda Softworks / ZeniMax Media in PRs or issues. All test fixtures must be generated procedurally or extracted dynamically at runtime from the user's legally owned game files.
+Mudcrab is a clean-room engine reimplementation. **Do NOT upload, distribute, or submit copyrighted game assets** (`.bsa`, `.esm`, `.nif`, `.dds`, etc.) owned by Bethesda Softworks / ZeniMax Media in PRs or issues. All test fixtures must be generated procedurally or extracted dynamically at runtime from the user's legally owned game files.

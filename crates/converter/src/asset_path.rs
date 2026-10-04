@@ -247,6 +247,20 @@ fn is_within(path: &Path, root: &Path) -> bool {
     path == root.trim_end_matches('/') || path.starts_with(&root)
 }
 
+/// Strip converter-owned sampler/transfer aliases back to the converted source.
+/// Alias ordering is transfer first, sampler second; only known suffixes are reserved.
+pub(crate) fn runtime_texture_source(runtime_key: &str) -> Option<String> {
+    let mut stem = runtime_key.strip_suffix(".ktx2")?;
+    for suffix in [".opensky-wrap0", ".opensky-wrap1", ".opensky-wrap2"] {
+        if let Some(source) = stem.strip_suffix(suffix) {
+            stem = source;
+            break;
+        }
+    }
+    stem = stem.strip_suffix(".opensky-srgb").unwrap_or(stem);
+    Some(format!("{stem}.ktx2"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

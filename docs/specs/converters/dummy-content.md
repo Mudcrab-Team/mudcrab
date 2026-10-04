@@ -4,7 +4,7 @@
 without a local game installation can develop, test, and demo the converter without touching
 copyrighted assets. No game data is read, copied, or required.
 
-Tracks [`issue #2`](https://github.com/realfakenerd/OpenSkyrim/issues/2).
+Tracks [`issue #2`](https://github.com/Mudcrab-Team/mudcrab/issues/2).
 
 ## Quick start
 
@@ -101,7 +101,7 @@ Supported writers:
   (`esm::PRESET_INTERIOR`, `esm::plugin_with_interior`), or with a `LIGH` base record whose
   `DATA` is the 48-byte layout `Skyrim.esm` uses, an `FNAM` fade and one reference carrying an
   `XRDS` radius override (`esm::PRESET_LIGHT`, `esm::plugin_with_lights`). Exports into
-  `skyrim_world.db` (schema 4) and `cell_cache.rkyv`.
+  `skyrim_world.db` (schema 5, `shared::WORLD_DATABASE_SCHEMA_VERSION`) and `cell_cache.rkyv`.
 - `layout`: the `Data/` tree above, with atomic publication and symlink refusal. `layout::generate`
   writes the default tree and `layout::write_plugin` publishes a caller-built `Skyrim.esm` —
   the interior preset included — through the same writer and the same constants
@@ -144,10 +144,12 @@ Real-asset checks stay opt-in and never run in CI with proprietary data. Point t
 **unmodded** `Data` directory (for example the Steam install):
 
 ```bash
-export OPENSKYRIM_SKYRIM_DATA="$HOME/.local/share/Steam/steamapps/common/Skyrim Special Edition/Data"
-export OPENSKYRIM_NIF_FIXTURE="/path/to/a/static.nif"
+export MUDCRAB_SKYRIM_DATA="$HOME/.local/share/Steam/steamapps/common/Skyrim Special Edition/Data"
+export MUDCRAB_NIF_FIXTURE="/path/to/a/static.nif"
 cargo test -p converter -- --ignored
 ```
+
+The old `OPENSKYRIM_*` variable names are still accepted as a fallback.
 
 Mod-manager "Stock Game" directories are not suitable: their loose files are often modified.
 

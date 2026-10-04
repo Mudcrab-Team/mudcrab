@@ -27,6 +27,7 @@ sha2.workspace = true
 walkdir.workspace = true
 lz4_flex.workspace = true
 image_dds.workspace = true
+intel_tex_2 = "0.2.2"
 ktx2.workspace = true
 project-wormhole-nif.workspace = true
 project-wormhole-shared = "0.1.0"
@@ -37,6 +38,7 @@ zstd = "0.13"
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 
 [dev-dependencies]
+gltf = { version = "1.4", default-features = false, features = ["utils"] }
 tempfile = "3.20"
 insta = { version = "1.48", features = ["json", "redactions"] }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
