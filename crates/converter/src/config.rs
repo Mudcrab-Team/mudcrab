@@ -2,6 +2,23 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+/// Which encoder turns DDS textures into UASTC KTX2.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextureEncoder {
+    /// Basis Universal on the CPU (UASTC level `texture_uastc_level`).
+    #[default]
+    Cpu,
+    /// wgpu compute shader, batched across textures (`texture_gpu`).
+    /// Falls back to the CPU encoder when no GPU is available.
+    Gpu {
+        /// Endpoint refinement passes (0 = fastest).
+        quality: u32,
+        /// Texel megabytes packed into one GPU dispatch.
+        batch_mb: u64,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub data_dir: PathBuf,
@@ -28,6 +45,8 @@ pub struct PipelineConfig {
     /// Zstandard level for per-mip KTX2 supercompression (0 = off).
     #[serde(default = "default_texture_zstd_level")]
     pub texture_zstd_level: i32,
+    #[serde(default)]
+    pub texture_encoder: TextureEncoder,
     pub script_abi_version: u32,
 }
 
@@ -36,6 +55,7 @@ fn default_texture_zstd_level() -> i32 {
 }
 
 impl PipelineConfig {
+    /// A configuration with the default settings for converting `data_dir` into `output_dir`.
     pub fn new(data_dir: impl Into<PathBuf>, output_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -52,6 +72,7 @@ impl PipelineConfig {
             texture_fallback_quality: 192,
             texture_uastc_level: 2,
             texture_zstd_level: default_texture_zstd_level(),
+            texture_encoder: TextureEncoder::Cpu,
             script_abi_version: 1,
         }
     }
@@ -70,6 +91,7 @@ impl PipelineConfig {
             .with_file_name(format!("{file_name}.assets-cache"))
     }
 
+    /// Checks that the directories and settings can be used for a run.
     pub(crate) fn validate(&self) -> color_eyre::Result<()> {
         color_eyre::eyre::ensure!(
             self.data_dir.is_dir(),
@@ -86,6 +108,13 @@ impl PipelineConfig {
             self.texture_uastc_level <= 4,
             "texture_uastc_level must be between 0 and 4"
         );
+        if let TextureEncoder::Gpu { quality, batch_mb } = self.texture_encoder {
+            color_eyre::eyre::ensure!(quality <= 8, "GPU quality must be between 0 and 8");
+            color_eyre::eyre::ensure!(
+                (1..=4096).contains(&batch_mb),
+                "GPU batch size must be between 1 and 4096 MiB"
+            );
+        }
         color_eyre::eyre::ensure!(
             (0..=22).contains(&self.texture_zstd_level),
             "texture_zstd_level must be between 0 and 22"

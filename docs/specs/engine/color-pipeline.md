@@ -33,7 +33,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
 - V5: Preserve NIF source values and declared unsupported families. Do not compensate for pending material errors with global tint, exposure, ambient or emission changes.
 - V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Non-finite source emission or overflowing energy → contextual conversion error before clamping.
-- V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete schemas 15–17; world database schema unchanged.
+- V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete converter schemas 15–17 and additive world database schemas 3–5, including main’s grass tables. This emission slice does not change world database schema 5.
 
 - V8: Finite signed NIF tint & static lighting multiplier ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
 
