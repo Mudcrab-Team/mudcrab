@@ -17,7 +17,8 @@ import zlib
 from pathlib import Path
 
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
+CORPUS_EVIDENCE_VERSION = 1
 TARGET_RUNTIME = {
     "game": "Skyrim Special Edition",
     "executable_version": "1.7.104.0",
@@ -39,6 +40,7 @@ RECORD_HEADER_SIZE = 24
 FLAG_COMPRESSED = 0x00040000
 MAX_TES4_HEADER_BYTES = 16 * 1024 * 1024
 MAX_CCC_BYTES = 1024 * 1024
+MAX_CORPUS_EVIDENCE_BYTES = 1024 * 1024
 HASH_CHUNK_SIZE = 1024 * 1024
 
 
@@ -341,6 +343,265 @@ def _scan_hashed_file(path: Path, source_root: Path, root_label: str, kind: str)
     }
 
 
+def _exact_object(value: object, keys: set[str], label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    actual = set(value)
+    missing = sorted(keys - actual)
+    unknown = sorted(actual - keys)
+    if missing or unknown:
+        detail = []
+        if missing:
+            detail.append(f"missing keys: {', '.join(missing)}")
+        if unknown:
+            detail.append(f"unsupported keys: {', '.join(unknown)}")
+        raise ValueError(f"{label} has an invalid shape ({'; '.join(detail)})")
+    return value
+
+
+def _required_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-empty string")
+    return value.strip()
+
+
+def _required_name_list(value: object, label: str, *, allow_empty: bool) -> list[str]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        qualifier = "a list" if allow_empty else "a non-empty list"
+        raise ValueError(f"{label} must be {qualifier} of plugin filenames")
+    names = []
+    seen = set()
+    for index, raw_name in enumerate(value):
+        name = _required_text(raw_name, f"{label}[{index}]")
+        if name in {".", ".."} or "/" in name or "\\" in name:
+            raise ValueError(f"{label}[{index}] must be a plain plugin filename")
+        if Path(name).suffix.lower() not in PLUGIN_SUFFIXES:
+            raise ValueError(f"{label}[{index}] does not have a supported plugin suffix: {name}")
+        folded = name.casefold()
+        if folded in seen:
+            raise ValueError(f"{label} repeats a case-insensitive plugin name: {name}")
+        seen.add(folded)
+        names.append(name)
+    return names
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"corpus evidence JSON repeats object key: {key}")
+        result[key] = value
+    return result
+
+
+def _read_evidence_artifact(
+    descriptor_path: Path, value: object, label: str
+) -> dict:
+    evidence = _exact_object(value, {"path", "sha256"}, f"{label}.evidence")
+    declared_path = _required_text(evidence["path"], f"{label}.evidence.path")
+    expected_digest = evidence["sha256"]
+    if (
+        not isinstance(expected_digest, str)
+        or len(expected_digest) != 64
+        or any(character not in "0123456789abcdef" for character in expected_digest)
+    ):
+        raise ValueError(f"{label}.evidence.sha256 must be 64 lowercase hexadecimal characters")
+
+    evidence_path = Path(declared_path).expanduser()
+    if not evidence_path.is_absolute():
+        evidence_path = descriptor_path.parent / evidence_path
+    evidence_path = evidence_path.absolute()
+    if evidence_path == descriptor_path:
+        raise ValueError(f"{label}.evidence.path cannot point to the evidence descriptor itself")
+    digest, size, _ = _read_verified_file(evidence_path)
+    if digest != expected_digest:
+        raise ValueError(
+            f"{label}.evidence hash mismatch for {evidence_path}: "
+            f"declared {expected_digest}, observed {digest}"
+        )
+    return {
+        "path": str(evidence_path),
+        "size": size,
+        "sha256": digest,
+        "status": "source_artifact_hash_verified; semantic_claim_unverified",
+    }
+
+
+def _read_corpus_evidence(path: Path | None) -> dict | None:
+    if path is None:
+        return None
+    descriptor_path = Path(path).expanduser().absolute()
+    descriptor_size = _path_stat(descriptor_path).st_size
+    if descriptor_size > MAX_CORPUS_EVIDENCE_BYTES:
+        raise ValueError("corpus evidence JSON exceeds the 1 MiB input limit")
+    digest, size, raw = _read_verified_file(
+        descriptor_path, capture_bytes=MAX_CORPUS_EVIDENCE_BYTES + 1
+    )
+    if size > MAX_CORPUS_EVIDENCE_BYTES:
+        raise ValueError("corpus evidence JSON exceeds the 1 MiB input limit")
+    try:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid corpus evidence JSON {descriptor_path}: {exc}") from exc
+
+    root = _exact_object(
+        payload,
+        {"schema_version", "corpus_profile", "locale", "load_order"},
+        "corpus evidence",
+    )
+    if type(root["schema_version"]) is not int or root["schema_version"] != CORPUS_EVIDENCE_VERSION:
+        raise ValueError(
+            f"corpus evidence schema_version must be {CORPUS_EVIDENCE_VERSION}"
+        )
+
+    profile = _exact_object(
+        root["corpus_profile"], {"id", "target", "evidence"}, "corpus_profile"
+    )
+    profile_id = _required_text(profile["id"], "corpus_profile.id")
+    target = _exact_object(
+        profile["target"], {"game", "executable_version", "steam_build"}, "corpus_profile.target"
+    )
+    expected_target = {
+        "game": TARGET_RUNTIME["game"],
+        "executable_version": TARGET_RUNTIME["executable_version"],
+        "steam_build": TARGET_RUNTIME["steam_build"],
+    }
+    if target != expected_target:
+        raise ValueError(
+            "corpus_profile.target does not match the required Steam Skyrim SE/AE "
+            f"1.7.104.0 build 24914197 target: expected {expected_target}"
+        )
+    profile_evidence = _read_evidence_artifact(
+        descriptor_path, profile["evidence"], "corpus_profile"
+    )
+
+    locale = _exact_object(root["locale"], {"value", "evidence"}, "locale")
+    locale_value = _required_text(locale["value"], "locale.value")
+    locale_evidence = _read_evidence_artifact(
+        descriptor_path, locale["evidence"], "locale"
+    )
+
+    load_order = _exact_object(
+        root["load_order"],
+        {"active_plugins", "unloaded_optional_plugins", "evidence"},
+        "load_order",
+    )
+    active_plugins = _required_name_list(
+        load_order["active_plugins"], "load_order.active_plugins", allow_empty=False
+    )
+    unloaded_plugins = _required_name_list(
+        load_order["unloaded_optional_plugins"],
+        "load_order.unloaded_optional_plugins",
+        allow_empty=True,
+    )
+    overlap = {name.casefold() for name in active_plugins} & {
+        name.casefold() for name in unloaded_plugins
+    }
+    if overlap:
+        raise ValueError(
+            "load_order classifies plugins as both active and unloaded: "
+            + ", ".join(sorted(overlap))
+        )
+    load_order_evidence = _read_evidence_artifact(
+        descriptor_path, load_order["evidence"], "load_order"
+    )
+
+    return {
+        "descriptor": {
+            "path": str(descriptor_path),
+            "size": size,
+            "sha256": digest,
+            "status": "supplied_input_hash_verified; semantic_claims_unverified",
+        },
+        "corpus_profile": {
+            "id": profile_id,
+            "target": expected_target,
+            "evidence": profile_evidence,
+            "status": "supplied_evidence_hash_verified",
+            "semantic_status": "unverified",
+        },
+        "locale": {
+            "value": locale_value,
+            "evidence": locale_evidence,
+            "status": "supplied_evidence_hash_verified",
+            "semantic_status": "unverified",
+        },
+        "load_order": {
+            "active_plugins": active_plugins,
+            "unloaded_optional_plugins": unloaded_plugins,
+            "evidence": load_order_evidence,
+            "status": "supplied_evidence_hash_verified",
+            "semantic_status": "unverified",
+        },
+    }
+
+
+def _validate_supplied_load_order(load_order: dict, plugins: list[dict]) -> dict:
+    by_name: dict[str, list[dict]] = {}
+    for plugin in plugins:
+        by_name.setdefault(plugin["name"].casefold(), []).append(plugin)
+    duplicates = sorted(name for name, matches in by_name.items() if len(matches) != 1)
+    if duplicates:
+        raise ValueError(
+            "cannot validate supplied load order against duplicate installed plugin names: "
+            + ", ".join(duplicates)
+        )
+
+    installed_names = {folded: matches[0]["name"] for folded, matches in by_name.items()}
+    active = load_order["active_plugins"]
+    unloaded = load_order["unloaded_optional_plugins"]
+    active_folded = [name.casefold() for name in active]
+    unloaded_folded = [name.casefold() for name in unloaded]
+    supplied = set(active_folded) | set(unloaded_folded)
+    unknown = sorted(supplied - installed_names.keys())
+    omitted = sorted(installed_names.keys() - supplied)
+    if unknown:
+        raise ValueError("load_order names are not installed in Data: " + ", ".join(unknown))
+    if omitted:
+        raise ValueError(
+            "load_order must classify every installed plugin as active or unloaded optional; "
+            "unclassified: " + ", ".join(omitted)
+        )
+
+    active_index = {name: index for index, name in enumerate(active_folded)}
+    inactive_required = [
+        name for name in REQUIRED_BASE_PLUGINS if name.casefold() not in active_index
+    ]
+    if inactive_required:
+        raise ValueError(
+            "load_order cannot mark required base plugins unloaded: "
+            + ", ".join(inactive_required)
+        )
+
+    for index, folded_name in enumerate(active_folded):
+        plugin = by_name[folded_name][0]
+        tes4 = plugin["tes4"]
+        if tes4.get("status") != "decoded":
+            raise ValueError(
+                f"load_order cannot validate {plugin['name']}: TES4 masters were not decoded"
+            )
+        for master in tes4["masters"]:
+            master_folded = master.casefold()
+            master_index = active_index.get(master_folded)
+            if master_index is None:
+                raise ValueError(
+                    f"load_order omits active master {master} required by {plugin['name']}"
+                )
+            if master_index >= index:
+                raise ValueError(
+                    f"load_order places master {master} after dependent plugin {plugin['name']}"
+                )
+
+    return {
+        "status": load_order["status"],
+        "semantic_status": "dependency_order_checked; active-state_claim_unverified",
+        "source": load_order["evidence"],
+        "entries": [installed_names[name] for name in active_folded],
+        "unloaded_optional_plugins": [installed_names[name] for name in unloaded_folded],
+        "dependency_order_validated": True,
+    }
+
+
 def _discover_files(data_root: Path, suffixes: set[str], issues: list[dict]) -> list[Path]:
     found = []
 
@@ -469,20 +730,13 @@ def _dependency_closure(plugins: list[dict], issues: list[dict]) -> dict:
     }
 
 
-def _source_observation(path: Path, data_root: Path, kind: str) -> dict:
-    provenance = _source_path(data_root, path, "data")
-    info = _path_stat(path)
-    return {
-        "name": path.name,
-        "source": provenance,
-        "size": info.st_size,
-        "hash_status": "not_hashed",
-        "kind": kind,
-        "gap": "archive contents and bundled string tables were not read",
-    }
-
-
-def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path: Path | None = None) -> dict:
+def build_manifest(
+    game_root: Path,
+    data_root: Path,
+    executable: Path,
+    ccc_path: Path | None = None,
+    corpus_evidence_path: Path | None = None,
+) -> dict:
     game_root = Path(game_root).resolve(strict=True)
     data_root = Path(data_root).resolve(strict=True)
     executable = Path(executable).expanduser().absolute()
@@ -496,6 +750,7 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
     if ccc_path.parent != game_root:
         raise ValueError("Skyrim.ccc must be an immediate child of the supplied game root")
     ccc_source = _source_path(game_root, ccc_path, "game")
+    supplied_evidence = _read_corpus_evidence(corpus_evidence_path)
 
     issues = []
     runtime = {
@@ -589,9 +844,22 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
     archives = []
     for path in archive_paths:
         try:
-            archives.append(_source_observation(path, data_root, "archive_unhashed"))
+            archives.append(_scan_hashed_file(path, data_root, "data", "archive"))
         except SourceDriftError as exc:
-            issues.append({"code": "source_stat_error", "path": str(path.relative_to(data_root)), "detail": str(exc)})
+            missing = isinstance(exc, MissingSourceError)
+            archives.append({
+                "name": path.name,
+                "source": _source_path(data_root, path, "data"),
+                "size": None,
+                "sha256": None,
+                "hash_status": "failed_source_missing" if missing else "failed_source_drift",
+                "kind": "archive",
+            })
+            issues.append({
+                "code": "missing_required_input" if missing else "source_drift",
+                "path": str(path.relative_to(data_root)),
+                "detail": str(exc),
+            })
 
     if not ccc_path.exists():
         ccc = {
@@ -634,9 +902,48 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
 
     plugin_complete = all(plugin["tes4"].get("status") == "decoded" for plugin in plugins)
     no_hard_issues = not issues
-    archive_coverage_complete = not archives
-    load_order = {"status": "unresolved", "source": None, "entries": []}
-    locale = {"status": "unresolved", "string_table_observation": string_table_status}
+    archive_hashes_complete = all(
+        archive["hash_status"] == "observed_candidate_pin" for archive in archives
+    )
+    inventory_gap_codes = {
+        "data_walk_error",
+        "non_file_source_skipped",
+        "source_stat_error",
+        "symlink_directory_skipped",
+        "symlink_file_skipped",
+    }
+    archive_inventory_complete = not any(
+        issue["code"] in inventory_gap_codes for issue in issues
+    )
+    archive_coverage_complete = archive_hashes_complete and archive_inventory_complete
+    if supplied_evidence is None:
+        load_order = {
+            "status": "unresolved",
+            "semantic_status": "no_explicit_evidence_supplied",
+            "source": None,
+            "entries": [],
+            "unloaded_optional_plugins": [],
+            "dependency_order_validated": False,
+        }
+        locale = {
+            "status": "unresolved",
+            "semantic_status": "no_explicit_evidence_supplied",
+            "value": None,
+            "evidence": None,
+            "string_table_observation": string_table_status,
+        }
+        corpus_profile = {
+            "status": "unresolved",
+            "semantic_status": "no_explicit_evidence_supplied",
+            "id": None,
+            "evidence": None,
+        }
+    else:
+        load_order = _validate_supplied_load_order(supplied_evidence["load_order"], plugins)
+        locale = supplied_evidence["locale"]
+        locale["string_table_observation"] = string_table_status
+        corpus_profile = supplied_evidence["corpus_profile"]
+
     corpus_pin_status = "first_observation_only; no prior accepted corpus digest set was supplied"
     completion_blockers = []
     if not no_hard_issues:
@@ -647,12 +954,25 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
         completion_blockers.append("master_dependency_closure_incomplete")
     if not all(item["present"] for item in base_plugins):
         completion_blockers.append("required_base_plugin_missing")
-    if not archive_coverage_complete:
-        completion_blockers.append("archive_contents_unhashed")
-    if load_order["status"] != "resolved":
+    if not archive_hashes_complete:
+        completion_blockers.append("archive_hash_coverage_incomplete")
+    if not archive_inventory_complete:
+        completion_blockers.append("archive_inventory_incomplete")
+    if archives or not archive_inventory_complete:
+        completion_blockers.append("bundled_string_tables_uninspected")
+    if load_order["status"] == "unresolved":
         completion_blockers.append("active_load_order_unresolved")
-    if locale["status"] != "resolved":
+    else:
+        completion_blockers.append("active_load_order_semantics_unverified")
+    if locale["status"] == "unresolved":
         completion_blockers.append("locale_unresolved")
+    else:
+        completion_blockers.append("locale_semantics_unverified")
+    if corpus_profile["status"] == "unresolved":
+        completion_blockers.append("corpus_profile_unresolved")
+    else:
+        completion_blockers.append("corpus_profile_semantics_unverified")
+    completion_blockers.append("official_content_provenance_unresolved")
     if corpus_pin_status != "accepted":
         completion_blockers.append("accepted_corpus_pin_set_missing")
     complete = not completion_blockers
@@ -670,6 +990,8 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
             "runtime": runtime,
         },
         "source_roots": {"game": str(game_root), "data": str(data_root)},
+        "input_evidence": None if supplied_evidence is None else supplied_evidence["descriptor"],
+        "corpus_profile": corpus_profile,
         "corpus_hashes": {
             "status": corpus_pin_status,
             "plugins": plugins,
@@ -678,10 +1000,26 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
         "plugin_count": len(plugins),
         "string_table_count": len(string_tables),
         "archive_observations": {
-            "status": "filenames_and_sizes_only; archive bytes and bundled tables were not read",
+            "status": "archive_inventory_incomplete" if not archive_inventory_complete else (
+                "archive_hash_coverage_incomplete" if not archive_hashes_complete else (
+                    "whole_archive_bytes_hashed; bundled_string_tables_not_inspected"
+                    if archives
+                    else "no_archives_observed"
+                )
+            ),
             "count": len(archives),
             "files": archives,
             "coverage_complete": archive_coverage_complete,
+            "hashes_complete": archive_hashes_complete,
+            "inventory_complete": archive_inventory_complete,
+            "bundled_string_tables": {
+                "status": "uninspected" if archives or not archive_inventory_complete else "no_archives_observed",
+                "inspection_complete": not archives and archive_inventory_complete,
+            },
+            "hash_method": (
+                "SHA-256 from one opened descriptor in bounded chunks; pre/post file identity "
+                "and stat checks detect observed drift but do not provide an immutable snapshot"
+            ),
         },
         "base_plugins": base_plugins,
         "dependency_closure": dependency_closure,
@@ -690,8 +1028,27 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
         "locale": locale,
         "unresolved": [
             "Skyrim.ccc names are a declared content list, not active load order or entitlement proof",
-            "BSA/BA2 contents, including bundled string tables, were not inspected or hashed",
-            "locale is unresolved; no locale was inferred from installed filenames",
+            *(
+                ["BSA/BA2 archive inventory is incomplete; discovered hashes and bundled-table status are partial"]
+                if not archive_inventory_complete
+                else ["some BSA/BA2 whole-file hashes are incomplete; bundled string tables were not inspected"]
+                if not archive_hashes_complete
+                else ["BSA/BA2 file bytes were hashed, but archive entries and bundled string tables were not inspected"]
+                if archives
+                else []
+            ),
+            *(
+                ["locale is unresolved; no locale was inferred from installed filenames"]
+                if locale["status"] == "unresolved"
+                else ["locale value and evidence bytes were supplied; the semantic claim is not independently verified"]
+            ),
+            *(
+                ["active load order is unresolved"]
+                if load_order["status"] == "unresolved"
+                else ["active load-order evidence bytes were hashed and dependencies checked; the active-state claim is not independently verified"]
+            ),
+            "corpus-profile input cannot establish official-content provenance or entitlement",
+            "official-content provenance is unresolved; filenames and CCC declarations are not proof",
             "plugin and loose string-table hashes are first observations without a prior accepted corpus pin set",
         ],
         "issues": sorted(issues, key=lambda item: (item["code"], item.get("path", item.get("plugin", item.get("name", ""))).casefold())),
@@ -707,6 +1064,18 @@ def ensure_output_outside_sources(output: Path, game_root: Path, data_root: Path
             continue
         raise ValueError(f"manifest output must be outside source root {source_root}")
     return output
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    try:
+        second.relative_to(first)
+        return True
+    except ValueError:
+        try:
+            first.relative_to(second)
+            return True
+        except ValueError:
+            return False
 
 
 def write_manifest(output: Path, manifest: dict, game_root: Path, data_root: Path) -> None:
@@ -739,6 +1108,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, required=True, help="selected installed Data source directory")
     parser.add_argument("--executable", type=Path, required=True, help="SkyrimSE.exe to compare with the fixed target pin")
     parser.add_argument("--ccc", type=Path, help="Skyrim.ccc path (defaults to <game-root>/Skyrim.ccc)")
+    parser.add_argument(
+        "--corpus-evidence",
+        type=Path,
+        help="strict JSON candidate locale/load-order/corpus-profile inputs with SHA-256-bound evidence files",
+    )
     parser.add_argument("--output", type=Path, required=True, help="manifest JSON path outside all source roots")
     return parser.parse_args(argv)
 
@@ -751,7 +1125,19 @@ def main(argv: list[str] | None = None) -> int:
         executable = args.executable.expanduser().absolute()
         ccc_path = args.ccc.expanduser().absolute() if args.ccc else game_root / "Skyrim.ccc"
         output = ensure_output_outside_sources(args.output, game_root, data_root)
-        manifest = build_manifest(game_root, data_root, executable, ccc_path)
+        manifest = build_manifest(game_root, data_root, executable, ccc_path, args.corpus_evidence)
+        evidence_paths = set()
+        if manifest["input_evidence"] is not None:
+            evidence_paths.add(Path(manifest["input_evidence"]["path"]).resolve(strict=True))
+            for name in ("corpus_profile", "locale", "load_order"):
+                artifact = manifest[name]["source"] if name == "load_order" else manifest[name]["evidence"]
+                evidence_paths.add(Path(artifact["path"]).resolve(strict=True))
+        for evidence_path in evidence_paths:
+            if _paths_overlap(output, evidence_path):
+                raise ValueError(
+                    "manifest output overlaps the corpus evidence descriptor or a referenced artifact: "
+                    f"{evidence_path}"
+                )
         write_manifest(output, manifest, game_root, data_root)
     except (OSError, ValueError, SourceDriftError) as exc:
         print(f"corpus manifest failed: {exc}", file=sys.stderr)
