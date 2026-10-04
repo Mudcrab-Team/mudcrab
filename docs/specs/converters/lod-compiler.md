@@ -82,7 +82,20 @@ content hashes of inputs, rule set, settings, and compiler version
 publish only after every referenced payload validates. The `lod` reshape
 ships with a world DB version bump.
 
-The consolidated implementation uses converter schema 17 and world schema 5.
+The consolidated implementation uses converter schema 20 and world schema 6. Converter schemas 17–19 are reserved
+for the L1 lighting stack (#139/#141/#142); world schema 5 is reserved for
+grass data (#152). Earlier LOD schema-17/world-5 packages and journals have
+ambiguous producer identities and must be regenerated from verified source
+assets. They are not relabeled. Metadata reuse accepts only source schemas
+15, 16 and 20, with explicit retained-mesh provenance. Grass-only schema-5
+worlds remain readable without LOD tables.
+
+When combining these branches, resolve the cache and metadata gates deliberately:
+the numeric ordering alone does not prove that a lighting mesh is compatible
+with the LOD branch. A combined producer must use a new converter identity
+above 20, and a combined grass/LOD database must use a new world identity above
+6; update runtime, launcher, manifests and capture gates together. Existing
+native evidence below describes its original producer and is historical.
 Main's converter schema 16 identifies collision-aware assets; retained assets
 keep their producer schema/configuration during metadata-only rebuilds.
 
@@ -113,12 +126,12 @@ settings cannot survive in staged metadata or payloads.
 - LOD-V3: resumed output after an origin change equals a clean build's chunk
   keys/hashes; removing the winning sidecar removes old chunks, R-tree rows,
   payloads, and manifest. Full-detail conversion remains usable.
-- LOD-V4: `--reuse-assets DIR` requires complete schema 15 through 17 source;
+- LOD-V4: `--reuse-assets DIR` requires complete schema 15, 16 or 20 source;
   retained bytes match manifest hashes; source DB plugin order/checksums
   match originals before rebuild. New disjoint output only; source unchanged.
   Retained meshes/textures/scripts reflect source package, not later Data
   asset replacements. Normal conversion required to refresh those assets.
-  Rebuild schema-5 headers/enable state, cache, origins, chunks, R-tree,
+  Rebuild schema-6 headers/enable state, cache, origins, chunks, R-tree,
   manifests and integration report; never default missing metadata or copy
   stale generated outputs. `metadata-rebuild.json` retains source schema,
   manifest/configuration hash and copied asset hashes. Fresh archive/loose
@@ -182,7 +195,7 @@ settings cannot survive in staged metadata or payloads.
 
 ## Bug history
 
-Consolidation gate: schema-17 outputs distinguish LOD from main's schema-16
+Consolidation gate: schema-20 outputs distinguish LOD from main's schema-16
 collision producer; existing schema-3/4 databases remain full-detail-only and
 cannot advertise LOD. Current-schema databases require LOD tables. A world
 without compiled chunks does not require an invented LOD origin. Regression

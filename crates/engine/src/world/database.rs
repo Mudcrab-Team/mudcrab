@@ -444,7 +444,7 @@ pub(crate) fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u
         let version: u32 =
             connection.query_row("SELECT version FROM schema_info", [], |row| row.get(0))?;
         color_eyre::eyre::ensure!(
-            version < 5 && !manifest_path.exists(),
+            version < shared::WORLD_DATABASE_LOD_SCHEMA_VERSION && !manifest_path.exists(),
             "world database has no LOD chunk table"
         );
         return Ok(());
@@ -610,7 +610,10 @@ fn load_lod_chunks(connection: &Connection, query: LodChunkQuery) -> Result<Vec<
     if !has_lod_table(connection)? {
         let version: u32 =
             connection.query_row("SELECT version FROM schema_info", [], |row| row.get(0))?;
-        color_eyre::eyre::ensure!(version < 5, "world database has no LOD chunk table");
+        color_eyre::eyre::ensure!(
+            version < shared::WORLD_DATABASE_LOD_SCHEMA_VERSION,
+            "world database has no LOD chunk table"
+        );
         return Ok(Vec::new());
     }
     let has_chunks: bool = connection.query_row(
@@ -1038,7 +1041,7 @@ mod tests {
         connection
             .execute_batch(
                 r#"CREATE TABLE schema_info(version INTEGER NOT NULL);
-                INSERT INTO schema_info VALUES(5);
+                INSERT INTO schema_info VALUES(6);
                 CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
                 CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
                 CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
@@ -1128,7 +1131,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_info(version INTEGER NOT NULL);
-                 INSERT INTO schema_info VALUES(5);
+                 INSERT INTO schema_info VALUES(6);
                  CREATE TABLE lod_chunks(id INTEGER PRIMARY KEY);
                  CREATE TABLE lod_build(id INTEGER PRIMARY KEY,build_identity TEXT NOT NULL);",
             )
@@ -1148,7 +1151,7 @@ mod tests {
 
     #[test]
     fn legacy_databases_render_without_lod_but_cannot_advertise_lod() {
-        for version in [3, 4] {
+        for version in [3, 4, 5] {
             let directory = tempfile::tempdir().unwrap();
             let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
             connection.execute_batch(&format!(
@@ -1159,9 +1162,9 @@ mod tests {
                     .unwrap()
                     .is_empty()
             );
-            validate_lod_build_contract(directory.path(), 17).unwrap();
+            validate_lod_build_contract(directory.path(), 20).unwrap();
             std::fs::write(directory.path().join("lod-manifest.json"), b"{}").unwrap();
-            assert!(validate_lod_build_contract(directory.path(), 17).is_err());
+            assert!(validate_lod_build_contract(directory.path(), 20).is_err());
         }
     }
 
@@ -1170,10 +1173,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
         connection.execute_batch(
-            "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(5);"
+            "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(6);"
         ).unwrap();
         assert!(load_lod_chunks(&connection, lod_query([0.0, 0.0], [1.0, 1.0])).is_err());
-        assert!(validate_lod_build_contract(directory.path(), 17).is_err());
+        assert!(validate_lod_build_contract(directory.path(), 20).is_err());
     }
 
     #[test]
@@ -1208,7 +1211,7 @@ mod tests {
                 "build_identity": identity,
                 "converter_schema": 16,
                 "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
-                "world_database_schema": 5,
+                "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
                 "chunks": 1,
             }))
             .unwrap(),

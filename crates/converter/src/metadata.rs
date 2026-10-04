@@ -75,10 +75,11 @@ impl AssetPipeline {
         // GLBs during schema migration, which this explicit route verifies instead.
         let mut manifest: ConversionManifest = serde_json::from_slice(&source_manifest)?;
         ensure!(
-            matches!(manifest.schema_version, 15..=17)
+            (matches!(manifest.schema_version, 15 | 16)
+                || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && manifest.complete
                 && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15 through 17 assets"
+            "metadata rebuild requires complete converter schema 15, 16 or 20 assets"
         );
         ensure!(
             manifest.retained_mesh_schema_version.is_some()
@@ -89,7 +90,8 @@ impl AssetPipeline {
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
         ensure!(
-            matches!(mesh_schema, 15..=17) && mesh_schema <= manifest.schema_version,
+            (matches!(mesh_schema, 15 | 16) || mesh_schema == CONVERTER_SCHEMA_VERSION)
+                && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );
         ensure!(

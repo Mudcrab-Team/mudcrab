@@ -1053,8 +1053,8 @@ pub(crate) mod tests {
     #[test]
     fn readiness_accepts_the_same_schema_ranges_as_the_runtime() {
         let output = complete_output("lod-schema-range");
-        for converter_schema in [14, 15, 16, 17, 18] {
-            for world_schema in [2, 3, 4, 5, 6] {
+        for converter_schema in 14..=converter::cache::CONVERTER_SCHEMA_VERSION + 1 {
+            for world_schema in 2..=shared::WORLD_DATABASE_SCHEMA_VERSION + 1 {
                 std::fs::write(
                     output.join(MANIFEST_FILE),
                     format!(

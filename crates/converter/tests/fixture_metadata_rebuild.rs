@@ -257,7 +257,7 @@ async fn metadata_rebuild_reuses_bytes_and_recovers_authoritative_flags() {
     let version: u32 = connection
         .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, shared::WORLD_DATABASE_SCHEMA_VERSION);
     let provenance: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap();
     assert_eq!(provenance["source_converter_schema"], 15);
@@ -339,7 +339,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
 
 #[tokio::test]
 async fn metadata_rebuild_rejects_unsupported_mesh_provenance() {
-    for (schema, mesh_schema) in [(15, 16), (17, 18)] {
+    for (schema, mesh_schema) in [(15, 16), (20, 17), (20, 18), (20, 19)] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -641,5 +641,31 @@ async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_r
             hash_file(&source.join("meshes/generated.glb")).unwrap(),
             retained
         );
+    }
+}
+
+#[tokio::test]
+async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    generate(&data);
+    convert(&data, &source).await;
+    let path = source.join("conversion-manifest.json");
+    let mut manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for schema in [17, 18, 19] {
+        manifest.schema_version = schema;
+        manifest.save(&path).unwrap();
+        let output = directory.path().join(format!("derived-{schema}"));
+        let error = rebuild(&data, &source, &output)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("complete converter schema 15, 16 or 20"),
+            "{error}"
+        );
+        assert!(!output.exists());
     }
 }

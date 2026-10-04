@@ -70,23 +70,23 @@ def make_package(package):
     write_json(
         package / "assets/lod-manifest.json",
         {
-            "converter_schema": 17,
-            "world_database_schema": 5,
+            "converter_schema": 20,
+            "world_database_schema": 6,
             "build_identity": identity,
             "chunks": 1,
         },
     )
     write_json(
         package / "assets/conversion-manifest.json",
-        {"schema_version": 17, "complete": True},
+        {"schema_version": 20, "complete": True},
     )
     write_json(
         package / "assets/integration-report.json",
-        {"schema_version": 5, "passed": True},
+        {"schema_version": 6, "passed": True},
     )
     with sqlite3.connect(package / "assets/skyrim_world.db") as database:
         database.execute("CREATE TABLE schema_info(version INTEGER NOT NULL)")
-        database.execute("INSERT INTO schema_info(version) VALUES (5)")
+        database.execute("INSERT INTO schema_info(version) VALUES (6)")
         database.execute(
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL)"
         )
@@ -201,13 +201,13 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
             (
                 "converter schema",
                 "assets/lod-manifest.json",
-                lambda value: value.update(converter_schema=15),
+                lambda value: value.update(converter_schema=17),
                 "Unsupported LOD schemas",
             ),
             (
                 "database schema",
                 "assets/lod-manifest.json",
-                lambda value: value.update(world_database_schema=4),
+                lambda value: value.update(world_database_schema=5),
                 "Unsupported LOD schemas",
             ),
             (

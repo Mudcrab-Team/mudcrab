@@ -11,7 +11,7 @@ Fixed spatial tiers past the full-detail grid: 4-, 8-, and 16-cell blocks
 policy, and variant stay separate dimensions (ARCH-03). Per-worldspace LOD
 origins anchor chunks; floor division rounds toward negative infinity so a
 position just west of zero lands in cell -1 (GEOM-02). `worldspaces` needs
-origin columns in world database schema 5.
+origin columns in world database schema 6.
 
 Selection is tier-based first. Projected-size selection is a later option,
 not the initial contract.
@@ -221,7 +221,7 @@ Capture invariants:
 - LOD-CV1: capture output is new and outside the package after path
   canonicalization. A rejected output request writes no package files.
 - LOD-CV2: handoff capture validates a typed commit/dirty flag, exact binary
-  and metadata checksums, passing integration, and the expected schema-5
+  and metadata checksums, passing integration, and the expected schema-6
   DB/manifest build identity before launch. Both runs require parseable,
   passing benchmark reports, ready screenshots, and zero failed/pending
   streaming work. An engine exit code alone is insufficient evidence.

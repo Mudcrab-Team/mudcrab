@@ -8,7 +8,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CONVERTER_SCHEMA_VERSION: u32 = 17;
+// 17–19 belong to the L1 lighting stack. Old LOD schema 17 is ambiguous;
+// neither its staged outputs nor lighting meshes establish this producer's identity.
+pub const CONVERTER_SCHEMA_VERSION: u32 = 20;
+
+/// Mesh producers explicitly verified as unchanged by the LOD-only converter.
+/// A higher numeric version alone does not establish compatible mesh semantics.
+fn supports_lod_mesh_cache_schema(schema: u32) -> bool {
+    schema == 16 || schema == CONVERTER_SCHEMA_VERSION
+}
 
 /// Provenance journal the converter keeps inside a staging directory.
 ///
@@ -219,15 +227,13 @@ impl ConversionManifest {
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
         let retained_meshes_are_stale = manifest.schema_version == CONVERTER_SCHEMA_VERSION
             && match manifest.retained_mesh_schema_version {
-                Some(schema) => !(16..=CONVERTER_SCHEMA_VERSION).contains(&schema),
+                Some(schema) => !supports_lod_mesh_cache_schema(schema),
                 None => path
                     .parent()
                     .is_some_and(|root| root.join("metadata-rebuild.json").exists()),
             };
-        if (matches!(manifest.schema_version, 12..=15) && CONVERTER_SCHEMA_VERSION == 17)
-            || retained_meshes_are_stale
-        {
-            // Schema 16 adds authored collision; schema 17 does not change mesh output.
+        if matches!(manifest.schema_version, 12..=15) || retained_meshes_are_stale {
+            // Schema 16 adds authored collision; LOD schema 20 retains that mesh contract.
             // Preserve verified non-mesh assets, but rebuild GLBs and world data.
             manifest.complete = false;
             manifest
@@ -624,6 +630,37 @@ mod tests {
     }
 
     #[test]
+    fn v91_lod_staging_identity_excludes_lighting_and_old_lod_schemas() {
+        let directory = tempfile::tempdir().unwrap();
+        let config =
+            crate::config::PipelineConfig::new(directory.path(), directory.path().join("output"));
+        let current_hash = configuration_hash(&config).unwrap();
+        for schema in [17, 18, 19] {
+            assert_ne!(
+                current_hash,
+                configuration_hash_for_schema(&config, schema).unwrap()
+            );
+        }
+        let path = directory.path().join("mesh.glb");
+        fs::write(&path, b"verified mesh").unwrap();
+        let record = StagedOutput {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash: "config".into(),
+            source_hash: "source".into(),
+            output_size: 13,
+            output_hash: hash_file(&path).unwrap(),
+        };
+        assert!(record.is_current(&path, "source", "config"));
+        for schema_version in [17, 18, 19] {
+            let stale = StagedOutput {
+                schema_version,
+                ..record.clone()
+            };
+            assert!(!stale.is_current(&path, "source", "config"));
+        }
+    }
+
+    #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
         for schema_version in [12, 13, 14, 15, 16] {
             let directory = tempfile::tempdir().unwrap();
@@ -661,7 +698,7 @@ mod tests {
 
     #[test]
     fn current_metadata_never_promotes_an_older_or_unknown_mesh_contract() {
-        for mesh_schema in [15, 18] {
+        for mesh_schema in [15, 17, 18, 19, CONVERTER_SCHEMA_VERSION + 1] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {

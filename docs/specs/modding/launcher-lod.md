@@ -63,7 +63,7 @@ ordinary resumable conversion.
   job kind. Hide unsupported Resume for this kind; failure must not invent
   resumable staging or point Delete staging at source assets.
 - Verify native source producer/configuration, all retained bytes, winning
-  plugin order/checksums, regenerated LOD identity and schema-17/5 integration.
+  plugin order/checksums, regenerated LOD identity and schema-20/6 integration.
   Publish new directory atomically. Never overwrite source or relabel old LOD.
 - On success, select new derived output for Play. On failure/cancellation,
   preserve previous playable output and show actionable error.

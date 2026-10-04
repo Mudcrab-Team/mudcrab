@@ -90,7 +90,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"PRAGMA foreign_keys = ON;
          CREATE TABLE IF NOT EXISTS schema_info (version INTEGER NOT NULL);
-         INSERT INTO schema_info(version) SELECT 5 WHERE NOT EXISTS (SELECT 1 FROM schema_info);
+         INSERT INTO schema_info(version) SELECT 6 WHERE NOT EXISTS (SELECT 1 FROM schema_info);
          CREATE TABLE IF NOT EXISTS plugins (
              id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, priority INTEGER NOT NULL, checksum BLOB NOT NULL
          );

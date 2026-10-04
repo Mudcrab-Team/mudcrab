@@ -138,7 +138,7 @@ V25: P3 lumbermill walkway `MASK` primitive → proxy; masked roof/rope & unrela
 V26: WALK crosses adjacent 15-unit floor rises without jump while existing wall/24-unit step tests remain green.
 V27: P3 converted `STAT`/`TREE` with physical NIF Havok layer + supported shape → authored collider; absent collision or `NONCOLLIDABLE` layer → passable; unsupported shape → counted reason. Legacy GLBs alone use narrow proxy policy.
 V28: P3 bridge/stair compressed mesh follows authored triangles, chunk transforms, body and node transforms; WALK crosses deck/treads without render-beam snag; tankard contacts deck. Invalid refs, indices, transforms → skipped reason, no invented collider.
-V29: Converter collision-contract change bumps cache schema; engine accepts complete converter schema 15–17 packages, schema 15 via proxy fallback; older/newer/incomplete assets fail startup.
+V29: Converter collision-contract change bumps cache schema; engine accepts complete converter schema 15–20 packages, schema 15 via proxy fallback; older/newer/incomplete assets fail startup.
 V30: Converter schema 12–15 → 16 migration marks manifest incomplete, invalidates every GLB cache entry, preserves unchanged texture/script cache entries.
 V31: Packaged Riverwood 5×5 and wider grid `x=-1..11,y=-18..-6` audits → zero unsupported fixed `STAT`/`TREE` models; bridge, stairs, lumbermill, pine solid & clover passable.
 V32: P3 authored multi-shape placement → each mesh/primitive attached as child collider to one fixed body; ⊥ nested Rapier compounds; all child colliders use world groups and answer contact queries without panic.
@@ -180,11 +180,11 @@ V67: `Space` press remains latched across Update frames until WALK fixed tick co
 V68: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
 V69: Active airborne WALK with no downward collision ray continues descending across fixed ticks; ground-ray miss alone never resets velocity or reports terrain loading.
 V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
-V71: Runtime accepts passed integration report & world database schema 3 through 5 inclusive; schema 3 legacy & additive schemas 4/5 supported; older/newer schemas rejected; supported Riverwood package reaches world loading without `--allow-incomplete-assets`.
+V71: Runtime accepts passed integration report & world database schema 3 through 6 inclusive; schema 3 legacy & additive schemas 4/5/6 supported; older/newer schemas rejected; supported Riverwood package reaches world loading without `--allow-incomplete-assets`.
 
 V72: Launcher conversion runs existing terrain LOD stage exactly once before final validation/publication; LOD failure cannot report successful conversion. No second compiler or duplicate post-publication job.
 V73: Launcher retains LOD chunk count & LOD warnings; zero chunks, partial world coverage & compiler failure remain distinct. LOD stage label/count accurate; no invented ETA or benchmark acceptance.
-V74: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-17/5 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
+V74: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-20/6 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
 V75: Existing-assets LOD build unavailable until cancellable metadata API & worker/state tests pass; cancellation checked between retained files & worlds and before publication; in-flight file/world allowed to finish; never reports resumable staging without journal support. Engine-running/path/asset-lock guards retained.
 V76: Publication backups identified by full output name; record-owned recovery restores supported manifests with verified retained output sizes/hashes; incomplete status retained; invalid or symlink backups remain untouched.
 V77: Equivalent existing asset paths share one canonical lock; acquisition fails on resolution errors; missing-tail paths normalized before report containment checks.
@@ -203,6 +203,8 @@ V88: `--ini` retains strict CLI missing/option-shaped value rejection, help prec
 
 V89: Script CLI drift checks cover utility commands, excluding script-test assertions; non-engine flags classified by owner; comma-separated values remain whole and PowerShell list delimiters still split.
 V90: Serialized legacy `PipelineConfig` without `lod_origins` → empty map, no invented world origin; explicit signed origins retained; existing config fields/defaults unchanged.
+
+V91: LOD converter schema 20/world 6 distinct from lighting converter 17–19/grass world 5; staged outputs from ambiguous schema 17 or lighting 18/19 rejected; retained-mesh reuse ! explicit producer allowlist; grass-only world 5 loads without LOD tables.
 
 ## §T TASKS
 
@@ -316,3 +318,4 @@ B62|2026-10-03|conflict splice placed `notices` before LOD keys in sorted JSON s
 B63|2026-10-03|new `lod_origins` lacked serde default, rejecting legacy serialized configs|V90
 B64|2026-10-03|schema docs claimed legacy `lod` removal while exporter retained unused table|document retained placeholder and external GLB payloads; documentation correction, no new invariant
 B65|2026-10-03|V29/V71 retained pre-LOD current schema limits after runtime range expanded to converter 17/world 5|align existing invariants with supported ranges; existing runtime/launcher range tests, no new invariant
+B66|2026-10-03|LOD & grass both stamped world 5; LOD & emission both stamped converter 17; range reuse hid distinct producer contracts|V91; allocate LOD 20/6; preserve explicit cache gates; refresh schema-dependent snapshot/error fixtures; downstream failure not reproduced
