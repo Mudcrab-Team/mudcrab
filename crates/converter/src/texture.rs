@@ -3266,11 +3266,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_DDS_FIXTURE with a locally installed cubemap"]
+    #[ignore = "requires MUDCRAB_DDS_FIXTURE with a locally installed cubemap"]
     fn converts_installed_cubemap_fixture() {
-        let path = std::env::var_os("OPENSKYRIM_DDS_FIXTURE")
+        let path = std::env::var_os("MUDCRAB_DDS_FIXTURE")
+            .or_else(|| std::env::var_os("OPENSKYRIM_DDS_FIXTURE"))
             .map(std::path::PathBuf::from)
-            .expect("set OPENSKYRIM_DDS_FIXTURE to a cubemap DDS");
+            .expect("set MUDCRAB_DDS_FIXTURE to a cubemap DDS");
         let bytes = std::fs::read(&path).unwrap();
 
         let converted = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb)
@@ -3280,26 +3281,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_COLOR_DDS_FIXTURE with a locally installed color DDS"]
+    #[ignore = "requires MUDCRAB_COLOR_DDS_FIXTURE with a locally installed color DDS"]
     fn converts_installed_color_fixture() {
-        convert_installed_2d_fixture("OPENSKYRIM_COLOR_DDS_FIXTURE", TextureEncoding::ColorSrgb);
+        convert_installed_2d_fixture("MUDCRAB_COLOR_DDS_FIXTURE", TextureEncoding::ColorSrgb);
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_NORMAL_DDS_FIXTURE with a locally installed normal DDS"]
+    #[ignore = "requires MUDCRAB_NORMAL_DDS_FIXTURE with a locally installed normal DDS"]
     fn converts_installed_normal_fixture() {
-        convert_installed_2d_fixture(
-            "OPENSKYRIM_NORMAL_DDS_FIXTURE",
-            TextureEncoding::NormalLinear,
-        );
+        convert_installed_2d_fixture("MUDCRAB_NORMAL_DDS_FIXTURE", TextureEncoding::NormalLinear);
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_VOLUME_DDS_FIXTURE with a locally installed volume DDS"]
+    #[ignore = "requires MUDCRAB_VOLUME_DDS_FIXTURE with a locally installed volume DDS"]
     fn converts_installed_volume_fixture() {
-        let path = std::env::var_os("OPENSKYRIM_VOLUME_DDS_FIXTURE")
+        let path = std::env::var_os("MUDCRAB_VOLUME_DDS_FIXTURE")
+            .or_else(|| std::env::var_os("OPENSKYRIM_VOLUME_DDS_FIXTURE"))
             .map(std::path::PathBuf::from)
-            .expect("set OPENSKYRIM_VOLUME_DDS_FIXTURE to a volume DDS");
+            .expect("set MUDCRAB_VOLUME_DDS_FIXTURE to a volume DDS");
         let bytes = std::fs::read(&path).unwrap();
 
         let converted = TextureConverter::convert(&bytes, TextureEncoding::DataLinear)
@@ -3552,9 +3551,11 @@ mod tests {
     }
 
     fn convert_installed_2d_fixture(variable: &str, encoding: TextureEncoding) {
+        let legacy_var = variable.replace("MUDCRAB_", "OPENSKYRIM_");
         let path = std::env::var_os(variable)
+            .or_else(|| std::env::var_os(&legacy_var))
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| panic!("set {variable} to an installed DDS"));
+            .unwrap_or_else(|| panic!("set {variable} or {legacy_var} to an installed DDS"));
         let dds_bytes = std::fs::read(&path).unwrap();
         let dds = Dds::read(Cursor::new(&dds_bytes)).unwrap();
         let converted = TextureConverter::convert(&dds_bytes, encoding)

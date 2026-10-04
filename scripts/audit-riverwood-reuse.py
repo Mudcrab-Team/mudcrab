@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only structural reuse check for installed OpenSkyrim assets."""
+"""Read-only structural reuse check for installed Mudcrab assets."""
 
 from __future__ import annotations
 
@@ -251,13 +251,17 @@ def _inspect_glb(data: bytes, description: str) -> tuple[dict[str, Any], bytes, 
     extras = scenes[0].get("extras", MISSING)
     if extras is not MISSING and not isinstance(extras, dict):
         raise AuditError(f"{description}: scenes[0].extras must be an object")
-    has_collision = isinstance(extras, dict) and "openSkyrimCollision" in extras
+    collision_keys = [key for key in ("mudcrabCollision", "openSkyrimCollision")
+                      if isinstance(extras, dict) and key in extras]
+    if len(collision_keys) > 1:
+        raise AuditError(f"{description}: ambiguous collision extras keys")
+    has_collision = bool(collision_keys)
     collision_hash = None
     normalized = copy.deepcopy(document)
     if has_collision:
-        collision_hash = _sha256(_canonical_json(extras["openSkyrimCollision"]))
+        collision_hash = _sha256(_canonical_json(extras[collision_keys[0]]))
         normalized_extras = normalized["scenes"][0]["extras"]
-        del normalized_extras["openSkyrimCollision"]
+        del normalized_extras[collision_keys[0]]
         if not normalized_extras:
             del normalized["scenes"][0]["extras"]
     normalized_bytes = _canonical_json(normalized)
@@ -566,7 +570,7 @@ def compare(
         "format": COMPARISON_FORMAT,
         "passed": False,
         "method": {
-            "glb": "canonical structured JSON after removing only scenes[0].extras.openSkyrimCollision, plus byte-exact post-JSON data",
+            "glb": "canonical structured JSON after removing only scenes[0].extras.mudcrabCollision (legacy openSkyrimCollision also accepted), plus byte-exact post-JSON data",
             "non_glb": "exact file size and SHA-256",
             "collision_annotation": "candidate-only addition is permitted; existing reference values must remain byte-canonical identical",
             "scope": "portable inventory comparison only; collision correctness and collision audit support are unverified",

@@ -200,11 +200,12 @@ expression: document
   "scenes": [
     {
       "extras": {
-        "openSkyrimCollision": {
+        "mudcrabCollision": {
           "authored": true,
+          "bodies": [],
           "shapes": [],
           "skipped": [],
-          "version": 1
+          "version": 2
         }
       },
       "nodes": [

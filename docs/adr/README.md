@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory records the architecture decisions behind OpenSkyrim features. Each decision gets
+This directory records the architecture decisions behind Mudcrab features. Each decision gets
 its own numbered file using a lightweight MADR-style format: **Status**, **Date**, **Context**,
 **Decision**, **Consequences**.
 
@@ -20,5 +20,5 @@ its own numbered file using a lightweight MADR-style format: **Status**, **Date*
 | [0012](0012-billboard-atlas-layout.md) | Per-worldspace billboard atlases with gutters and layout versioning | Proposed |
 
 ADRs 0001–0008 were produced by the synthetic fixture generator work tracked in
-[issue #2](https://github.com/realfakenerd/OpenSkyrim/issues/2). Decisions for the NIF/ESM writers
+[issue #2](https://github.com/Mudcrab-Team/mudcrab/issues/2). Decisions for the NIF/ESM writers
 follow in the same series.

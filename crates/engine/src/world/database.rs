@@ -2,7 +2,6 @@ use bevy::prelude::Resource;
 use color_eyre::{Result, eyre::WrapErr};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use rusqlite::{Connection, OpenFlags, params};
-use serde::Deserialize;
 use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
 use std::{
     collections::BTreeSet,
@@ -350,7 +349,7 @@ impl WorldDatabase {
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let stopped = worker_stopped.clone();
         let worker = thread::Builder::new()
-            .name("openskyrim-world-db".into())
+            .name("mudcrab-world-db".into())
             .spawn(move || {
                 worker(path, request_rx, response_tx, lod_response_tx);
                 stopped.store(true, Ordering::Release);
@@ -418,116 +417,10 @@ impl Drop for WorldDatabase {
 }
 
 fn validate(path: &Path) -> Result<()> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .wrap_err_with(|| format!("failed to open {}", path.display()))?;
-    let version: u32 = connection
-        .query_row("SELECT version FROM schema_info LIMIT 1", [], |row| {
-            row.get(0)
-        })
-        .wrap_err("world database has no schema version")?;
-    color_eyre::eyre::ensure!(
-        shared::supports_runtime_world_database_schema(version),
-        "world database schema {version} is unsupported; supported versions are {} through {}",
-        shared::MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION,
-        shared::WORLD_DATABASE_SCHEMA_VERSION
-    );
-    Ok(())
+    shared::world_assets::validate_world_database(path).map(|_| ())
 }
 
-pub(crate) fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u32) -> Result<()> {
-    let database_path = assets_dir.join("skyrim_world.db");
-    validate(&database_path)?;
-    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .wrap_err_with(|| format!("failed to open {}", database_path.display()))?;
-    let manifest_path = assets_dir.join("lod-manifest.json");
-    if !has_lod_table(&connection)? {
-        let version: u32 =
-            connection.query_row("SELECT version FROM schema_info", [], |row| row.get(0))?;
-        color_eyre::eyre::ensure!(
-            version < shared::WORLD_DATABASE_LOD_SCHEMA_VERSION && !manifest_path.exists(),
-            "world database has no LOD chunk table"
-        );
-        return Ok(());
-    }
-    let chunk_count: i64 = connection
-        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
-        .wrap_err("world database has no LOD chunk table")?;
-    if !manifest_path.is_file() {
-        color_eyre::eyre::ensure!(
-            chunk_count == 0,
-            "world database contains {chunk_count} LOD chunks but {} is missing",
-            manifest_path.display()
-        );
-        return Ok(());
-    }
-
-    let conversion: LodProducerManifest = serde_json::from_slice(
-        &std::fs::read(assets_dir.join("conversion-manifest.json"))
-            .wrap_err("LOD package has no conversion producer manifest")?,
-    )
-    .wrap_err("invalid LOD conversion producer manifest")?;
-    color_eyre::eyre::ensure!(
-        conversion.schema_version == shared::LOD_CONVERTER_SCHEMA_VERSION,
-        "LOD conversion producer is stale; reconvert assets with converter schema {}",
-        shared::LOD_CONVERTER_SCHEMA_VERSION
-    );
-
-    let bytes = std::fs::read(&manifest_path)
-        .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: LodBuildManifest =
-        serde_json::from_slice(&bytes).wrap_err("invalid LOD build manifest")?;
-    color_eyre::eyre::ensure!(
-        manifest.land_texture_repeats_per_cell == shared::LAND_TEXTURE_REPEATS_PER_CELL,
-        "LOD terrain texture scale is stale; rebuild LOD metadata for {} repeats per cell",
-        shared::LAND_TEXTURE_REPEATS_PER_CELL
-    );
-    color_eyre::eyre::ensure!(
-        converter_schema == shared::LOD_CONVERTER_SCHEMA_VERSION
-            && manifest.converter_schema == converter_schema
-            && manifest.world_database_schema == shared::WORLD_DATABASE_SCHEMA_VERSION
-            && connection.query_row("SELECT version FROM schema_info", [], |row| row
-                .get::<_, u32>(0))?
-                == shared::WORLD_DATABASE_SCHEMA_VERSION,
-        "LOD manifest schema is stale; reconvert assets with converter schema {converter_schema} and world database schema {}",
-        shared::WORLD_DATABASE_SCHEMA_VERSION
-    );
-    color_eyre::eyre::ensure!(
-        is_canonical_sha256(&manifest.build_identity),
-        "LOD manifest build identity is not a lowercase SHA-256 digest"
-    );
-    let database_identity: String = connection
-        .query_row(
-            "SELECT build_identity FROM lod_build WHERE id=1",
-            [],
-            |row| row.get(0),
-        )
-        .wrap_err("world database has no LOD build identity")?;
-    color_eyre::eyre::ensure!(
-        database_identity == manifest.build_identity,
-        "LOD database and manifest build identities do not match"
-    );
-    color_eyre::eyre::ensure!(
-        u64::try_from(chunk_count).ok() == Some(manifest.chunks),
-        "LOD manifest declares {} chunks but the world database contains {chunk_count}",
-        manifest.chunks
-    );
-    Ok(())
-}
-
-#[derive(Deserialize)]
-struct LodProducerManifest {
-    schema_version: u32,
-}
-
-#[derive(Deserialize)]
-struct LodBuildManifest {
-    build_identity: String,
-    converter_schema: u32,
-    world_database_schema: u32,
-    chunks: u64,
-    #[serde(default)]
-    land_texture_repeats_per_cell: f32,
-}
+pub(crate) use shared::world_assets::validate_lod_build_contract;
 
 fn worker(
     path: std::path::PathBuf,

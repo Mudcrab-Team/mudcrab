@@ -10,7 +10,7 @@ expression: manifest
         {
           "hash": "[hash]",
           "path": "meshes/generated.nif",
-          "size": 724
+          "size": 721
         }
       ],
       "source_hash": "[source_hash]"
@@ -67,19 +67,19 @@ expression: manifest
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
-      "output_size": 2312,
+      "output_size": 2320,
       "source_hash": "[source_hash]"
     },
     "scripts/generated.pex": {
       "output": "scripts/generated.luau",
       "output_hash": "[output_hash]",
-      "output_size": 995,
+      "output_size": 992,
       "source_hash": "[source_hash]"
     },
     "scripts/second.pex": {
       "output": "scripts/second.luau",
       "output_hash": "[output_hash]",
-      "output_size": 992,
+      "output_size": 989,
       "source_hash": "[source_hash]"
     },
     "textures/generated_color.dds": {

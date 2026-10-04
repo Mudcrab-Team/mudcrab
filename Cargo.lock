@@ -4118,6 +4118,7 @@ dependencies = [
  "bevy",
  "converter",
  "crossbeam-channel",
+ "rusqlite",
  "serde_json",
  "shared",
  "tokio",
@@ -6275,8 +6276,11 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
+ "color-eyre",
  "rkyv",
+ "rusqlite",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

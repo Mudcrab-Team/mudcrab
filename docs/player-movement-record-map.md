@@ -1,6 +1,6 @@
 # Player movement record map (Skyrim Special Edition masters)
 
-This is the first Riverwood WALK profile, not a recovered Skyrim movement equation. Values below came from the retail ESM files at `/home/dev/skyrim/Skyrim Special Edition/Data` and the current `/home/dev/riverwood-pkg/assets/skyrim_world.db`. The [source manifest](player-movement-plugin-manifest.csv) lists all 80 package plugins in load order with SHA-256 checksums verified against the installed files. The table below highlights the relevant priorities.
+This is the first Riverwood WALK profile, not a recovered Skyrim movement equation. Values below came from the retail ESM files at a local unmodded `Skyrim Special Edition/Data` directory and a locally converted Riverwood package (`<package>/assets/skyrim_world.db`). The [source manifest](player-movement-plugin-manifest.csv) lists all 80 package plugins in load order with SHA-256 checksums verified against the installed files. The table below highlights the relevant priorities.
 
 | Priority | Plugin | SHA-256 |
 | --- | --- | --- |

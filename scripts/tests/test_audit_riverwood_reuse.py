@@ -98,6 +98,16 @@ class AuditRiverwoodReuseTests(unittest.TestCase):
         candidate_path, reference_path, _, _ = self.prepare_inventories()
         return AUDIT.compare(candidate_path, reference_path)
 
+    def test_renamed_collision_key_preserves_verified_collision_payload(self):
+        reference_document = base_document()
+        collision = {"version": 2, "shapes": [], "bodies": [{"mass": 2.5}]}
+        reference_document["scenes"][0]["extras"] = {"openSkyrimCollision": collision}
+        candidate_document = base_document()
+        candidate_document["scenes"][0]["extras"] = {"mudcrabCollision": collision}
+        self.write_pair("meshes/marker.glb", make_glb(reference_document), make_glb(candidate_document))
+        result = self.compare()
+        self.assertTrue(result["passed"], result["errors"])
+
     def test_collision_addition_and_new_empty_extras_are_permitted(self):
         reference = make_glb(base_document())
         candidate_document = base_document()

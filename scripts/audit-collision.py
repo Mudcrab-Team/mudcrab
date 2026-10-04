@@ -26,7 +26,11 @@ def collision_contract(path: Path):
             raise ValueError("missing or oversized GLB JSON")
         document = json.loads(source.read(length))
     scenes = document.get("scenes", [])
-    return scenes[0].get("extras", {}).get("openSkyrimCollision") if scenes else None
+    if not scenes:
+        return None
+    extras = scenes[0].get("extras", {})
+    # Assets converted before the rename carry the old key.
+    return extras.get("mudcrabCollision", extras.get("openSkyrimCollision"))
 
 
 def main():

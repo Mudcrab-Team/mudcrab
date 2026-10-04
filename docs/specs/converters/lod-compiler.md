@@ -83,11 +83,12 @@ publish only after every referenced payload validates. The `lod` reshape
 ships with a world DB version bump.
 
 The combined implementation uses converter schema 24 and world schema 7. World schema 5
-belongs to grass data; LOD tables were introduced in schema 6. Only verified producer
-23 or current 24 meshes may be reused during normal conversion. Producer 23 NIF or
-skeleton headers containing `BSMultiBoundNode` require regeneration, and unreadable
-headers fail closed. Older lighting/LOD producers lack current texture or lighting
-contracts, so their GLBs and textures regenerate. Numeric ordering grants no reuse.
+belongs to grass data; LOD tables were introduced in schema 6. Only verified current
+producer 24 meshes may be reused during normal conversion. Producer 23 was shared by
+the source-surface exporter before and after rigid-body dynamics changed the GLB payload;
+its number cannot prove the current mesh contract. All earlier producers through 23
+regenerate GLBs and textures, retaining only verified scripts/archive ingestion.
+Numeric ordering grants no reuse.
 Configuration proof includes encoder selection and GPU quality, while batch size only
 changes scheduling. Metadata-only retained bytes preserve explicit original producer,
 configuration, manifest and output hashes; they are never certified as current 24 bytes.

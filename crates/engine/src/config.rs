@@ -186,7 +186,7 @@ impl Default for EngineConfig {
 /// option is named; the tests read the match arms back out of this file and
 /// check the two agree, so neither can drift from the other.
 pub const HELP_TEXT: &str = "\
-OpenSkyrim engine
+Mudcrab engine
 
 Usage: engine [options]
 
@@ -394,7 +394,7 @@ impl EngineConfig {
     }
 
     /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
-    /// the taskbar says what it is. An interactive run is plain "OpenSkyrim".
+    /// the taskbar says what it is. An interactive run is plain "Mudcrab".
     pub fn window_title(&self) -> String {
         let kind = if self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some() {
             Some("benchmark")
@@ -406,10 +406,10 @@ impl EngineConfig {
             None
         };
         match (kind, self.run_label.as_deref()) {
-            (Some(kind), Some(label)) => format!("OpenSkyrim - {kind}: {label}"),
-            (Some(kind), None) => format!("OpenSkyrim - {kind}"),
-            (None, Some(label)) => format!("OpenSkyrim - {label}"),
-            (None, None) => "OpenSkyrim".to_owned(),
+            (Some(kind), Some(label)) => format!("Mudcrab - {kind}: {label}"),
+            (Some(kind), None) => format!("Mudcrab - {kind}"),
+            (None, Some(label)) => format!("Mudcrab - {label}"),
+            (None, None) => "Mudcrab".to_owned(),
         }
     }
 
@@ -1058,11 +1058,11 @@ mod tests {
         let args = |list: &[&str]| run_config(list);
         assert_eq!(
             args(&["--benchmark-duration", "20", "--run-label", "main rural r1"]).window_title(),
-            "OpenSkyrim - benchmark: main rural r1"
+            "Mudcrab - benchmark: main rural r1"
         );
         assert_eq!(
             args(&["--benchmark-frames", "600"]).window_title(),
-            "OpenSkyrim - benchmark"
+            "Mudcrab - benchmark"
         );
         // A label left out does not swallow the next option.
         let config = args(&["--run-label", "--benchmark-frames", "600"]);
@@ -1079,13 +1079,13 @@ mod tests {
         );
         assert_eq!(
             args(&["--streaming-fixture"]).window_title(),
-            "OpenSkyrim - streaming fixture"
+            "Mudcrab - streaming fixture"
         );
         assert_eq!(
             args(&["--shots", "poses.json", "--run-label", "riverwood"]).window_title(),
-            "OpenSkyrim - shots: riverwood"
+            "Mudcrab - shots: riverwood"
         );
-        assert_eq!(args(&[]).window_title(), "OpenSkyrim");
+        assert_eq!(args(&[]).window_title(), "Mudcrab");
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a

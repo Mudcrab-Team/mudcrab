@@ -380,8 +380,9 @@ pub fn output_is_safe_target(output: &Path) -> Result<(), String> {
 /// schema's manifest incomplete, because the next conversion rebuilds from it, but the engine still
 /// starts on that output.
 ///
-/// This looks at what the engine needs to start, not at every artifact; Check and Full check are
-/// the deeper look.
+/// Database schema and advertised LOD identity are checked by the runtime's shared read-only
+/// validator, and the database schema must match the integration report. Check and Full check
+/// additionally verify individual artifact bytes.
 pub fn output_is_complete(output: &Path) -> bool {
     std::fs::read(output.join(MANIFEST_FILE))
         .ok()
@@ -394,7 +395,6 @@ pub fn output_is_complete(output: &Path) -> bool {
                 && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION
                     ..=converter::cache::CONVERTER_SCHEMA_VERSION)
                     .contains(&manifest.schema_version)
-                && output.join("skyrim_world.db").is_file()
                 && output.join("cell_cache.rkyv").is_file()
                 && std::fs::read(output.join("integration-report.json"))
                     .ok()
@@ -405,7 +405,13 @@ pub fn output_is_complete(output: &Path) -> bool {
                                 .get("schema_version")
                                 .and_then(serde_json::Value::as_u64)
                                 .and_then(|version| u32::try_from(version).ok())
-                                .is_some_and(shared::supports_runtime_world_database_schema)
+                                .is_some_and(|schema| {
+                                    shared::world_assets::validate_lod_build_contract(
+                                        output,
+                                        shared::LOD_CONVERTER_SCHEMA_VERSION,
+                                    )
+                                    .is_ok_and(|actual| actual == schema)
+                                })
                     })
         })
 }
@@ -909,7 +915,7 @@ pub(crate) mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("openskyrim-launcher-{name}-{unique}"))
+        std::env::temp_dir().join(format!("mudcrab-launcher-{name}-{unique}"))
     }
 
     /// A converted output in miniature: one artifact, a world database and a manifest written by
@@ -940,9 +946,22 @@ pub(crate) mod tests {
     /// cache and an integration report that passed.
     pub(crate) fn complete_output(name: &str) -> PathBuf {
         let output = tiny_output(name, false);
+        write_world_database(&output, shared::WORLD_DATABASE_SCHEMA_VERSION);
         std::fs::write(output.join("cell_cache.rkyv"), b"").unwrap();
         write_integration_report(&output, true);
         output
+    }
+
+    fn write_world_database(output: &Path, version: u32) {
+        let path = output.join("skyrim_world.db");
+        let _ = std::fs::remove_file(&path);
+        let database = rusqlite::Connection::open(path).unwrap();
+        database.execute_batch(&format!(
+            "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES({version});"
+        )).unwrap();
+        if version >= shared::WORLD_DATABASE_LOD_SCHEMA_VERSION {
+            database.execute_batch("CREATE TABLE lod_chunks(id INTEGER PRIMARY KEY); CREATE TABLE lod_build(id INTEGER PRIMARY KEY,build_identity TEXT NOT NULL);").unwrap();
+        }
     }
 
     fn write_integration_report(output: &Path, passed: bool) {
@@ -956,12 +975,88 @@ pub(crate) mod tests {
     /// Rewrites `output`'s manifest and passed integration report to say they were written at
     /// these converter and world database schemas.
     fn set_schemas(output: &Path, converter_schema: u32, database_schema: u32) {
+        write_world_database(output, database_schema);
         let manifest = format!(
             r#"{{"schema_version": {converter_schema}, "complete": true, "entries": {{}}}}"#
         );
         std::fs::write(output.join(MANIFEST_FILE), manifest).unwrap();
         let report = format!(r#"{{"passed": true, "schema_version": {database_schema}}}"#);
         std::fs::write(output.join("integration-report.json"), report).unwrap();
+    }
+
+    #[test]
+    fn readiness_validates_database_report_and_current_lod_identity() {
+        let output = complete_output("db-lod-contract");
+        for version in [3, 4, 5] {
+            set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, version);
+            assert!(
+                output_is_complete(&output),
+                "legacy {version} needs no LOD tables"
+            );
+        }
+        set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 5);
+        write_integration_report(&output, true); // Says current world 7, actual DB is 5.
+        assert!(
+            !output_is_complete(&output),
+            "integration report must match actual schema"
+        );
+        std::fs::write(output.join("skyrim_world.db"), b"corrupt SQLite bytes").unwrap();
+        assert!(
+            !output_is_complete(&output),
+            "corrupt database cannot enable Play"
+        );
+        set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 7);
+        let identity = "a".repeat(64);
+        let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        database
+            .execute(
+                "INSERT INTO lod_build(id,build_identity) VALUES(1,?1)",
+                [&identity],
+            )
+            .unwrap();
+        let mut lod = serde_json::json!({
+            "converter_schema": shared::LOD_CONVERTER_SCHEMA_VERSION,
+            "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
+            "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
+            "build_identity": identity, "chunks": 0
+        });
+        let path = output.join("lod-manifest.json");
+        std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
+        assert!(output_is_complete(&output), "matching current LOD contract");
+        lod["build_identity"] = serde_json::json!("b".repeat(64));
+        std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
+        assert!(
+            !output_is_complete(&output),
+            "mixed build identity cannot enable Play"
+        );
+        lod["build_identity"] = serde_json::json!(identity);
+        lod["converter_schema"] = serde_json::json!(23);
+        std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
+        assert!(
+            !output_is_complete(&output),
+            "stale LOD producer cannot enable Play"
+        );
+        std::fs::remove_file(&path).unwrap();
+        database
+            .execute("INSERT INTO lod_chunks(id) VALUES(0)", [])
+            .unwrap();
+        assert!(
+            !output_is_complete(&output),
+            "populated LOD needs its manifest"
+        );
+        drop(database);
+        std::fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn readiness_rejects_empty_world_database() {
+        let output = complete_output("empty-db-regression");
+        std::fs::write(output.join("skyrim_world.db"), []).unwrap();
+        assert!(
+            !output_is_complete(&output),
+            "empty database cannot enable Play"
+        );
+        std::fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
@@ -1055,18 +1150,7 @@ pub(crate) mod tests {
         let output = complete_output("lod-schema-range");
         for converter_schema in 14..=converter::cache::CONVERTER_SCHEMA_VERSION + 1 {
             for world_schema in 2..=shared::WORLD_DATABASE_SCHEMA_VERSION + 1 {
-                std::fs::write(
-                    output.join(MANIFEST_FILE),
-                    format!(
-                        r#"{{"schema_version":{converter_schema},"complete":true,"entries":{{}}}}"#
-                    ),
-                )
-                .unwrap();
-                std::fs::write(
-                    output.join("integration-report.json"),
-                    format!(r#"{{"schema_version":{world_schema},"passed":true}}"#),
-                )
-                .unwrap();
+                set_schemas(&output, converter_schema, world_schema);
                 assert_eq!(
                     output_is_complete(&output),
                     (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION

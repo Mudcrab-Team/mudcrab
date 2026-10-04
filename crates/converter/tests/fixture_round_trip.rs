@@ -271,7 +271,7 @@ fn generated_esm_plugin_exports_world_database() {
         },
     ];
     let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
-        author: "OpenSkyrim dummy-content",
+        author: "Mudcrab dummy-content",
         worldspace: "GeneratedWorld",
         cells: &cells,
         model_path: "meshes/generated.nif",
@@ -310,13 +310,14 @@ fn generated_esm_plugin_exports_world_database() {
 }
 
 #[test]
-#[ignore = "requires OPENSKYRIM_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
+#[ignore = "requires MUDCRAB_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
 fn real_static_nif_matches_writer_version_assumptions() {
     use converter::mesh::MeshConverter;
 
-    let path = std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE")
+    let path = std::env::var_os("MUDCRAB_STATIC_NIF_FIXTURE")
+        .or_else(|| std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE"))
         .map(std::path::PathBuf::from)
-        .expect("set OPENSKYRIM_STATIC_NIF_FIXTURE to a static Skyrim NIF");
+        .expect("set MUDCRAB_STATIC_NIF_FIXTURE to a static Skyrim NIF");
     let bytes = fs::read(&path).unwrap();
     let line = b"Gamebryo File Format, Version 20.2.0.7\n";
     assert!(bytes.starts_with(line), "unexpected NIF signature");
@@ -461,7 +462,7 @@ async fn generated_data_directory_converts_end_to_end() {
             .unwrap();
         drain.await.unwrap();
         assert!(report.complete, "schema {schema}");
-        // Combined producer 23 rebuilds all five textures and the model:
+        // The current combined producer rebuilds all five textures and the model:
         // old schema/hash identities cannot prove both output contracts.
         // The two scripts retain their historical source/configuration proof.
         assert_eq!(report.converted, 6, "schema {schema}");

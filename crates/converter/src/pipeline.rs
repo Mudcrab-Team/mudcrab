@@ -278,7 +278,7 @@ impl AssetPipeline {
         let metadata_configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
             || ((can_reuse_scripts_and_archives(loaded_manifest.schema_version)
-                || crate::cache::supports_lod_mesh_cache_schema(loaded_manifest.schema_version))
+                || loaded_manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
         let retained_configuration_is_compatible =
@@ -1023,10 +1023,6 @@ impl ConversionBatch<'_> {
         let texture_encoder = self.config.texture_encoder;
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
-        let previous_mesh_schema = self
-            .previous
-            .retained_mesh_schema_version
-            .unwrap_or(self.previous.schema_version);
         let staged_outputs = Arc::clone(&self.staged);
         let expected_configuration = self.expected_configuration.to_owned();
         let force_reconvert = force_reconvert.clone();
@@ -1168,12 +1164,8 @@ impl ConversionBatch<'_> {
                         // A mesh whose pruned texture source is back must be converted again:
                         // the mesh cache does not hash texture dependencies, so a reused GLB
                         // would never regain the reference.
-                        let forced = force_reconvert
-                            .contains(target_rel.to_string_lossy().as_ref())
-                            || (source_kind == "nif"
-                                && previous_mesh_schema == 23
-                                && previous_entries.contains_key(&key)
-                                && !MeshConverter::pre_lod_mesh_cache_is_compatible(&source));
+                        let forced =
+                            force_reconvert.contains(target_rel.to_string_lossy().as_ref());
                         let target = staging_root.join(&target_rel);
 
                         let source_hash = if source_kind == "nif" {
@@ -3705,7 +3697,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema23_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn current24_meshes_reuse_but_changed_mesh_source_reconverts() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -3720,10 +3712,7 @@ mod tests {
         config.cpu_jobs = 2;
         run_without_progress(config.clone()).await;
         let path = output.join("conversion-manifest.json");
-        let mut old: ConversionManifest =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        old.schema_version = 23;
-        old.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
+        let old: ConversionManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -4780,7 +4769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pre_lod23_distant_containers_require_mesh_regeneration() {
+    async fn schema23_distant_containers_and_textures_require_regeneration() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -4813,6 +4802,8 @@ mod tests {
         let config = PipelineConfig::new(&data, &output);
         assert!(run_without_progress(config.clone()).await.complete);
         let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
+        let texture = output.join("textures/present.ktx2");
+        let expected_texture = fs::read(&texture).unwrap();
         let mut manifest = published_manifest(&output);
         manifest.schema_version = 23;
         manifest.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
@@ -4829,13 +4820,14 @@ mod tests {
             .save(&output.join("conversion-manifest.json"))
             .unwrap();
         let report = run_without_progress(config).await;
-        assert_eq!(report.converted, 1);
+        assert_eq!(report.converted, 2);
         assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected);
+        assert_eq!(fs::read(texture).unwrap(), expected_texture);
     }
 
     #[tokio::test]
     async fn legacy_producers_rebuild_meshes_and_textures_and_reuse_scripts() {
-        for old_schema in [16, 17, 18, 19, 20, 21, 22] {
+        for old_schema in [16, 17, 18, 19, 20, 21, 22, 23] {
             let temp = tempfile::tempdir().unwrap();
             let data = temp.path().join("Data");
             let output = temp.path().join("modern");
@@ -6011,9 +6003,9 @@ mod tests {
 
     /// Times artifact validation on a real converted output, for before/after comparisons.
     ///
-    /// `OPENSKYRIM_VALIDATE_OUTPUT` names a converted output folder, which is only read.
-    /// `OPENSKYRIM_VALIDATE_LIMIT` caps the artifact count; the cap samples the manifest evenly so
-    /// every kind is represented. `OPENSKYRIM_VALIDATE_JOBS` sets the thread count (default: every
+    /// `MUDCRAB_VALIDATE_OUTPUT` names a converted output folder, which is only read.
+    /// `MUDCRAB_VALIDATE_LIMIT` caps the artifact count; the cap samples the manifest evenly so
+    /// every kind is represented. `MUDCRAB_VALIDATE_JOBS` sets the thread count (default: every
     /// core, as a conversion does). Run with
     /// `cargo test --release -p converter validation_timing_on_a_real_output -- --ignored --nocapture`.
     ///
@@ -6021,21 +6013,27 @@ mod tests {
     /// older converter, say), the failures are counted per kind and the passing artifacts are
     /// timed again; that second timing runs with the files already in the OS cache.
     #[test]
-    #[ignore = "needs a converted output; set OPENSKYRIM_VALIDATE_OUTPUT"]
+    #[ignore = "needs a converted output; set MUDCRAB_VALIDATE_OUTPUT"]
     fn validation_timing_on_a_real_output() {
         use std::time::Instant;
 
-        let Some(output) = std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT").map(PathBuf::from) else {
-            eprintln!("OPENSKYRIM_VALIDATE_OUTPUT is not set; nothing to time");
+        let Some(output) = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
+            .or_else(|| std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT"))
+            .map(PathBuf::from)
+        else {
+            eprintln!("MUDCRAB_VALIDATE_OUTPUT is not set; nothing to time");
             return;
         };
-        let limit = std::env::var("OPENSKYRIM_VALIDATE_LIMIT")
+        let limit = std::env::var("MUDCRAB_VALIDATE_LIMIT")
+            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_LIMIT"))
             .ok()
-            .map(|value| value.parse::<usize>().expect("OPENSKYRIM_VALIDATE_LIMIT"));
-        let jobs = std::env::var("OPENSKYRIM_VALIDATE_JOBS").map_or_else(
-            |_| std::thread::available_parallelism().map_or(1, usize::from),
-            |value| value.parse::<usize>().expect("OPENSKYRIM_VALIDATE_JOBS"),
-        );
+            .map(|value| value.parse::<usize>().expect("MUDCRAB_VALIDATE_LIMIT"));
+        let jobs = std::env::var("MUDCRAB_VALIDATE_JOBS")
+            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_JOBS"))
+            .map_or_else(
+                |_| std::thread::available_parallelism().map_or(1, usize::from),
+                |value| value.parse::<usize>().expect("MUDCRAB_VALIDATE_JOBS"),
+            );
 
         let manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(output.join("conversion-manifest.json")).expect("read manifest"),
@@ -6067,17 +6065,19 @@ mod tests {
         }
 
         // Collecting semantics reads every GLB and takes minutes on a full install;
-        // `OPENSKYRIM_VALIDATE_SEMANTICS=skip` validates textures without them instead.
+        // `MUDCRAB_VALIDATE_SEMANTICS=skip` validates textures without them instead.
         let started = Instant::now();
-        let texture_semantics =
-            if std::env::var("OPENSKYRIM_VALIDATE_SEMANTICS").is_ok_and(|value| value == "skip") {
+        let texture_semantics = if std::env::var("MUDCRAB_VALIDATE_SEMANTICS")
+            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_SEMANTICS"))
+            .is_ok_and(|value| value == "skip")
+        {
+            BTreeMap::new()
+        } else {
+            collect_texture_semantics(&output).unwrap_or_else(|error| {
+                eprintln!("texture semantics unavailable, validating without them: {error:#}");
                 BTreeMap::new()
-            } else {
-                collect_texture_semantics(&output).unwrap_or_else(|error| {
-                    eprintln!("texture semantics unavailable, validating without them: {error:#}");
-                    BTreeMap::new()
-                })
-            };
+            })
+        };
         eprintln!(
             "texture semantics: {} textures in {:.2} s (not part of the timing)",
             texture_semantics.len(),

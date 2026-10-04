@@ -429,10 +429,8 @@ impl StreamingFixtureDirectory {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let path = std::env::temp_dir().join(format!(
-            "openskyrim-streaming-{}-{suffix}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("mudcrab-streaming-{}-{suffix}", std::process::id()));
         fs::create_dir(&path).wrap_err_with(|| format!("failed to create {}", path.display()))?;
         let fixture = Self { path };
         fixture.populate(worldspace_id, start_grid)?;
@@ -1646,10 +1644,15 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
             AssetSetRejection::IntegrationReportFailed
         )
     );
-    crate::world::database::validate_lod_build_contract(
+    let database_schema = crate::world::database::validate_lod_build_contract(
         &config.assets_dir,
         converter_schema_version(),
     )?;
+    color_eyre::eyre::ensure!(
+        database_schema == report.schema_version,
+        "world database schema {database_schema} does not match integration report schema {}",
+        report.schema_version
+    );
     Ok(())
 }
 
@@ -1938,7 +1941,7 @@ fn setup_world(
         ground_height,
         camera = ?camera_position,
         target = ?target,
-        "OpenSkyrim runtime initialized"
+        "Mudcrab runtime initialized"
     );
 }
 
@@ -3295,6 +3298,17 @@ mod tests {
             ..default()
         };
         validate_runtime_assets(&config).unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            br#"{"schema_version":5,"passed":true}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_runtime_assets(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match integration report schema 5")
+        );
     }
 
     #[test]

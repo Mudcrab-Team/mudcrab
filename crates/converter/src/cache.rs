@@ -12,12 +12,6 @@ use std::{
 // alone do not establish compatible output semantics.
 pub const CONVERTER_SCHEMA_VERSION: u32 = shared::LOD_CONVERTER_SCHEMA_VERSION;
 
-/// Complete native-BC/lighting producers eligible for source-checked LOD reuse.
-/// A higher numeric version alone does not establish compatible mesh semantics.
-pub(crate) fn supports_lod_mesh_cache_schema(schema: u32) -> bool {
-    schema == 23 || schema == CONVERTER_SCHEMA_VERSION
-}
-
 /// Provenance journal the converter keeps inside a staging directory.
 ///
 /// A staging directory outlives the run that filled it, so a resumed run finds
@@ -216,7 +210,7 @@ pub struct ConversionManifest {
 /// These schema changes affect GLBs/textures/world data, leaving script/archive
 /// bytes compatible. Configuration and source hashes still have to match.
 pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
-    matches!(schema, 12..=22)
+    matches!(schema, 12..=23)
 }
 
 impl ConversionManifest {
@@ -231,15 +225,15 @@ impl ConversionManifest {
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let mut manifest: Self =
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
-        let retained_meshes_are_stale = supports_lod_mesh_cache_schema(manifest.schema_version)
+        let retained_meshes_are_stale = (manifest.schema_version == CONVERTER_SCHEMA_VERSION)
             && match manifest.retained_mesh_schema_version {
-                Some(schema) => !supports_lod_mesh_cache_schema(schema),
+                Some(schema) => schema != CONVERTER_SCHEMA_VERSION,
                 None => path
                     .parent()
                     .is_some_and(|root| root.join("metadata-rebuild.json").exists()),
             };
         if (can_reuse_scripts_and_archives(manifest.schema_version)
-            && !supports_lod_mesh_cache_schema(manifest.schema_version))
+            && manifest.schema_version != CONVERTER_SCHEMA_VERSION)
             || retained_meshes_are_stale
         {
             // Legacy producers lack the combined texture and lighting contracts.
@@ -250,7 +244,7 @@ impl ConversionManifest {
                 .retain(|_, entry| entry.output.to_ascii_lowercase().ends_with(".luau"));
             return Ok(manifest);
         }
-        if !supports_lod_mesh_cache_schema(manifest.schema_version) {
+        if manifest.schema_version != CONVERTER_SCHEMA_VERSION {
             return Ok(Self {
                 schema_version: CONVERTER_SCHEMA_VERSION,
                 ..Self::default()
@@ -469,7 +463,7 @@ mod tests {
         for name in ["old.glb", "old.ktx2"] {
             let path = directory.path().join(name);
             fs::write(&path, b"verified old bytes").unwrap();
-            for schema_version in [17, 18, 19, 20, 21, 22] {
+            for schema_version in [17, 18, 19, 20, 21, 22, 23] {
                 let record = StagedOutput {
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
@@ -739,7 +733,7 @@ mod tests {
 
     #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
+        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {
@@ -772,7 +766,18 @@ mod tests {
 
     #[test]
     fn current_metadata_never_promotes_an_older_or_unknown_mesh_contract() {
-        for mesh_schema in [15, 16, 17, 18, 19, 20, 21, 22, CONVERTER_SCHEMA_VERSION + 1] {
+        for mesh_schema in [
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            CONVERTER_SCHEMA_VERSION + 1,
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {

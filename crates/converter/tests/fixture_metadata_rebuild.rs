@@ -323,15 +323,15 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if matches!(source_schema, 23 | 24) {
+            if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
                 meshes
             } else {
                 0
             },
-            "metadata-only upgrades preserve compatible mesh producer provenance"
+            "metadata-only upgrades preserve original provenance; only current producer meshes are normal cache hits"
         );
         let report = convert(&data, &repeated).await;
-        let regenerated = if matches!(source_schema, 23 | 24) {
+        let regenerated = if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
             0
         } else {
             retained

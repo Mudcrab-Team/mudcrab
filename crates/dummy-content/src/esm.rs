@@ -999,7 +999,7 @@ mod tests {
     /// gone, and this constant stands in for it. A deliberate change to the
     /// exterior bytes refreshes it in the same commit, which is what keeps the
     /// change visible.
-    const EXTERIOR_ONLY_HASH: u64 = 0x390C_B14F_65BA_916F;
+    const EXTERIOR_ONLY_HASH: u64 = 0xF389_D351_445D_66D4;
 
     /// FNV-1a over every byte of `bytes`.
     fn fnv1a(bytes: &[u8]) -> u64 {

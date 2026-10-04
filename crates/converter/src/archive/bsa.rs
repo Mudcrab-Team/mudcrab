@@ -395,11 +395,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires OPENSKYRIM_SKYRIM_DATA with locally installed game assets"]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
     fn accepts_installed_skyrim_bsa_headers() {
-        let data_dir = std::env::var_os("OPENSKYRIM_SKYRIM_DATA")
+        let data_dir = std::env::var_os("MUDCRAB_SKYRIM_DATA")
+            .or_else(|| std::env::var_os("OPENSKYRIM_SKYRIM_DATA"))
             .map(std::path::PathBuf::from)
-            .expect("set OPENSKYRIM_SKYRIM_DATA to the Skyrim Data directory");
+            .expect("set MUDCRAB_SKYRIM_DATA to the Skyrim Data directory");
         let mut archives: Vec<_> = std::fs::read_dir(&data_dir)
             .unwrap()
             .filter_map(Result::ok)

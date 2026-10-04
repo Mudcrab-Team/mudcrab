@@ -1,6 +1,6 @@
 # Build and Conversion Requirements
 
-What a contributor's machine spends on OpenSkyrim, measured on a Windows desktop with NVMe drives and
+What a contributor's machine spends on Mudcrab, measured on a Windows desktop with NVMe drives and
 Skyrim Special Edition with its free Creation Club content. Treat the times as a guide: they depend on the
 CPU, the disk and what else is running.
 

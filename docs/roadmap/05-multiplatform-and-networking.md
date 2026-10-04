@@ -1,6 +1,6 @@
 # Phase 5: Hardware Ray-Tracing, Multiplatform & Networking
 
-> **Goal:** Extend OpenSkyrim with modern rendering pipelines, cross-platform compilation targets, VR support, and native co-op multiplayer.
+> **Goal:** Extend Mudcrab with modern rendering pipelines, cross-platform compilation targets, VR support, and native co-op multiplayer.
 
 ---
 

@@ -15,8 +15,8 @@
 
 ### 3.2 Modder Developer Experience (DX) & Type Safety
 
-- Automated `.d.lua` EmmyLua / LuaLS type definitions generator (`openskyrim.d.lua`).
-- **Luarocks** package distribution (`luarocks install openskyrim-types`) enabling autocompletion, inline docs, and static type checking in VS Code, Zed, Neovim, and Cursor.
+- Automated `.d.lua` EmmyLua / LuaLS type definitions generator (`mudcrab.d.lua`).
+- **Luarocks** package distribution (`luarocks install mudcrab-types`) enabling autocompletion, inline docs, and static type checking in VS Code, Zed, Neovim, and Cursor.
 
 ### 3.3 Async Web API Integration
 
@@ -29,7 +29,7 @@
 - ActionScript 2.0 ➔ Luau UI event handlers running on the unified Luau engine.
 - Hardware-accelerated HUD, Inventory, Magic, Dialogue, and Map menus.
 
-### 3.4 OpenSkyrim Launcher & Mod Manager (`launcher`)
+### 3.4 Mudcrab Launcher & Mod Manager (`launcher`)
 
 - GUI setup wizard: Auto-detect Skyrim SE installation path on system.
 - Built-in Mod Manager: Drag-and-drop `.esp`/`.lua` mod archives, priority order load configuration, and automated invocation of `converter`.
