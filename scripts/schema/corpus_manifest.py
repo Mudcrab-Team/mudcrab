@@ -441,7 +441,7 @@ def _read_corpus_evidence(path: Path | None) -> dict | None:
         raise ValueError("corpus evidence JSON exceeds the 1 MiB input limit")
     try:
         payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
         raise ValueError(f"invalid corpus evidence JSON {descriptor_path}: {exc}") from exc
 
     root = _exact_object(

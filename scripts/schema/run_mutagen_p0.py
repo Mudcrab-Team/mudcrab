@@ -11,15 +11,19 @@ import argparse
 import hashlib
 import json
 import os
-import signal
 import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 
-import corpus_manifest
 import p0_fixtures
+from p0_tools import (
+    QualificationError, ProcessTimeout, _read_verified_bytes,
+    validate_artifact_destination, _run_supervised,
+    RE_PROJECT_ROOT, MCRAB_STORE, REPO_ROOT,
+    runner_provenance,
+)
 
 
 PINNED_PROGRAM_SHA256 = "8e61a44f4f953c0491aab3c0519021fb67ca1b7528c607797cd4a2d948c06a06"
@@ -29,9 +33,6 @@ PINNED_MUTAGEN = "0.54.4"
 DEFAULT_ORACLE_SOURCE = Path(
     "/home/dev/.t3/projects/mudcrab-reverse-engineering/oracles/records"
 )
-RE_PROJECT_ROOT = Path("/home/dev/.t3/projects/mudcrab-reverse-engineering")
-MCRAB_STORE = Path("/home/dev/mcrab-store")
-REPO_ROOT = Path(__file__).resolve().parents[2]
 ORACLE_ENTRY = 'if (args.Length >= 3 && args[0] == "placed-lo")'
 INSPECT_ENTRY = b'if (args.Length == 2 && args[0] == "inspect")\n    return MutagenP0Inspect.Run(args[1]);\n'
 RESTORE_TIMEOUT_SECONDS = 240
@@ -40,56 +41,8 @@ ORACLE_TIMEOUT_SECONDS = 45
 CLI_TIMEOUT_SECONDS = 15
 
 
-class QualificationError(RuntimeError):
-    pass
-
-
-class ProcessTimeout(QualificationError):
-    def __init__(self, label: str, timeout: float, stdout: str, stderr: str):
-        super().__init__(f"{label} timed out after {timeout:g} seconds")
-        self.label = label
-        self.timeout = timeout
-        self.stdout = stdout
-        self.stderr = stderr
-
-
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
-
-
-def _read_verified_bytes(path: Path) -> tuple[str, int, bytes]:
-    try:
-        requested = path.lstat().st_size
-    except OSError as exc:
-        raise QualificationError(f"cannot stat pinned source {path}: {exc}") from exc
-    try:
-        digest, size, raw = corpus_manifest._read_verified_file(path, capture_bytes=requested)
-    except (OSError, corpus_manifest.SourceDriftError) as exc:
-        raise QualificationError(f"pinned source verification failed for {path}: {exc}") from exc
-    if len(raw) != size:
-        raise QualificationError(
-            f"verified read did not capture the full source {path}: captured {len(raw)}, read {size}"
-        )
-    if _sha256(raw) != digest:
-        raise QualificationError(f"verified source bytes and digest differ for {path}")
-    return digest, size, raw
-
-
-def validate_artifact_destination(
-    candidate: Path,
-    oracle_source: Path,
-    *,
-    additional_protected: tuple[Path, ...] = (),
-) -> None:
-    candidate = candidate.expanduser().resolve()
-    protected = (REPO_ROOT, RE_PROJECT_ROOT, MCRAB_STORE, oracle_source.expanduser().resolve()) + tuple(
-        path.expanduser().resolve() for path in additional_protected
-    )
-    for protected_root in protected:
-        if _contains(candidate, protected_root) or _contains(protected_root, candidate):
-            raise QualificationError(
-                f"artifact directory overlaps protected path {protected_root}: {candidate}"
-            )
 
 
 def default_artifact_destination(env: dict[str, str] | None = None) -> Path:
@@ -100,14 +53,6 @@ def default_artifact_destination(env: dict[str, str] | None = None) -> Path:
         Path("/tmp"),
     )
     return base / f"mudcrab-p0-mutagen-{uuid.uuid4().hex}"
-
-
-def _contains(parent: Path, child: Path) -> bool:
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 def apply_inspect_extension(program: bytes, extension: bytes) -> bytes:
@@ -133,43 +78,6 @@ def _resolve_dotnet(explicit: str | None) -> Path:
     if not path.is_file():
         raise QualificationError(f"dotnet executable is not a regular file: {path}")
     return path
-
-
-def _run_supervised(
-    command: list[str], *, cwd: Path, env: dict[str, str], label: str, timeout: float
-) -> subprocess.CompletedProcess:
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=(os.name == "posix"),
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        else:
-            process.terminate()
-        try:
-            stdout, stderr = process.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:
-                process.kill()
-            stdout, stderr = process.communicate()
-        raise ProcessTimeout(label, timeout, stdout or "", stderr or "")
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _run_checked(
@@ -729,6 +637,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     )
     oracle_dir = Path(args.oracle_source).expanduser().resolve()
     validate_artifact_destination(artifact_dir, oracle_dir)
+    runner_source = runner_provenance(Path(__file__))
     if artifact_dir.exists() and any(artifact_dir.iterdir()):
         raise QualificationError(f"artifact directory must be empty: {artifact_dir}")
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -938,6 +847,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     )
     summary = {
         "pilot_status": "passed_bounded_synthetic_qualification",
+        "runner": runner_source,
         "acceptance_verdict": {
             "state": "unavailable",
             "reason": "P0 typed traversal does not establish full structural, catalog, corpus, or native-runtime acceptance",
@@ -975,7 +885,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
         "legacy_command_smokes": legacy,
         "xedit": {
             "status": "not_run",
-            "reason": "No xEdit executable or qualified runner was available; the pinned xDump Delphi route remains unbuilt and unexecuted.",
+            "reason": "This suite executes Mutagen only; run_xedit_p0.py separately records xEdit capabilities and qualification gaps.",
         },
         "limits": [
             "Mutagen typed groups may collapse or skip source record occurrences.",

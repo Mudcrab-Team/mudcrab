@@ -239,8 +239,10 @@ V99: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs, 
 V100: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
 V101: P0 fixtures ! positive header counts/hierarchy match physical occurrences; unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
 V102: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
-V103: P0 oracle artifacts/temp/build/cache ! outside Mudcrab source, active RE checkout/store & supplied oracle roots; validate destination before any write. Protected-path fixtures guard both CLI & runner.
+V103: P0 oracle artifacts/temp/build/cache ! outside every registered Mudcrab worktree, active RE checkout/store & supplied oracle/tool roots; verify worktree discovery & validate destination before any write; tool temp env artifact-local. Protected-path fixtures guard both CLI & runner.
 V104: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
+V106: P0 corpus evidence ! bounded strict JSON + exact newest target + verified artifact hashes; supplied semantic claims remain unverified. Invalid/deep JSON → managed failure; output cannot overlap descriptor or evidence artifacts. Evidence CLI/deep-JSON regressions guard boundary.
+V107: P0 tool reports ! exact Python decision-runner/helper/fixture source hashes separate from external binary/package pins; release metadata ≠ verified source-to-binary build. Startup-report provenance regression + final executable artifacts guard identity.
 
 ## §T TASKS
 
@@ -281,7 +283,7 @@ T33|x|Latch provisional unlimited WALK sprint on `Alt` press until movement stop
 T34|~|Make sprint perceptible; display actual speed and latch; ease controlled camera FOV; package laptop and verify manual launch|V10,V57,V60,V61
 
 
-T35|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V73,V74,V84,V90,V94,V97,V98,V99,V102
+T35|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V73,V74,V84,V90,V94,V97,V98,V99,V102,V106
 T36|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V73,V75,V76,V77,V92,V98
 T37|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V74,V77,V87,V98
 T38|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V78,V79,V82,V94,V97
@@ -296,7 +298,7 @@ T46|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evide
 T47|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V78,V84,V89,V90,V91,V96
 T48|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V78,V84,V89,V90,V91,V93
 T49|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V73,V84,V90,V91,V92,V93,V94
-T50|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V84,V90,V99,V100,V101,V103,V104,R26
+T50|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V84,V90,V99,V100,V101,V103,V104,V107,R26
 
 ## §B BUGS
 
@@ -362,3 +364,10 @@ B58|2026-10-04|optional typed StringsKey null could convert to empty string unde
 B59|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader success masked inconsistent source fixtures|V101; include major + group occurrences, independent physical count checks & regenerated golden digest
 B60|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V100; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
 B61|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V99; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
+B63|2026-10-04|supplied load-order descriptor normalized artifact under `source`; CLI indexed nonexistent `evidence` key|V106; responsible source key + supplied-evidence CLI regression
+B64|2026-10-04|manifest output could alias or overlap external evidence input; source-only guard missed new descriptor artifacts|V106; resolved overlap guard before writes + alias/ancestor regressions
+B65|2026-10-04|deep evidence JSON escaped decode handler with `RecursionError` despite byte limit|V106; managed invalid-JSON failure + 20000-level input regression
+B66|2026-10-04|detached descendant retained stdout after process-group termination; final unbounded `communicate()` waited 60 seconds|V104; bounded final collection + pipe close; detached-pipe regression; escaped descendant cleanup separately limited
+B67|2026-10-04|oracle artifact guard protected only current Mudcrab worktree; primary dirty checkout remained writable destination|V103; timed registered-worktree discovery before writes + every-checkout/failure regressions
+B68|2026-10-04|xEdit console exited zero after Wine crash & tolerated malformed dump; exit code alone could masquerade as qualification|V100,V101; crash/completion/identity diagnostics; malformed dumps remain unqualified; original schema diagnostics retained
+B69|2026-10-04|tool reports omitted Python classification source identity; xEdit inherited potentially protected temp paths|V103,V107; decision-source hashes + artifact-local Wine temp env + startup/provenance regression

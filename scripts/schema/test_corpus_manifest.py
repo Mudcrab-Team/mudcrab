@@ -103,6 +103,24 @@ def make_corpus_evidence(root: Path, active_plugins, unloaded_optional_plugins=(
 
 
 class CorpusManifestTests(unittest.TestCase):
+    def test_v106_deep_evidence_json_fails_cleanly_without_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game, data, executable, _ = make_tree(root)
+            evidence = root / "deep.json"
+            evidence.write_text("[" * 20000 + "0" + "]" * 20000, encoding="utf-8")
+            output = root / "manifest.json"
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                status = manifest_tool.main([
+                    "--game-root", str(game), "--data-dir", str(data),
+                    "--executable", str(executable), "--corpus-evidence", str(evidence),
+                    "--output", str(output),
+                ])
+            self.assertEqual(status, 2)
+            self.assertIn("invalid corpus evidence JSON", stderr.getvalue())
+            self.assertFalse(output.exists())
+
     def test_hash_and_tes4_metadata_share_verified_read_with_path_provenance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
