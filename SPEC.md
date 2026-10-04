@@ -238,6 +238,7 @@ V98: Dynamic ingestion: P0–P6 have no earlier-SE/VR/LE/other-game implementati
 V99: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs, digest/size + observed header/master metadata from same verified read; source drift → fail pin. Installed filename ≠ official-content proof; unresolved load order/locale remain explicit.
 V100: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
 V101: P0 fixtures ! unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
+V102: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
 
 ## §T TASKS
 
@@ -278,7 +279,7 @@ T33|x|Latch provisional unlimited WALK sprint on `Alt` press until movement stop
 T34|~|Make sprint perceptible; display actual speed and latch; ease controlled camera FOV; package laptop and verify manual launch|V10,V57,V60,V61
 
 
-T35|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V73,V74,V84,V90,V94,V97,V98,V99
+T35|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V73,V74,V84,V90,V94,V97,V98,V99,V102
 T36|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V73,V75,V76,V77,V92,V98
 T37|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V74,V77,V87,V98
 T38|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V78,V79,V82,V94,V97
@@ -341,3 +342,6 @@ B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; re
 B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings failed unchanged workspace under `-D warnings`|§C fixed Rust toolchain; restore 1.98.1
 B42|2026-10-01|PR #102 merge retained local LAND tiling constant alongside shared import; engine failed E0255|reuse shared constant; workspace compile + Clippy gates
 B43|2026-10-03|resume cleanup exempted historical prune-record GLBs without schema/source/output proof; removed NIF let unpublished stale mesh supply world bounds & hide unavailable source|V72
+B44|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V102; stdlib iterative dependency traversal + chain/cycle fixtures
+B45|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V99; explicit completion blockers + matched-runtime base-only regression
+B46|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V99; shared source provenance + custom missing-descriptor regression
