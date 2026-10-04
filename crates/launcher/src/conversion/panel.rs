@@ -412,6 +412,7 @@ pub fn detect_skyrim_at_start(
 
 /// Turns button presses into inputs. A press the table forbids is dropped here and refused by the
 /// state machine as well, so an unexpected event can never start a second run.
+#[allow(clippy::too_many_arguments)] // Bevy injects each system parameter.
 pub fn click_controls(
     buttons: Query<(&Interaction, &ControlButton), Changed<Interaction>>,
     state: Res<CurrentConversion>,
@@ -427,24 +428,24 @@ pub fn click_controls(
             continue;
         }
         let controls = state::controls(&state.0);
-        if *control == ControlButton::Detect {
-            if let Some(source) = source.as_mut().filter(|source| source.use_mo2) {
-                if crate::mo2_settings::editable(&state.0) {
-                    source.open = true;
-                }
-                continue;
+        if *control == ControlButton::Detect
+            && let Some(source) = source.as_mut().filter(|source| source.use_mo2)
+        {
+            if crate::mo2_settings::editable(&state.0) {
+                source.open = true;
             }
+            continue;
         }
         if !control.enabled(&controls) {
             continue;
         }
-        if matches!(control, ControlButton::Start | ControlButton::Resume) {
-            if let Some(source) = &source {
-                let mut config = converter::PipelineConfig::new("", "");
-                if let Err(reason) = source.apply(&mut config) {
-                    status.push_notice(&reason);
-                    continue;
-                }
+        if matches!(control, ControlButton::Start | ControlButton::Resume)
+            && let Some(source) = &source
+        {
+            let mut config = converter::PipelineConfig::new("", "");
+            if let Err(reason) = source.apply(&mut config) {
+                status.push_notice(&reason);
+                continue;
             }
         }
         match control {
@@ -511,13 +512,13 @@ pub fn accept_dropped_folder(
         let FileDragAndDrop::DroppedFile { path_buf, .. } = event else {
             continue;
         };
-        if let Some(source) = &mut source {
-            if source.open {
-                if crate::mo2_settings::editable(&state.0) {
-                    source.set_instance(path_buf);
-                }
-                continue;
+        if let Some(source) = &mut source
+            && source.open
+        {
+            if crate::mo2_settings::editable(&state.0) {
+                source.set_instance(path_buf);
             }
+            continue;
         }
         if !path_buf.is_dir() {
             if !handlers::is_mod_file(path_buf) {
@@ -575,7 +576,9 @@ pub fn draw_paths(
     let mo2 = source.as_ref().filter(|source| source.use_mo2);
     for mut text in &mut texts.p0() {
         text.0 = if let Some(source) = mo2 {
-            source.selection.as_ref()
+            source
+                .selection
+                .as_ref()
                 .map(|selection| crate::mo2_settings::display_path(&selection.instance_path))
                 .unwrap_or_else(|| "not configured - open MO2 settings".into())
         } else {
@@ -586,7 +589,12 @@ pub fn draw_paths(
         text.0 = paths.output_label();
     }
     for mut text in &mut texts.p2() {
-        text.0 = if mo2.is_some() { "MO2 instance" } else { "Skyrim Data" }.into();
+        text.0 = if mo2.is_some() {
+            "MO2 instance"
+        } else {
+            "Skyrim Data"
+        }
+        .into();
     }
 }
 
@@ -641,6 +649,7 @@ pub fn draw_labels(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy injects each system parameter.
 pub fn draw_controls(
     state: Res<CurrentConversion>,
     paths: Res<GamePathConfig>,
@@ -648,7 +657,12 @@ pub fn draw_controls(
     has_manifest: Res<OutputHasManifest>,
     engine: Option<Res<EngineProcess>>,
     source: Option<Res<crate::mo2_settings::SourceSettings>>,
-    mut buttons: Query<(&ControlButton, &Interaction, &mut BackgroundColor, Option<&mut Node>)>,
+    mut buttons: Query<(
+        &ControlButton,
+        &Interaction,
+        &mut BackgroundColor,
+        Option<&mut Node>,
+    )>,
     mut labels: Query<(&ControlLabel, &mut Text, &mut TextColor)>,
 ) {
     let controls = state::controls(&state.0);
@@ -664,10 +678,10 @@ pub fn draw_controls(
             control.available(&controls, &paths, has_manifest.0, game_running)
                 && (!control.needs_folders() || source_ready)
         };
-        if *control == ControlButton::Detect {
-            if let Some(mut node) = node {
-                node.width = Val::Px(if mo2 { 120.0 } else { 90.0 });
-            }
+        if *control == ControlButton::Detect
+            && let Some(mut node) = node
+        {
+            node.width = Val::Px(if mo2 { 120.0 } else { 90.0 });
         }
         background.0 = match (enabled, *interaction) {
             (false, _) => BUTTON_OFF,
@@ -687,7 +701,9 @@ pub fn draw_controls(
         let enabled = if mo2 && label.0 == ControlButton::Detect {
             crate::mo2_settings::editable(&state.0)
         } else {
-            label.0.available(&controls, &paths, has_manifest.0, game_running)
+            label
+                .0
+                .available(&controls, &paths, has_manifest.0, game_running)
                 && (!label.0.needs_folders() || source_ready)
         };
         let wanted_color = if enabled { TEXT_COLOR } else { BUTTON_OFF_TEXT };

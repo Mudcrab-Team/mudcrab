@@ -651,7 +651,10 @@ impl AssetPipeline {
         let mut loose_keys = BTreeSet::new();
         for (relative, source) in &resolved_files {
             if crate::asset_path::is_authoring_resource(relative) {
-                manifest.excluded_inputs.insert(relative.clone(), "BodySlide/Outfit Studio authoring resource, not runtime data".into());
+                manifest.excluded_inputs.insert(
+                    relative.clone(),
+                    "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
+                );
                 continue;
             }
             let (kind, ext) = if extension(source, &["dds"]) {
@@ -671,9 +674,16 @@ impl AssetPipeline {
             vfs_files.insert(vfs_root.join(canonical), source.clone());
         }
         vfs_files.retain(|path, _| {
-            let relative = path.strip_prefix(&vfs_root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+            let relative = path
+                .strip_prefix(&vfs_root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
             if crate::asset_path::is_authoring_resource(&relative) {
-                manifest.excluded_inputs.insert(relative, "BodySlide/Outfit Studio authoring resource, not runtime data".into());
+                manifest.excluded_inputs.insert(
+                    relative,
+                    "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
+                );
                 false
             } else {
                 true
@@ -1618,23 +1628,37 @@ pub(crate) fn collect_texture_semantics(
 ) -> Result<BTreeMap<String, BTreeSet<TextureSemantic>>> {
     use rayon::prelude::*;
     let mut semantics = BTreeMap::<String, BTreeSet<TextureSemantic>>::new();
-    let glbs: Vec<_> = discover(staging)?.into_iter().filter(|path| extension(path, &["glb"])).collect();
-    let dependencies = glbs.par_iter().map(|glb| -> Result<Vec<_>> {
-        MeshConverter::glb_texture_dependencies(glb)?.into_iter().map(|dependency| {
-            let resolved = resolve_asset_uri(staging, glb, &dependency.uri)?;
-            let relative = resolved.strip_prefix(staging)?;
-            let key = canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, "ktx2")
-                .and_then(|key| source_texture_key(&key))?;
-            Ok((key, dependency.semantic))
-        }).collect()
-    }).collect::<Result<Vec<_>>>()?;
+    let glbs: Vec<_> = discover(staging)?
+        .into_iter()
+        .filter(|path| extension(path, &["glb"]))
+        .collect();
+    let dependencies = glbs
+        .par_iter()
+        .map(|glb| -> Result<Vec<_>> {
+            MeshConverter::glb_texture_dependencies(glb)?
+                .into_iter()
+                .map(|dependency| {
+                    let resolved = resolve_asset_uri(staging, glb, &dependency.uri)?;
+                    let relative = resolved.strip_prefix(staging)?;
+                    let key = canonical_asset_path(
+                        &relative.to_string_lossy(),
+                        AssetKind::Texture,
+                        "ktx2",
+                    )
+                    .and_then(|key| source_texture_key(&key))?;
+                    Ok((key, dependency.semantic))
+                })
+                .collect()
+        })
+        .collect::<Result<Vec<_>>>()?;
     for (key, semantic) in dependencies.into_iter().flatten() {
         semantics.entry(key).or_default().insert(semantic);
     }
 
     let database = staging.join("skyrim_world.db");
     if database.is_file() {
-        let connection = Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let connection =
+            Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let columns = [
             ("diffuse_path", TextureSemantic::BaseColor),
             ("normal_path", TextureSemantic::Normal),

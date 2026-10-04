@@ -1,5 +1,5 @@
 use project_wormhole_ba2::dev::Bounds;
-use project_wormhole_shared::glam::{U8Vec4, U16Vec3, Vec2, Vec3, Vec4};
+use project_wormhole_shared::glam::{U16Vec3, U8Vec4, Vec2, Vec3, Vec4};
 
 use super::prelude::*;
 

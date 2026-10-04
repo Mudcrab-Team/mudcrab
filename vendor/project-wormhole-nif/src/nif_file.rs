@@ -542,7 +542,11 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                 if shape.data == u32::MAX {
                     model.static_nodes.push(StaticSceneNode {
                         block_index,
-                        name: nif.header.get_string(shape.name as usize).ok().map(str::to_owned),
+                        name: nif
+                            .header
+                            .get_string(shape.name as usize)
+                            .ok()
+                            .map(str::to_owned),
                         translation: shape.translation,
                         rotation: shape.rotation,
                         scale: shape.scale,

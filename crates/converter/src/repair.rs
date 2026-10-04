@@ -503,15 +503,15 @@ fn attempt(
         let source = sources
             .get(key)
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
-        if let Some((archive, expected)) = &source.archive {
-            if !verified.contains(archive) {
-                ensure!(
-                    hash_file(archive)? == *expected,
-                    "archive changed since conversion: {}",
-                    archive.display()
-                );
-                verified.insert(archive.clone());
-            }
+        if let Some((archive, expected)) = &source.archive
+            && !verified.contains(archive)
+        {
+            ensure!(
+                hash_file(archive)? == *expected,
+                "archive changed since conversion: {}",
+                archive.display()
+            );
+            verified.insert(archive.clone());
         }
         let mut source_hash = hash_file(&source.path)?;
         if let Some(expected) = &source.expected_hash {

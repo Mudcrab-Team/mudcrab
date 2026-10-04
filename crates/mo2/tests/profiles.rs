@@ -54,7 +54,11 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     let (_dir, root) = fixture();
     // Bundled masters may be absent from MO2's plugins.txt even though they are active.
     write(&root, "Data/ccBGSSSE001-Fish.esm", "bundled creation");
-    write(&root, "profiles/Default/loadorder.txt", "Skyrim.esm\nccBGSSSE001-Fish.esm\nMod.esm\nPatch.esp\n");
+    write(
+        &root,
+        "profiles/Default/loadorder.txt",
+        "Skyrim.esm\nccBGSSSE001-Fish.esm\nMod.esm\nPatch.esp\n",
+    );
     write(&root, "Data/Textures/priority.dds", "physical");
     write(&root, "mods/Low/textures/PRIORITY.dds", "low");
     write(&root, "mods/High/TEXTURES/priority.dds", "high");
@@ -66,7 +70,10 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     let instance = Instance::open(&root).unwrap();
     assert_eq!(instance.profiles, ["alpha", "Default"]);
     let resolved = instance.resolve(&root.join("Data"), "default").unwrap();
-    assert_eq!(resolved.plugins, ["skyrim.esm", "ccbgssse001-fish.esm", "mod.esm", "patch.esp"]);
+    assert_eq!(
+        resolved.plugins,
+        ["skyrim.esm", "ccbgssse001-fish.esm", "mod.esm", "patch.esp"]
+    );
     assert_eq!(
         fs::read_to_string(&resolved.files["textures/priority.dds"]).unwrap(),
         "high"

@@ -156,10 +156,21 @@ async fn main() -> Result<()> {
             let mut config = PipelineConfig::new(cli.data, cli.output);
             config.mo2 = cli.mo2;
             let report = converter::repair::repair_failed(&config, apply)?;
-            println!("Repair {}: {} converted, {} classified/excluded, {} failures. Files/report: {}",
-                if report.published { "published" } else { "staged (original pack unchanged)" },
-                report.converted, report.excluded, report.failures.len(), report.directory.display());
-            if !report.failures.is_empty() { std::process::exit(1); }
+            println!(
+                "Repair {}: {} converted, {} classified/excluded, {} failures. Files/report: {}",
+                if report.published {
+                    "published"
+                } else {
+                    "staged (original pack unchanged)"
+                },
+                report.converted,
+                report.excluded,
+                report.failures.len(),
+                report.directory.display()
+            );
+            if !report.failures.is_empty() {
+                std::process::exit(1);
+            }
             return Ok(());
         }
     };
@@ -609,10 +620,22 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
         let apply = args.iter().any(|argument| argument == "--apply");
-        let cli = parse_cli(args.into_iter().skip(1).filter(|argument| argument != "--apply").collect())?;
-        if cli.resume_staging.is_some() || cli.invalidate_cache || cli.fail_fast || cli.report_json.is_some()
-            || cli.cpu_jobs.is_some() || cli.io_jobs.is_some() || !cli.verify_cache
-            || cli.verbose || !matches!(cli.texture_encoder, TextureEncoder::Cpu) {
+        let cli = parse_cli(
+            args.into_iter()
+                .skip(1)
+                .filter(|argument| argument != "--apply")
+                .collect(),
+        )?;
+        if cli.resume_staging.is_some()
+            || cli.invalidate_cache
+            || cli.fail_fast
+            || cli.report_json.is_some()
+            || cli.cpu_jobs.is_some()
+            || cli.io_jobs.is_some()
+            || !cli.verify_cache
+            || cli.verbose
+            || !matches!(cli.texture_encoder, TextureEncoder::Cpu)
+        {
             bail!("repair-failed accepts Data/output, MO2 selection and --apply only");
         }
         return Ok(Command::Repair(cli, apply));

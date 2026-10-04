@@ -119,7 +119,9 @@ impl AssetSourceIndex {
 
 /// Authoring resources are not runtime assets, even when their extension is NIF/DDS/PEX.
 pub(crate) fn is_authoring_resource(path: &str) -> bool {
-    path.replace('\\', "/").split('/').any(|part| part.eq_ignore_ascii_case("calientetools"))
+    path.replace('\\', "/")
+        .split('/')
+        .any(|part| part.eq_ignore_ascii_case("calientetools"))
 }
 
 /// Canonicalizes a Bethesda asset path into a lowercase, root-relative key.

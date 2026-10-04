@@ -683,13 +683,30 @@ fn emit_function(out: &mut String, state: &State, function: &Function) -> Result
     writeln!(out, "    while true do")?;
     // Luau recursively parses elseif chains. Bound each instruction dispatch
     // to 128 branches without changing jump targets or the interpreter state.
-    writeln!(out, "        if __pc == {} then return nil end", ir.instructions.len())?;
-    writeln!(out, "        if __pc < 0 or __pc >= {} then error(\"invalid Papyrus program counter: \" .. tostring(__pc)) end", ir.instructions.len())?;
+    writeln!(
+        out,
+        "        if __pc == {} then return nil end",
+        ir.instructions.len()
+    )?;
+    writeln!(
+        out,
+        "        if __pc < 0 or __pc >= {} then error(\"invalid Papyrus program counter: \" .. tostring(__pc)) end",
+        ir.instructions.len()
+    )?;
     for chunk in ir.instructions.chunks(128) {
-        writeln!(out, "        if __pc >= {} and __pc <= {} then", chunk[0].pc, chunk.last().unwrap().pc)?;
+        writeln!(
+            out,
+            "        if __pc >= {} and __pc <= {} then",
+            chunk[0].pc,
+            chunk.last().unwrap().pc
+        )?;
         for (index, ir_instruction) in chunk.iter().enumerate() {
             let ip = ir_instruction.pc;
-            writeln!(out, "            {} __pc == {ip} then", if index == 0 { "if" } else { "elseif" })?;
+            writeln!(
+                out,
+                "            {} __pc == {ip} then",
+                if index == 0 { "if" } else { "elseif" }
+            )?;
             emit_instruction(out, ip, &ir_instruction.instruction)?;
         }
         writeln!(out, "            end")?;
@@ -1089,13 +1106,47 @@ mod tests {
 
     #[test]
     fn large_dispatch_compiles_and_preserves_cross_chunk_jumps() {
-        let mut instructions = vec![Instruction { opcode: 0, args: vec![], varargs: vec![] }; 2048];
-        instructions[0] = Instruction { opcode: 20, args: vec![Value::Integer(1024)], varargs: vec![] };
-        instructions[1024] = Instruction { opcode: 21, args: vec![Value::Bool(true), Value::Integer(1023)], varargs: vec![] };
-        instructions[2047] = Instruction { opcode: 26, args: vec![Value::Integer(42)], varargs: vec![] };
-        let function = Function { name: "large".into(), return_type: "Int".into(), flags: 0, params: vec![], locals: vec![], instructions };
+        let mut instructions = vec![
+            Instruction {
+                opcode: 0,
+                args: vec![],
+                varargs: vec![]
+            };
+            2048
+        ];
+        instructions[0] = Instruction {
+            opcode: 20,
+            args: vec![Value::Integer(1024)],
+            varargs: vec![],
+        };
+        instructions[1024] = Instruction {
+            opcode: 21,
+            args: vec![Value::Bool(true), Value::Integer(1023)],
+            varargs: vec![],
+        };
+        instructions[2047] = Instruction {
+            opcode: 26,
+            args: vec![Value::Integer(42)],
+            varargs: vec![],
+        };
+        let function = Function {
+            name: "large".into(),
+            return_type: "Int".into(),
+            flags: 0,
+            params: vec![],
+            locals: vec![],
+            instructions,
+        };
         let mut source = String::from("local Script = {}\n");
-        emit_function(&mut source, &State { name: String::new(), functions: vec![] }, &function).unwrap();
+        emit_function(
+            &mut source,
+            &State {
+                name: String::new(),
+                functions: vec![],
+            },
+            &function,
+        )
+        .unwrap();
         source.push_str("return Script.large({})\n");
         assert_eq!(mlua::Lua::new().load(&source).eval::<i32>().unwrap(), 42);
     }

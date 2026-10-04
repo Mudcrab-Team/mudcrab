@@ -100,7 +100,7 @@ pub fn generate(spec: &Spec, rng: &mut Rng) -> Result<Vec<u8>> {
             caps2: spec
                 .cubemap
                 .then_some(Caps2::CUBEMAP | Caps2::CUBEMAP_ALLFACES),
-            is_cubemap: false,
+            is_cubemap: spec.cubemap,
             resource_dimension: if spec.depth.is_some() {
                 D3D10ResourceDimension::Texture3D
             } else {
@@ -189,8 +189,11 @@ mod tests {
         let bytes = generate(&spec, &mut Rng::new(2)).unwrap();
         let dds = Dds::read(bytes.as_slice()).unwrap();
         assert_eq!(dds.data.len(), 48);
-        assert_eq!(dds.get_num_array_layers(), 6);
+        assert_eq!(dds.get_num_array_layers(), 1);
         assert!(dds.header.caps2.contains(Caps2::CUBEMAP));
+        let header = dds.header10.as_ref().unwrap();
+        assert_eq!(header.array_size, 1);
+        assert!(header.misc_flag.contains(ddsfile::MiscFlag::TEXTURECUBE));
     }
 
     #[test]

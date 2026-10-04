@@ -201,7 +201,8 @@ impl TextureConverter {
                 .is_some_and(|header| header.misc_flag.contains(MiscFlag::TEXTURECUBE));
         // DX10 array_size counts cubes, whereas legacy DDS reports faces.
         let layer_count = if is_cubemap && dds.header10.is_some() {
-            dds.get_num_array_layers().checked_mul(6)
+            dds.get_num_array_layers()
+                .checked_mul(6)
                 .ok_or_else(|| color_eyre::eyre::eyre!("DDS cube array size overflow"))?
         } else {
             dds.get_num_array_layers()
@@ -215,7 +216,10 @@ impl TextureConverter {
             "DDS cubemap does not contain exactly six faces"
         );
         if is_cubemap && dds.header10.is_none() {
-            ensure!(dds.header.caps2.contains(Caps2::CUBEMAP_ALLFACES), "DDS cubemap has missing face flags");
+            ensure!(
+                dds.header.caps2.contains(Caps2::CUBEMAP_ALLFACES),
+                "DDS cubemap has missing face flags"
+            );
         }
         if let Some(format) = native_ktx2_format(&dds, encoding) {
             let result = assemble_native_ktx2(&dds, format, is_cubemap, zstd_level)?;

@@ -219,14 +219,19 @@ impl MeshConverter {
         file.read_exact(&mut header)?;
         let length = u32::from_le_bytes(header[8..12].try_into().unwrap());
         let json_length = u32::from_le_bytes(header[12..16].try_into().unwrap());
-        ensure!(&header[..4] == b"glTF" && &header[16..20] == b"JSON"
-            && u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2
-            && u64::from(length) == file.metadata()?.len()
-            && u64::from(json_length) + 20 <= u64::from(length),
-            "invalid GLB JSON chunk in {}", path.display());
+        ensure!(
+            &header[..4] == b"glTF"
+                && &header[16..20] == b"JSON"
+                && u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2
+                && u64::from(length) == file.metadata()?.len()
+                && u64::from(json_length) + 20 <= u64::from(length),
+            "invalid GLB JSON chunk in {}",
+            path.display()
+        );
         // Dependency scans need JSON only, not potentially gigabytes of geometry.
-        let document = serde_json::from_reader(std::io::BufReader::new(file.take(u64::from(json_length))))
-            .wrap_err_with(|| format!("failed to inspect textures in {}", path.display()))?;
+        let document =
+            serde_json::from_reader(std::io::BufReader::new(file.take(u64::from(json_length))))
+                .wrap_err_with(|| format!("failed to inspect textures in {}", path.display()))?;
         Ok(texture_dependencies(&document))
     }
 
@@ -547,7 +552,11 @@ fn is_declared_geometry_block(block_type: &str) -> bool {
 fn is_geometry_template(nif: &NifFile) -> bool {
     let mut templates = 0;
     for (index, block) in nif.blocks.iter().enumerate() {
-        if !nif.header.get_block_type(index).is_ok_and(is_declared_geometry_block) {
+        if !nif
+            .header
+            .get_block_type(index)
+            .is_ok_and(is_declared_geometry_block)
+        {
             continue;
         }
         match block {
@@ -935,8 +944,11 @@ pub(crate) fn parse_skyrim_header<'a>(
         path.display()
     );
     let user_version = cursor.u32()?;
-    ensure!(nif_version == 0x1402_0007 && user_version == 12,
-        "unsupported NIF version {nif_version:#010x}, user version {user_version} in {}", path.display());
+    ensure!(
+        nif_version == 0x1402_0007 && user_version == 12,
+        "unsupported NIF version {nif_version:#010x}, user version {user_version} in {}",
+        path.display()
+    );
     let block_count = cursor.u32()?;
     ensure!(
         block_count <= 1_000_000,
@@ -944,8 +956,11 @@ pub(crate) fn parse_skyrim_header<'a>(
         path.display()
     );
     let bethesda_version = cursor.u32()?;
-    ensure!(matches!(bethesda_version, 83 | 100),
-        "unsupported Bethesda NIF version {bethesda_version} in {}", path.display());
+    ensure!(
+        matches!(bethesda_version, 83 | 100),
+        "unsupported Bethesda NIF version {bethesda_version} in {}",
+        path.display()
+    );
     let author = cursor.sized_string8_optional()?;
     let process_script = cursor.sized_string8_optional()?;
     let export_script = cursor.sized_string8_optional()?;

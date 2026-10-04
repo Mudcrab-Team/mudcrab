@@ -271,7 +271,7 @@ pub enum Effect {
     /// Nothing to do: the press was not legal in this state.
     None,
     /// Start a conversion with this configuration on its own thread.
-    Begin(PipelineConfig),
+    Begin(Box<PipelineConfig>),
     /// Ask the running conversion to stop.
     Cancel,
     /// End the process now, as the command line's second Ctrl+C does.
@@ -295,9 +295,10 @@ pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) 
         // Start always converts from scratch, whichever state it is pressed in: a run that kept a
         // staging folder is only picked up again by Resume.
         Input::Start { data, output } => match state {
-            Idle | Finished(_) | Stopped { .. } => {
-                (Running, Effect::Begin(PipelineConfig::new(data, output)))
-            }
+            Idle | Finished(_) | Stopped { .. } => (
+                Running,
+                Effect::Begin(Box::new(PipelineConfig::new(data, output))),
+            ),
             Running | Stopping | Checking { .. } | Deleting { .. } => (state, Effect::None),
         },
         Input::Stop => match state {
@@ -318,7 +319,7 @@ pub fn apply(state: ConversionState, input: Input) -> (ConversionState, Effect) 
             } => {
                 let mut config = PipelineConfig::new(data, output);
                 config.resume_staging = Some(staging);
-                (Running, Effect::Begin(config))
+                (Running, Effect::Begin(Box::new(config)))
             }
             other => (other, Effect::None),
         },

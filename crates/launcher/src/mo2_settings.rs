@@ -163,7 +163,7 @@ fn draw_source(
     mut commands: Commands,
     source: Res<SourceSettings>,
     state: Res<CurrentConversion>,
-    mut buttons: Query<(&SourceButton, &mut BackgroundColor)>, 
+    mut buttons: Query<(&SourceButton, &mut BackgroundColor)>,
     mut labels: Query<&mut Text, With<SourceLabel>>,
     dialogs: Query<Entity, With<SettingsDialog>>,
 ) {
@@ -324,7 +324,7 @@ mod tests {
         app.update();
         assert!(!app.world().resource::<SourceSettings>().use_mo2);
     }
- 
+
     #[test]
     fn validates_defaults_and_switches_conversion_source() {
         let root = std::env::temp_dir().join(format!("mudcrab-source-{}", std::process::id()));
