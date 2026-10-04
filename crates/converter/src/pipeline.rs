@@ -230,7 +230,7 @@ impl AssetPipeline {
         let expected_configuration = configuration_hash(&config)?;
         let configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
-            || (matches!(loaded_manifest.schema_version, 12..=15)
+            || (matches!(loaded_manifest.schema_version, 12..=16)
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
         let previous_manifest = if configuration_is_compatible {
@@ -2558,6 +2558,13 @@ mod tests {
                 "schema-15",
                 Some(
                     br#"{"schema_version":15,"complete":true,"configuration_hash":"","entries":{}}"#
+                        .as_slice(),
+                ),
+            ),
+            (
+                "schema-16",
+                Some(
+                    br#"{"schema_version":16,"complete":true,"configuration_hash":"","entries":{}}"#
                         .as_slice(),
                 ),
             ),

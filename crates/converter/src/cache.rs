@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const CONVERTER_SCHEMA_VERSION: u32 = 16;
+pub const CONVERTER_SCHEMA_VERSION: u32 = 17;
 
 /// Provenance journal the converter keeps inside a staging directory.
 ///
@@ -210,14 +210,18 @@ impl ConversionManifest {
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let mut manifest: Self =
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
-        if matches!(manifest.schema_version, 12..=15) && CONVERTER_SCHEMA_VERSION == 16 {
-            // Schemas 13-15 changed mesh/material publication; schema 16 adds
-            // authored collision to GLBs. Preserve verified archive ingestion,
-            // textures, and scripts, but rebuild every GLB and the world data.
+        if matches!(manifest.schema_version, 12..=16) && CONVERTER_SCHEMA_VERSION == 17 {
+            // Schemas 13-15 changed mesh/material publication and schema 16
+            // added authored collision to GLBs; schema 17 stores uncompressed
+            // DDS textures as native BC7 instead of UASTC. Preserve verified
+            // archive ingestion and scripts, but rebuild every texture, the GLBs
+            // of schemas before 16, and the world data.
+            let rebuild_glbs = manifest.schema_version < 16;
             manifest.complete = false;
-            manifest
-                .entries
-                .retain(|_, entry| !entry.output.to_ascii_lowercase().ends_with(".glb"));
+            manifest.entries.retain(|_, entry| {
+                let output = entry.output.to_ascii_lowercase();
+                !output.ends_with(".ktx2") && !(rebuild_glbs && output.ends_with(".glb"))
+            });
             return Ok(manifest);
         }
         if manifest.schema_version != CONVERTER_SCHEMA_VERSION {
@@ -587,7 +591,7 @@ mod tests {
 
     #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14, 15] {
+        for schema_version in [12, 13, 14, 15, 16] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {
@@ -612,8 +616,11 @@ mod tests {
 
             assert_eq!(migrated.schema_version, schema_version);
             assert!(!migrated.complete);
-            assert!(!migrated.entries.contains_key("meshes/a.glb"));
-            assert!(migrated.entries.contains_key("textures/a.ktx2"));
+            assert_eq!(
+                migrated.entries.contains_key("meshes/a.glb"),
+                schema_version == 16
+            );
+            assert!(!migrated.entries.contains_key("textures/a.ktx2"));
             assert!(migrated.entries.contains_key("scripts/a.luau"));
         }
     }
