@@ -1,4 +1,4 @@
-//! Proposed V72: only accepted current-run mesh artifacts may affect the world audit.
+//! V72: only accepted current-run mesh artifacts may affect the world audit.
 //! Historical prune records describe omissions; they do not prove mesh provenance.
 
 use converter::{
