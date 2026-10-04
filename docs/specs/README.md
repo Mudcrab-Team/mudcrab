@@ -40,6 +40,7 @@ Offline asset transpilation specs handled by the `converter` crate:
 
 - 📄 **[`pipeline.md`](converters/pipeline.md)** — Master offline conversion architecture and pipeline matrix.
 - 📄 **[`esm-to-sqlite.md`](converters/esm-to-sqlite.md)** — `Skyrim.esm` parsing strategy, libSQL sync, and `rkyv` zero-copy terrain cache.
+- **[Dynamic Schema Initiative](../roadmap/dynamic-schema-initiative.md)** — Proposed newest-SE complete interpretation and compatibility plan; declarative schemas, lossless round-trips and strictly deferred earlier SE/VR, LE and other-game expansion.
 - 📄 **[`db-schema.md`](converters/db-schema.md)** — Complete SQLite 3 database DDL schema (`skyrim_world.db`), table constraints, and indices.
 - 📄 **[`nif-to-gltf.md`](converters/nif-to-gltf.md)** — Converting `.nif` geometry, material shaders, and skin weights to `glTF 2.0`.
 - 📄 **[`dds-to-ktx2.md`](converters/dds-to-ktx2.md)** — DirectDraw surface transcoding to Basis Universal `KTX2`.
