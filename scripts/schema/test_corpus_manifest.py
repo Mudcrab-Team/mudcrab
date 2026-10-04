@@ -1,4 +1,6 @@
 import hashlib
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 import json
 import struct
 import tempfile
@@ -542,6 +544,18 @@ class CorpusManifestTests(unittest.TestCase):
                     game_root, data_root, executable, ccc, malformed_descriptor
                 )
 
+    def test_oversized_evidence_descriptor_is_rejected_before_hash_read(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            descriptor = Path(temp_dir) / "oversized-evidence.json"
+            with descriptor.open("wb") as stream:
+                stream.truncate(manifest_tool.MAX_CORPUS_EVIDENCE_BYTES + 1)
+
+            with mock.patch.object(
+                manifest_tool, "_read_verified_file", side_effect=AssertionError("read attempted")
+            ):
+                with self.assertRaisesRegex(ValueError, "exceeds the 1 MiB input limit"):
+                    manifest_tool._read_corpus_evidence(descriptor)
+
     def test_profile_target_must_match_fixed_newest_steam_build(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -566,6 +580,104 @@ class CorpusManifestTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "unsupported keys: accepted"):
                 manifest_tool.build_manifest(game_root, data_root, executable, ccc, evidence_path)
+
+    def test_cli_writes_supplied_evidence_candidate_and_keeps_incomplete_exit_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root)
+            evidence_path, _ = make_corpus_evidence(root, BASE_PLUGINS)
+            output = root / "candidate.json"
+            stdout = StringIO()
+            stderr = StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                status = manifest_tool.main([
+                    "--game-root", str(game_root),
+                    "--data-dir", str(data_root),
+                    "--executable", str(executable),
+                    "--ccc", str(ccc),
+                    "--corpus-evidence", str(evidence_path),
+                    "--output", str(output),
+                ])
+
+            self.assertEqual(status, 2)
+            self.assertTrue(output.is_file())
+            self.assertEqual(stderr.getvalue(), "")
+            observed = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(observed["locale"]["value"], "ENGLISH")
+            self.assertEqual(observed["load_order"]["entries"], list(BASE_PLUGINS))
+            self.assertIn("accepted_corpus_pin_set_missing", observed["completion_blockers"])
+
+    def test_cli_rejects_load_order_evidence_as_output_before_replacing_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root)
+            evidence_path, _ = make_corpus_evidence(root, BASE_PLUGINS)
+            load_order_artifact = root / "evidence" / "load-order-source.txt"
+            original = load_order_artifact.read_bytes()
+            stdout = StringIO()
+            stderr = StringIO()
+
+            with mock.patch.object(manifest_tool, "write_manifest", wraps=manifest_tool.write_manifest) as writer:
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    status = manifest_tool.main([
+                        "--game-root", str(game_root),
+                        "--data-dir", str(data_root),
+                        "--executable", str(executable),
+                        "--ccc", str(ccc),
+                        "--corpus-evidence", str(evidence_path),
+                        "--output", str(load_order_artifact),
+                    ])
+
+            self.assertEqual(status, 2)
+            writer.assert_not_called()
+            self.assertEqual(load_order_artifact.read_bytes(), original)
+            self.assertIn("manifest output overlaps", stderr.getvalue())
+
+    def test_cli_rejects_symlink_alias_and_ancestor_of_evidence_artifact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root)
+            evidence_path, _ = make_corpus_evidence(root, BASE_PLUGINS)
+            profile_artifact = root / "evidence" / "profile-source.txt"
+            original = profile_artifact.read_bytes()
+            alias = root / "artifact-alias.json"
+            alias.symlink_to(profile_artifact)
+            stdout = StringIO()
+            stderr = StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                alias_status = manifest_tool.main([
+                    "--game-root", str(game_root),
+                    "--data-dir", str(data_root),
+                    "--executable", str(executable),
+                    "--ccc", str(ccc),
+                    "--corpus-evidence", str(evidence_path),
+                    "--output", str(alias),
+                ])
+
+            self.assertEqual(alias_status, 2)
+            self.assertTrue(alias.is_symlink())
+            self.assertEqual(profile_artifact.read_bytes(), original)
+            self.assertIn("manifest output overlaps", stderr.getvalue())
+
+            stdout = StringIO()
+            stderr = StringIO()
+            evidence_directory = root / "evidence"
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                ancestor_status = manifest_tool.main([
+                    "--game-root", str(game_root),
+                    "--data-dir", str(data_root),
+                    "--executable", str(executable),
+                    "--ccc", str(ccc),
+                    "--corpus-evidence", str(evidence_path),
+                    "--output", str(evidence_directory),
+                ])
+
+            self.assertEqual(ancestor_status, 2)
+            self.assertTrue(evidence_directory.is_dir())
+            self.assertEqual(profile_artifact.read_bytes(), original)
+            self.assertIn("manifest output overlaps", stderr.getvalue())
 
     def test_supplied_load_order_rejects_unknown_and_unclassified_plugins(self):
         with tempfile.TemporaryDirectory() as temp_dir:

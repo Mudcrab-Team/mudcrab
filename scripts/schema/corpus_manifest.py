@@ -431,6 +431,9 @@ def _read_corpus_evidence(path: Path | None) -> dict | None:
     if path is None:
         return None
     descriptor_path = Path(path).expanduser().absolute()
+    descriptor_size = _path_stat(descriptor_path).st_size
+    if descriptor_size > MAX_CORPUS_EVIDENCE_BYTES:
+        raise ValueError("corpus evidence JSON exceeds the 1 MiB input limit")
     digest, size, raw = _read_verified_file(
         descriptor_path, capture_bytes=MAX_CORPUS_EVIDENCE_BYTES + 1
     )
@@ -1063,6 +1066,18 @@ def ensure_output_outside_sources(output: Path, game_root: Path, data_root: Path
     return output
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    try:
+        second.relative_to(first)
+        return True
+    except ValueError:
+        try:
+            first.relative_to(second)
+            return True
+        except ValueError:
+            return False
+
+
 def write_manifest(output: Path, manifest: dict, game_root: Path, data_root: Path) -> None:
     output = ensure_output_outside_sources(output, game_root, data_root)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1115,9 +1130,14 @@ def main(argv: list[str] | None = None) -> int:
         if manifest["input_evidence"] is not None:
             evidence_paths.add(Path(manifest["input_evidence"]["path"]).resolve(strict=True))
             for name in ("corpus_profile", "locale", "load_order"):
-                evidence_paths.add(Path(manifest[name]["evidence"]["path"]).resolve(strict=True))
-        if output in evidence_paths:
-            raise ValueError("manifest output cannot replace the corpus evidence descriptor or a referenced artifact")
+                artifact = manifest[name]["source"] if name == "load_order" else manifest[name]["evidence"]
+                evidence_paths.add(Path(artifact["path"]).resolve(strict=True))
+        for evidence_path in evidence_paths:
+            if _paths_overlap(output, evidence_path):
+                raise ValueError(
+                    "manifest output overlaps the corpus evidence descriptor or a referenced artifact: "
+                    f"{evidence_path}"
+                )
         write_manifest(output, manifest, game_root, data_root)
     except (OSError, ValueError, SourceDriftError) as exc:
         print(f"corpus manifest failed: {exc}", file=sys.stderr)
