@@ -241,47 +241,8 @@ impl AssetPipeline {
             .resume_staging
             .clone()
             .unwrap_or_else(|| staging_path(&config.output_dir));
-        let resumed = config.resume_staging.is_some();
         fs::create_dir_all(staging.join("vfs"))
             .wrap_err_with(|| format!("failed to create {}", staging.join("vfs").display()))?;
-        if resumed {
-            let mut verified = BTreeSet::new();
-            if !config.invalidate_cache {
-                if let Ok(staged) = load_staged_outputs(&staging) {
-                    for (key, record) in staged {
-                        if record.schema_version == CONVERTER_SCHEMA_VERSION
-                            && record.configuration_hash == expected_configuration
-                        {
-                            let mut glb_path = PathBuf::from(key);
-                            glb_path.set_extension("glb");
-                            let rel = glb_path.to_string_lossy().replace('\\', "/");
-                            let full = staging.join(&rel);
-                            if full.is_file()
-                                && fs::metadata(&full).is_ok_and(|m| m.len() == record.output_size)
-                                && hash_file(&full).is_ok_and(|h| h == record.output_hash)
-                            {
-                                verified.insert(rel);
-                            }
-                        }
-                    }
-                }
-                for glb in previous_manifest.pruned_texture_references.keys() {
-                    let full = staging.join(glb);
-                    if full.is_file() {
-                        verified.insert(glb.clone());
-                    }
-                }
-                for entry in previous_manifest.entries.values() {
-                    if entry.output.ends_with(".glb") {
-                        let full = staging.join(&entry.output);
-                        if full.is_file() {
-                            verified.insert(entry.output.clone());
-                        }
-                    }
-                }
-            }
-            invalidate_staged_mesh_outputs(&staging, &verified)?;
-        }
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
         // resumes from it. Only a successful publish removes it, once the runtime pack is out.
@@ -614,6 +575,19 @@ impl AssetPipeline {
                 )
                 .await?;
         }
+        // Only meshes accepted by this run may affect texture pruning or the world audit.
+        // Conversion checks current source/dependency hashes, schema/configuration and output
+        // bytes before adding an artifact. A historical prune record is only an audit of omitted
+        // references; neither it nor old provenance proves that a source still exists. Waiting
+        // until conversion preserves valid same-schema pruned resumes while discarding meshes
+        // whose sources disappeared or whose conversion failed.
+        let accepted_meshes = report
+            .artifacts
+            .iter()
+            .filter(|path| extension(path, &["glb"]))
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
         let texture_semantics = collect_texture_semantics(staging)?;
         {
             let mut batch = ConversionBatch {
@@ -1757,13 +1731,11 @@ fn extension(path: &Path, expected: &[&str]) -> bool {
         })
 }
 
-/// Deletes staged meshes no provenance source vouches for.
+/// Deletes staged meshes outside the accepted set, preserving extracted VFS sources.
 ///
-/// `verified` holds staged-relative mesh paths (forward slashes) whose bytes
-/// a provenance record describes: the PR31 staging journal once merged. A
-/// mesh in that set survives so the journal reuse gate below can certify it;
-/// every other staged mesh is unverified and goes, so a resume can never
-/// publish bytes this converter did not verify.
+/// Paths are relative to staging with forward slashes. The mesh conversion batch supplies
+/// artifacts only after validating current provenance or successfully converting the source;
+/// downstream directory scans must see exactly those meshes that publication will include.
 fn invalidate_staged_mesh_outputs(staging: &Path, verified: &BTreeSet<String>) -> Result<()> {
     let vfs = staging.join("vfs");
     for entry in WalkDir::new(staging)
