@@ -31,6 +31,7 @@ struct Cli {
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
+    no_lod: bool,
     verbose: bool,
 }
 
@@ -158,6 +159,7 @@ async fn main() -> Result<()> {
     config.fail_fast = cli.fail_fast;
     config.invalidate_cache = cli.invalidate_cache;
     config.verify_cache = cli.verify_cache;
+    config.no_lod = cli.no_lod;
     config.texture_encoder = cli.texture_encoder;
     if let Some(cpu_jobs) = cli.cpu_jobs {
         config.cpu_jobs = cpu_jobs;
@@ -443,6 +445,9 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
             " --texture-encoder gpu --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
         ));
     }
+    if cli.no_lod {
+        command.push_str(" --no-lod");
+    }
     command
 }
 
@@ -655,6 +660,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut fail_fast = false;
     let mut invalidate_cache = false;
     let mut verify_cache = true;
+    let mut no_lod = false;
     let mut verbose = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
@@ -703,6 +709,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--fail-fast") => fail_fast = true,
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
+            Some("--no-lod") => no_lod = true,
             Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
@@ -737,6 +744,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         fail_fast,
         invalidate_cache,
         verify_cache,
+        no_lod,
         verbose,
     })
 }
@@ -777,10 +785,13 @@ fn usage() -> &'static str {
     "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
-                 [--report-json FILE] [--verbose] [--reuse-assets DIR]
+                 [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
        converter check <output directory> [--full]
 
 Converts a Skyrim Data directory into runtime assets.
+
+--no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
+terrain and ordinary assets remain available. Omit it on a later run to build LOD.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -1028,6 +1039,7 @@ mod tests {
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
+            no_lod: false,
             verbose: false,
         };
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
@@ -1042,6 +1054,9 @@ mod tests {
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
+        let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
+        assert!(no_lod.no_lod);
+        assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {

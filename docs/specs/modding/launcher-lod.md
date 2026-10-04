@@ -15,8 +15,10 @@ Conversion already builds terrain LOD. Launcher worker calls
 Progress already travels through `RunMessage::Progress` and `ConversionStatus`.
 Before A, `RunReport::from_pipeline` dropped `PipelineReport::lod_chunks` and
 `lod_warnings`. A retains both. `LodChunks` has zero
-uncalibrated progress weight; its long first world makes overall progress
-unhelpful. Do not invent timing estimates to hide this.
+uncalibrated progress weight. During that stage the bar shows completed/total
+worldspaces and is labeled `LOD <percent>%`; afterwards it returns to the
+monotonic overall estimate. Its long first world can still show zero completed
+worldspaces while compiling. No unsupported timing estimate is displayed.
 
 ## A: Small Launcher Change
 
@@ -25,7 +27,8 @@ unhelpful. Do not invent timing estimates to hide this.
 - Preserve chunk count and LOD-specific warnings in launcher `RunReport`.
 - Show `Building terrain LOD` with completed/total worldspaces and elapsed
   time. Zero completed worlds does not mean zero CPU work. Leave ETA unknown
-  where measurements cannot support it; retain shared monotonic overall bar.
+  where measurements cannot support it; retain shared monotonic overall estimate
+  while the visible bar reports explicitly labeled LOD stage completion.
 - On completion, show terrain chunk count and skipped-world warning count
   alongside conversion outcome. A zero-chunk result says no terrain LOD was
   generated. Conversion completeness is not proof of full-world LOD coverage.

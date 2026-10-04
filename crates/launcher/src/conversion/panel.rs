@@ -552,12 +552,12 @@ pub fn draw_bar(
     mut fill: Query<&mut Node, With<BarFill>>,
     mut overall: Query<&mut Text, With<OverallText>>,
 ) {
-    let percent = status.overall_percent();
+    let (percent, label) = status.progress_bar();
     for mut node in &mut fill {
         node.width = Val::Percent(percent);
     }
     for mut text in &mut overall {
-        text.0 = format!("{percent:.0}%");
+        text.0 = label.clone();
     }
 }
 

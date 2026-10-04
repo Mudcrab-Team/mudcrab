@@ -270,6 +270,8 @@ impl ConversionManifest {
 }
 
 pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<String> {
+    // no_lod only selects regenerated outputs; it does not change converted asset
+    // bytes. Resume invalidates database/LOD outputs before evaluating this proof.
     configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION)
 }
 

@@ -39,6 +39,10 @@ pub struct PipelineConfig {
     /// no LOD, never an assumed origin of zero (GEOM-02).
     #[serde(default)]
     pub lod_origins: BTreeMap<String, [i32; 2]>,
+    /// Skip generated terrain LOD in both conversion routes. Asset byte contracts
+    /// are unchanged; generated database/LOD outputs are rebuilt on every run.
+    #[serde(default)]
+    pub no_lod: bool,
     pub cpu_jobs: usize,
     pub io_jobs: usize,
     pub enable_ba2: bool,
@@ -73,6 +77,7 @@ impl PipelineConfig {
             cache_dir: None,
             plugins_file: None,
             lod_origins: BTreeMap::new(),
+            no_lod: false,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
             io_jobs: 2,
             enable_ba2: true,
@@ -361,6 +366,7 @@ mod tests {
         });
         let config: PipelineConfig = serde_json::from_value(legacy.clone()).unwrap();
         assert!(config.lod_origins.is_empty());
+        assert!(!config.no_lod);
         assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
         assert_eq!(config.data_dir, PathBuf::from("Data"));
         assert_eq!(config.cpu_jobs, 2);

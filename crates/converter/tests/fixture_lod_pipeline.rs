@@ -37,6 +37,122 @@ async fn convert_config(config: converter::PipelineConfig) -> converter::Pipelin
 }
 
 #[tokio::test]
+async fn no_lod_replaces_generated_lod_without_reconverting_ordinary_assets() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("assets");
+    generate_data(&data);
+    let enabled = convert(&data, &output).await;
+    assert!(enabled.lod_chunks > 0);
+    let manifest: converter::cache::ConversionManifest =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    let original_outputs: Vec<_> = manifest
+        .entries
+        .values()
+        .map(|entry| {
+            (
+                entry.output.clone(),
+                fs::read(output.join(&entry.output)).unwrap(),
+            )
+        })
+        .collect();
+
+    let mut config = converter::PipelineConfig::new(&data, &output);
+    config.no_lod = true;
+    let disabled = convert_config(config).await;
+    assert!(disabled.complete);
+    assert_eq!(disabled.converted, 0);
+    assert_eq!(disabled.lod_chunks, 0);
+    assert!(
+        disabled
+            .notices
+            .iter()
+            .any(|notice| notice.contains("--no-lod"))
+    );
+    assert!(!output.join("lod-manifest.json").exists());
+    assert!(!output.join("lod").exists());
+    let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM lod_chunks", [], |row| row
+            .get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(
+        shared::world_assets::validate_lod_build_contract(
+            &output,
+            shared::LOD_CONVERTER_SCHEMA_VERSION
+        )
+        .is_ok()
+    );
+    for (path, bytes) in original_outputs {
+        assert_eq!(fs::read(output.join(path)).unwrap(), bytes);
+    }
+    drop(db);
+    let reenabled = convert(&data, &output).await;
+    assert!(reenabled.complete);
+    assert_eq!(reenabled.converted, 0);
+    assert_eq!(reenabled.lod_chunks, enabled.lod_chunks);
+}
+
+#[tokio::test]
+async fn metadata_no_lod_omits_chunks_and_preserves_the_source_package() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate_data(&data);
+    let enabled = convert(&data, &source).await;
+    assert!(enabled.lod_chunks > 0);
+    let source_manifest = fs::read(source.join("lod-manifest.json")).unwrap();
+    let mut config = converter::PipelineConfig::new(&data, &output);
+    config.no_lod = true;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = converter::AssetPipeline::rebuild_metadata_async(config, &source, tx)
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    assert!(report.complete);
+    assert_eq!(report.converted, 0);
+    assert_eq!(report.lod_chunks, 0);
+    assert!(!output.join("lod-manifest.json").exists());
+    assert!(!output.join("lod").exists());
+    assert_eq!(
+        fs::read(source.join("lod-manifest.json")).unwrap(),
+        source_manifest
+    );
+    assert!(
+        shared::world_assets::validate_lod_build_contract(
+            &output,
+            shared::LOD_CONVERTER_SCHEMA_VERSION
+        )
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn v115_resumed_no_lod_discards_staged_lod_outputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("assets");
+    generate_data(&data);
+    assert!(convert(&data, &output).await.lod_chunks > 0);
+    let staging = directory.path().join("assets.staging-lod-retry");
+    fs::rename(&output, &staging).unwrap();
+    let mut config = converter::PipelineConfig::new(&data, &output);
+    config.no_lod = true;
+    config.resume_staging = Some(staging);
+    let report = convert_config(config).await;
+    assert!(report.complete);
+    assert_eq!(report.lod_chunks, 0);
+    assert!(indexed_chunks(&output).is_empty());
+    assert!(!output.join("lod-manifest.json").exists());
+    assert!(!output.join("lod").exists());
+}
+
+#[tokio::test]
 async fn packed_sidecars_compile_lod_and_loose_settings_override_them() {
     for loose_override in [false, true] {
         let directory = tempfile::tempdir().unwrap();

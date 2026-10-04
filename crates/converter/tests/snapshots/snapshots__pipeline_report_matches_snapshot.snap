@@ -58,9 +58,11 @@ expression: report
     "waters_with_flow_normal": 0
   },
   "lod_chunks": 6,
+  "lod_elapsed_ms": "[lod_elapsed_ms]",
   "lod_warnings": [],
   "notices": [],
   "pruned_texture_references": 0,
+  "publication_elapsed_ms": "[publication_elapsed_ms]",
   "skipped": 0,
   "warnings": []
 }

@@ -216,6 +216,10 @@ V112: Combined converter 24/world 7 ! native-BC, lighting, grass & LOD contracts
 
 V113: Launcher Play readiness & runtime startup share read-only world DB/LOD validation; actual schema ! report schema. Empty/corrupt/unsupported DB ⊥ ready; grass-only schema 5 requires no LOD tables. Advertised current LOD ! exact producer/world/build identity & chunk count; stale/missing/mismatched identity ⊥ ready.
 
+V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publication timings → zero/empty defaults; explicit values retained. Timings measured by monotonic clock; absent historical values ≠ measured zero.
+V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed generated outputs rebuilt; source package unchanged.
+V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -339,3 +343,6 @@ B72|2026-10-04|conflict splice dropped async regression test attribute; legacy p
 B73|2026-10-04|schema 23 retained across rigid-body GLB payload change; honest old source/config/output proof reused mesh without body dynamics|V73,V112; valid legacy GLB negative control, current24 unchanged resume
 B74|2026-10-04|launcher readiness checked only world DB file existence; empty SQLite fixture enabled Play while runtime rejected|V113; shared read-only DB/LOD contract, real SQLite readiness fixtures
 B75|2026-10-04|schema23 fixtures retained mesh-only count and normal-reuse allowlist after legacy mesh/texture regeneration became required|V73,V112; align output-byte/count assertions and current-only normal reuse; preserve honest metadata-only provenance; existing invariants sufficient
+B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional LOD addition; older JSON rejected|V114; failing legacy-report regression, serde defaults
+B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
+B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant

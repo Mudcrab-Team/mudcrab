@@ -236,6 +236,21 @@ impl ConversionStatus {
         }
     }
 
+    /// Show LOD's own completion while its share of total run time is uncalibrated.
+    /// The label distinguishes this stage fraction from the overall estimate.
+    pub fn progress_bar(&self) -> (f32, String) {
+        if self.check.is_none()
+            && !self.run_finished
+            && self.stage == Some(ProgressStage::LodChunks)
+        {
+            let percent = self.stage_fraction.clamp(0.0, 1.0) * 100.0;
+            (percent, format!("LOD {percent:.0}%"))
+        } else {
+            let percent = self.overall_percent();
+            (percent, format!("{percent:.0}%"))
+        }
+    }
+
     /// The stage line: which stage, how far through it, and how fast it is going; or the staging
     /// folder being deleted.
     pub fn stage_line(&self) -> String {
@@ -363,6 +378,7 @@ mod tests {
         );
         assert_eq!(status.clock_line(), "00:02:00 elapsed");
         assert!(status.overall_percent() >= previous);
+        assert_eq!(status.progress_bar(), (0.0, "LOD 0%".to_owned()));
         status.observe(&ProgressEvent::notice(
             ProgressStage::LodChunks,
             None,
@@ -383,6 +399,18 @@ mod tests {
             status.stage_line(),
             "Building terrain LOD   3/50 worldspaces"
         );
+        assert_eq!(status.progress_bar(), (6.0, "LOD 6%".to_owned()));
+        status.observe(&ProgressEvent::new(
+            ProgressStage::Validating,
+            1,
+            2,
+            None,
+            "validating",
+        ));
+        let (percent, label) = status.progress_bar();
+        assert_eq!(percent, status.overall_percent());
+        assert_eq!(label, format!("{percent:.0}%"));
+        assert!(percent >= previous);
     }
 
     #[test]

@@ -13,6 +13,12 @@ ambiguous legacy backups require manual recovery. Cleanup validates the new
 package before deleting its owned predecessor. Validation errors identify file,
 block, and shape.
 
+CLI `--no-lod` skips this compiler in both normal conversion and metadata rebuilds.
+It publishes full-detail terrain/world data with empty LOD tables and no LOD manifest
+or generated chunks. Default conversion still compiles LOD; previous chunks are not
+reused. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
+for same-output locking, read-only installations and unowned backups.
+
 ## Inputs
 
 - `references` (placement, rotation, scale, `radius_override`), `statics`

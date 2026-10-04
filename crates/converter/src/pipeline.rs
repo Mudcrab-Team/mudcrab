@@ -67,9 +67,17 @@ pub struct PipelineReport {
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
     /// Terrain LOD chunks compiled this run. Zero when no worldspace had a
-    /// valid origin; a world without one is recorded as an LOD omission, never
+    /// valid origin or LOD was disabled; a world without one is recorded as an LOD omission, never
     /// given an assumed origin (GEOM-02).
+    #[serde(default)]
     pub lod_chunks: u64,
+    /// Wall time spent compiling terrain LOD, excluding other conversion stages.
+    #[serde(default)]
+    pub lod_elapsed_ms: u128,
+    /// Wall time of package publication, including seals/verification when replacing
+    /// an output. Excludes subsequent ingestion-cache persistence and pruning.
+    #[serde(default)]
+    pub publication_elapsed_ms: u128,
     #[serde(default)]
     pub lod_warnings: Vec<String>,
     pub warnings: Vec<String>,
@@ -344,8 +352,10 @@ impl AssetPipeline {
         if cancellation.is_cancelled() {
             return Err(failure(Interrupted::new().into(), &staging, &cancellation));
         }
+        let publication_started = Instant::now();
         publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
             .map_err(|error| failure(error, &staging, &cancellation))?;
+        report.publication_elapsed_ms = publication_started.elapsed().as_millis();
         let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
         if staging.join(".ingestion-cache").is_dir() {
             persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
@@ -822,6 +832,7 @@ impl AssetPipeline {
                 )
                 .await?;
         }
+        let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
             config,
             staging,
@@ -832,6 +843,7 @@ impl AssetPipeline {
             &mut report,
         )
         .await?;
+        report.lod_elapsed_ms = lod_started.elapsed().as_millis();
         interrupt(cancellation)?;
         if let Some(integration) = finalize_world_database(staging)? {
             if !integration.passed {
@@ -2396,6 +2408,19 @@ async fn compile_lod_chunks_with_cancel(
     cancellation: &Cancellation,
     report: &mut PipelineReport,
 ) -> Result<()> {
+    if config.no_lod {
+        interrupt(cancellation)?;
+        let message = "Terrain LOD compilation disabled by --no-lod";
+        report.notices.push(message.to_owned());
+        let _ = progress_tx
+            .send(ProgressEvent::notice(
+                ProgressStage::LodChunks,
+                None,
+                message,
+            ))
+            .await;
+        return Ok(());
+    }
     let db_path = staging.join("skyrim_world.db");
     if plugins.is_empty() || !db_path.is_file() {
         return Ok(());
@@ -3266,6 +3291,23 @@ mod stop_hook {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_report_without_lod_fields_deserializes() {
+        let mut legacy = serde_json::to_value(super::PipelineReport::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("lod_chunks");
+        legacy.as_object_mut().unwrap().remove("lod_warnings");
+        legacy.as_object_mut().unwrap().remove("lod_elapsed_ms");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("publication_elapsed_ms");
+        let report: super::PipelineReport = serde_json::from_value(legacy).unwrap();
+        assert_eq!(report.lod_chunks, 0);
+        assert!(report.lod_warnings.is_empty());
+        assert_eq!(report.lod_elapsed_ms, 0);
+        assert_eq!(report.publication_elapsed_ms, 0);
+    }
+
     use super::*;
 
     #[test]

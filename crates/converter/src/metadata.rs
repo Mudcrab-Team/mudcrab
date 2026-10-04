@@ -136,10 +136,12 @@ impl AssetPipeline {
                 return Err(error);
             }
         };
+        let publication_started = Instant::now();
         if let Err(error) = publish_new_directory(&staging, &config.output_dir, &output_lock) {
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }
+        report.publication_elapsed_ms = publication_started.elapsed().as_millis();
         report.elapsed_ms = started.elapsed().as_millis();
         Ok(report)
     }
@@ -350,6 +352,7 @@ async fn rebuild_into(
         PathBuf::from("skyrim_world.db"),
         PathBuf::from("cell_cache.rkyv"),
     ]);
+    let lod_started = Instant::now();
     compile_lod_chunks(
         config,
         staging,
@@ -359,6 +362,7 @@ async fn rebuild_into(
         &mut report,
     )
     .await?;
+    report.lod_elapsed_ms = lod_started.elapsed().as_millis();
     let integration = finalize_world_database(staging)?
         .ok_or_else(|| color_eyre::eyre::eyre!("missing rebuilt world database"))?;
     ensure!(
