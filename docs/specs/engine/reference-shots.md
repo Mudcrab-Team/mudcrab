@@ -91,4 +91,4 @@ visible in a campaign report instead of being read as a pass.
 
 `--headless` is ignored during a shots run, since the image is taken of the window. `--shots`
 cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-speed` or a fixture.
-`--run-label` names the run in the window title (`OpenSkyrim - shots: <label>`).
+`--run-label` names the run in the window title (`Mudcrab - shots: <label>`).

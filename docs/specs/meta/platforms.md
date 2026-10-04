@@ -1,6 +1,6 @@
-# OpenSkyrim Cross-Platform Target Architecture & Strategy
+# Mudcrab Cross-Platform Target Architecture & Strategy
 
-This document outlines the multi-platform target strategy for OpenSkyrim, ensuring native performance across **Desktop (Windows, Linux, macOS)** and **Mobile/ARM (Android, iOS, iPadOS)**.
+This document outlines the multi-platform target strategy for Mudcrab, ensuring native performance across **Desktop (Windows, Linux, macOS)** and **Mobile/ARM (Android, iOS, iPadOS)**.
 
 ---
 
@@ -30,7 +30,7 @@ This document outlines the multi-platform target strategy for OpenSkyrim, ensuri
 
 ### C. Touch & Gamepad Responsive Controls
 
-- OpenSkyrim's UI engine incorporates an **adaptive touch overlay system** for Android & iOS.
+- Mudcrab's UI engine incorporates an **adaptive touch overlay system** for Android & iOS.
 - Automatic input device switching:
   - Mouse/Keyboard ➔ Xbox/PlayStation Controller ➔ On-screen Virtual Joystick.
 

@@ -1,12 +1,12 @@
-# OpenSkyrim Bevy Engine Examples & Patterns
+# Mudcrab Bevy Engine Examples & Patterns
 
-This document maps official **Bevy 0.19 Examples** (`bevy.org/examples`) directly into OpenSkyrim subsystem implementations.
+This document maps official **Bevy 0.19 Examples** (`bevy.org/examples`) directly into Mudcrab subsystem implementations.
 
 ---
 
 ## 1. Subsystem to Bevy Example Mapping
 
-| OpenSkyrim Feature                    | Bevy Example Category   | Target Bevy Example               | OpenSkyrim Adaptation                                                                                          |
+| Mudcrab Feature                    | Bevy Example Category   | Target Bevy Example               | Mudcrab Adaptation                                                                                          |
 | :------------------------------------ | :---------------------- | :-------------------------------- | :------------------------------------------------------------------------------------------------------------- |
 | **Cell Spatial Streaming**            | `Async Tasks` / `Scene` | `async_channel`, `scene`          | Background thread streams SQLite bounding box objects & spawns `bsn!` scene bundles without UI stutter.        |
 | **PBR & Environment Lighting**        | `3D Rendering`          | `pbr`, `lighting`, `atmosphere`   | Skyrim sun direction, volumetric fog, and PBR metallic roughness materials.                                    |

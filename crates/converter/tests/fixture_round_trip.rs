@@ -271,7 +271,7 @@ fn generated_esm_plugin_exports_world_database() {
         },
     ];
     let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
-        author: "OpenSkyrim dummy-content",
+        author: "Mudcrab dummy-content",
         worldspace: "GeneratedWorld",
         cells: &cells,
         model_path: "meshes/generated.nif",
@@ -310,13 +310,14 @@ fn generated_esm_plugin_exports_world_database() {
 }
 
 #[test]
-#[ignore = "requires OPENSKYRIM_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
+#[ignore = "requires MUDCRAB_STATIC_NIF_FIXTURE with a locally installed Skyrim NIF"]
 fn real_static_nif_matches_writer_version_assumptions() {
     use converter::mesh::MeshConverter;
 
-    let path = std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE")
+    let path = std::env::var_os("MUDCRAB_STATIC_NIF_FIXTURE")
+        .or_else(|| std::env::var_os("OPENSKYRIM_STATIC_NIF_FIXTURE"))
         .map(std::path::PathBuf::from)
-        .expect("set OPENSKYRIM_STATIC_NIF_FIXTURE to a static Skyrim NIF");
+        .expect("set MUDCRAB_STATIC_NIF_FIXTURE to a static Skyrim NIF");
     let bytes = fs::read(&path).unwrap();
     let line = b"Gamebryo File Format, Version 20.2.0.7\n";
     assert!(bytes.starts_with(line), "unexpected NIF signature");
@@ -411,6 +412,12 @@ async fn generated_data_directory_converts_end_to_end() {
             17,
             "508de5874ce448ff192e55520bc249f44a2416b9e259b7797e53cdbd5ec0a3c0",
         ),
+        // Both native-BC and specular branches used this schema/hash identity.
+        // Pinned from their schema 18 manifest snapshot, not generated here.
+        (
+            18,
+            "c2c8f012524647edc8490feeb6e28cccb20583f8738652eeccab5d0fa59c0c31",
+        ),
     ];
     let manifest_path = output.join("conversion-manifest.json");
     let published: serde_json::Value =
@@ -435,14 +442,10 @@ async fn generated_data_directory_converts_end_to_end() {
             .unwrap();
         drain.await.unwrap();
         assert!(report.complete, "schema {schema}");
-        // Migrating to schema 18 rebuilds the five textures (uncompressed DDS
-        // now become native BC7) and, before schema 17, the one model; the two
-        // scripts are retained, and from schema 17 the model too.
-        assert_eq!(
-            report.converted,
-            5 + u64::from(schema < 17),
-            "schema {schema}"
-        );
+        // Combined producer 23 rebuilds all five textures and the model:
+        // old schema/hash identities cannot prove both output contracts.
+        // The two scripts retain their historical source/configuration proof.
+        assert_eq!(report.converted, 6, "schema {schema}");
         assert!(report.cache_hits >= 2, "schema {schema}: {report:?}");
         let mmap = converter::esm::cell_cache::validate_cell_cache(&cache_path).unwrap();
         let cache = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&mmap).unwrap();

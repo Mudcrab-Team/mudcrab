@@ -271,7 +271,7 @@ impl WorldDatabase {
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let stopped = worker_stopped.clone();
         let worker = thread::Builder::new()
-            .name("openskyrim-world-db".into())
+            .name("mudcrab-world-db".into())
             .spawn(move || {
                 worker(path, request_rx, response_tx);
                 stopped.store(true, Ordering::Release);

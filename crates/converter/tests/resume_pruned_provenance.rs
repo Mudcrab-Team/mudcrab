@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 const MESH: &str = "meshes/generated.glb";
 const SOURCE: &str = "meshes/generated.nif";
-const MISSING_TEXTURE: &str = "textures/absent_n.ktx2";
+const MISSING_TEXTURE: &str = "textures/absent_n.opensky-wrap0.ktx2";
 
 fn generate_data(data: &Path) {
     dummy_content::layout::prepare_directory(data, false).unwrap();

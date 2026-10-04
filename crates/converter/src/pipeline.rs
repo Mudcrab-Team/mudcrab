@@ -3,8 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        can_reuse_non_mesh_outputs, configuration_hash, configuration_hash_for_schema, hash_file,
-        link_or_copy, load_staged_outputs,
+        can_reuse_scripts_and_archives, configuration_hash, configuration_hash_for_schema,
+        hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
@@ -230,7 +230,7 @@ impl AssetPipeline {
         let expected_configuration = configuration_hash(&config)?;
         let configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
-            || (can_reuse_non_mesh_outputs(loaded_manifest.schema_version)
+            || (can_reuse_scripts_and_archives(loaded_manifest.schema_version)
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
         let previous_manifest = if configuration_is_compatible {
@@ -612,7 +612,7 @@ impl AssetPipeline {
                     &BTreeSet::new(),
                 )
                 .await?;
-            let aliases = publish_srgb_texture_aliases(staging)?;
+            let aliases = publish_texture_aliases(staging)?;
             batch.report.artifacts.extend(aliases);
             // A reused mesh that still holds its published bytes keeps the prune record of the
             // run that wrote it: a prune only removes references, so an older record stays true.
@@ -1583,10 +1583,8 @@ fn texture_source_keys(staging: &Path, files: &[PathBuf]) -> BTreeSet<String> {
 /// its `.opensky-srgb` alias both map to `textures/foo.dds`. Returns `None` for references that
 /// are not converted texture paths.
 fn texture_reference_source_key(reference: &str) -> Option<String> {
-    let stem = reference
-        .strip_suffix(".opensky-srgb.ktx2")
-        .or_else(|| reference.strip_suffix(".ktx2"))?;
-    canonical_asset_path(&format!("{stem}.dds"), AssetKind::Texture, "dds").ok()
+    let source = crate::asset_path::runtime_texture_source(reference)?;
+    canonical_asset_path(&source, AssetKind::Texture, "dds").ok()
 }
 
 /// Target outputs of meshes that must be converted again: one of their pruned references has
@@ -1610,13 +1608,11 @@ fn restored_mesh_outputs(
 }
 
 fn source_texture_key(runtime_key: &str) -> Result<String> {
-    if let Some(stem) = runtime_key.strip_suffix(".opensky-srgb.ktx2") {
-        return Ok(format!("{stem}.ktx2"));
-    }
-    Ok(runtime_key.to_owned())
+    crate::asset_path::runtime_texture_source(runtime_key)
+        .ok_or_else(|| color_eyre::eyre::eyre!("invalid runtime texture path: {runtime_key}"))
 }
 
-fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
+fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
     let mut aliases = BTreeSet::new();
     for entry in WalkDir::new(staging)
         .follow_links(false)
@@ -1630,7 +1626,7 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
             let relative = destination.strip_prefix(staging)?.to_owned();
             let runtime_key =
                 canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, "ktx2")?;
-            if runtime_key.ends_with(".opensky-srgb.ktx2") {
+            if source_texture_key(&runtime_key)? != runtime_key {
                 aliases.insert(PathBuf::from(runtime_key));
             }
         }
@@ -1650,7 +1646,7 @@ fn publish_srgb_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
         }
         link_or_copy(&source, &destination).wrap_err_with(|| {
             format!(
-                "failed to publish sRGB alias {} to {}",
+                "failed to publish texture alias {} to {}",
                 source.display(),
                 destination.display()
             )
@@ -2335,6 +2331,42 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[test]
+    fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
+        for mode in 0..3 {
+            for transfer in ["", ".opensky-srgb"] {
+                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+                assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
+                assert_eq!(
+                    texture_reference_source_key(&alias).as_deref(),
+                    Some("textures/shared.dds")
+                );
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path();
+                fs::create_dir_all(root.join("textures")).unwrap();
+                fs::create_dir_all(root.join("meshes")).unwrap();
+                fs::write(root.join("textures/shared.ktx2"), b"source").unwrap();
+                let document = serde_json::json!({"asset":{"version":"2.0"},"images":[{"uri":format!("../{alias}")}],"textures":[{"source":0}],"materials":[{"normalTexture":{"index":0}}]});
+                let mut json = serde_json::to_vec(&document).unwrap();
+                while !json.len().is_multiple_of(4) {
+                    json.push(b' ');
+                }
+                let mut glb = b"glTF".to_vec();
+                glb.extend_from_slice(&2u32.to_le_bytes());
+                glb.extend_from_slice(&(20u32 + json.len() as u32).to_le_bytes());
+                glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+                glb.extend_from_slice(b"JSON");
+                glb.extend_from_slice(&json);
+                fs::write(root.join("meshes/alias.glb"), glb).unwrap();
+                assert_eq!(
+                    publish_texture_aliases(root).unwrap(),
+                    vec![PathBuf::from(&alias)]
+                );
+                assert_eq!(fs::read(root.join(alias)).unwrap(), b"source");
+            }
+        }
+    }
+
+    #[test]
     fn maps_srgb_runtime_aliases_back_to_their_converted_source() {
         assert_eq!(
             source_texture_key("textures/effects/fire.opensky-srgb.ktx2").unwrap(),
@@ -2406,7 +2438,7 @@ mod tests {
         glb.extend_from_slice(&json);
         fs::write(staging.join("meshes/fire.glb"), glb).unwrap();
 
-        let aliases = publish_srgb_texture_aliases(staging).unwrap();
+        let aliases = publish_texture_aliases(staging).unwrap();
 
         assert_eq!(
             aliases,
@@ -2517,37 +2549,12 @@ mod tests {
 
     #[tokio::test]
     async fn resume_does_not_publish_unverified_staged_meshes_for_any_manifest_schema() {
-        let manifests = [
-            ("absent", None),
-            (
-                "schema-14",
-                Some(
-                    br#"{"schema_version":14,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-            (
-                "schema-15",
-                Some(
-                    br#"{"schema_version":15,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-            (
-                "schema-16",
-                Some(
-                    br#"{"schema_version":16,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-            (
-                "schema-17",
-                Some(
-                    br#"{"schema_version":17,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-        ];
+        let manifests = std::iter::once(("absent".to_owned(), None)).chain(
+            (14..=22).map(|schema| (
+                format!("schema-{schema}"),
+                Some(format!(r#"{{"schema_version":{schema},"complete":true,"configuration_hash":"","entries":{{}}}}"#)),
+            )),
+        );
 
         for (name, manifest) in manifests {
             let temp = tempfile::tempdir().unwrap();
@@ -3010,14 +3017,16 @@ mod tests {
                 .pruned_texture_references
                 .get("meshes/missing_diffuse.glb"),
             Some(&BTreeSet::from([
-                "textures/absent.opensky-srgb.ktx2".to_owned()
+                "textures/absent.opensky-srgb.opensky-wrap0.ktx2".to_owned()
             ]))
         );
         assert_eq!(
             manifest
                 .pruned_texture_references
                 .get("meshes/missing_normal.glb"),
-            Some(&BTreeSet::from(["textures/absent_n.ktx2".to_owned()]))
+            Some(&BTreeSet::from([
+                "textures/absent_n.opensky-wrap0.ktx2".to_owned()
+            ]))
         );
         for (glb, kept) in [
             ("meshes/missing_diffuse.glb", "present_n"),
@@ -3058,7 +3067,7 @@ mod tests {
     }
 
     const PRUNED_MESH: &str = "meshes/dangling_normal.glb";
-    const PRUNED_REFERENCE: &str = "textures/absent_n.ktx2";
+    const PRUNED_REFERENCE: &str = "textures/absent_n.opensky-wrap0.ktx2";
 
     /// Writes one NIF whose normal map is absent from the game data, next to the
     /// base-color DDS the game data does contain.
@@ -3100,94 +3109,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_17_keeps_meshes_and_rebuilds_textures() {
-        let temp = tempfile::tempdir().unwrap();
-        let data = temp.path().join("Data");
-        let output = temp.path().join("modern");
-        write_mesh_with_absent_normal(&data);
-        fs::create_dir_all(data.join("scripts")).unwrap();
-        fs::write(
-            data.join("scripts/one.pex"),
-            dummy_content::pex::minimal("One").unwrap(),
-        )
-        .unwrap();
-        let config = PipelineConfig::new(&data, &output);
-        assert!(run_without_progress(config.clone()).await.complete);
-        let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
-        let mut manifest = published_manifest(&output);
-        manifest.schema_version = 17;
-        manifest.configuration_hash = configuration_hash_for_schema(&config, 17).unwrap();
-        manifest
-            .save(&output.join("conversion-manifest.json"))
+    async fn legacy_producers_rebuild_meshes_and_textures_and_reuse_scripts() {
+        for old_schema in [16, 17, 18, 19, 20, 21, 22] {
+            let temp = tempfile::tempdir().unwrap();
+            let data = temp.path().join("Data");
+            let output = temp.path().join("modern");
+            write_mesh_with_absent_normal(&data);
+            fs::create_dir_all(data.join("scripts")).unwrap();
+            fs::write(
+                data.join("scripts/one.pex"),
+                dummy_content::pex::minimal("One").unwrap(),
+            )
             .unwrap();
+            let config = PipelineConfig::new(&data, &output);
+            assert!(run_without_progress(config.clone()).await.complete);
+            let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
+            let texture_path = output.join("textures/present.ktx2");
+            let expected_texture = fs::read(&texture_path).unwrap();
+            let manifest_path = output.join("conversion-manifest.json");
+            let mut manifest = published_manifest(&output);
+            manifest.schema_version = old_schema;
+            manifest.configuration_hash =
+                configuration_hash_for_schema(&config, old_schema).unwrap();
+            // A verified old GLB must still be rebuilt: its publication semantics changed.
+            let old_bytes = b"old material publication";
+            fs::write(output.join(PRUNED_MESH), old_bytes).unwrap();
+            let entry = manifest
+                .entries
+                .values_mut()
+                .find(|entry| entry.output == PRUNED_MESH)
+                .unwrap();
+            entry.output_size = old_bytes.len() as u64;
+            entry.output_hash = crate::cache::hash_bytes(old_bytes);
+            // Valid old cache proof cannot establish the new texture contract.
+            let old_texture = b"old texture encoding contract";
+            fs::write(&texture_path, old_texture).unwrap();
+            let entry = manifest
+                .entries
+                .values_mut()
+                .find(|entry| entry.output == "textures/present.ktx2")
+                .unwrap();
+            entry.output_size = old_texture.len() as u64;
+            entry.output_hash = crate::cache::hash_bytes(old_texture);
+            manifest.save(&manifest_path).unwrap();
 
-        let report = run_without_progress(config).await;
-        assert!(report.complete);
-        // The DDS texture was UASTC at schema 17, so it is converted again; the
-        // schema 17 mesh and the script are kept.
-        assert_eq!(report.converted, 1);
-        assert_eq!(report.cache_hits, 2); // The mesh and the PEX.
-        assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
-        assert_eq!(
-            published_manifest(&output).schema_version,
-            CONVERTER_SCHEMA_VERSION
-        );
-    }
+            let report = run_without_progress(config.clone()).await;
+            assert!(report.complete);
+            assert_eq!(report.converted, 2);
+            assert_eq!(report.cache_hits, 1); // Only unchanged PEX.
+            assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
+            assert_eq!(fs::read(&texture_path).unwrap(), expected_texture);
+            assert_eq!(
+                published_manifest(&output).schema_version,
+                CONVERTER_SCHEMA_VERSION
+            );
 
-    #[tokio::test]
-    async fn v7_schema_16_rebuilds_meshes_and_textures_and_reuses_scripts() {
-        let temp = tempfile::tempdir().unwrap();
-        let data = temp.path().join("Data");
-        let output = temp.path().join("modern");
-        write_mesh_with_absent_normal(&data);
-        fs::create_dir_all(data.join("scripts")).unwrap();
-        fs::write(
-            data.join("scripts/one.pex"),
-            dummy_content::pex::minimal("One").unwrap(),
-        )
-        .unwrap();
-        let config = PipelineConfig::new(&data, &output);
-        assert!(run_without_progress(config.clone()).await.complete);
-        let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
-        let manifest_path = output.join("conversion-manifest.json");
-        let mut manifest = published_manifest(&output);
-        manifest.schema_version = 16;
-        manifest.configuration_hash = configuration_hash_for_schema(&config, 16).unwrap();
-        // A verified old GLB must still be rebuilt: its publication semantics changed.
-        let old_bytes = b"old material publication";
-        fs::write(output.join(PRUNED_MESH), old_bytes).unwrap();
-        let entry = manifest
-            .entries
-            .values_mut()
-            .find(|entry| entry.output == PRUNED_MESH)
-            .unwrap();
-        entry.output_size = old_bytes.len() as u64;
-        entry.output_hash = crate::cache::hash_bytes(old_bytes);
-        manifest.save(&manifest_path).unwrap();
-
-        let report = run_without_progress(config.clone()).await;
-        assert!(report.complete);
-        // The mesh (publication changed) and the DDS texture (UASTC before
-        // schema 18) are converted again; the PEX is kept.
-        assert_eq!(report.converted, 2);
-        assert_eq!(report.cache_hits, 1); // Unchanged PEX.
-        assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
-        assert_eq!(
-            published_manifest(&output).schema_version,
-            CONVERTER_SCHEMA_VERSION
-        );
-
-        // Schema migration must not erase a real configuration change.
-        let mut manifest = published_manifest(&output);
-        manifest.schema_version = 16;
-        manifest.configuration_hash = configuration_hash_for_schema(&config, 16).unwrap();
-        manifest.save(&manifest_path).unwrap();
-        let mut changed_config = config;
-        changed_config.texture_zstd_level = 0;
-        let report = run_without_progress(changed_config).await;
-        assert!(report.complete);
-        assert_eq!(report.cache_hits, 0);
-        assert_eq!(report.converted, 3);
+            // Schema migration must not erase a real configuration change.
+            let mut manifest = published_manifest(&output);
+            manifest.schema_version = old_schema;
+            manifest.configuration_hash =
+                configuration_hash_for_schema(&config, old_schema).unwrap();
+            manifest.save(&manifest_path).unwrap();
+            let mut changed_config = config;
+            changed_config.texture_zstd_level = 0;
+            let report = run_without_progress(changed_config).await;
+            assert!(report.complete);
+            assert_eq!(report.cache_hits, 0);
+            assert_eq!(report.converted, 3);
+        }
     }
 
     #[tokio::test]
@@ -3639,8 +3628,8 @@ mod tests {
                 .pruned_texture_references
                 .get(PRUNED_MESH),
             Some(&BTreeSet::from([
-                "textures/absent_n.ktx2".to_owned(),
-                "textures/present.opensky-srgb.ktx2".to_owned(),
+                "textures/absent_n.opensky-wrap0.ktx2".to_owned(),
+                "textures/present.opensky-srgb.opensky-wrap0.ktx2".to_owned(),
             ]))
         );
     }
@@ -4287,9 +4276,9 @@ mod tests {
 
     /// Times artifact validation on a real converted output, for before/after comparisons.
     ///
-    /// `OPENSKYRIM_VALIDATE_OUTPUT` names a converted output folder, which is only read.
-    /// `OPENSKYRIM_VALIDATE_LIMIT` caps the artifact count; the cap samples the manifest evenly so
-    /// every kind is represented. `OPENSKYRIM_VALIDATE_JOBS` sets the thread count (default: every
+    /// `MUDCRAB_VALIDATE_OUTPUT` names a converted output folder, which is only read.
+    /// `MUDCRAB_VALIDATE_LIMIT` caps the artifact count; the cap samples the manifest evenly so
+    /// every kind is represented. `MUDCRAB_VALIDATE_JOBS` sets the thread count (default: every
     /// core, as a conversion does). Run with
     /// `cargo test --release -p converter validation_timing_on_a_real_output -- --ignored --nocapture`.
     ///
@@ -4297,21 +4286,27 @@ mod tests {
     /// older converter, say), the failures are counted per kind and the passing artifacts are
     /// timed again; that second timing runs with the files already in the OS cache.
     #[test]
-    #[ignore = "needs a converted output; set OPENSKYRIM_VALIDATE_OUTPUT"]
+    #[ignore = "needs a converted output; set MUDCRAB_VALIDATE_OUTPUT"]
     fn validation_timing_on_a_real_output() {
         use std::time::Instant;
 
-        let Some(output) = std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT").map(PathBuf::from) else {
-            eprintln!("OPENSKYRIM_VALIDATE_OUTPUT is not set; nothing to time");
+        let Some(output) = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
+            .or_else(|| std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT"))
+            .map(PathBuf::from)
+        else {
+            eprintln!("MUDCRAB_VALIDATE_OUTPUT is not set; nothing to time");
             return;
         };
-        let limit = std::env::var("OPENSKYRIM_VALIDATE_LIMIT")
+        let limit = std::env::var("MUDCRAB_VALIDATE_LIMIT")
+            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_LIMIT"))
             .ok()
-            .map(|value| value.parse::<usize>().expect("OPENSKYRIM_VALIDATE_LIMIT"));
-        let jobs = std::env::var("OPENSKYRIM_VALIDATE_JOBS").map_or_else(
-            |_| std::thread::available_parallelism().map_or(1, usize::from),
-            |value| value.parse::<usize>().expect("OPENSKYRIM_VALIDATE_JOBS"),
-        );
+            .map(|value| value.parse::<usize>().expect("MUDCRAB_VALIDATE_LIMIT"));
+        let jobs = std::env::var("MUDCRAB_VALIDATE_JOBS")
+            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_JOBS"))
+            .map_or_else(
+                |_| std::thread::available_parallelism().map_or(1, usize::from),
+                |value| value.parse::<usize>().expect("MUDCRAB_VALIDATE_JOBS"),
+            );
 
         let manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(output.join("conversion-manifest.json")).expect("read manifest"),
@@ -4343,17 +4338,19 @@ mod tests {
         }
 
         // Collecting semantics reads every GLB and takes minutes on a full install;
-        // `OPENSKYRIM_VALIDATE_SEMANTICS=skip` validates textures without them instead.
+        // `MUDCRAB_VALIDATE_SEMANTICS=skip` validates textures without them instead.
         let started = Instant::now();
-        let texture_semantics =
-            if std::env::var("OPENSKYRIM_VALIDATE_SEMANTICS").is_ok_and(|value| value == "skip") {
+        let texture_semantics = if std::env::var("MUDCRAB_VALIDATE_SEMANTICS")
+            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_SEMANTICS"))
+            .is_ok_and(|value| value == "skip")
+        {
+            BTreeMap::new()
+        } else {
+            collect_texture_semantics(&output).unwrap_or_else(|error| {
+                eprintln!("texture semantics unavailable, validating without them: {error:#}");
                 BTreeMap::new()
-            } else {
-                collect_texture_semantics(&output).unwrap_or_else(|error| {
-                    eprintln!("texture semantics unavailable, validating without them: {error:#}");
-                    BTreeMap::new()
-                })
-            };
+            })
+        };
         eprintln!(
             "texture semantics: {} textures in {:.2} s (not part of the timing)",
             texture_semantics.len(),

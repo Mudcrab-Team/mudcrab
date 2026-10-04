@@ -90,6 +90,9 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
         .enumerate()
         .map(|(index, (name, color, multiple, glow))| {
             let material = ValidatedNifMaterial {
+                uv_offset: [0.0; 2],
+                uv_scale: [1.0; 2],
+                texture_clamp_mode: 3,
                 shader_family: NifShaderFamily::Lighting,
                 lighting_shader_type: Some(LightingShaderType::Default),
                 shader_block: index as u32,

@@ -8,9 +8,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Schema history, newest last: 16 added authored collision to GLBs; 17 fixed
-/// static emission energy; 18 stores uncompressed DDS as native BC7.
-pub const CONVERTER_SCHEMA_VERSION: u32 = 18;
+/// Unique combined producer: authored surface GLBs and native-BC DDS.
+/// Schema 18 was used independently by specular and native-BC producers; older
+/// numeric identities do not establish mesh or texture compatibility. Schema 23
+/// also rebuilds schema 22 meshes for normal/UV/alpha source-surface publication.
+pub const CONVERTER_SCHEMA_VERSION: u32 = 23;
 
 /// Provenance journal the converter keeps inside a staging directory.
 ///
@@ -200,12 +202,12 @@ pub struct ConversionManifest {
     pub entries: BTreeMap<String, CacheEntry>,
 }
 
-/// These schema changes affect GLBs/world data and, since schema 18, texture
-/// bytes, leaving script/archive bytes compatible. `ConversionManifest::load`
-/// decides per schema which GLB and texture entries survive. Configuration and
-/// source hashes still have to match.
-pub(crate) fn can_reuse_non_mesh_outputs(schema: u32) -> bool {
-    matches!(schema, 12..=17)
+/// Known legacy producers change mesh, texture or world contracts, while their
+/// script/archive bytes remain compatible. Never use this predicate to infer
+/// mesh or texture compatibility; source/configuration/output proof is required
+/// even for the unchanged asset kinds.
+pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
+    matches!(schema, 12..=22)
 }
 
 impl ConversionManifest {
@@ -220,19 +222,15 @@ impl ConversionManifest {
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let mut manifest: Self =
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
-        if can_reuse_non_mesh_outputs(manifest.schema_version) {
-            // Schemas 13-15 changed mesh/material publication; schema 16 adds
-            // authored collision to GLBs; schema 17 fixes static emission; schema
-            // 18 stores uncompressed DDS textures as native BC7 instead of UASTC.
-            // Preserve verified archive ingestion and scripts, but rebuild every
-            // texture (all earlier schemas wrote UASTC), the GLBs of schemas before
-            // 17 (schema 17 GLBs are current) and the world data.
-            let rebuild_glbs = manifest.schema_version < 17;
+        if can_reuse_scripts_and_archives(manifest.schema_version) {
+            // Separate branches reused schema 18 for specular GLBs and native
+            // BC textures. Rebuild all GLBs/KTX2/world outputs rather than infer
+            // either contract from the ambiguous number. Scripts and archive
+            // ingestion still require their original configuration/source proof.
             manifest.complete = false;
-            manifest.entries.retain(|_, entry| {
-                let output = entry.output.to_ascii_lowercase();
-                !output.ends_with(".ktx2") && !(rebuild_glbs && output.ends_with(".glb"))
-            });
+            manifest
+                .entries
+                .retain(|_, entry| entry.output.to_ascii_lowercase().ends_with(".luau"));
             return Ok(manifest);
         }
         if manifest.schema_version != CONVERTER_SCHEMA_VERSION {
@@ -276,6 +274,16 @@ pub fn configuration_hash_for_schema(
     });
     if schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
+    }
+    if schema >= 22 {
+        // CPU native-BC output and GPU UASTC output have different contracts;
+        // quality changes bytes, while GPU batch size only changes scheduling.
+        relevant["texture_encoder"] = match config.texture_encoder {
+            crate::config::TextureEncoder::Cpu => serde_json::json!({"mode": "cpu"}),
+            crate::config::TextureEncoder::Gpu { quality, .. } => {
+                serde_json::json!({"mode": "gpu", "quality": quality})
+            }
+        };
     }
     Ok(hash_bytes(&serde_json::to_vec(&relevant)?))
 }
@@ -414,6 +422,64 @@ pub fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambiguous_legacy_producers_cannot_reuse_staged_meshes_or_textures() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["old.glb", "old.ktx2"] {
+            let path = directory.path().join(name);
+            fs::write(&path, b"verified old bytes").unwrap();
+            for schema_version in [17, 18, 19, 20, 21, 22] {
+                let record = StagedOutput {
+                    schema_version,
+                    configuration_hash: "matching-config".to_owned(),
+                    source_hash: "matching-source".to_owned(),
+                    output_size: 18,
+                    output_hash: hash_file(&path).unwrap(),
+                };
+                assert!(
+                    !record.is_current(&path, "matching-source", "matching-config"),
+                    "legacy producer {schema_version} accepted for {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v73_encoder_contract_participates_in_current_configuration_proof() {
+        use crate::config::{PipelineConfig, TextureEncoder};
+        let mut config = PipelineConfig::new("Data", "output");
+        let cpu = configuration_hash(&config).unwrap();
+        let legacy = configuration_hash_for_schema(&config, 18).unwrap();
+        config.texture_encoder = TextureEncoder::Gpu {
+            quality: 0,
+            batch_mb: 4,
+        };
+        let gpu = configuration_hash(&config).unwrap();
+        assert_ne!(
+            cpu, gpu,
+            "native CPU and GPU texture contracts share configuration identity"
+        );
+        assert_eq!(legacy, configuration_hash_for_schema(&config, 18).unwrap());
+        config.texture_encoder = TextureEncoder::Gpu {
+            quality: 1,
+            batch_mb: 4,
+        };
+        let refined = configuration_hash(&config).unwrap();
+        assert_ne!(
+            gpu, refined,
+            "GPU quality changes must invalidate output provenance"
+        );
+        config.texture_encoder = TextureEncoder::Gpu {
+            quality: 1,
+            batch_mb: 8,
+        };
+        assert_eq!(
+            refined,
+            configuration_hash(&config).unwrap(),
+            "batch scheduling does not change bytes"
+        );
+    }
 
     #[test]
     fn sha256_is_stable() {
@@ -602,7 +668,7 @@ mod tests {
 
     #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14, 15, 16, 17] {
+        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {
@@ -627,10 +693,7 @@ mod tests {
 
             assert_eq!(migrated.schema_version, schema_version);
             assert!(!migrated.complete);
-            assert_eq!(
-                migrated.entries.contains_key("meshes/a.glb"),
-                schema_version == 17
-            );
+            assert!(!migrated.entries.contains_key("meshes/a.glb"));
             assert!(!migrated.entries.contains_key("textures/a.ktx2"));
             assert!(migrated.entries.contains_key("scripts/a.luau"));
         }

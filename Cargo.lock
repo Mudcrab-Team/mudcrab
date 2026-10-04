@@ -2343,6 +2343,7 @@ dependencies = [
  "ddsfile",
  "dummy-content",
  "flate2",
+ "gltf",
  "image_dds 0.7.2",
  "insta",
  "intel_tex_2",
