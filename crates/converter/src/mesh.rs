@@ -56,6 +56,24 @@ impl MeshConverter {
         find_skeleton(nif_path).into_iter().collect()
     }
 
+    /// LOD adds distant-container node traversal to the lighting19 exporter.
+    /// Other source node contracts are unchanged. Unknown headers fail closed;
+    /// the normal conversion path reports parse/source errors.
+    pub(crate) fn lighting19_mesh_cache_is_compatible(nif_path: &Path) -> bool {
+        std::iter::once(nif_path.to_path_buf())
+            .chain(Self::dependency_paths(nif_path))
+            .all(|path| {
+                fs::read(&path).is_ok_and(|bytes| {
+                    parse_skyrim_header(&bytes, &path).is_ok_and(|(_, header)| {
+                        !header
+                            .block_types
+                            .iter()
+                            .any(|kind| kind.0 == "BSMultiBoundNode")
+                    })
+                })
+            })
+    }
+
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;

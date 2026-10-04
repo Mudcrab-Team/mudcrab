@@ -235,3 +235,67 @@ async fn resumed_conversion_drops_removed_textures_and_stale_provenance() {
         assert!(!output.join(sidecar).exists());
     }
 }
+
+#[tokio::test]
+async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    generate_data(&data);
+    fn sub(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &(payload.len() as u16).to_le_bytes(),
+            payload,
+        ]
+        .concat()
+    }
+    fn record(tag: &[u8; 4], id: u32, payload: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &(payload.len() as u32).to_le_bytes(),
+            &[0; 4],
+            &id.to_le_bytes(),
+            &[0; 8],
+            payload,
+        ]
+        .concat()
+    }
+    let mut plugin = record(b"TES4", 0, &[]);
+    plugin.extend(record(b"GRAS", 0x801, &sub(b"EDID", b"CombinedGrass\0")));
+    plugin.extend(record(
+        b"LTEX",
+        0x802,
+        &sub(b"GNAM", &0x801u32.to_le_bytes()),
+    ));
+    fs::write(data.join("Grass.esp"), plugin).unwrap();
+    let output = directory.path().join("combined");
+    let report = convert(&data, &output).await;
+    assert!(report.complete, "{:?}", report.warnings);
+    assert!(report.lod_chunks > 0);
+    let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM grass_types g JOIN landscape_texture_grasses l ON g.id=l.gras_id",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let origin: (i32, i32) = db
+        .query_row(
+            "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE editor_id='GeneratedWorld'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(origin, (-4, -4));
+    let world_schema: u32 = db
+        .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(world_schema, 7);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["converter_schema"], 21);
+    assert_eq!(manifest["world_database_schema"], 7);
+    assert_eq!(manifest["chunks"], report.lod_chunks);
+}

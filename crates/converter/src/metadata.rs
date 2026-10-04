@@ -75,11 +75,11 @@ impl AssetPipeline {
         // GLBs during schema migration, which this explicit route verifies instead.
         let mut manifest: ConversionManifest = serde_json::from_slice(&source_manifest)?;
         ensure!(
-            (matches!(manifest.schema_version, 15 | 16)
+            (matches!(manifest.schema_version, 15 | 16 | 19 | 20)
                 || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && manifest.complete
                 && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15, 16 or 20 assets"
+            "metadata rebuild requires complete converter schema 15, 16, 19, 20 or 21 assets"
         );
         ensure!(
             manifest.retained_mesh_schema_version.is_some()
@@ -90,7 +90,7 @@ impl AssetPipeline {
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
         ensure!(
-            (matches!(mesh_schema, 15 | 16) || mesh_schema == CONVERTER_SCHEMA_VERSION)
+            (matches!(mesh_schema, 15 | 16 | 19 | 20) || mesh_schema == CONVERTER_SCHEMA_VERSION)
                 && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );
@@ -486,8 +486,10 @@ fn copy_verified_assets(
                 .strip_prefix(source)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            let key = if relative.ends_with(".opensky-srgb.ktx2") {
-                relative.replace(".opensky-srgb.ktx2", ".ktx2")
+            let key = if relative.starts_with("textures/") {
+                crate::asset_path::runtime_texture_source(&relative).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("unsupported retained texture: {relative}")
+                })?
             } else {
                 relative.clone()
             };
@@ -591,4 +593,54 @@ async fn progress_event(progress: &Sender<ProgressEvent>, stage: ProgressStage, 
     let _ = progress
         .send(ProgressEvent::new(stage, 0, 1, None, message))
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::CacheEntry;
+
+    #[test]
+    fn retained_sampler_aliases_require_exact_source_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let staging = directory.path().join("staging");
+        for folder in ["meshes", "textures", "scripts"] {
+            fs::create_dir_all(source.join(folder)).unwrap();
+        }
+        fs::write(
+            source.join("scripts/papyrus_runtime.luau"),
+            include_bytes!("../../shared/src/papyrus_runtime.luau"),
+        )
+        .unwrap();
+        fs::write(source.join("textures/shared.ktx2"), b"verified texture").unwrap();
+        let mut manifest = ConversionManifest::default();
+        manifest.entries.insert(
+            "textures/shared.dds".into(),
+            CacheEntry {
+                source_hash: "source".into(),
+                output: "textures/shared.ktx2".into(),
+                output_size: 16,
+                output_hash: hash_bytes(b"verified texture"),
+            },
+        );
+        let mut aliases = Vec::new();
+        for mode in 0..3 {
+            for transfer in ["", ".opensky-srgb"] {
+                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+                fs::write(source.join(&alias), b"verified texture").unwrap();
+                aliases.push(alias);
+            }
+        }
+        let (retained, _) = copy_verified_assets(&source, &staging, &mut manifest).unwrap();
+        for alias in &aliases {
+            assert_eq!(retained[alias], hash_bytes(b"verified texture"));
+            assert_eq!(fs::read(staging.join(alias)).unwrap(), b"verified texture");
+        }
+        fs::write(source.join(&aliases[0]), b"tampered texture").unwrap();
+        assert!(
+            copy_verified_assets(&source, &directory.path().join("tampered"), &mut manifest)
+                .is_err()
+        );
+    }
 }

@@ -70,23 +70,23 @@ def make_package(package):
     write_json(
         package / "assets/lod-manifest.json",
         {
-            "converter_schema": 20,
-            "world_database_schema": 6,
+            "converter_schema": 21,
+            "world_database_schema": 7,
             "build_identity": identity,
             "chunks": 1,
         },
     )
     write_json(
         package / "assets/conversion-manifest.json",
-        {"schema_version": 20, "complete": True},
+        {"schema_version": 21, "complete": True},
     )
     write_json(
         package / "assets/integration-report.json",
-        {"schema_version": 6, "passed": True},
+        {"schema_version": 7, "passed": True},
     )
     with sqlite3.connect(package / "assets/skyrim_world.db") as database:
         database.execute("CREATE TABLE schema_info(version INTEGER NOT NULL)")
-        database.execute("INSERT INTO schema_info(version) VALUES (6)")
+        database.execute("INSERT INTO schema_info(version) VALUES (7)")
         database.execute(
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL)"
         )
@@ -147,6 +147,32 @@ def run_postflight_validator(root):
 
 
 class CaptureRiverwoodGateTests(unittest.TestCase):
+    def test_lod_only20_world6_is_not_combined_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = make_package(Path(directory))
+            for relative, fields in (
+                ("assets/lod-manifest.json", {"converter_schema": 20, "world_database_schema": 6}),
+                ("assets/conversion-manifest.json", {"schema_version": 20}),
+                ("assets/integration-report.json", {"schema_version": 6}),
+            ):
+                path = package / relative
+                value = json.loads(path.read_text())
+                value.update(fields)
+                write_json(path, value)
+                refresh_checksum(package, relative)
+            with sqlite3.connect(package / "assets/skyrim_world.db") as database:
+                database.execute("UPDATE schema_info SET version=6")
+            refresh_checksum(package, "assets/skyrim_world.db")
+            self.assertNotEqual(run_provenance_validator(package).returncode, 0)
+
+    def test_lod_capture_rejects_mixed_conversion_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = make_package(Path(directory))
+            path = package / "assets/conversion-manifest.json"
+            write_json(path, {"schema_version": 20, "complete": True})
+            refresh_checksum(package, "assets/conversion-manifest.json")
+            self.assertNotEqual(run_provenance_validator(package).returncode, 0)
+
     def test_capture_scripts_redirect_logs_without_unsupported_engine_flag(self):
         for script in (SCRIPT, SCRIPT.with_name("capture-lod-phase1.sh")):
             with self.subTest(script=script.name):

@@ -3,8 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        configuration_hash, configuration_hash_for_schema, hash_bytes, hash_file, link_or_copy,
-        load_staged_outputs,
+        can_reuse_non_mesh_outputs, configuration_hash, configuration_hash_for_schema, hash_bytes,
+        hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{
@@ -277,7 +277,7 @@ impl AssetPipeline {
         let expected_configuration = configuration_hash(&config)?;
         let metadata_configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
-            || (matches!(loaded_manifest.schema_version, 12..=16)
+            || (can_reuse_non_mesh_outputs(loaded_manifest.schema_version)
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
         let retained_configuration_is_compatible =
@@ -311,44 +311,9 @@ impl AssetPipeline {
         fs::create_dir_all(staging.join("vfs"))
             .wrap_err_with(|| format!("failed to create {}", staging.join("vfs").display()))?;
         if resumed {
-            let mut verified = BTreeSet::new();
-            if !config.invalidate_cache {
-                if let Ok(staged) = load_staged_outputs(&staging) {
-                    for (key, record) in staged {
-                        if record.schema_version == CONVERTER_SCHEMA_VERSION
-                            && record.configuration_hash == expected_configuration
-                        {
-                            let mut glb_path = PathBuf::from(key);
-                            glb_path.set_extension("glb");
-                            let rel = glb_path.to_string_lossy().replace('\\', "/");
-                            let full = staging.join(&rel);
-                            if full.is_file()
-                                && fs::metadata(&full).is_ok_and(|m| m.len() == record.output_size)
-                                && hash_file(&full).is_ok_and(|h| h == record.output_hash)
-                            {
-                                verified.insert(rel);
-                            }
-                        }
-                    }
-                }
-                for glb in previous_manifest.pruned_texture_references.keys() {
-                    let full = staging.join(glb);
-                    if full.is_file() {
-                        verified.insert(glb.clone());
-                    }
-                }
-                for entry in previous_manifest.entries.values() {
-                    if entry.output.ends_with(".glb") {
-                        let full = staging.join(&entry.output);
-                        if full.is_file() {
-                            verified.insert(entry.output.clone());
-                        }
-                    }
-                }
-            }
-            invalidate_staged_mesh_outputs(&staging, &verified)?;
             invalidate_staged_generated_outputs(&staging)?;
         }
+
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
         // resumes from it. Only a successful publish removes it, once the runtime pack is out.
@@ -691,6 +656,16 @@ impl AssetPipeline {
                 )
                 .await?;
         }
+        // Only accepted current-source outputs may participate in directory scans.
+        // Delaying cleanup preserves verified same-schema pruned bytes; audit
+        // records alone cannot supply provenance or survive a failed conversion.
+        let accepted_meshes = report
+            .artifacts
+            .iter()
+            .filter(|path| extension(path, &["glb"]))
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
         let texture_semantics = collect_texture_semantics(staging)?;
         {
             let mut batch = ConversionBatch {
@@ -1048,6 +1023,10 @@ impl ConversionBatch<'_> {
         let texture_encoder = self.config.texture_encoder;
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
+        let previous_mesh_schema = self
+            .previous
+            .retained_mesh_schema_version
+            .unwrap_or(self.previous.schema_version);
         let staged_outputs = Arc::clone(&self.staged);
         let expected_configuration = self.expected_configuration.to_owned();
         let force_reconvert = force_reconvert.clone();
@@ -1189,8 +1168,12 @@ impl ConversionBatch<'_> {
                         // A mesh whose pruned texture source is back must be converted again:
                         // the mesh cache does not hash texture dependencies, so a reused GLB
                         // would never regain the reference.
-                        let forced =
-                            force_reconvert.contains(target_rel.to_string_lossy().as_ref());
+                        let forced = force_reconvert
+                            .contains(target_rel.to_string_lossy().as_ref())
+                            || (source_kind == "nif"
+                                && previous_mesh_schema == 19
+                                && previous_entries.contains_key(&key)
+                                && !MeshConverter::lighting19_mesh_cache_is_compatible(&source));
                         let target = staging_root.join(&target_rel);
 
                         let source_hash = if source_kind == "nif" {
@@ -2070,13 +2053,11 @@ fn extension(path: &Path, expected: &[&str]) -> bool {
         })
 }
 
-/// Deletes staged meshes no provenance source vouches for.
+/// Deletes staged meshes outside the accepted set, preserving extracted VFS sources.
 ///
-/// `verified` holds staged-relative mesh paths (forward slashes) whose bytes
-/// a provenance record describes: the PR31 staging journal once merged. A
-/// mesh in that set survives so the journal reuse gate below can certify it;
-/// every other staged mesh is unverified and goes, so a resume can never
-/// publish bytes this converter did not verify.
+/// Paths are relative to staging with forward slashes. Conversion supplies the
+/// accepted artifacts after current-source, schema/configuration and byte checks;
+/// downstream scans must see exactly the meshes publication will include.
 fn invalidate_staged_mesh_outputs(staging: &Path, verified: &BTreeSet<String>) -> Result<()> {
     let vfs = staging.join("vfs");
     for entry in WalkDir::new(staging)
@@ -3135,7 +3116,8 @@ fn validate_publication_package(backup: &Path) -> Result<()> {
             "backup database schema {version} is unsupported"
         );
         ensure!(
-            version >= 5 || !root.join("lod-manifest.json").exists(),
+            version >= shared::WORLD_DATABASE_LOD_SCHEMA_VERSION
+                || !root.join("lod-manifest.json").exists(),
             "legacy backup database cannot advertise LOD"
         );
         read_cached_heights(
@@ -3148,7 +3130,7 @@ fn validate_publication_package(backup: &Path) -> Result<()> {
             integration["passed"].is_boolean() && integration["schema_version"] == version,
             "backup integration report is invalid"
         );
-        if version >= 5 {
+        if version >= shared::WORLD_DATABASE_LOD_SCHEMA_VERSION {
             let count: u64 =
                 database.query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))?;
             if count > 0 || root.join("lod-manifest.json").exists() {
@@ -3704,16 +3686,26 @@ mod tests {
         let mut integration: serde_json::Value =
             serde_json::from_slice(&fs::read(&integration_path).unwrap()).unwrap();
         integration["schema_version"] = serde_json::json!(3);
-        fs::write(integration_path, serde_json::to_vec(&integration).unwrap()).unwrap();
+        fs::write(&integration_path, serde_json::to_vec(&integration).unwrap()).unwrap();
         fs::rename(&output, &backup).unwrap();
         seal_test_backup(&output, &backup);
         recover_interrupted_publication(&output).unwrap();
         assert_eq!(published_manifest(&output).schema_version, 16);
         assert!(!output.join("lod-manifest.json").exists());
+        // Grass-only schema5 has no LOD tables, and must remain recoverable.
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        database.execute_batch("UPDATE schema_info SET version=5; DROP TABLE lod_chunks; DROP TABLE lod_chunks_spatial; DROP TABLE lod_build;").unwrap();
+        drop(database);
+        integration["schema_version"] = serde_json::json!(5);
+        fs::write(&integration_path, serde_json::to_vec(&integration).unwrap()).unwrap();
+        fs::rename(&output, &backup).unwrap();
+        seal_test_backup(&output, &backup);
+        recover_interrupted_publication(&output).unwrap();
+        assert!(output.join("skyrim_world.db").is_file());
     }
 
     #[tokio::test]
-    async fn schema16_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn schema19_meshes_reuse_but_changed_mesh_source_reconverts() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -3730,8 +3722,8 @@ mod tests {
         let path = output.join("conversion-manifest.json");
         let mut old: ConversionManifest =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        old.schema_version = 16;
-        old.configuration_hash = configuration_hash_for_schema(&config, 16).unwrap();
+        old.schema_version = 19;
+        old.configuration_hash = configuration_hash_for_schema(&config, 19).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -4799,8 +4791,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lighting19_distant_containers_require_mesh_regeneration() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("assets");
+        write_mesh_with_absent_normal(&data);
+        let nif = data.join("meshes/dangling_normal.nif");
+        let mut bytes = fs::read(&nif).unwrap();
+        let root = bytes
+            .windows(b"BSFadeNode".len())
+            .position(|w| w == b"BSFadeNode")
+            .unwrap();
+        let last_type = bytes
+            .windows(b"BSShaderTextureSet".len())
+            .position(|w| w == b"BSShaderTextureSet")
+            .unwrap();
+        let size_offset = last_type + b"BSShaderTextureSet".len() + 4 * 2;
+        let root_size = u32::from_le_bytes(bytes[size_offset..size_offset + 4].try_into().unwrap());
+        bytes[size_offset..size_offset + 4].copy_from_slice(&(root_size + 4).to_le_bytes());
+        bytes.splice(
+            root - 4..root + b"BSFadeNode".len(),
+            [
+                (b"BSMultiBoundNode".len() as u32).to_le_bytes().as_slice(),
+                b"BSMultiBoundNode",
+            ]
+            .concat(),
+        );
+        let (body, _) = crate::mesh::parse_skyrim_header(&bytes, &nif).unwrap();
+        let root_end = bytes.len() - body.len() + root_size as usize;
+        bytes.splice(root_end..root_end, u32::MAX.to_le_bytes());
+        fs::write(&nif, bytes).unwrap();
+        let config = PipelineConfig::new(&data, &output);
+        assert!(run_without_progress(config.clone()).await.complete);
+        let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
+        let mut manifest = published_manifest(&output);
+        manifest.schema_version = 19;
+        manifest.configuration_hash = configuration_hash_for_schema(&config, 19).unwrap();
+        let stale = b"lighting19 omitted distant container";
+        fs::write(output.join(PRUNED_MESH), stale).unwrap();
+        let entry = manifest
+            .entries
+            .values_mut()
+            .find(|entry| entry.output == PRUNED_MESH)
+            .unwrap();
+        entry.output_size = stale.len() as u64;
+        entry.output_hash = hash_bytes(stale);
+        manifest
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+        let report = run_without_progress(config).await;
+        assert_eq!(report.converted, 1);
+        assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected);
+    }
+
+    #[tokio::test]
     async fn v15_old_material_schemas_rebuild_meshes_and_reuse_compatible_assets() {
-        for old_schema in [16, 17, 18] {
+        for old_schema in [16, 18, 20] {
             let temp = tempfile::tempdir().unwrap();
             let data = temp.path().join("Data");
             let output = temp.path().join("modern");
@@ -4836,7 +4882,10 @@ mod tests {
             assert_eq!(report.converted, 1);
             assert_eq!(report.cache_hits, 2); // Unchanged DDS and PEX.
             assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
-            assert_eq!(published_manifest(&output).schema_version, 19);
+            assert_eq!(
+                published_manifest(&output).schema_version,
+                CONVERTER_SCHEMA_VERSION
+            );
 
             // Schema migration must not erase a real configuration change.
             let mut manifest = published_manifest(&output);

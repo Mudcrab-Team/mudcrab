@@ -461,6 +461,17 @@ pub(crate) fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u
         return Ok(());
     }
 
+    let conversion: LodProducerManifest = serde_json::from_slice(
+        &std::fs::read(assets_dir.join("conversion-manifest.json"))
+            .wrap_err("LOD package has no conversion producer manifest")?,
+    )
+    .wrap_err("invalid LOD conversion producer manifest")?;
+    color_eyre::eyre::ensure!(
+        conversion.schema_version == shared::LOD_CONVERTER_SCHEMA_VERSION,
+        "LOD conversion producer is stale; reconvert assets with converter schema {}",
+        shared::LOD_CONVERTER_SCHEMA_VERSION
+    );
+
     let bytes = std::fs::read(&manifest_path)
         .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
     let manifest: LodBuildManifest =
@@ -471,8 +482,12 @@ pub(crate) fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u
         shared::LAND_TEXTURE_REPEATS_PER_CELL
     );
     color_eyre::eyre::ensure!(
-        manifest.converter_schema == converter_schema
-            && manifest.world_database_schema == shared::WORLD_DATABASE_SCHEMA_VERSION,
+        converter_schema == shared::LOD_CONVERTER_SCHEMA_VERSION
+            && manifest.converter_schema == converter_schema
+            && manifest.world_database_schema == shared::WORLD_DATABASE_SCHEMA_VERSION
+            && connection.query_row("SELECT version FROM schema_info", [], |row| row
+                .get::<_, u32>(0))?
+                == shared::WORLD_DATABASE_SCHEMA_VERSION,
         "LOD manifest schema is stale; reconvert assets with converter schema {converter_schema} and world database schema {}",
         shared::WORLD_DATABASE_SCHEMA_VERSION
     );
@@ -497,6 +512,11 @@ pub(crate) fn validate_lod_build_contract(assets_dir: &Path, converter_schema: u
         manifest.chunks
     );
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct LodProducerManifest {
+    schema_version: u32,
 }
 
 #[derive(Deserialize)]
@@ -1127,11 +1147,19 @@ mod tests {
     }
 
     fn lod_build_contract_fixture(path: &Path, chunks: u32, identity: &str) {
+        std::fs::write(
+            path.parent().unwrap().join("conversion-manifest.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"schema_version": shared::LOD_CONVERTER_SCHEMA_VERSION}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let connection = Connection::open(path).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE schema_info(version INTEGER NOT NULL);
-                 INSERT INTO schema_info VALUES(6);
+                 INSERT INTO schema_info VALUES(7);
                  CREATE TABLE lod_chunks(id INTEGER PRIMARY KEY);
                  CREATE TABLE lod_build(id INTEGER PRIMARY KEY,build_identity TEXT NOT NULL);",
             )
@@ -1157,6 +1185,9 @@ mod tests {
             connection.execute_batch(&format!(
                 "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES({version});"
             )).unwrap();
+            if version == 5 {
+                connection.execute_batch("CREATE TABLE grass_types(id INTEGER PRIMARY KEY); CREATE TABLE landscape_texture_grasses(ltex_id INTEGER,gras_id INTEGER); INSERT INTO grass_types VALUES(1); INSERT INTO landscape_texture_grasses VALUES(2,1);").unwrap();
+            }
             assert!(
                 load_lod_chunks(&connection, lod_query([0.0, 0.0], [1.0, 1.0]))
                     .unwrap()
@@ -1173,10 +1204,63 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
         connection.execute_batch(
-            "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(6);"
+            "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(7);"
         ).unwrap();
         assert!(load_lod_chunks(&connection, lod_query([0.0, 0.0], [1.0, 1.0])).is_err());
         assert!(validate_lod_build_contract(directory.path(), 20).is_err());
+    }
+
+    #[test]
+    fn combined_lod_requires_exact_latest_producer_and_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = "a".repeat(64);
+        let database = directory.path().join("skyrim_world.db");
+        lod_build_contract_fixture(&database, 1, &identity);
+        for (producer, world, accepted) in [
+            (21, 7, true),
+            (20, 6, false),
+            (19, 7, false),
+            (16, 7, false),
+        ] {
+            Connection::open(&database)
+                .unwrap()
+                .execute("UPDATE schema_info SET version=?1", [world])
+                .unwrap();
+            std::fs::write(
+                directory.path().join("lod-manifest.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "build_identity": identity, "converter_schema": producer,
+                    "world_database_schema": world, "chunks": 1,
+                    "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                validate_lod_build_contract(directory.path(), producer).is_ok(),
+                accepted,
+                "producer={producer} world={world}"
+            );
+        }
+        Connection::open(&database)
+            .unwrap()
+            .execute("UPDATE schema_info SET version=7", [])
+            .unwrap();
+        std::fs::write(
+            directory.path().join("lod-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "build_identity": identity, "converter_schema": 21, "world_database_schema": 7,
+                "chunks": 1, "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"schema_version":20}"#,
+        )
+        .unwrap();
+        assert!(validate_lod_build_contract(directory.path(), 21).is_err());
     }
 
     #[test]
@@ -1209,7 +1293,7 @@ mod tests {
             &manifest_path,
             serde_json::to_vec(&serde_json::json!({
                 "build_identity": identity,
-                "converter_schema": 16,
+                "converter_schema": shared::LOD_CONVERTER_SCHEMA_VERSION,
                 "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
                 "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
                 "chunks": 1,
@@ -1217,14 +1301,15 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        validate_lod_build_contract(directory.path(), 16).unwrap();
+        validate_lod_build_contract(directory.path(), shared::LOD_CONVERTER_SCHEMA_VERSION)
+            .unwrap();
         let current: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         let mut stale = current.clone();
         stale["land_texture_repeats_per_cell"] = serde_json::json!(8.0);
         std::fs::write(&manifest_path, serde_json::to_vec(&stale).unwrap()).unwrap();
         assert!(
-            validate_lod_build_contract(directory.path(), 16)
+            validate_lod_build_contract(directory.path(), shared::LOD_CONVERTER_SCHEMA_VERSION)
                 .unwrap_err()
                 .to_string()
                 .contains("texture scale is stale")
@@ -1239,15 +1324,17 @@ mod tests {
             )
             .unwrap();
         drop(connection);
-        let error = validate_lod_build_contract(directory.path(), 16)
-            .unwrap_err()
-            .to_string();
+        let error =
+            validate_lod_build_contract(directory.path(), shared::LOD_CONVERTER_SCHEMA_VERSION)
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("identities do not match"), "{error}");
 
         std::fs::remove_file(&manifest_path).unwrap();
-        let error = validate_lod_build_contract(directory.path(), 16)
-            .unwrap_err()
-            .to_string();
+        let error =
+            validate_lod_build_contract(directory.path(), shared::LOD_CONVERTER_SCHEMA_VERSION)
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("lod-manifest.json is missing"), "{error}");
     }
 
@@ -1290,6 +1377,21 @@ mod tests {
             Some("architecture/wall.nif")
         );
         assert_eq!(payload.references[0].bounds_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn legacy_world6_lod_metadata_remains_queryable() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(6);").unwrap();
+        lod_fixture(&connection);
+        let chunks = load_lod_chunks(
+            &connection,
+            lod_query([-46000.0, 54000.0], [-45000.0, 55000.0]),
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].origin, LodOrigin::new(-8, 12));
+        assert_eq!(chunks[0].source_cells, vec![[-12, 20], [-11, 20]]);
     }
 
     #[test]
@@ -1607,31 +1709,27 @@ mod tests {
         let path = directory.path().join("world.db");
         let connection = Connection::open(&path).unwrap();
         fixture(&connection);
-        connection
-            .execute("UPDATE schema_info SET version=4", [])
-            .unwrap();
         drop(connection);
-        validate(&path).unwrap();
-        let connection = Connection::open(&path).unwrap();
-        let payload = load_cell(
-            &connection,
-            1,
-            CellKey::Exterior {
-                worldspace_id: 60,
-                grid_x: 2,
-                grid_y: -3,
-            },
-        )
-        .unwrap();
-        assert_eq!(payload.references.len(), 2);
-        connection
-            .execute(
-                "UPDATE schema_info SET version=?1",
-                [shared::WORLD_DATABASE_SCHEMA_VERSION + 1],
+        for version in [4, 5] {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute("UPDATE schema_info SET version=?1", [version])
+                .unwrap();
+            drop(connection);
+            validate(&path).unwrap();
+            let connection = Connection::open(&path).unwrap();
+            let payload = load_cell(
+                &connection,
+                1,
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 2,
+                    grid_y: -3,
+                },
             )
             .unwrap();
-        drop(connection);
-        validate(&path).unwrap();
+            assert_eq!(payload.references.len(), 2);
+        }
         let connection = Connection::open(&path).unwrap();
         connection
             .execute(

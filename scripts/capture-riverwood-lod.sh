@@ -38,9 +38,12 @@ for relative in (
         raise SystemExit(f"Build checksum mismatch: {relative}")
 manifest = json.loads((root / "assets/lod-manifest.json").read_text())
 integration = json.loads((root / "assets/integration-report.json").read_text())
-if manifest.get("converter_schema") != 20 or manifest.get("world_database_schema") != 6:
+conversion = json.loads((root / "assets/conversion-manifest.json").read_text())
+if conversion.get("schema_version") != 21 or conversion.get("complete") is not True:
+    raise SystemExit("Unsupported or incomplete converter package")
+if manifest.get("converter_schema") != 21 or manifest.get("world_database_schema") != 7:
     raise SystemExit("Unsupported LOD schemas")
-if integration.get("schema_version") != 6 or integration.get("passed") is not True:
+if integration.get("schema_version") != 7 or integration.get("passed") is not True:
     raise SystemExit("Asset integration did not pass")
 identity = build.get("lod_build_identity")
 if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
@@ -48,7 +51,7 @@ if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
 with sqlite3.connect((root / "assets/skyrim_world.db").as_uri() + "?mode=ro", uri=True) as database:
     schema = database.execute("SELECT version FROM schema_info").fetchall()
     database_identity = database.execute("SELECT build_identity FROM lod_build WHERE id=1").fetchone()
-if schema != [(6,)] or database_identity != (identity,) or manifest.get("build_identity") != identity:
+if schema != [(7,)] or database_identity != (identity,) or manifest.get("build_identity") != identity:
     raise SystemExit("Database and manifest LOD identities differ")
 print(build["commit"])
 print(str(build["dirty_worktree"]).lower())

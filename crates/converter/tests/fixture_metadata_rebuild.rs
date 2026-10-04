@@ -272,7 +272,7 @@ async fn metadata_rebuild_reuses_bytes_and_recovers_authoritative_flags() {
 
 #[tokio::test]
 async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
-    for source_schema in [15, 16, converter::cache::CONVERTER_SCHEMA_VERSION] {
+    for source_schema in [15, 16, 19, 20, converter::cache::CONVERTER_SCHEMA_VERSION] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -282,14 +282,14 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
         convert(&data, &source).await;
         if source_schema == 15 {
             schema_four_source(&source);
-        } else if source_schema == 16 {
+        } else {
             let path = source.join("conversion-manifest.json");
             let mut manifest: ConversionManifest =
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            manifest.schema_version = 16;
+            manifest.schema_version = source_schema;
             manifest.configuration_hash = converter::cache::configuration_hash_for_schema(
                 &PipelineConfig::new(&data, &output),
-                16,
+                source_schema,
             )
             .unwrap();
             manifest.save(&path).unwrap();
@@ -314,11 +314,19 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if source_schema >= 16 { meshes } else { 0 },
+            if matches!(source_schema, 19 | 21) {
+                meshes
+            } else {
+                0
+            },
             "metadata-only upgrades preserve compatible mesh producer provenance"
         );
         let report = convert(&data, &repeated).await;
-        let regenerated = if source_schema >= 16 { 0 } else { meshes };
+        let regenerated = if matches!(source_schema, 19 | 21) {
+            0
+        } else {
+            meshes
+        };
         let current: ConversionManifest =
             serde_json::from_slice(&fs::read(repeated.join("conversion-manifest.json")).unwrap())
                 .unwrap();
@@ -339,7 +347,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
 
 #[tokio::test]
 async fn metadata_rebuild_rejects_unsupported_mesh_provenance() {
-    for (schema, mesh_schema) in [(15, 16), (20, 17), (20, 18), (20, 19)] {
+    for (schema, mesh_schema) in [(15, 16), (21, 17), (21, 18), (21, 22)] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -654,7 +662,7 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
     let path = source.join("conversion-manifest.json");
     let mut manifest: ConversionManifest =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    for schema in [17, 18, 19] {
+    for schema in [17, 18] {
         manifest.schema_version = schema;
         manifest.save(&path).unwrap();
         let output = directory.path().join(format!("derived-{schema}"));
@@ -663,7 +671,7 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("complete converter schema 15, 16 or 20"),
+            error.contains("complete converter schema 15, 16, 19, 20 or 21"),
             "{error}"
         );
         assert!(!output.exists());

@@ -444,7 +444,7 @@ impl StreamingFixtureDirectory {
         let connection = Connection::open(&database_path)?;
         connection.execute_batch(
             r#"CREATE TABLE schema_info(version INTEGER NOT NULL);
-            INSERT INTO schema_info VALUES(6);
+            INSERT INTO schema_info VALUES(7);
             CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
             CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);
             CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
@@ -1725,9 +1725,8 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 }
 
 const fn converter_schema_version() -> u32 {
-    // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
-    // linking the heavy converter crate into the runtime binary.
-    20
+    // Shared with the producer without linking the converter into the runtime.
+    shared::LOD_CONVERTER_SCHEMA_VERSION
 }
 
 fn setup_synthetic_benchmark(
@@ -3306,6 +3305,8 @@ mod tests {
         );
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
+        let database = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        database.execute_batch("CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(4);").unwrap();
         std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
         std::fs::write(
             directory.path().join("integration-report.json"),
@@ -3316,7 +3317,7 @@ mod tests {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        for schema in [16, 17, 18, 19] {
+        for schema in [16, 17, 18, 19, 20, 21] {
             std::fs::write(
                 directory.path().join("conversion-manifest.json"),
                 format!(r#"{{"schema_version":{schema},"complete":true}}"#),
