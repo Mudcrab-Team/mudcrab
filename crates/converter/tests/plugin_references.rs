@@ -591,31 +591,123 @@ fn reference_and_cell_form_id_fields_use_load_order_numbering() {
     assert_eq!([word(&xclr, 0), word(&xclr, 4)], [0x0000_0123, 0x0400_0124]);
 }
 
-/// A FormID-bearing field with the wrong size is malformed data, not something to remap
-/// at a guessed offset.
+/// Malformed optional fields are dropped while usable fields and neighboring records
+/// still remap from plugin-local slot 1 to load-order slot 2.
 #[test]
-fn reference_form_id_fields_reject_malformed_lengths() {
-    for (tag, bytes) in [
-        (b"XTEL", vec![0u8; 28]),
-        (b"XESP", vec![0u8; 4]),
-        (b"XESP", vec![0u8; 12]),
-        (b"XLKR", vec![0u8; 6]),
-        (b"XNDP", vec![0u8; 4]),
-        (b"XAPR", vec![0u8; 12]),
-        (b"XAPR", vec![0u8; 16]),
-        (b"XLRT", vec![0u8; 6]),
+fn malformed_form_id_field_lengths_are_dropped_without_blocking_valid_links() {
+    for (record_type, tag, len) in [
+        (b"REFR", b"XTEL", 28),
+        (b"REFR", b"XESP", 4),
+        (b"REFR", b"XESP", 12),
+        (b"REFR", b"XLKR", 6),
+        (b"REFR", b"XNDP", 4),
+        (b"REFR", b"XAPR", 12),
+        (b"REFR", b"XAPR", 16),
+        (b"REFR", b"XLRT", 6),
+        (b"CELL", b"XCLR", 6),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let path = plugin(
+        let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+        let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+        let valid_tag = if record_type == b"CELL" {
+            b"LTMP"
+        } else {
+            b"NAME"
+        };
+        let mut malformed = vec![0xAB; len];
+        malformed[..4].copy_from_slice(&0x0100_0900u32.to_le_bytes());
+        let patch = plugin(
             dir.path(),
-            "Base.esm",
-            &[],
+            "Patch.esm",
+            &["Base.esm"],
             1,
-            record(b"REFR", 0x0000_0800, 0, sub(tag, &bytes)),
+            [
+                record(
+                    record_type,
+                    0x0100_0800,
+                    0,
+                    [
+                        sub(tag, &malformed),
+                        sub(valid_tag, &0x0100_0901u32.to_le_bytes()),
+                    ]
+                    .concat(),
+                ),
+                record(
+                    b"REFR",
+                    0x0100_0801,
+                    0,
+                    sub(b"NAME", &0x0100_0902u32.to_le_bytes()),
+                ),
+            ]
+            .concat(),
         );
-        let error = format!("{:?}", EsmParser::merge_plugins(&[path]).unwrap_err());
-        assert!(error.contains(std::str::from_utf8(tag).unwrap()), "{error}");
+        let result = EsmParser::merge_plugins(&[base, filler, patch]);
+        assert!(
+            result.is_ok(),
+            "{} {} length {len}: {result:?}",
+            String::from_utf8_lossy(record_type),
+            String::from_utf8_lossy(tag)
+        );
+        let merged = result.unwrap();
+        let fields = &merged[&0x0200_0800].subrecords;
+        assert!(!fields.iter().any(|(name, _)| name.as_slice() == tag));
+        assert_eq!(
+            fields
+                .iter()
+                .find(|(name, _)| name.as_slice() == valid_tag)
+                .unwrap()
+                .1,
+            0x0200_0901u32.to_le_bytes()
+        );
+        assert_eq!(
+            merged[&0x0200_0801].subrecords[0].1,
+            0x0200_0902u32.to_le_bytes()
+        );
     }
+}
+
+/// Repeated optional fields are independent: dropping a malformed occurrence preserves
+/// both valid neighbors and their non-FormID payload bytes.
+#[test]
+fn malformed_repeated_xapr_drops_only_the_bad_occurrence() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+    let first = [0x0100_0901u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat();
+    let last = [0x0100_0902u32.to_le_bytes(), 2.5f32.to_le_bytes()].concat();
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        record(
+            b"REFR",
+            0x0100_0800,
+            0,
+            [
+                sub(b"XAPR", &first),
+                sub(b"XAPR", &[0xAB; 12]),
+                sub(b"XAPR", &last),
+            ]
+            .concat(),
+        ),
+    );
+    let result = EsmParser::merge_plugins(&[base, filler, patch]);
+    assert!(result.is_ok(), "{result:?}");
+    let merged = result.unwrap();
+    let fields: Vec<_> = merged[&0x0200_0800]
+        .subrecords
+        .iter()
+        .filter(|(tag, _)| tag.as_slice() == b"XAPR")
+        .map(|(_, data)| data.clone())
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            [0x0200_0901u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat(),
+            [0x0200_0902u32.to_le_bytes(), 2.5f32.to_le_bytes()].concat(),
+        ]
+    );
 }
 
 /// Forms seen in the official plugins: 14 references use a 4-byte `XLKR` holding only the
@@ -733,37 +825,6 @@ fn every_covered_reference_and_cell_field_is_remapped_at_its_offsets() {
             expected[offset..offset + 4].copy_from_slice(&(0x0200_0900 + i as u32).to_le_bytes());
         }
         assert_eq!(data, &expected, "{label}");
-    }
-}
-
-/// Diagnostics identify both the source plugin's record and its resolved load-order ID.
-#[test]
-fn reference_error_reports_source_and_load_order_record_ids() {
-    let dir = tempfile::tempdir().unwrap();
-    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
-    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
-    let mut xesp = 0x0200_0900u32.to_le_bytes().to_vec();
-    xesp.extend([0u8; 8]); // Invalid length still reports the record and field.
-    let patch = plugin(
-        dir.path(),
-        "Patch.esm",
-        &["Base.esm"],
-        1,
-        record(b"PHZD", 0x0100_0800, 0, sub(b"XESP", &xesp)),
-    );
-    let error = format!(
-        "{:#}",
-        EsmParser::merge_plugins(&[base, filler, patch]).unwrap_err()
-    );
-    for expected in [
-        "patch.esm",
-        "PHZD",
-        "source 01000800",
-        "load-order 02000800",
-        "XESP",
-        "must be 8 bytes",
-    ] {
-        assert!(error.contains(expected), "{error}");
     }
 }
 
@@ -971,6 +1032,7 @@ fn database_field(conn: &rusqlite::Connection, table: &str, id: u32, tag: &[u8; 
 
 /// The real pipeline publishes resolved IDs in every blob projection, including
 /// non-identity master lists, light masters, overrides and repeated subrecords.
+/// Malformed fields are absent from both record and reference blobs; valid neighbors survive.
 /// Rerunning it replaces stale database blobs without invalidating asset caches.
 #[tokio::test]
 async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
@@ -1007,6 +1069,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                 [
                     sub(b"DATA", &[1, 0]),
                     sub(b"LTMP", &0x0200_0901u32.to_le_bytes()),
+                    sub(b"XCLR", &[0xAB; 6]),
                 ]
                 .concat(),
             ),
@@ -1033,10 +1096,14 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             b"REFR",
                             0x0200_0806,
                             0,
-                            sub(
-                                b"XESP",
-                                &[0x0300_0802u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
-                            ),
+                            [
+                                sub(
+                                    b"XESP",
+                                    &[0x0300_0802u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+                                ),
+                                sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                            ]
+                            .concat(),
                         ),
                     ]
                     .concat(),
@@ -1065,6 +1132,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                     0,
                     [
                         sub(b"XTEL", &override_xtel),
+                        sub(b"XLRT", &[0xAB; 6]),
+                        sub(b"XAPR", &[0xAB; 12]),
                         sub(
                             b"XESP",
                             &[0x0200_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat(),
@@ -1106,6 +1175,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         let mut expected_xtel = xtel.clone();
         expected_xtel[..4].copy_from_slice(&0x0300_0804u32.to_le_bytes());
         for table in ["records", "references"] {
+            assert!(database_fields(&conn, table, 0x0300_0800, b"XLRT").is_empty());
+            assert_eq!(
+                database_field(&conn, table, 0x0300_0806, b"NAME"),
+                0x0000_0003u32.to_le_bytes()
+            );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0806, b"XESP"),
                 [0u32.to_le_bytes(), [2, 0, 0, 0]].concat()
@@ -1127,6 +1201,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
         }
         for table in ["records", "cells"] {
+            assert!(database_fields(&conn, table, 0x0300_0900, b"XCLR").is_empty());
             assert_eq!(
                 database_field(&conn, table, 0x0300_0900, b"LTMP"),
                 0x0300_0901u32.to_le_bytes()

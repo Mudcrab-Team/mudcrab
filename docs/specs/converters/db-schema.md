@@ -254,11 +254,13 @@ The fields in this table validate master indices and light-plugin local IDs.
 An out-of-range index or light-plugin local ID wider than 12 bits is an invalid
 optional link: the converter sets that FormID to zero and reports a warning,
 aggregated per source plugin with the count and first record/field diagnostic.
-Other records and valid links continue to convert. Malformed field lengths still
-fail conversion, since their FormID offsets cannot be decoded safely. Existing
+Other records and valid links continue to convert. Malformed field lengths cause
+the entire subrecord to be dropped and counted in the same per-plugin warning,
+since its FormID offsets cannot be decoded safely. An array with an incomplete
+entry is dropped in full; valid repeated subrecords are retained. Existing
 validation of record headers and required fields is unchanged. Zero FormIDs
-remain zero. Other bytes (such as teleport coordinates, enable flags, navmesh
-triangles and activation delays) are preserved. Unlisted fields remain opaque,
+remain zero. Other bytes in retained subrecords (such as teleport coordinates,
+enable flags, navmesh triangles and activation delays) are preserved. Unlisted fields remain opaque,
 not an assurance that all FormIDs in arbitrary Skyrim or mod subrecords have
 been resolved.
 

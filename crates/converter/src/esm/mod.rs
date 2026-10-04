@@ -185,7 +185,7 @@ impl RemapWarnings {
         }
         for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
             eprintln!(
-                "warning: {plugin}: skipped {count} invalid optional FormID links (set to zero; first: {example})"
+                "warning: {plugin}: skipped {count} invalid optional FormID links (cleared or removed; first: {example})"
             );
         }
     }
@@ -398,8 +398,8 @@ fn remap_record_form_ids(
     // Enforce strict reference validation for landscape and grass record kinds.
     // Preserve legacy handling elsewhere until their record-specific exceptions
     // (including shipped GMST IDs outside the master table) have been audited.
-    // Optional link fields in `form_id_layout` clear invalid IDs instead, even on
-    // these record kinds; see the layout branch below.
+    // Optional link fields in `form_id_layout` clear invalid IDs or drop malformed
+    // subrecords instead, even on these record kinds; see the layout branch below.
     let strict = matches!(
         &record.record_type,
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
@@ -445,7 +445,8 @@ fn remap_record_form_ids(
     record.form_id = remap(record.form_id)?;
     record.cell_form_id = record.cell_form_id.map(&remap).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap).transpose()?;
-    for (tag, data) in &mut record.subrecords {
+    let mut malformed_subrecords = Vec::new();
+    for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
         if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
             color_eyre::eyre::ensure!(data.len() >= 4, "truncated GRAS alternate textures");
             let count = u32::from_le_bytes(data[..4].try_into().unwrap());
@@ -492,8 +493,10 @@ fn remap_record_form_ids(
             continue;
         }
         if let Some(layout) = form_id_layout(&record.record_type, tag) {
+            // Broken optional links, including wrong lengths, must not block unrelated
+            // content. Drop a malformed subrecord: its FormID offsets cannot be trusted.
             let name = String::from_utf8_lossy(tag).into_owned();
-            let offsets: Vec<usize> = match layout {
+            let offsets = match layout {
                 FormIdLayout::Fixed(variants) => variants
                     .iter()
                     .find(|(len, _)| *len == data.len())
@@ -501,25 +504,42 @@ fn remap_record_form_ids(
                     .ok_or_else(|| {
                         let sizes: Vec<String> =
                             variants.iter().map(|(len, _)| len.to_string()).collect();
-                        color_eyre::eyre::eyre!(
+                        format!(
                             "{name} must be {} bytes, found {}",
                             sizes.join(" or "),
                             data.len()
                         )
-                    })?,
+                    }),
                 FormIdLayout::Array { stride } => {
-                    color_eyre::eyre::ensure!(
-                        data.len().is_multiple_of(stride),
-                        "{name} length {} is not a multiple of {stride}",
-                        data.len()
+                    if data.len().is_multiple_of(stride) {
+                        Ok((0..data.len()).step_by(stride).collect())
+                    } else {
+                        Err(format!(
+                            "{name} length {} is not a multiple of {stride}",
+                            data.len()
+                        ))
+                    }
+                }
+            };
+            let offsets = match offsets {
+                Ok(offsets) => offsets,
+                Err(reason) => {
+                    warnings.skipped_optional(
+                        plugin_name,
+                        format!(
+                            "{} record source {source_id:08X} (load-order {:08X}) {reason}",
+                            String::from_utf8_lossy(&record_type),
+                            record.form_id
+                        ),
                     );
-                    (0..data.len()).step_by(stride).collect()
+                    malformed_subrecords.push(index);
+                    continue;
                 }
             };
             for offset in offsets {
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-                // A broken optional link must not block unrelated content. Do not keep
-                // a plugin-local value or guess an owner: publish a null link and report it.
+                // Keep valid payload bytes, but publish null for an invalid FormID rather
+                // than retaining a plugin-local value or guessing its owner.
                 let resolved = match remap_with_validation(value, true) {
                     Ok(resolved) => resolved,
                     Err(error) => {
@@ -546,6 +566,16 @@ fn remap_record_form_ids(
                     .to_le_bytes(),
             );
         }
+    }
+    if !malformed_subrecords.is_empty() {
+        // Indices are sorted by traversal order. Remove only those occurrences, so a
+        // repeated field such as XAPR keeps its valid siblings and their relative order.
+        let mut index = 0;
+        record.subrecords.retain(|_| {
+            let keep = malformed_subrecords.binary_search(&index).is_err();
+            index += 1;
+            keep
+        });
     }
     Ok(())
 }
@@ -606,6 +636,63 @@ mod tests {
             "invalid master index",
         ] {
             assert!(example.contains(expected), "{example}");
+        }
+    }
+
+    /// Bad lengths and bad values share one plugin summary with one contextual example.
+    #[test]
+    fn malformed_optional_links_are_removed_and_share_value_warnings() {
+        for (tag, length, expected) in [
+            (b"XTEL", 28, "XTEL must be 32 bytes, found 28"),
+            (b"XLRT", 6, "XLRT length 6 is not a multiple of 4"),
+        ] {
+            let indices = HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]);
+            let warnings = RemapWarnings::default();
+            let mut record = RawRecord {
+                form_id: 0x0100_0800,
+                record_type: *b"PHZD",
+                flags: 0,
+                subrecords: vec![
+                    (tag.to_vec(), vec![0xAB; length]),
+                    (
+                        b"XESP".to_vec(),
+                        [0x0200_0900u32.to_le_bytes(), [1, 2, 3, 4]].concat(),
+                    ),
+                    (b"XEMI".to_vec(), 0x0100_0901u32.to_le_bytes().to_vec()),
+                ],
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            };
+            remap_record_form_ids(
+                &mut record,
+                "patch.esp",
+                &["base.esm".into()],
+                &indices,
+                &HashMap::new(),
+                &warnings,
+            )
+            .unwrap();
+            assert_eq!(
+                record.subrecords,
+                [
+                    (
+                        b"XESP".to_vec(),
+                        [0u32.to_le_bytes(), [1, 2, 3, 4]].concat()
+                    ),
+                    (b"XEMI".to_vec(), 0x0200_0901u32.to_le_bytes().to_vec()),
+                ]
+            );
+            let counts = warnings.skipped_optional.borrow();
+            assert_eq!(counts.len(), 1);
+            let (count, example) = &counts["patch.esp"];
+            assert_eq!(*count, 2);
+            assert_eq!(
+                example,
+                &format!("PHZD record source 01000800 (load-order 02000800) {expected}")
+            );
+            assert!(warnings.out_of_range.borrow().is_empty());
+            assert!(warnings.truncations.borrow().is_empty());
         }
     }
 
