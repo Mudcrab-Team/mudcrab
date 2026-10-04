@@ -4,12 +4,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Writes a text fixture relative to a root, creating its parent directories.
 fn write(root: &Path, path: &str, contents: &str) {
     let path = root.join(path);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, contents).unwrap();
 }
 
+/// Creates an MO2 instance fixture with profiles, enabled and disabled mods, and ordered plugins.
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("MO2");
@@ -49,6 +51,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
+/// Verifies mod and overwrite precedence, hidden-file exclusion, implicit masters, and active load order.
 #[test]
 fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     let (_dir, root) = fixture();
@@ -97,6 +100,7 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     );
 }
 
+/// Verifies base-directory expansion, relative paths, case-insensitive lookup, and external mod paths.
 #[test]
 fn resolves_base_relative_and_external_configured_directories() {
     let (_dir, root) = fixture();
@@ -130,6 +134,7 @@ fn resolves_base_relative_and_external_configured_directories() {
     );
 }
 
+/// Verifies opening an instance fails when its configuration or a configured directory is missing.
 #[test]
 fn validates_instance_and_configured_directories() {
     let (_dir, root) = fixture();
@@ -143,6 +148,7 @@ fn validates_instance_and_configured_directories() {
     assert!(Instance::open(&root).is_err());
 }
 
+/// Verifies resolution rejects missing sources, unsafe names, and incomplete plugin load order.
 #[test]
 fn rejects_missing_mods_plugins_unsafe_paths_and_incomplete_order() {
     let (_dir, root) = fixture();
@@ -175,6 +181,7 @@ fn rejects_missing_mods_plugins_unsafe_paths_and_incomplete_order() {
     assert!(instance.profile_dir("../Default").is_err());
 }
 
+/// Verifies cancellation aborts resolution and absent loadorder.txt falls back to active plugin order.
 #[test]
 fn cancellation_and_optional_loadorder() {
     let (_dir, root) = fixture();

@@ -208,6 +208,7 @@ fn row_label(text: &'static str) -> impl Scene {
     }
 }
 
+/// Builds the source-path row with its label, path text, and detection or MO2 settings button.
 fn ui_data_row() -> impl Scene {
     bsn! {
         Node {
@@ -566,6 +567,7 @@ type LabelTexts = (
     Query<'static, 'static, &'static mut Text, With<NoticeText>>,
 );
 
+/// Updates source and output path labels for the selected Skyrim Data or MO2 source.
 pub fn draw_paths(
     paths: Res<GamePathConfig>,
     source: Option<Res<crate::mo2_settings::SourceSettings>>,
@@ -649,6 +651,7 @@ pub fn draw_labels(
     }
 }
 
+/// Updates button appearance and labels from conversion state, source readiness, and engine status.
 #[allow(clippy::too_many_arguments)] // Bevy injects each system parameter.
 pub fn draw_controls(
     state: Res<CurrentConversion>,

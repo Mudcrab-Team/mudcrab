@@ -265,6 +265,7 @@ pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<Stri
     configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION)
 }
 
+/// Hashes conversion settings for a schema, including MO2 paths and profile configuration files.
 pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,

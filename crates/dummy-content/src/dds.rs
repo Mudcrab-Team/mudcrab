@@ -183,6 +183,7 @@ mod tests {
         assert_eq!(dds.data.len(), 56);
     }
 
+    /// Verifies generated DX10 cubemaps contain six faces while declaring one cube in the array header.
     #[test]
     fn generates_cube_map_with_six_faces() {
         let spec = Spec::new(Format::Bc1Unorm, 4, 4).as_cubemap();

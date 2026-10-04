@@ -614,6 +614,7 @@ fn format_check_report(report: &converter::CheckReport) -> String {
     text
 }
 
+/// Parses conversion, check, or repair arguments and rejects options unsupported by repair.
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
@@ -858,6 +859,7 @@ the existence and size of every file, and with --full their hashes too. Exit cod
 mod tests {
     use super::*;
 
+    /// Verifies MO2 profile defaults, invalid selections, and selection retention in resume commands.
     #[test]
     fn mo2_cli_defaults_validates_and_preserves_selection_on_resume() {
         let dir = tempfile::tempdir().unwrap();

@@ -383,6 +383,7 @@ mod tests {
         }
     }
 
+    /// Verifies accepted UI extension flags and rejection of unsupported BSA header values.
     #[test]
     fn rejects_unsupported_versions_offsets_and_flags() {
         let mut ui_extensions = uncompressed_fixture();

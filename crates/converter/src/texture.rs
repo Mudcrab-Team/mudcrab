@@ -185,6 +185,9 @@ impl TextureConverter {
         )
     }
 
+    /// Converts DDS bytes to KTX2 with the requested texture encoding and compression settings.
+    ///
+    /// Preserves supported native formats where possible and rejects unsupported texture arrays.
     pub fn convert_with_options(
         dds_bytes: &[u8],
         encoding: TextureEncoding,
@@ -2172,6 +2175,7 @@ mod tests {
         }
     }
 
+    /// Verifies cubemap faces are regrouped by mip level and invalid arrays or truncated data are rejected.
     #[test]
     fn native_cubemap_gathers_faces_per_mip_level() {
         let mut dds = Dds::new_dxgi(NewDxgiParams {

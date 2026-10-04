@@ -163,6 +163,7 @@ impl NiSkinPartition {
 }
 
 impl Parse<&[u8]> for NiSkinPartition {
+    /// Parses an SSE skin partition, validating vertex-buffer sizes before reading vertices and triangles.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         let (i, partition_count) = le_u32(i)?;
         let (i, data_size) = le_u32(i)?;
@@ -283,6 +284,7 @@ impl Parse<&[u8]> for BSLODTriShape {
 }
 
 impl Parse<&[u8]> for BSDynamicTriShape {
+    /// Parses an SSE dynamic triangle shape and applies its full-precision vertex positions.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // BSDynamicTriShape extends the ordinary SSE BSTriShape payload; its
         // dynamic vertex array follows the base payload directly.
@@ -329,6 +331,7 @@ impl Parse<&[u8]> for BSTriShape {
     }
 }
 
+/// Parses a triangle shape with the given bounds extension and validates its declared geometry size.
 fn parse_tri_shape(
     i: &[u8],
     bound_extension_size: usize,

@@ -7,16 +7,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Writes a fixture file relative to a root, creating its parent directories.
 fn write(root: &Path, relative: &str, contents: impl AsRef<[u8]>) {
     let path = root.join(relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, contents).unwrap();
 }
 
+/// Encodes a synthetic plugin subrecord with a tag and 16-bit payload length.
 fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
     [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
 }
 
+/// Encodes a synthetic plugin record with its identifier, flags, and payload.
 fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
     [
         tag.as_slice(),
@@ -29,6 +32,7 @@ fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
     .concat()
 }
 
+/// Writes a synthetic plugin with a master dependency and a jump-height game setting.
 fn plugin(path: &Path, master: &str, value: f32) {
     let header = [
         sub(b"MAST", format!("{master}\0").as_bytes()),
@@ -49,6 +53,7 @@ fn plugin(path: &Path, master: &str, value: f32) {
     fs::write(path, bytes).unwrap();
 }
 
+/// Creates synthetic game data and an MO2 profile with conflicting plugins across priority layers.
 fn fixture() -> (tempfile::TempDir, PipelineConfig, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
@@ -106,6 +111,7 @@ fn fixture() -> (tempfile::TempDir, PipelineConfig, PathBuf) {
     (dir, config, instance)
 }
 
+/// Runs conversion with cancellation support while draining progress events to avoid blocking.
 async fn run(
     config: PipelineConfig,
     stop: Cancellation,
@@ -117,6 +123,7 @@ async fn run(
     result
 }
 
+/// Reads the winning jump-height game setting from the converted world database.
 fn value(config: &PipelineConfig) -> f64 {
     Connection::open(config.output_dir.join("skyrim_world.db"))
         .unwrap()
@@ -128,6 +135,7 @@ fn value(config: &PipelineConfig) -> f64 {
         .unwrap()
 }
 
+/// Verifies plugin order, overwrite precedence, cache reuse, and changes to enabled mods.
 #[tokio::test]
 async fn consumes_merged_profile_plugin_order_overwrite_and_reuses_conversion() {
     let (_dir, config, instance) = fixture();
@@ -175,6 +183,7 @@ async fn consumes_merged_profile_plugin_order_overwrite_and_reuses_conversion() 
     assert!(!instance.join("mods/High/patch.esp.mohidden").exists());
 }
 
+/// Verifies conversion reads winning MO2 sources directly without copying them into staging.
 #[tokio::test]
 async fn reads_sources_without_materializing_mo2_inputs() {
     let (_dir, config, instance) = fixture();
@@ -205,6 +214,7 @@ async fn reads_sources_without_materializing_mo2_inputs() {
     );
 }
 
+/// Verifies missing-master errors identify the MO2 profile and the plugin requiring that master.
 #[tokio::test]
 async fn missing_master_has_profile_and_plugin_context() {
     let (_dir, config, instance) = fixture();
@@ -218,6 +228,7 @@ async fn missing_master_has_profile_and_plugin_context() {
     );
 }
 
+/// Verifies resume discards stale staged inputs and outputs after the MO2 profile changes.
 #[tokio::test]
 async fn resume_rebuilds_input_and_vfs_after_profile_change() {
     let (_dir, mut config, instance) = fixture();
@@ -245,6 +256,7 @@ async fn resume_rebuilds_input_and_vfs_after_profile_change() {
     assert!(!config.output_dir.join("textures/stale.ktx2").exists());
 }
 
+/// Verifies source overlap and conflicting plugin selection are rejected and MO2 configs round-trip.
 #[tokio::test]
 async fn refuses_source_overlap_and_conflicting_plugin_selection() {
     let (_dir, config, instance) = fixture();

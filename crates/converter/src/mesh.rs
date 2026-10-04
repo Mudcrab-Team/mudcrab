@@ -47,6 +47,7 @@ impl MeshConverter {
         find_skeleton(nif_path).into_iter().collect()
     }
 
+    /// Converts a NIF into a GLB with collision and material metadata, using static geometry as a fallback.
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
@@ -190,6 +191,7 @@ impl MeshConverter {
         open_nif_resilient(path).map(|(_, diagnostics, _)| diagnostics)
     }
 
+    /// Loads a NIF and reports whether its declared geometry consists only of empty overlay templates.
     pub fn is_geometry_template(path: &Path) -> Result<bool> {
         open_nif_resilient(path).map(|(nif, _, _)| is_geometry_template(&nif))
     }
@@ -610,6 +612,7 @@ fn is_declared_geometry_block(block_type: &str) -> bool {
     )
 }
 
+/// Returns whether all declared geometry blocks are NiTriShape templates without geometry data.
 fn is_geometry_template(nif: &NifFile) -> bool {
     let mut templates = 0;
     for (index, block) in nif.blocks.iter().enumerate() {
@@ -835,6 +838,9 @@ fn apply_vertex_color_contract(
     Ok(())
 }
 
+/// Loads Skyrim NIF blocks within their declared sizes, recording parse failures as unhandled blocks.
+///
+/// Returns the parsed file, diagnostics, and validated material contract.
 fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
@@ -1036,6 +1042,9 @@ fn nif_scene_depth(blocks: &[NifBlock]) -> usize {
         .unwrap_or(0)
 }
 
+/// Parses a little-endian Skyrim NIF header for Bethesda versions 83 or 100.
+///
+/// Returns the remaining block bytes and header, rejecting unsupported versions and excessive counts.
 pub(crate) fn parse_skyrim_header<'a>(
     bytes: &'a [u8],
     path: &Path,
@@ -1848,6 +1857,7 @@ mod tests {
         assert_eq!(check(Some(Vec::new())), 0);
     }
 
+    /// Verifies legacy skin partitions parse without an SSE vertex buffer and fail under the wrong layout.
     #[test]
     fn skin_partition_uses_legacy_layout_and_rejects_oversized_sse_buffer() {
         // Counts from the KS Hairdos file that previously requested 56,716,014,720 bytes.

@@ -198,6 +198,7 @@ impl NifFile {
 }
 
 impl Parse<&[u8]> for NifFile {
+    /// Parses a NIF header and its size-delimited blocks using the declared Bethesda version.
     fn parse(i: &[u8]) -> nom::IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // Parse header first
         let (i, header) = NifHeader::parse(i)?;
@@ -501,6 +502,7 @@ pub fn nif_to_static_model(nif: &NifFile) -> Result<Model, String> {
     Ok(model)
 }
 
+/// Adds supported NIF nodes and geometry to the static scene, retaining geometryless template nodes.
 fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String> {
     let supported_blocks: BTreeSet<u32> = nif
         .blocks
@@ -604,6 +606,7 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
     Ok(())
 }
 
+/// Adds an SSE shape to the static scene, recovering missing geometry from its skin partition.
 fn push_modern_static_shape(
     nif: &NifFile,
     model: &mut Model,
@@ -1379,6 +1382,7 @@ impl NifFileV3 {
 }
 
 impl Parse<&[u8]> for NifFileV3 {
+    /// Parses version-aware NIF blocks and organizes nodes, skins, materials, and shapes into lookup maps.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         let (i, header) = NifHeader::parse(i)?;
 

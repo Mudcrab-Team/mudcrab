@@ -162,6 +162,7 @@ pub struct RunHandle {
 pub struct ConversionLogicPlugin;
 
 impl Plugin for ConversionLogicPlugin {
+    /// Registers conversion and source-selection resources and orders the conversion logic systems.
     fn build(&self, app: &mut App) {
         app.init_resource::<ConversionStatus>()
             .init_resource::<GamePathConfig>()

@@ -53,6 +53,7 @@ pub enum LauncherSet {
 pub struct LauncherPlugin;
 
 impl Plugin for LauncherPlugin {
+    /// Configures launcher system ordering, UI setup, MO2 settings, and engine launch handling.
     fn build(&self, app: &mut App) {
         app.configure_sets(
             Update,

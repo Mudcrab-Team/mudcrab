@@ -21,6 +21,9 @@ pub struct SourceSettings {
 }
 
 impl SourceSettings {
+    /// Loads an MO2 instance and its profiles, retaining the selected profile when still valid.
+    ///
+    /// Selects the first profile otherwise; an invalid instance clears the selection and records an error.
     pub fn set_instance(&mut self, path: &Path) {
         match mo2::Instance::open(path) {
             Ok(instance) => {
@@ -47,6 +50,7 @@ impl SourceSettings {
         }
     }
 
+    /// Applies the selected source to a pipeline config, revalidating an enabled MO2 instance and profile.
     pub fn apply(&self, config: &mut converter::PipelineConfig) -> Result<(), String> {
         config.mo2 = if self.use_mo2 {
             let selection = self.selection.as_ref().ok_or_else(|| {
@@ -79,6 +83,7 @@ struct SourceLabel;
 #[derive(Component)]
 struct SettingsDialog;
 
+/// Builds the source selector with Skyrim Data and MO2 buttons and a current-source label.
 pub fn source_row() -> impl Scene {
     bsn! {
         Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(8.0), align_items: AlignItems::Center }
@@ -91,6 +96,7 @@ pub fn source_row() -> impl Scene {
     }
 }
 
+/// Builds a source-selection button carrying the requested action.
 fn source_button(label: &'static str, action: SourceButton) -> impl Scene {
     bsn! {
         Button
@@ -101,6 +107,7 @@ fn source_button(label: &'static str, action: SourceButton) -> impl Scene {
     }
 }
 
+/// Formats a path for display, removing Windows extended-path prefixes while preserving UNC paths.
 pub fn display_path(path: &Path) -> String {
     let path = path.to_string_lossy();
     if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
@@ -110,15 +117,18 @@ pub fn display_path(path: &Path) -> String {
     }
 }
 
+/// Reports whether source settings may be edited in the current conversion state.
 pub fn editable(state: &state::ConversionState) -> bool {
     state::controls(state).paths || matches!(state, state::ConversionState::Stopped { .. })
 }
 
+/// Registers source-selection input and drawing systems in the launcher update schedule.
 pub fn install(app: &mut App) {
     app.add_systems(Update, click_source.in_set(LauncherSet::Input))
         .add_systems(Update, draw_source.in_set(LauncherSet::Draw));
 }
 
+/// Handles source, profile, dropdown, and close actions while respecting conversion edit locks.
 fn click_source(
     buttons: Query<(&Interaction, &SourceButton), Changed<Interaction>>,
     state: Res<CurrentConversion>,
@@ -159,6 +169,7 @@ fn click_source(
     }
 }
 
+/// Refreshes source labels and button colors and rebuilds the settings dialog when its state changes.
 fn draw_source(
     mut commands: Commands,
     source: Res<SourceSettings>,
@@ -234,6 +245,7 @@ fn draw_source(
     });
 }
 
+/// Spawns a labeled button with a source-selection action inside the settings dialog.
 fn spawn_dialog_button(
     parent: &mut bevy::ecs::relationship::RelatedSpawnerCommands<'_, ChildOf>,
     label: String,
@@ -265,6 +277,7 @@ fn spawn_dialog_button(
 mod tests {
     use super::*;
 
+    /// Verifies source controls open settings, select profiles, and prevent source changes during conversion.
     #[test]
     fn source_buttons_open_settings_select_profiles_and_lock_during_conversion() {
         let mut app = App::new();
@@ -325,6 +338,7 @@ mod tests {
         assert!(!app.world().resource::<SourceSettings>().use_mo2);
     }
 
+    /// Verifies profile defaults, config application, source switching, and invalid-instance handling.
     #[test]
     fn validates_defaults_and_switches_conversion_source() {
         let root = std::env::temp_dir().join(format!("mudcrab-source-{}", std::process::id()));

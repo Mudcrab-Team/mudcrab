@@ -306,6 +306,9 @@ impl AssetPipeline {
         Ok(report)
     }
 
+    /// Converts resolved inputs into staging, reusing valid cached outputs and reporting progress.
+    ///
+    /// Rebuilds MO2 input selection on resume and records conversion results in the staging manifest.
     async fn run_into(
         config: &PipelineConfig,
         staging: &Path,
@@ -1597,6 +1600,7 @@ impl ConversionBatch<'_> {
     }
 }
 
+/// Collects texture usage from staged GLBs and the world database, grouped by source texture key.
 pub(crate) fn collect_texture_semantics(
     staging: &Path,
 ) -> Result<BTreeMap<String, BTreeSet<TextureSemantic>>> {
@@ -1730,6 +1734,7 @@ fn restored_mesh_outputs(
         .collect()
 }
 
+/// Resolves a runtime texture or alias to its source KTX2 key, rejecting invalid paths.
 pub(crate) fn source_texture_key(runtime_key: &str) -> Result<String> {
     crate::asset_path::runtime_texture_source(runtime_key)
         .ok_or_else(|| color_eyre::eyre::eyre!("invalid runtime texture path: {runtime_key}"))
@@ -1737,6 +1742,9 @@ pub(crate) fn source_texture_key(runtime_key: &str) -> Result<String> {
 
 pub(crate) use publish_texture_aliases as publish_srgb_texture_aliases;
 
+/// Links or copies existing source textures to aliases referenced by staged GLBs.
+///
+/// Returns the published paths relative to staging; references without a source file are skipped.
 pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
     let mut aliases = BTreeSet::new();
     for entry in WalkDir::new(staging)
@@ -2008,8 +2016,9 @@ pub(crate) fn plugin_paths(
     crate::esm::load_order::order_discovered_plugins(plugins)
 }
 
-// Staging outlives a profile edit. Drop removed outputs before whole-tree texture/integration
-// passes so they cannot contribute stale references or aliases, but retain current resume work.
+/// Removes staged mesh, texture, and script outputs absent from the current MO2 source selection.
+///
+/// Retains current resume work while preventing removed outputs from contributing stale references.
 fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> {
     let mut current = BTreeSet::new();
     for source in sources {
@@ -2050,6 +2059,7 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
     Ok(())
 }
 
+/// Checks whether an archive stem matches an active plugin, including suffixed companion archives.
 pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool {
     let stem = archive
         .file_stem()
@@ -2068,6 +2078,7 @@ pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool
         })
 }
 
+/// Sorts archives by plugin load order, then lowercase stem, placing unmatched archives last.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     let plugin_stems = plugins
         .iter()

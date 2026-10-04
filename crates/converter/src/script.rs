@@ -617,6 +617,7 @@ fn parse_typed_names(reader: &mut Reader<'_>, strings: &[String]) -> Result<Vec<
     Ok(names)
 }
 
+/// Emits a Luau function with native-call handling or instruction dispatch in bounded chunks.
 fn emit_function(out: &mut String, state: &State, function: &Function) -> Result<()> {
     let exported = if state.name.is_empty() {
         function.name.clone()
@@ -1104,6 +1105,7 @@ mod tests {
         assert_eq!(build_cfg(&jumping).unwrap().blocks[0].successors, vec![1]);
     }
 
+    /// Verifies a large generated function compiles and executes jumps across dispatch chunk boundaries.
     #[test]
     fn large_dispatch_compiles_and_preserves_cross_chunk_jumps() {
         let mut instructions = vec![

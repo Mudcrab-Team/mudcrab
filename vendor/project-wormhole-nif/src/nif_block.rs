@@ -275,6 +275,7 @@ impl std::fmt::Debug for NifBlock {
 }
 
 impl NifBlock {
+    /// Parses a named block using the legacy skin-partition layout for Bethesda versions below 100.
     pub fn parse_with_version(
         i: &[u8],
         block_type: String,
@@ -1552,6 +1553,7 @@ pub struct NiAVObject {
 }
 
 impl Parse<&[u8]> for NiAVObject {
+    /// Parses counted extra-data references first, falling back to a compact object with a valid transform.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // Skyrim stores an extra-data count followed by references. A shifted
         // compact interpretation can still look like a finite transform.

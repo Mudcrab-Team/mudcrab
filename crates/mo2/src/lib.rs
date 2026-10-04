@@ -50,6 +50,9 @@ pub const OFFICIAL_MASTERS: &[&str] = &[
 ];
 
 impl Instance {
+    /// Opens an MO2 instance, resolves configured directories, and discovers sorted profile names.
+    ///
+    /// Fails on unreadable or invalid configuration, missing directories, unsafe names, or no profiles.
     pub fn open(path: &Path) -> Result<Self> {
         let instance_path = fs::canonicalize(path)
             .wrap_err_with(|| format!("MO2 instance not found: {}", path.display()))?;
@@ -128,6 +131,7 @@ impl Instance {
         })
     }
 
+    /// Finds a profile directory by case-insensitive name, rejecting unsafe or missing selections.
     pub fn profile_dir(&self, profile: &str) -> Result<PathBuf> {
         safe_name(profile)?;
         let name = self
@@ -168,6 +172,9 @@ impl Instance {
         ]
     }
 
+    /// Resolves winning files and plugin order for a profile without cancellation.
+    ///
+    /// Enabled mods overlay the base Data directory in priority order; overwrite files take precedence.
     pub fn resolve(&self, data: &Path, profile: &str) -> Result<Resolved> {
         self.resolve_with_cancel(data, profile, &|| false)
     }
@@ -267,6 +274,7 @@ impl Instance {
     }
 }
 
+/// Iterates trimmed configuration lines, ignoring an initial BOM, blank lines, and comments.
 fn lines(text: &str) -> impl Iterator<Item = &str> {
     text.trim_start_matches('\u{feff}')
         .lines()
@@ -274,6 +282,7 @@ fn lines(text: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with(';'))
 }
 
+/// Rejects unsafe path components, including traversal, Windows device names, and reserved characters.
 fn safe_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
@@ -303,6 +312,7 @@ fn safe_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validates a safe plugin filename with an ESM, ESP, or ESL extension.
 fn plugin_name(name: &str) -> Result<()> {
     safe_name(name)?;
     ensure!(
@@ -317,6 +327,7 @@ fn plugin_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Finds an optional child by case-insensitive name, rejecting unsafe names, collisions, and symlinks.
 fn optional_child(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     safe_name(name)?;
     let mut found = None;
@@ -343,11 +354,15 @@ fn optional_child(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     Ok(found)
 }
 
+/// Finds a required child by case-insensitive name, failing if it is missing, ambiguous, or a symlink.
 fn child(root: &Path, name: &str) -> Result<PathBuf> {
     optional_child(root, name)?
         .ok_or_else(|| color_eyre::eyre::eyre!("MO2 path not found: {}", root.join(name).display()))
 }
 
+/// Expands an MO2 directory setting and resolves existing components case-insensitively.
+///
+/// Relative paths use the instance directory; only the `%BASE_DIR%` variable is supported.
 fn configured_dir(instance: &Path, base: &Path, value: &str) -> Result<PathBuf> {
     let expanded = value
         .replace("%BASE_DIR%", &base.to_string_lossy())
@@ -386,6 +401,9 @@ fn configured_dir(instance: &Path, base: &Path, value: &str) -> Result<PathBuf> 
     Ok(fs::canonicalize(resolved)?)
 }
 
+/// Overlays a directory onto winning file paths, skipping `.mohidden` entries and checking cancellation.
+///
+/// Rejects symlinks, unsafe path components, and case-insensitive collisions within the layer.
 fn overlay(
     root: &Path,
     files: &mut BTreeMap<String, PathBuf>,

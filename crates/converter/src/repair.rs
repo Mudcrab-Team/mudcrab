@@ -45,6 +45,7 @@ struct Source {
     expected_hash: Option<String>,
 }
 
+/// Maps a supported source extension to its asset kind, source extension, and output extension.
 fn kind(path: &str) -> Option<(AssetKind, &'static str, &'static str)> {
     match Path::new(path)
         .extension()?
@@ -486,6 +487,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     Ok(report)
 }
 
+/// Attempts one staged repair, updating manifest entries and counts or recording the failure.
 #[allow(clippy::too_many_arguments)]
 fn attempt(
     config: &PipelineConfig,
@@ -564,6 +566,7 @@ fn attempt(
     }
 }
 
+/// Records a staged output with its source hash, output hash, and size in the manifest.
 fn record_output(
     manifest: &mut ConversionManifest,
     key: String,
@@ -584,6 +587,7 @@ fn record_output(
     Ok(())
 }
 
+/// Checks a published pack, allowing only incomplete-conversion and recorded-input-failure problems.
 fn check_existing(output: &Path, mode: CheckMode) -> Result<()> {
     let check = check_output(output, mode, |_, _| {})?;
     for problem in check.problems {
@@ -598,6 +602,7 @@ fn check_existing(output: &Path, mode: CheckMode) -> Result<()> {
     Ok(())
 }
 
+/// Validates a relative repair path and ensures its nearest existing ancestor remains inside the root.
 fn checked_destination(root: &Path, relative: &str) -> Result<PathBuf> {
     let relative = safe_relative_path(relative)?;
     let path = root.join(relative);
@@ -616,6 +621,9 @@ fn checked_destination(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Publishes staged repairs with the manifest last, backing up replaced files.
+///
+/// Attempts to restore applied paths if publication fails; filesystem errors can also prevent rollback.
 fn publish(output: &Path, staged: &Path, backup: &Path, changed: &BTreeSet<String>) -> Result<()> {
     fs::create_dir(backup)?;
     // Manifest is the commit marker and must be published last.
@@ -658,6 +666,7 @@ fn publish(output: &Path, staged: &Path, backup: &Path, changed: &BTreeSet<Strin
 mod tests {
     use super::*;
 
+    /// Verifies failed publication restores original files and repair paths cannot traverse outside the pack.
     #[test]
     fn publication_rolls_back_and_rejects_escaping_paths() {
         let root = tempfile::tempdir().unwrap();
@@ -681,6 +690,7 @@ mod tests {
         assert!(checked_destination(&output, "../outside").is_err());
     }
 
+    /// Repairs an installed failed pack into a sibling directory and verifies its manifest stays unchanged.
     #[test]
     #[ignore = "requires MUDCRAB_REPAIR_DATA, OUTPUT, INSTANCE and PROFILE for an installed failed pack"]
     fn repairs_installed_profile_without_publishing() {
