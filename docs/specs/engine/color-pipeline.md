@@ -33,7 +33,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
 - V5: Preserve NIF source values and declared unsupported families. Do not compensate for pending material errors with global tint, exposure, ambient or emission changes.
 - V6: Static emission → authored linear tint × multiplier × eligible glow sample; preserve zero, dim, HDR and black tint. Slot 2 glow ! Glow shader or Glow_Map; Own_Emit alone ≠ texture eligibility. Non-finite source emission or overflowing energy → contextual conversion error before clamping.
-- V7: Converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete converter schemas 15–17 and additive world database schemas 3–5, including main’s grass tables. This emission slice does not change world database schema 5.
+- V7: Historical emission-slice contract: converter schema 17 → rebuild GLBs from schemas 12–16; reuse verified unchanged texture/script/archive outputs only with matching source/configuration. Runtime accepts complete converter schemas 15–17 and additive world database schemas 3–5, including main’s grass tables. This emission slice does not change world database schema 5.
 
 - V8: Finite signed NIF tint & static lighting multiplier ! convertible; glTF nonnegative projection retains raw signed color/multiplier and names lower-clamp approximation. Positive channel energy follows V6; signed shader parity remains gap.
 
@@ -63,7 +63,9 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - `--legacy-output` is a negative control: restore the previous non-HDR cameras and 8-bit reflection target inside the probe. It must fail the consistency check, with a nonzero status and saved pixel differences. This option does not exist on the game CLI.
 - Complete L1 acceptance additionally needs NIF-to-runtime material probes, integrated dependency fixes and matched vanilla neutral/material captures from L0. Leave #131 open until those gates pass.
 
-## Static emission publication
+## Static emission publication (historical schema-17 slice)
+
+The schema-17 cache and launcher guidance below records the original emission slice. Current conversion uses producer 22, rebuilds legacy mesh/texture/world outputs, and accepts complete converter schemas 15–22 with world schemas 3–5; see V11. Historical package and probe results retain their original producer identities.
 
 [Emission issue #82](https://github.com/Mudcrab-Team/mudcrab/issues/82): `Own_Emit` declares own emittance; `Glow_Map` declares third-slot glow (`vendor/project-wormhole-nif/src/nif_flags.rs`). Glow shader type also permits slot 2. Own_Emit alone retains slot 2 as unclassified source data; no emissive texture sampling.
 
