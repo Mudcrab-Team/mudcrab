@@ -374,8 +374,12 @@ fn render_and_capture(
             .iter(&scene.world)
             .map(|(name, material)| {
                 let index = CASES.iter().position(|case| case.0 == name.0).unwrap();
-                let (_, _, _, _, mask) = CASES[index];
-                let suffix = if mask.is_some() { "nif" } else { "std" };
+                let (_, _, strength, enabled, mask) = CASES[index];
+                let suffix = if !probe.legacy && enabled && strength > 0.0 && mask.is_some() {
+                    "nif"
+                } else {
+                    "std"
+                };
                 let label = format!("Material{index}/{suffix}");
                 let actual = asset_server.get_path(material.id());
                 let inverted = format!("Material{index} (inverted)/{suffix}");

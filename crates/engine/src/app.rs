@@ -1681,7 +1681,7 @@ fn asset_set_rejection_message(assets_dir: &Path, rejection: AssetSetRejection) 
 const fn converter_schema_version() -> u32 {
     // Kept in sync with converter::cache::CONVERTER_SCHEMA_VERSION without
     // linking the heavy converter crate into the runtime binary.
-    19
+    23
 }
 
 fn setup_synthetic_benchmark(
@@ -3144,6 +3144,7 @@ mod tests {
         }
     }
 
+    /// Current, complete assets load, and an integration report newer than the engine is rejected.
     #[test]
     fn accepts_current_complete_runtime_assets() {
         let directory = tempfile::tempdir().unwrap();
@@ -3172,14 +3173,20 @@ mod tests {
         validate_runtime_assets(&config).unwrap();
         std::fs::write(
             directory.path().join("integration-report.json"),
-            br#"{"schema_version":5,"passed":true}"#,
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION + 1
+            ),
         )
         .unwrap();
         assert!(
             validate_runtime_assets(&config)
                 .unwrap_err()
                 .to_string()
-                .contains("schema 5 is unsupported")
+                .contains(&format!(
+                    "schema {} is unsupported",
+                    shared::WORLD_DATABASE_SCHEMA_VERSION + 1
+                ))
         );
     }
 
@@ -3224,7 +3231,7 @@ mod tests {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        for schema in [16, 17, 18, 19] {
+        for schema in [16, 17, 18, 19, 20, 21, 22, 23] {
             std::fs::write(
                 directory.path().join("conversion-manifest.json"),
                 format!(r#"{{"schema_version":{schema},"complete":true}}"#),
