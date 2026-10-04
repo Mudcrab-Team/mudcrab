@@ -295,7 +295,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     assert_eq!(world_schema, 7);
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["converter_schema"], 21);
+    assert_eq!(manifest["converter_schema"], 24);
     assert_eq!(manifest["world_database_schema"], 7);
     assert_eq!(manifest["chunks"], report.lod_chunks);
 }

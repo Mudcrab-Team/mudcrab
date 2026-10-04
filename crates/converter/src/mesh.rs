@@ -56,10 +56,10 @@ impl MeshConverter {
         find_skeleton(nif_path).into_iter().collect()
     }
 
-    /// LOD adds distant-container node traversal to the lighting19 exporter.
+    /// LOD adds distant-container node traversal to the pre-LOD lighting exporter.
     /// Other source node contracts are unchanged. Unknown headers fail closed;
     /// the normal conversion path reports parse/source errors.
-    pub(crate) fn lighting19_mesh_cache_is_compatible(nif_path: &Path) -> bool {
+    pub(crate) fn pre_lod_mesh_cache_is_compatible(nif_path: &Path) -> bool {
         std::iter::once(nif_path.to_path_buf())
             .chain(Self::dependency_paths(nif_path))
             .all(|path| {

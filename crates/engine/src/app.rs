@@ -3317,7 +3317,7 @@ mod tests {
             assets_dir: directory.path().to_owned(),
             ..default()
         };
-        for schema in [16, 17, 18, 19, 20, 21] {
+        for schema in [16, 17, 18, 19, 20, 21, 22, 23, 24] {
             std::fs::write(
                 directory.path().join("conversion-manifest.json"),
                 format!(r#"{{"schema_version":{schema},"complete":true}}"#),

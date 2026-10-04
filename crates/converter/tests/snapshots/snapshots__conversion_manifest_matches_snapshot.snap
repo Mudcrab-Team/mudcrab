@@ -62,7 +62,7 @@ expression: manifest
     }
   },
   "complete": true,
-  "configuration_hash": "1c27e135fccc9e56c5131236d3103d507b6a6e8503940010f87a6ca1cb0a8ee2",
+  "configuration_hash": "cca2af2b67310e9bc99f97208cabb4edffbd5d04c007e01fb350fccc011a19a2",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -91,7 +91,7 @@ expression: manifest
     "textures/generated_color_x8.dds": {
       "output": "textures/generated_color_x8.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 1785,
+      "output_size": 1753,
       "source_hash": "[source_hash]"
     },
     "textures/generated_cube.dds": {
@@ -120,5 +120,5 @@ expression: manifest
     "pex": 2
   },
   "pruned_texture_references": {},
-  "schema_version": 21
+  "schema_version": 24
 }

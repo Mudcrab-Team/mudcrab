@@ -1217,7 +1217,15 @@ mod tests {
         let database = directory.path().join("skyrim_world.db");
         lod_build_contract_fixture(&database, 1, &identity);
         for (producer, world, accepted) in [
-            (21, 7, true),
+            (
+                shared::LOD_CONVERTER_SCHEMA_VERSION,
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+                true,
+            ),
+            (24, 6, false),
+            (23, 7, false),
+            (22, 7, false),
+            (21, 7, false),
             (20, 6, false),
             (19, 7, false),
             (16, 7, false),
@@ -1249,7 +1257,7 @@ mod tests {
         std::fs::write(
             directory.path().join("lod-manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "build_identity": identity, "converter_schema": 21, "world_database_schema": 7,
+                "build_identity": identity, "converter_schema": 24, "world_database_schema": 7,
                 "chunks": 1, "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
             }))
             .unwrap(),

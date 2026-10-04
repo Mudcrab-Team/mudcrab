@@ -272,7 +272,16 @@ async fn metadata_rebuild_reuses_bytes_and_recovers_authoritative_flags() {
 
 #[tokio::test]
 async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
-    for source_schema in [15, 16, 19, 20, converter::cache::CONVERTER_SCHEMA_VERSION] {
+    for source_schema in [
+        15,
+        16,
+        19,
+        20,
+        21,
+        22,
+        23,
+        converter::cache::CONVERTER_SCHEMA_VERSION,
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -314,7 +323,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if matches!(source_schema, 19 | 21) {
+            if matches!(source_schema, 23 | 24) {
                 meshes
             } else {
                 0
@@ -322,10 +331,14 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
             "metadata-only upgrades preserve compatible mesh producer provenance"
         );
         let report = convert(&data, &repeated).await;
-        let regenerated = if matches!(source_schema, 19 | 21) {
+        let regenerated = if matches!(source_schema, 23 | 24) {
             0
         } else {
-            meshes
+            retained
+                .entries
+                .values()
+                .filter(|entry| !entry.output.to_ascii_lowercase().ends_with(".luau"))
+                .count()
         };
         let current: ConversionManifest =
             serde_json::from_slice(&fs::read(repeated.join("conversion-manifest.json")).unwrap())
@@ -347,7 +360,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
 
 #[tokio::test]
 async fn metadata_rebuild_rejects_unsupported_mesh_provenance() {
-    for (schema, mesh_schema) in [(15, 16), (21, 17), (21, 18), (21, 22)] {
+    for (schema, mesh_schema) in [(15, 16), (21, 17), (21, 18), (24, 25)] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -671,7 +684,7 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("complete converter schema 15, 16, 19, 20 or 21"),
+            error.contains("complete converter schema 15, 16, 19, 20, 21, 22, 23 or 24"),
             "{error}"
         );
         assert!(!output.exists());

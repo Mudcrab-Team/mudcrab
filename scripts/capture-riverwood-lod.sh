@@ -39,9 +39,9 @@ for relative in (
 manifest = json.loads((root / "assets/lod-manifest.json").read_text())
 integration = json.loads((root / "assets/integration-report.json").read_text())
 conversion = json.loads((root / "assets/conversion-manifest.json").read_text())
-if conversion.get("schema_version") != 21 or conversion.get("complete") is not True:
+if conversion.get("schema_version") != 24 or conversion.get("complete") is not True:
     raise SystemExit("Unsupported or incomplete converter package")
-if manifest.get("converter_schema") != 21 or manifest.get("world_database_schema") != 7:
+if manifest.get("converter_schema") != 24 or manifest.get("world_database_schema") != 7:
     raise SystemExit("Unsupported LOD schemas")
 if integration.get("schema_version") != 7 or integration.get("passed") is not True:
     raise SystemExit("Asset integration did not pass")

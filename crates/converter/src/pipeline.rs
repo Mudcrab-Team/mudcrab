@@ -3,8 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        can_reuse_non_mesh_outputs, configuration_hash, configuration_hash_for_schema, hash_bytes,
-        hash_file, link_or_copy, load_staged_outputs,
+        can_reuse_scripts_and_archives, configuration_hash, configuration_hash_for_schema,
+        hash_bytes, hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{
@@ -277,7 +277,8 @@ impl AssetPipeline {
         let expected_configuration = configuration_hash(&config)?;
         let metadata_configuration_is_compatible = loaded_manifest.configuration_hash
             == expected_configuration
-            || (can_reuse_non_mesh_outputs(loaded_manifest.schema_version)
+            || ((can_reuse_scripts_and_archives(loaded_manifest.schema_version)
+                || crate::cache::supports_lod_mesh_cache_schema(loaded_manifest.schema_version))
                 && loaded_manifest.configuration_hash
                     == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
         let retained_configuration_is_compatible =
@@ -307,10 +308,9 @@ impl AssetPipeline {
             .resume_staging
             .clone()
             .unwrap_or_else(|| staging_path(&config.output_dir));
-        let resumed = config.resume_staging.is_some();
         fs::create_dir_all(staging.join("vfs"))
             .wrap_err_with(|| format!("failed to create {}", staging.join("vfs").display()))?;
-        if resumed {
+        if config.resume_staging.is_some() {
             invalidate_staged_generated_outputs(&staging)?;
         }
 
@@ -1171,9 +1171,9 @@ impl ConversionBatch<'_> {
                         let forced = force_reconvert
                             .contains(target_rel.to_string_lossy().as_ref())
                             || (source_kind == "nif"
-                                && previous_mesh_schema == 19
+                                && previous_mesh_schema == 23
                                 && previous_entries.contains_key(&key)
-                                && !MeshConverter::lighting19_mesh_cache_is_compatible(&source));
+                                && !MeshConverter::pre_lod_mesh_cache_is_compatible(&source));
                         let target = staging_root.join(&target_rel);
 
                         let source_hash = if source_kind == "nif" {
@@ -3705,7 +3705,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema19_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn schema23_meshes_reuse_but_changed_mesh_source_reconverts() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -3722,8 +3722,8 @@ mod tests {
         let path = output.join("conversion-manifest.json");
         let mut old: ConversionManifest =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        old.schema_version = 19;
-        old.configuration_hash = configuration_hash_for_schema(&config, 19).unwrap();
+        old.schema_version = 23;
+        old.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -4210,23 +4210,12 @@ mod tests {
 
     #[tokio::test]
     async fn resume_does_not_publish_unverified_staged_meshes_for_any_manifest_schema() {
-        let manifests = [
-            ("absent", None),
-            (
-                "schema-14",
-                Some(
-                    br#"{"schema_version":14,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-            (
-                "schema-15",
-                Some(
-                    br#"{"schema_version":15,"complete":true,"configuration_hash":"","entries":{}}"#
-                        .as_slice(),
-                ),
-            ),
-        ];
+        let manifests = std::iter::once(("absent".to_owned(), None)).chain(
+            (14..=22).map(|schema| (
+                format!("schema-{schema}"),
+                Some(format!(r#"{{"schema_version":{schema},"complete":true,"configuration_hash":"","entries":{{}}}}"#)),
+            )),
+        );
 
         for (name, manifest) in manifests {
             let temp = tempfile::tempdir().unwrap();
@@ -4791,7 +4780,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lighting19_distant_containers_require_mesh_regeneration() {
+    async fn pre_lod23_distant_containers_require_mesh_regeneration() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -4825,9 +4814,9 @@ mod tests {
         assert!(run_without_progress(config.clone()).await.complete);
         let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
         let mut manifest = published_manifest(&output);
-        manifest.schema_version = 19;
-        manifest.configuration_hash = configuration_hash_for_schema(&config, 19).unwrap();
-        let stale = b"lighting19 omitted distant container";
+        manifest.schema_version = 23;
+        manifest.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
+        let stale = b"pre-LOD23 omitted distant container";
         fs::write(output.join(PRUNED_MESH), stale).unwrap();
         let entry = manifest
             .entries
@@ -4845,8 +4834,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v15_old_material_schemas_rebuild_meshes_and_reuse_compatible_assets() {
-        for old_schema in [16, 18, 20] {
+    async fn legacy_producers_rebuild_meshes_and_textures_and_reuse_scripts() {
+        for old_schema in [16, 17, 18, 19, 20, 21, 22] {
             let temp = tempfile::tempdir().unwrap();
             let data = temp.path().join("Data");
             let output = temp.path().join("modern");
@@ -4860,6 +4849,8 @@ mod tests {
             let config = PipelineConfig::new(&data, &output);
             assert!(run_without_progress(config.clone()).await.complete);
             let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
+            let texture_path = output.join("textures/present.ktx2");
+            let expected_texture = fs::read(&texture_path).unwrap();
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest = published_manifest(&output);
             manifest.schema_version = old_schema;
@@ -4875,13 +4866,24 @@ mod tests {
                 .unwrap();
             entry.output_size = old_bytes.len() as u64;
             entry.output_hash = crate::cache::hash_bytes(old_bytes);
+            // Valid old cache proof cannot establish the new texture contract.
+            let old_texture = b"old texture encoding contract";
+            fs::write(&texture_path, old_texture).unwrap();
+            let entry = manifest
+                .entries
+                .values_mut()
+                .find(|entry| entry.output == "textures/present.ktx2")
+                .unwrap();
+            entry.output_size = old_texture.len() as u64;
+            entry.output_hash = crate::cache::hash_bytes(old_texture);
             manifest.save(&manifest_path).unwrap();
 
             let report = run_without_progress(config.clone()).await;
             assert!(report.complete);
-            assert_eq!(report.converted, 1);
-            assert_eq!(report.cache_hits, 2); // Unchanged DDS and PEX.
+            assert_eq!(report.converted, 2);
+            assert_eq!(report.cache_hits, 1); // Only unchanged PEX.
             assert_eq!(fs::read(output.join(PRUNED_MESH)).unwrap(), expected_mesh);
+            assert_eq!(fs::read(&texture_path).unwrap(), expected_texture);
             assert_eq!(
                 published_manifest(&output).schema_version,
                 CONVERTER_SCHEMA_VERSION

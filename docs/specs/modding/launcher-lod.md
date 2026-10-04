@@ -63,7 +63,7 @@ ordinary resumable conversion.
   job kind. Hide unsupported Resume for this kind; failure must not invent
   resumable staging or point Delete staging at source assets.
 - Verify native source producer/configuration, all retained bytes, winning
-  plugin order/checksums, regenerated LOD identity and schema-20/6 integration.
+  plugin order/checksums, regenerated LOD identity and schema-24/7 integration.
   Publish new directory atomically. Never overwrite source or relabel old LOD.
 - On success, select new derived output for Play. On failure/cancellation,
   preserve previous playable output and show actionable error.
@@ -76,4 +76,4 @@ Fiji reuse and scripted launcher capture before claiming test readiness.
 
 Excluded: object/tree LOD, quality presets, bespoke compiler orchestration,
 performance threshold changes, source-package mutation, and automatic rebuild
-on every launch. Tasks T35-T38; invariants V72-V75 in root `SPEC.md`.
+on every launch. Tasks T35-T38; invariants V92-V95 in root `SPEC.md`.

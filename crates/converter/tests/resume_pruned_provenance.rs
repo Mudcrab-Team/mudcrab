@@ -89,7 +89,7 @@ fn assert_removed_mesh_is_unavailable(report: &PipelineReport, output: &Path, sc
 }
 
 #[tokio::test]
-async fn v92_historical_prune_record_cannot_certify_a_removed_source() {
+async fn v72_historical_prune_record_cannot_certify_a_removed_source() {
     for schema in [16, 19, 20, CONVERTER_SCHEMA_VERSION] {
         for with_prune_record in [false, true] {
             let temp = tempfile::tempdir().unwrap();
@@ -131,7 +131,7 @@ async fn v92_historical_prune_record_cannot_certify_a_removed_source() {
 }
 
 #[tokio::test]
-async fn v92_removed_source_invalidates_previously_verified_pruned_mesh() {
+async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
     for schema in [16, 19, 20, CONVERTER_SCHEMA_VERSION] {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("Data");
