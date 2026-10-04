@@ -2550,7 +2550,7 @@ mod tests {
     #[tokio::test]
     async fn resume_does_not_publish_unverified_staged_meshes_for_any_manifest_schema() {
         let manifests = std::iter::once(("absent".to_owned(), None)).chain(
-            (14..=21).map(|schema| (
+            (14..=22).map(|schema| (
                 format!("schema-{schema}"),
                 Some(format!(r#"{{"schema_version":{schema},"complete":true,"configuration_hash":"","entries":{{}}}}"#)),
             )),
