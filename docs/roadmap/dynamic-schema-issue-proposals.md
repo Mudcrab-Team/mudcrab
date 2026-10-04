@@ -1,6 +1,6 @@
 # Newest Skyrim SE dynamic schema — issue proposals
 
-Status: local drafts, 2026-10-04. No GitHub issues or comments have been published. The [SE-first plan](dynamic-schema-initiative.md) controls scope; these proposals divide its first wave into reviewable units.
+Status: published on 2026-10-04 as [#156](https://github.com/Mudcrab-Team/mudcrab/issues/156) and work issues [#157](https://github.com/Mudcrab-Team/mudcrab/issues/157), [#158](https://github.com/Mudcrab-Team/mudcrab/issues/158), [#159](https://github.com/Mudcrab-Team/mudcrab/issues/159), [#160](https://github.com/Mudcrab-Team/mudcrab/issues/160). The [SE-first plan](dynamic-schema-initiative.md) controls scope. Bodies below retain their proposal snapshot; root [SPEC.md](../../SPEC.md) owns current task states.
 
 We can begin xEdit/Mutagen source inventory and validator qualification while decompilation runs. Native research resolves disputed or unexposed semantics; it is not a prerequisite for reading either source's definitions. Full interpretation acceptance still requires those research gaps to close.
 
@@ -10,7 +10,7 @@ The existing `mudcrab-reverse-engineering/oracles/records` wrapper uses Mutagen 
 
 ## First wave and dependencies
 
-Draft IDs below are local names, not GitHub issue numbers. Create one tracking proposal and four initial work issues; defer per-record implementation tickets until the catalog ledger identifies the actual gaps.
+Local proposal IDs map to published issues: DS0 → #156, DS1 → #157, DS2 → #158, DS3 → #159, DS4 → #160. Corpus/ledger and validator work have begun; structural/archive implementation remains gated. Per-record tickets follow the catalog ledger.
 
 | Draft | Proposed title | Plan/task mapping | Start condition | Decompilation dependency |
 | --- | --- | --- | --- | --- |
@@ -24,7 +24,7 @@ DS1 and DS2 can run in parallel. An unavailable external runner is a recorded pr
 
 ## Current coordination
 
-Live read-only check: 2026-10-04. Team `main` is `5579f007ad296c2e7134f1dbf2b8eb8cec5369fd`, matching the plan's audited code baseline. No matching dynamic-schema umbrella issue was found in the open issue list inspected for this draft.
+Pre-publication read-only check: 2026-10-04. Team `main` is `5579f007ad296c2e7134f1dbf2b8eb8cec5369fd`, matching the plan's audited code baseline. No matching dynamic-schema umbrella issue was found in the open issue list inspected for this draft.
 
 - [#108](https://github.com/Mudcrab-Team/mudcrab/issues/108) owns explicit-list master/light precedence. Include its winning-order contract in later canonical/consumer acceptance; source indexing must preserve supplied order independently of that correction.
 - [#110](https://github.com/Mudcrab-Team/mudcrab/issues/110) and open [PR #136](https://github.com/Mudcrab-Team/mudcrab/pull/136), head `136c2d7c9d9fd90a87b954e6828de561e7e3ad53`, own the existing reference/cell remapping fix. Reuse the final merged contract/tests instead of filing that bug again. Its optional-link clearing/dropping policy belongs to the derived runtime view; the immutable archive retains original values and malformed occurrences.
@@ -156,4 +156,4 @@ Establishes a durable lossless foundation independent of changing interpretation
 
 Ready now: DS1 source inventory and DS2 qualification work, aligned to the recorded Steam executable pin; the complete official-data manifest and broader validator qualification remain P0 tasks. DS1's provisional declaration comparison has started. DS3/DS4 become implementation work after their scoped contracts/gates. Complete decompilation is not a global dependency; each native-research item names the specific field/behavior it blocks.
 
-Registry, canonical integration and catalog-completion tickets are the next wave after the P1 gate. Earlier SE/VR, LE and other-game tickets stay deferred. These drafts do not claim P0 acceptance, a new external validator run, a parser implementation or 100% record interpretation.
+Registry, canonical integration and catalog-completion tickets are the next wave after the P1 gate. Earlier SE/VR, LE and other-game tickets stay deferred. Publishing these issues does not establish P0 acceptance, a new external validator run, a parser implementation or 100% record interpretation.

@@ -1,8 +1,8 @@
 # Mudcrab Dynamic Schema Initiative — implementation plan
 
-Status: proposed; P0 source inventory started. Revised on 2026-10-04: newest-version Skyrim SE first; earlier SE and VR next, then LE, then other games. No parser implementation or phase acceptance claimed.
+Status: P0 source inventory and corpus/validator tooling started; phase gate pending. Revised on 2026-10-04: newest-version Skyrim SE first; earlier SE and VR next, then LE, then other games. No parser implementation or phase acceptance claimed.
 
-Baseline: `5579f007ad296c2e7134f1dbf2b8eb8cec5369fd`, inspected 2026-10-04. This plan extends offline plugin ingestion. The root [SPEC.md](../../SPEC.md) currently controls player movement; its existing goals and task states remain intact. The scoped spec handoff below precedes implementation.
+Baseline: `5579f007ad296c2e7134f1dbf2b8eb8cec5369fd`, inspected 2026-10-04. This plan extends offline plugin ingestion. The root [SPEC.md](../../SPEC.md) currently controls player movement; its existing goals and task states remain intact. The scoped spec handoff is now adopted in root SPEC; its planning snapshot below remains the phase contract reference.
 
 ## Goal and scope
 
@@ -228,7 +228,7 @@ Newest-SE delivery: P0 → P1 → P2 → P3. P4 requires P2 and validates P3 map
 
 | Phase | State | Observable result | Dependencies | Acceptance gate | Deferred owner |
 | --- | --- | --- | --- | --- | --- |
-| P0 | source inventory started; gate pending | Exact newest-SE target, complete catalog ledger and current-game baselines | None | Release/data/tool pins, corpus/catalog denominator, time/RSS and consumer baselines recorded | Lossless source → P1; layouts → P2 |
+| P0 | tooling in progress; gate pending | Exact newest-SE target, complete catalog ledger and current-game baselines | None | Release/data/tool pins, corpus/catalog denominator, time/RSS and consumer baselines recorded | Lossless source → P1; layouts → P2 |
 | P1 | planned | Lossless newest-SE structural import | P0 | All structures accounted; byte-exact archive/reopen/export; bounded failures | Interpretation → P2–P4; other envelopes → P9 |
 | P2 | planned | Declarative SE registry and pilot layouts | P1 | Newest capability selection, linter, generated descriptors and independent pilot values | Complete catalog → P4; earlier profiles → P7 |
 | P3 | planned | SE canonical persistence and current engine bridge | P2 | Current identity/reference and SQL/cache parity; canonical query/reopen | Remaining catalog → P4; integrated adoption → P5 |
@@ -333,9 +333,9 @@ Qualify xEdit plus applicable Mutagen routes per opened game; Morrowind uses ind
 
 **Gate:** each opened game has an explicit native extraction/interpretation/compatibility contract and independent corpus acceptance while all accepted Skyrim profiles remain green. Future games and total conversions do not hold up the newest-SE minimum target. Asset conversion, playable-game implementation and general editing have separate owners/contracts.
 
-## Scoped spec handoff before implementation
+## Scoped spec handoff
 
-No `FORMAT.md` exists in the inspected repository. Preserve the root spec's current pipe-table convention and monotonic IDs when incorporating this handoff. Add a scoped dynamic-ingestion contract linked to this plan; do not replace the movement goal, accepted behavior or unrelated task states. Draft labels below acquire unused root IDs at that time.
+Adopted on 2026-10-04 without replacing movement goals or task states. No `FORMAT.md` exists in the repository; the root spec retains its existing pipe tables and monotonic IDs. Planning DSV1–DSV26 map to root V73–V98, DST1–DST15 to T35–T49. V99–V101 define P0 input/observation/fixture safeguards; T50 owns the validator pilot. Root SPEC is authoritative for current states; draft labels below retain the original mapping.
 
 **§G addition:** newest Skyrim SE first: 100% record/catalog/field interpretation, lossless preservation, Mudcrab-owned canonical definitions and current-game compatibility; earlier SE/VR, then LE, then other games are gated future goals.
 
