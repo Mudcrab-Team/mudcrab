@@ -12,8 +12,8 @@ pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 6;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
-/// so the oldest the launcher calls ready. Schema 4 only added tables and columns (`lights`,
-/// `references.radius_override`, the movement tables and the water fresnel columns), and every
+/// so the oldest the launcher calls ready. Schemas 4 and 5 only added tables and columns (`lights`,
+/// `references.radius_override`, the movement tables, water fresnel columns and grass tables), and every
 /// runtime query probes for them, so a schema 3 database still loads.
 pub const MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION: u32 = 3;
 
