@@ -372,7 +372,7 @@ No `FORMAT.md` exists in the inspected repository. Preserve the root spec's curr
 | DSV25 | Newest-SE runtime/distribution/data/tool pins and corpus/catalog denominators are explicit and fixed per acceptance run; newly discovered variants update the ledger and reopen completeness. |
 | DSV26 | P0–P6 have no earlier-SE/VR/LE/other-game implementation, corpus, native-key, adapter or framework prerequisite; newest-game-compatible older serialized forms remain part of the newest-SE input contract. |
 
-Draft **§T** rows; every implementation phase remains unstarted:
+Draft **§T** rows from the planning snapshot below. Root [SPEC.md](../../SPEC.md) now owns current IDs/states; P0 tooling is in progress, and no phase gate is accepted:
 
 id|status|task|cites
 ---|---|---|---

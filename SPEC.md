@@ -4,6 +4,9 @@
 
 Build Skyrim-derived player movement in phases. First milestone: retain working Riverwood WALK/NOCLIP controller, drive walk/run speeds from resolved game records in Creation units, and keep basic jump working while resolving its record-backed parameters. Expand record conversion and behavior only when later phases need them; full controller parity remains long-term goal.
 
+
+Dynamic ingestion initiative: newest Steam Skyrim SE/AE `1.7.104.0` / build `24914197` first; 100% complete catalog/variant/field interpretation + lossless source + Mudcrab-owned canonical data + current-game compatibility. Earlier SE backwards & VR only after P6 acceptance, then LE, then other games. [Approved plan](docs/roadmap/dynamic-schema-initiative.md) defines gates. Movement goal/statuses above remain owned by movement work.
+
 ## §C CONSTRAINTS
 
 - Initial target: Skyrim Special Edition master records in current converted asset set; preserve plugin order and winning override. Runtime oracle capture is optional, not a gate for basic walk/run/jump.
@@ -41,6 +44,16 @@ id|state|capability|depends_on|gate
 P1|planned|NOCLIP + WALK + dynamic fixture|-|mouse camera, `V`, walking capsule, debug tankards pass primitive slope/wall tests
 P2|planned|streamed terrain collision|P1 accepted|player walks/jumps across hill/seams; tankards roll/rest on hill; unload/rebase pass
 P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passes doorway; tankards hit statics without tunneling
+
+
+### Dynamic ingestion scope
+
+- P0–P6 newest SE only; runtime exe SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`. Full official Data/Creation/locale/load-order manifest ! pin; unresolved inputs ⊥ guessed. `1.6.1170.0` static importer evidence ! transfer proof before applicability on 1.7.104.
+- Movement-specific consumed-field restrictions above scope movement consumers; complete ingestion canonical fields include data unused by current engine. Existing movement goals/tasks/invariants unchanged.
+- xEdit primary physical-layout evidence; independent Mutagen/native validation. Canonical API Mudcrab-owned, ⊥ clone upstream object models. Raw-only/unexplained/disputed fields block P6 100% gate.
+- Extend current `converter::esm` owners after P0 gate; source immutable, resolved/runtime projections separate. No earlier-game reader/framework, blanket FormID rewrites or speculative API.
+- Active `mudcrab-reverse-engineering` checkout/store/decompilation read-only for this slice; use isolated worktrees/build outputs. Existing oracle source reused with recorded digest; independently authored extension at validation owner. Runtime evidence later from pinned executable; ⊥ copy proprietary/decompiled source into Mudcrab.
+- No archive/editing/parser adoption before scoped preservation/profile/identity contracts + P0 acceptance. Tool unavailability recorded, not silent success. P0 source inventory/qualification may proceed while native research runs.
 
 ## §I INTERFACES
 
@@ -80,6 +93,13 @@ Q6|state-specific forms from earlier rows|identify exact links for mount, furnit
 
 `CLAS`, `MATO`, and `MATT` remain conditional on a demonstrated movement/contact dependency. Core input mapping and INI values are external to plugin record extraction.
 
+
+### Dynamic ingestion interfaces
+
+- artifact: P0 corpus manifest → executable pin, ordered file identities/digests/sizes, observed TES4 metadata/masters, declared content/load-order/locale status & unresolved inputs. Installed source remains unmodified; proprietary bytes/retail record dumps remain local.
+- artifact: qualified oracle JSONL → before-merge major-record observations, tool/input provenance, typed values/references where exposed, explicit unavailable observations & errors. Existing placed-record command retains behavior.
+- document: `docs/roadmap/dynamic-schema-initiative.md` → complete phase/gate contracts; `docs/research/dynamic-schema/` → reproducible candidate evidence, not accepted schemas.
+
 ## §R RESEARCH
 
 id|topic|finding|src
@@ -106,6 +126,11 @@ R20|effects|`EffectSetting` carries effect flags, associated form/skill and arch
 R21|prototype implementation|`MovementTuning` currently hardcodes movement, gravity, capsule and eye values; `PlayerControlsPlugin` uses Rapier KCC; converter stores all raw records but typed `NPC_` subset only|crates/engine/src/physics.rs ; crates/converter/src/esm/exporter.rs
 R22|retail movement values|winning Player `0x00000007` from `ccbgssse018-shadowrend.esl` RNAM `NordRace` `0x00013746`; no `WKMV`/`RNMV`; `NPC_Default_MT` `0x0003580D` SPED left 80.09/370, right 79.75/370, forward 80.10/370, back 71.93/205.25; unit/s inferred|docs/player-movement-record-map.md ; https://github.com/Mutagen-Modding/Mutagen/blob/dev/Mutagen.Bethesda.Skyrim/Records/Major%20Records/MovementType.xml
 R23|retail GMST candidates|`fMoveCharWalkBase` `0x0001EC72` = 100; `fJumpHeightMin` `0x000ABEF6` = 76; no proven player-speed/impulse mapping or gravity GMST|docs/player-movement-record-map.md
+
+
+R24|dynamic target|RE lock pins Steam Skyrim SE/AE 1.7.104.0/build 24914197; 1.6.1170 static importer-native; complete Data manifest pending|docs/roadmap/dynamic-schema-initiative.md#reverse-engineering-stack-and-existing-evidence
+R25|source candidates|pinned xEdit/Mutagen scrape has 127 shared signatures + six xEdit-only candidates; broad release gates & unused/save-related declarations require review|docs/research/dynamic-schema/candidate-inventory.json ; docs/research/dynamic-schema/README.md
+R26|existing oracle|RE `oracles/records` Mutagen 0.54.4/.NET SDK9.0.318 placed pilot; F0005 matching counts only, runtime consequences unverified|docs/roadmap/dynamic-schema-initiative.md#reverse-engineering-stack-and-existing-evidence
 
 ## §V INVARIANTS
 
@@ -183,6 +208,37 @@ V71: Runtime accepts passed integration report & world database schema 3 or addi
 
 V72: ∀ staged GLB used by texture pruning or world integration → accepted current-run mesh artifact with current schema/configuration, source/dependency hash & output-byte proof; prune audit record alone grants no provenance. Removed source → no bounds update or published GLB; unavailable-source accounting preserved. Same-schema verified pruned resume retains mesh & audit record.
 
+
+V73: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
+V74: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
+V75: Dynamic ingestion: Resolution, interpretation and winner merging cannot mutate source bytes or remove source occurrences/tombstones.
+V76: Dynamic ingestion: Compressed subrecord spans identify decoded address space; encoded stream and all original length/header encodings remain preserved.
+V77: Dynamic ingestion: Structural bounds/zlib failures and resource limits have distinct bounded outcomes; per-record and aggregate decoded-byte/work budgets enforced; no partial output receives complete status.
+V78: Dynamic ingestion: Layout selection uses declared context and record observations; ambiguous/unsupported selection never silently chooses another variant.
+V79: Dynamic ingestion: Reference decoding belongs to evidenced layout fields/codecs; unknown payloads receive no guessed remapping.
+V80: Dynamic ingestion: Source occurrence, owning identity and winner identity remain distinct; Skyrim override/deletion/reference and GMST/full/light-slot exceptions retain tested behavior; newest capability changes require explicit proof.
+V81: Dynamic ingestion: Canonical outcomes distinguish absent, unknown, invalid and unresolved; field provenance includes source range, layout and evidence.
+V82: Dynamic ingestion: Registry/generator output deterministic and offline; invalid selectors, spans, mappings and codec references fail validation.
+V83: Dynamic ingestion: Coverage denominators and evidence tiers explicit; structural completeness and runtime readiness independent.
+V84: Dynamic ingestion: Qualified xEdit SSE/Mutagen SE traverse the full acceptance corpus; missing observations require independent native resolution, never assumed agreement; unresolved discrepancies remain gaps; reused logic cannot corroborate itself.
+V85: Dynamic ingestion: Runtime DB/cache share one effective view; existing supported outputs and legacy package acceptance retain parity.
+V86: Dynamic ingestion: Source, layout, canonical and runtime artifact identities distinct; relevant changes invalidate affected products while unrelated verified assets retain reuse.
+V87: Dynamic ingestion: Archive/output persistence atomic and hash-verified; scanner/index bound to exact retained snapshot; failed interpretation preserves successful raw import; asset-cache eviction cannot delete source authority.
+V88: Dynamic ingestion: Projection, annotation and registry updates leave the required no-op round-trip byte-identical; canonical editing remains separately scoped.
+V89: Dynamic ingestion: Localized IDs/table provenance retained; missing required tables remain unresolved and block affected interpretation acceptance; supplied bundles round-trip exactly.
+V90: Dynamic ingestion: Profile acceptance requires pinned corpus/source/tool evidence and declared resource/performance results; unknown semantics do not imply supported gameplay.
+V91: Dynamic ingestion: Delivery order is accepted newest SE (P6), then earlier SE/VR (P7), then LE (P8), then eventual other games (P9); future work cannot open before its predecessor gate.
+V92: Dynamic ingestion: SE source/occurrence and owner identities never collapse distinct records; future native-key/source-namespace generalization waits for P9 and must preserve each game's own identities.
+V93: Dynamic ingestion: SE coordinates/extents, terrain dimensions and text bytes retain native facts; future opened games retain theirs; cell splitting/resampling/record replacement have separate conversion contracts.
+V94: Dynamic ingestion: Every reused module/algorithm/test vector records source pin, author/license/notice and adaptations; provenance and independent evidence remain visible in accepted layouts.
+V95: Dynamic ingestion: Complete SE canonical fields, including data unused by current gameplay, survive persist/reopen/query/report; current SQL/cache columns never limit the interpretation contract.
+V96: Dynamic ingestion: Newest-SE acceptance requires 100% catalog signatures, valid variants, fields/flags/ranges and valid corpus occurrences correctly interpreted; raw-only fallback, unexplained tails, disputed semantics and failed required references are blockers.
+V97: Dynamic ingestion: Newest-SE runtime/distribution/data/tool pins and corpus/catalog denominators are explicit and fixed per acceptance run; newly discovered variants update the ledger and reopen completeness.
+V98: Dynamic ingestion: P0–P6 have no earlier-SE/VR/LE/other-game implementation, corpus, native-key, adapter or framework prerequisite; newest-game-compatible older serialized forms remain part of the newest-SE input contract.
+V99: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs, digest/size + observed header/master metadata from same verified read; source drift → fail pin. Installed filename ≠ official-content proof; unresolved load order/locale remain explicit.
+V100: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
+V101: P0 fixtures ! unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -220,6 +276,24 @@ T31|.|Deferred Q5: bind relevant Papyrus native controls and script records to e
 T32|.|Deferred Q6: resolve state-specific records and implement mount/furniture/transformation/bleedout/dragon paths; report scoped parity|V55,R12,R13
 T33|x|Latch provisional unlimited WALK sprint on `Alt` press until movement stops; reset on focus loss and mode switch; test key edge and gait changes|V10,V14,V57
 T34|~|Make sprint perceptible; display actual speed and latch; ease controlled camera FOV; package laptop and verify manual launch|V10,V57,V60,V61
+
+
+T35|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V73,V74,V84,V90,V94,V97,V98,V99
+T36|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V73,V75,V76,V77,V92,V98
+T37|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V74,V77,V87,V98
+T38|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V78,V79,V82,V94,V97
+T39|.|Dynamic ingestion P2 prove newest capability/encoding/variant/union/repetition cases and deterministic offline generated accessors|V76,V78,V82,V89,V98
+T40|.|Dynamic ingestion P3 define canonical SE outcomes/references and separate occurrences/owners/winners; persist and query pilot data|V75,V79,V80,V81,V92,V95
+T41|.|Dynamic ingestion P3 migrate current Skyrim SQL/cache/runtime consumers with identity/reference/native-geometry parity|V80,V81,V85,V93
+T42|.|Dynamic ingestion P4 qualify whole-corpus xEdit/Mutagen differential checks and reviewed miners; independently resolve omitted/disputed observations|V83,V84,V90,V94,V96
+T43|.|Dynamic ingestion P5 integrate complete SE canonical persistence/query, source/layout invalidation, atomic recovery and legacy product compatibility|V85,V86,V87,V95
+T44|.|Dynamic ingestion P6 accept 100% newest-SE interpretation, current-game compatibility, no-op/bundle preservation and performance/resource campaign|V74,V77,V88,V89,V90,V91,V96,V97,V98
+T45|.|Dynamic ingestion P4 close every newest-SE signature/variant/field/flag/reference gap through registry/codec work and controlled native research|V78,V79,V81,V83,V84,V95,V96,V97
+T46|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evidence, automated verdict, accepted limits and dependency handoff|V90,V91,V94
+T47|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V78,V84,V89,V90,V91,V96
+T48|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V78,V84,V89,V90,V91,V93
+T49|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V73,V84,V90,V91,V92,V93,V94
+T50|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V84,V90,V99,V100,V101,R26
 
 ## §B BUGS
 
