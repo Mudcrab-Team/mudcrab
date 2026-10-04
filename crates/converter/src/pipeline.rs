@@ -6,13 +6,14 @@ use crate::{
         configuration_hash, configuration_hash_for_schema, hash_file, link_or_copy,
         load_staged_outputs,
     },
-    config::PipelineConfig,
+    config::{PipelineConfig, TextureEncoder},
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database, read_plugins_txt},
     integration::{IntegrationReport, finalize_world_database},
     mesh::MeshConverter,
     progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
-    texture::{TextureConverter, TextureEncoding, TextureSemantic},
+    texture::{TextureConverter, TextureEncoding, TextureSemantic, publish_ktx2_file},
+    texture_gpu::{self, GpuJob, GpuUastc, PreparedTexture},
 };
 use color_eyre::{
     Result,
@@ -854,7 +855,30 @@ struct ConversionBatch<'a> {
     cancellation: &'a Cancellation,
 }
 
+/// How a worker produced a conversion output.
+enum Produced {
+    /// A cached output was reused.
+    CacheHit,
+    /// Freshly converted; `digest` is the output's (size, SHA-256) when the
+    /// converter already computed it, so it need not be read back.
+    Converted { digest: Option<(u64, String)> },
+}
+
+struct GpuTag {
+    index: usize,
+    key: String,
+    hash: String,
+    target_rel: PathBuf,
+    relative: PathBuf,
+    source: PathBuf,
+    target: PathBuf,
+    encoding: TextureEncoding,
+}
+
 impl ConversionBatch<'_> {
+    /// Converts every file of one kind (`dds`, `nif` or `pex`) on the worker pool, reusing cached
+    /// and staged outputs, and records each result in the manifest, the journal and the report.
+    /// Textures the GPU encoder takes are batched to it instead of being encoded on a worker.
     async fn convert_kind(
         &mut self,
         files: &[PathBuf],
@@ -935,6 +959,7 @@ impl ConversionBatch<'_> {
         let etc1s_quality = self.config.texture_fallback_quality;
         let uastc_level = self.config.texture_uastc_level;
         let zstd_level = self.config.texture_zstd_level;
+        let texture_encoder = self.config.texture_encoder;
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
         let staged_outputs = Arc::clone(&self.staged);
@@ -946,6 +971,111 @@ impl ConversionBatch<'_> {
 
         let rayon_handle = spawn_blocking(move || -> Result<()> {
             use rayon::prelude::*;
+
+            let gpu = if source_kind == "dds" {
+                if let TextureEncoder::Gpu { quality, batch_mb } = texture_encoder {
+                    match GpuUastc::new(quality, batch_mb) {
+                        Ok(mut gpu) => {
+                            gpu.zstd_level = zstd_level;
+                            // The batch size is capped to what the GPU's buffers allow.
+                            eprintln!(
+                                "GPU texture encoder: {} (quality {quality}, batch {} MiB)",
+                                gpu.adapter_name,
+                                gpu.batch_bytes >> 20
+                            );
+                            Some(gpu)
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "GPU texture encoder unavailable ({error:#}); using CPU encoder"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            // Cache label of GPU-encoded textures (see the hash below).
+            let gpu_label = gpu
+                .as_ref()
+                .map(|gpu| texture_gpu::cache_label(gpu.quality));
+            let (gpu_sender, gpu_thread) = if let Some(gpu) = gpu {
+                let (sender, receiver) = texture_gpu::job_channel::<GpuTag>(&gpu);
+                let gpu_outcomes = outcome_tx.clone();
+                let gpu_label = gpu_label.clone().unwrap_or_default();
+                let gpu_cancelled = Arc::clone(&worker_cancelled);
+                let gpu_run_cancelled = run_cancelled.clone();
+                // Like the workers, the GPU stops taking textures once the
+                // batch or the run is stopped.
+                let stopped = move || {
+                    gpu_cancelled.load(Ordering::Relaxed) || gpu_run_cancelled.is_cancelled()
+                };
+                let handle = std::thread::spawn(move || {
+                    // Called on the batcher's writer threads, so the writes
+                    // run in parallel.
+                    let finish = |tag: GpuTag, result: Result<texture_gpu::EncodedTexture>| {
+                        let GpuTag {
+                            index,
+                            key,
+                            hash,
+                            target_rel,
+                            relative,
+                            source,
+                            target,
+                            encoding,
+                        } = tag;
+                        let written = result.and_then(|encoded| {
+                            publish_ktx2_file(&target, &encoded.bytes)?;
+                            Ok((encoded.bytes.len() as u64, encoded.sha256))
+                        });
+                        let (hash, result) = match written {
+                            Ok(digest) => (
+                                hash,
+                                Ok(Produced::Converted {
+                                    digest: Some(digest),
+                                }),
+                            ),
+                            Err(error) => {
+                                eprintln!(
+                                    "GPU texture conversion failed for {} ({error:#}); using CPU encoder",
+                                    relative.display()
+                                );
+                                // A CPU-encoded fallback does not carry the GPU
+                                // label, so the next GPU run retries the GPU.
+                                (
+                                    hash.replace(&gpu_label, ""),
+                                    TextureConverter::convert_dds_to_ktx2_with_options(
+                                        &source,
+                                        &target,
+                                        encoding,
+                                        etc1s_quality,
+                                        uastc_level,
+                                        zstd_level,
+                                    )
+                                    .map(|_| Produced::Converted { digest: None }),
+                                )
+                            }
+                        };
+                        let result = result
+                            .wrap_err_with(|| format!("failed to convert {}", relative.display()));
+                        let _ = gpu_outcomes
+                            .send((index, key, hash, target_rel, relative, result, target));
+                    };
+                    let stats = texture_gpu::run_batcher(&gpu, receiver, cpu_jobs, stopped, finish);
+                    eprintln!(
+                        "GPU texture encoder: {} textures in {} batches, {:.1} GB uploaded",
+                        stats.textures,
+                        stats.batches,
+                        stats.source_bytes as f64 / 1e9
+                    );
+                });
+                (Some(sender), Some(handle))
+            } else {
+                (None, None)
+            };
 
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(cpu_jobs)
@@ -985,6 +1115,16 @@ impl ConversionBatch<'_> {
 
                         if let Some(encoding) = encoding {
                             hash.push_str(&format!(":texture-encoding:{encoding:?}"));
+                            // Marks the textures the GPU encodes. Natively preserved
+                            // textures and those only the CPU encoder handles
+                            // (volumes, arrays) convert the same way in either
+                            // mode and keep one cache entry.
+                            if gpu_sender.is_some()
+                                && let Some(label) = &gpu_label
+                                && texture_gpu::takes(&source, encoding)
+                            {
+                                hash.push_str(label);
+                            }
                         }
 
                         if source_kind == "nif" {
@@ -1035,7 +1175,7 @@ impl ConversionBatch<'_> {
                                         hash,
                                         target_rel,
                                         relative.clone(),
-                                        Ok(true), // is_cache_hit = true
+                                        Ok(Produced::CacheHit),
                                         target,
                                     ));
                                     return;
@@ -1074,6 +1214,44 @@ impl ConversionBatch<'_> {
                                 _ => false,
                             };
 
+                        if !existing_is_valid
+                            && source_kind == "dds"
+                            && let Some(sender) = &gpu_sender
+                            && let Ok(bytes) = fs::read(&source)
+                            && let Some(encoding) = encoding
+                            && let Ok(texture) = PreparedTexture::from_dds(bytes, encoding)
+                        {
+                            let tag = GpuTag {
+                                index,
+                                key: key.clone(),
+                                hash: hash.clone(),
+                                target_rel: target_rel.clone(),
+                                relative: relative.clone(),
+                                source: source.clone(),
+                                target: target.clone(),
+                                encoding,
+                            };
+                            if sender
+                                .send(GpuJob {
+                                    texture,
+                                    encoding: tag.encoding,
+                                    tag,
+                                })
+                                .is_ok()
+                            {
+                                return;
+                            }
+                        }
+                        // A labelled texture the GPU path declined after all
+                        // (undecodable pixels, a stopped GPU thread) is encoded
+                        // on the CPU below; its cache entry must say so.
+                        if !existing_is_valid
+                            && let Some(label) = &gpu_label
+                            && hash.ends_with(label.as_str())
+                        {
+                            hash.truncate(hash.len() - label.len());
+                        }
+
                         let result = if existing_is_valid {
                             Ok(())
                         } else {
@@ -1094,7 +1272,7 @@ impl ConversionBatch<'_> {
                         };
 
                         let result = result
-                            .map(|_| false)
+                            .map(|_| Produced::Converted { digest: None })
                             .wrap_err_with(|| format!("failed to convert {}", relative.display()));
                         let _ = outcome_tx.send((
                             index,
@@ -1108,6 +1286,12 @@ impl ConversionBatch<'_> {
                     },
                 );
             });
+            drop(gpu_sender);
+            if let Some(handle) = gpu_thread {
+                handle
+                    .join()
+                    .map_err(|_| color_eyre::eyre::eyre!("GPU texture worker panicked"))?;
+            }
             Ok(())
         });
 
@@ -1125,15 +1309,23 @@ impl ConversionBatch<'_> {
             }
 
             match conversion {
-                Ok(is_cache_hit) => {
+                Ok(produced) => {
                     // Without fail-fast only a journal write sets the first
                     // error, and after one nothing more can be recorded.
                     if first_error.is_some() {
                         continue;
                     }
+                    let (is_cache_hit, known_digest) = match produced {
+                        Produced::CacheHit => (true, None),
+                        Produced::Converted { digest } => (false, digest),
+                    };
                     if !is_cache_hit {
-                        let size = match fs::metadata(&target) {
-                            Ok(metadata) => metadata.len(),
+                        let known_size = known_digest.as_ref().map(|(size, _)| *size);
+                        let size = match known_size
+                            .map(Ok)
+                            .unwrap_or_else(|| fs::metadata(&target).map(|metadata| metadata.len()))
+                        {
+                            Ok(size) => size,
                             Err(error) => {
                                 if fail_fast {
                                     return Err(error).wrap_err_with(|| {
@@ -1152,7 +1344,10 @@ impl ConversionBatch<'_> {
                                 continue;
                             }
                         };
-                        let output_hash = match hash_file(&target) {
+                        let output_hash = match known_digest
+                            .map(|(_, sha256)| Ok(sha256))
+                            .unwrap_or_else(|| hash_file(&target))
+                        {
                             Ok(output_hash) => output_hash,
                             Err(error) => {
                                 if fail_fast {

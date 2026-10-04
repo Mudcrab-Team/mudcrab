@@ -158,47 +158,9 @@ impl TextureConverter {
 
         let ktx2 =
             Self::convert_with_options(&mmap, encoding, etc1s_quality, uastc_level, zstd_level)?;
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let temporary = output.with_extension(format!("ktx2.{}.partial", std::process::id()));
-        let backup = output.with_extension(format!("ktx2.{}.backup", std::process::id()));
-        ensure!(
-            !temporary.exists() && !backup.exists(),
-            "stale texture publication file exists beside {}",
-            output.display()
-        );
-        fs::write(&temporary, &ktx2)
-            .wrap_err_with(|| format!("failed to write {}", temporary.display()))?;
-        let publish = (|| {
-            let metadata = inspect_ktx2(&ktx2, encoding)?;
-            let had_previous = output.is_file();
-            if had_previous {
-                fs::rename(output, &backup).wrap_err_with(|| {
-                    format!("failed to stage replacement for {}", output.display())
-                })?;
-            }
-            if let Err(error) = fs::rename(&temporary, output) {
-                if had_previous {
-                    let _ = fs::rename(&backup, output);
-                }
-                return Err(error)
-                    .wrap_err_with(|| format!("failed to publish {}", output.display()));
-            }
-            if had_previous {
-                fs::remove_file(&backup).wrap_err_with(|| {
-                    format!("failed to remove publication backup {}", backup.display())
-                })?;
-            }
-            Ok(metadata)
-        })();
-        if publish.is_err() {
-            let _ = fs::remove_file(&temporary);
-            if backup.is_file() && !output.is_file() {
-                let _ = fs::rename(&backup, output);
-            }
-        }
-        publish
+        let metadata = inspect_ktx2(&ktx2, encoding)?;
+        publish_ktx2_file(output, &ktx2)?;
+        Ok(metadata)
     }
 
     pub fn convert(dds_bytes: &[u8], encoding: TextureEncoding) -> Result<Vec<u8>> {
@@ -307,6 +269,57 @@ impl TextureConverter {
         validate_ktx2_against_dds(&result, &dds, encoding, false)?;
         Ok(result)
     }
+}
+
+/// Writes `ktx2` to `output` through a temporary file, so a crash never
+/// leaves a half-written texture there. An existing output is kept as a
+/// backup until the new one is in place and restored if publication fails.
+pub(crate) fn publish_ktx2_file(output: &Path, ktx2: &[u8]) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = output.with_extension(format!("ktx2.{}.partial", std::process::id()));
+    let backup = output.with_extension(format!("ktx2.{}.backup", std::process::id()));
+    ensure!(
+        !temporary.exists() && !backup.exists(),
+        "stale texture publication file exists beside {}",
+        output.display()
+    );
+    fs::write(&temporary, ktx2)
+        .wrap_err_with(|| format!("failed to write {}", temporary.display()))?;
+    let publish = (|| {
+        let had_previous = output.is_file();
+        if had_previous {
+            fs::rename(output, &backup).wrap_err_with(|| {
+                format!("failed to stage replacement for {}", output.display())
+            })?;
+        }
+        if let Err(error) = fs::rename(&temporary, output) {
+            if had_previous {
+                let _ = fs::rename(&backup, output);
+            }
+            return Err(error).wrap_err_with(|| format!("failed to publish {}", output.display()));
+        }
+        if had_previous {
+            fs::remove_file(&backup).wrap_err_with(|| {
+                format!("failed to remove publication backup {}", backup.display())
+            })?;
+        }
+        Ok(())
+    })();
+    if publish.is_err() {
+        let _ = fs::remove_file(&temporary);
+        if backup.is_file() && !output.is_file() {
+            let _ = fs::rename(&backup, output);
+        }
+    }
+    publish
+}
+
+/// Whether the converter copies this DDS's blocks instead of encoding them.
+/// Only the remaining textures are worth sending to the GPU encoder.
+pub(crate) fn preserves_native_blocks(dds: &Dds, encoding: TextureEncoding) -> bool {
+    native_ktx2_format(dds, encoding).is_some()
 }
 
 /// Maps a DDS to its native KTX2 `VkFormat` when the source blocks can be
@@ -486,7 +499,7 @@ fn compress_level(level: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
 /// assemble uncompressed; the native path compresses during assembly.
 /// Levels that do not shrink are still stored compressed: the scheme is
 /// per-file, and a conformant reader handles any per-level ratio.
-fn supercompress_ktx2_levels(ktx2: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
+pub(crate) fn supercompress_ktx2_levels(ktx2: &[u8], zstd_level: i32) -> Result<Vec<u8>> {
     if zstd_level <= 0 {
         return Ok(ktx2.to_vec());
     }
@@ -871,7 +884,7 @@ fn is_l8_volume(dds: &Dds) -> bool {
 ///
 /// Headers may claim any count they like; this bounds what the dimensions can
 /// hold so that a hostile header cannot size a reservation.
-fn max_mip_levels(width: u32, height: u32, depth: u32) -> u32 {
+pub(crate) fn max_mip_levels(width: u32, height: u32, depth: u32) -> u32 {
     let longest_edge = width.max(height).max(depth).max(1);
     u32::BITS - longest_edge.leading_zeros()
 }
@@ -1177,7 +1190,8 @@ fn encode_x8r8g8b8(
     combine_ktx2_mip_levels(&template, &levels)
 }
 
-fn decode_x8r8g8b8_mips(dds: &Dds) -> Result<Vec<(u32, u32, Vec<u8>)>> {
+/// Decodes every mip level of an X8R8G8B8 DDS to RGBA8 with opaque alpha.
+pub(crate) fn decode_x8r8g8b8_mips(dds: &Dds) -> Result<Vec<(u32, u32, Vec<u8>)>> {
     // A header may declare zero mip levels; the base level is always there.
     let mip_count = dds.get_num_mipmap_levels().max(1);
     let max_levels = max_mip_levels(dds.get_width(), dds.get_height(), 1);

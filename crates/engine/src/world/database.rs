@@ -18,20 +18,6 @@ pub(crate) const EXTERIOR_CELL_ID_SQL: &str = "SELECT c.id FROM cells c
      ORDER BY (l.cell_id IS NOT NULL) DESC, c.id DESC
      LIMIT 1";
 
-/// The oldest world database schema the runtime reads. Schema 4 (the current
-/// [`shared::WORLD_DATABASE_SCHEMA_VERSION`]) only adds tables and columns — `lights`,
-/// `references.radius_override`, the movement tables and the water fresnel columns — and every
-/// query probes for them, so a schema 3 database (written by converter schema 15) still loads.
-pub const MIN_RUNTIME_DATABASE_SCHEMA_VERSION: u32 = 3;
-
-/// The newest world database schema the runtime reads: the one this revision's converter writes.
-pub const MAX_RUNTIME_DATABASE_SCHEMA_VERSION: u32 = shared::WORLD_DATABASE_SCHEMA_VERSION;
-
-/// Whether the runtime (engine and `world-inspect`) reads a world database of this schema.
-pub fn supports_runtime_database_schema(version: u32) -> bool {
-    (MIN_RUNTIME_DATABASE_SCHEMA_VERSION..=MAX_RUNTIME_DATABASE_SCHEMA_VERSION).contains(&version)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellKey {
     Exterior {
@@ -329,10 +315,10 @@ fn validate(path: &Path) -> Result<()> {
         })
         .wrap_err("world database has no schema version")?;
     color_eyre::eyre::ensure!(
-        supports_runtime_database_schema(version),
+        shared::supports_runtime_world_database_schema(version),
         "world database schema {version} is unsupported; supported versions are {} through {}",
-        MIN_RUNTIME_DATABASE_SCHEMA_VERSION,
-        MAX_RUNTIME_DATABASE_SCHEMA_VERSION
+        shared::MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION,
+        shared::WORLD_DATABASE_SCHEMA_VERSION
     );
     Ok(())
 }
@@ -840,8 +826,9 @@ mod tests {
         assert!(validate(&path).is_err());
     }
 
+    /// Schema-4 and schema-5 databases validate and load; a schema newer than the current one does not.
     #[test]
-    fn accepts_schema_four_database_with_legacy_query_columns() {
+    fn accepts_schema_four_and_five_databases_with_legacy_query_columns() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
         let connection = Connection::open(&path).unwrap();
@@ -865,6 +852,15 @@ mod tests {
         assert_eq!(payload.references.len(), 2);
         connection
             .execute("UPDATE schema_info SET version=5", [])
+            .unwrap();
+        drop(connection);
+        validate(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE schema_info SET version=?1",
+                [shared::WORLD_DATABASE_SCHEMA_VERSION + 1],
+            )
             .unwrap();
         drop(connection);
         assert!(validate(&path).is_err());

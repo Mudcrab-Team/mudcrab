@@ -5,7 +5,26 @@ pub mod coordinates;
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 4;
+pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 5;
+
+/// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
+/// so the oldest the launcher calls ready. Schemas 4 and 5 only added tables and columns (`lights`,
+/// `references.radius_override`, the movement tables, water fresnel columns and grass tables), and every
+/// runtime query probes for them, so a schema 3 database still loads.
+pub const MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION: u32 = 3;
+
+/// The oldest converter manifest schema the runtime still loads, and so the oldest the launcher
+/// calls ready. Converter schema 15 wrote world database schema 3, which the runtime reads (see
+/// [`MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION`]). The newest is the converter's own
+/// `CONVERTER_SCHEMA_VERSION`, which lives in the converter crate.
+pub const MIN_RUNTIME_CONVERTER_SCHEMA_VERSION: u32 = 15;
+
+/// Whether the runtime reads a world database of this schema: from
+/// [`MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION`] through [`WORLD_DATABASE_SCHEMA_VERSION`].
+pub fn supports_runtime_world_database_schema(version: u32) -> bool {
+    (MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION..=WORLD_DATABASE_SCHEMA_VERSION).contains(&version)
+}
+
 pub const CELL_CACHE_VERSION: u32 = 3;
 pub const LAND_SIDE: u16 = 33;
 
@@ -76,5 +95,23 @@ impl Bounds3 {
             .chain(self.max.iter())
             .all(|value| value.is_finite())
             && (0..3).all(|axis| self.min[axis] <= self.max[axis])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_world_database_schemas_run_from_the_oldest_to_the_current() {
+        let oldest = MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION;
+        assert!(!supports_runtime_world_database_schema(oldest - 1));
+        assert!(supports_runtime_world_database_schema(oldest));
+        assert!(supports_runtime_world_database_schema(
+            WORLD_DATABASE_SCHEMA_VERSION
+        ));
+        assert!(!supports_runtime_world_database_schema(
+            WORLD_DATABASE_SCHEMA_VERSION + 1
+        ));
     }
 }
