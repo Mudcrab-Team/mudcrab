@@ -137,8 +137,10 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header; `enable_parent_id` and
+metadata for initial spawn filtering (#165) and later object LOD (#106).
+The engine resolves parent chains before spawning; the documented rule and
+runtime limits are in [reference enable-state evidence](../../research/reference-enable-state-20261005.md).
+Current terrain LOD does not consume them. `header_flags` comes from the record header; `enable_parent_id` and
 `enable_parent_flags` are the two little-endian words of the eight-byte XESP
 subrecord, with the parent FormID resolved through plugin load order. The raw
 subrecord payload remains in `data`. An invalid parent link is published as

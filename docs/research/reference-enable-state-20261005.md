@@ -44,4 +44,6 @@ The database worker resolves initial state by global reference FormID, including
 
 Every placement remains in the database and cell payload. The common exterior/interior spawn path skips disabled or unresolved placements before entity, light, model-load, or collider work. Profiling counts actual spawned references separately from suppressed references. This is an initial-state snapshot; quest/script/save changes and revival of an omitted resident placement are not implemented. The converter currently omits normalized rows for six additional placed types, so parents represented only in `records.data` remain unresolved.
 
+Existing packs from before the parent-link fixes need reconversion. A schema number or the presence of the three columns alone does not certify that the stored XESP FormIDs were remapped correctly.
+
 An object LOD compiler must still exclude enable-dependent references from unconditional merged geometry, including references initially enabled by an enable parent. This filter does not certify that a placement will remain enabled.
