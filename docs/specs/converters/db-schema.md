@@ -141,7 +141,9 @@ metadata for later object LOD (#106). Current terrain LOD does not consume
 them. `header_flags` comes from the record header; `enable_parent_id` and
 `enable_parent_flags` are the two little-endian words of the eight-byte XESP
 subrecord, with the parent FormID resolved through plugin load order. The raw
-subrecord payload remains in `data`.
+subrecord payload remains in `data`. An invalid parent link is published as
+`enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
+dropped, so both columns are NULL. See the remapped-field table below.
 
 ---
 

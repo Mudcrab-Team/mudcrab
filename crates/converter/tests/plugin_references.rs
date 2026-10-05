@@ -1105,6 +1105,16 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             ]
                             .concat(),
                         ),
+                        record(
+                            b"REFR",
+                            0x0200_0807,
+                            0,
+                            [
+                                sub(b"XESP", &[0xAB; 4]),
+                                sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                            ]
+                            .concat(),
+                        ),
                     ]
                     .concat(),
                 ),
@@ -1199,6 +1209,25 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                     [0x0300_0805u32.to_le_bytes(), 2.5f32.to_le_bytes()].concat(),
                 ]
             );
+        }
+        // The enable-parent columns follow the remapped XESP: valid, cleared to
+        // zero with its flags kept, and NULL when the malformed subrecord was dropped.
+        for (id, expected) in [
+            (0x0300_0800u32, (Some(0xFE00_0802i64), Some(1i64))),
+            (0x0300_0806, (Some(0), Some(2))),
+            (0x0300_0807, (None, None)),
+        ] {
+            let columns: (Option<i64>, Option<i64>) = conn
+                .query_row(
+                    "SELECT enable_parent_id, enable_parent_flags FROM \"references\" WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(columns, expected, "{id:08X}");
+        }
+        for table in ["records", "references"] {
+            assert!(database_fields(&conn, table, 0x0300_0807, b"XESP").is_empty());
         }
         for table in ["records", "cells"] {
             assert!(database_fields(&conn, table, 0x0300_0900, b"XCLR").is_empty());
