@@ -1,4 +1,5 @@
 """Trust-boundary tests for the incomplete xEdit console capability probe."""
+from contextlib import contextmanager
 import os
 import hashlib
 import json
@@ -13,6 +14,53 @@ from unittest import mock
 
 import p0_tools
 import run_xedit_p0 as probe
+
+
+@contextmanager
+def _popen_waits_for_markers(*markers: Path, readiness_timeout: float = 5):
+    """Start the real child, then start its supervised deadline after readiness."""
+    real_popen = subprocess.Popen
+    ready_at = {}
+
+    def popen_and_wait(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        deadline = time.monotonic() + readiness_timeout
+        try:
+            while not all(marker.is_file() for marker in markers):
+                returncode = process.poll()
+                if returncode is not None:
+                    raise AssertionError(
+                        f"child exited with status {returncode} before readiness markers {markers}"
+                    )
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"child did not create readiness markers {markers} "
+                        f"within {readiness_timeout:g} seconds"
+                    )
+                time.sleep(0.01)
+            ready_at["monotonic"] = time.monotonic()
+            return process
+        except BaseException:
+            if process.poll() is None:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, 9)
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+            raise
+
+    with mock.patch.object(p0_tools.subprocess, "Popen", side_effect=popen_and_wait):
+        yield ready_at
 
 
 class XEditProbeTests(unittest.TestCase):
@@ -122,14 +170,21 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
 
     def test_v104_supervisor_terminates_a_real_timed_out_process(self):
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(p0_tools.ProcessTimeout) as caught:
-                p0_tools._run_supervised(
-                    [sys.executable, "-u", "-c", "import time; print('started'); time.sleep(60)"],
-                    cwd=Path(directory), env=dict(os.environ), label="synthetic-hang", timeout=0.2,
-                )
+            root = Path(directory)
+            ready = root / "ready"
+            command = [
+                sys.executable, "-u", "-c",
+                "import time; from pathlib import Path; "
+                "print('started', flush=True); Path('ready').write_text('ready'); time.sleep(60)",
+            ]
+            with _popen_waits_for_markers(ready):
+                with self.assertRaises(p0_tools.ProcessTimeout) as caught:
+                    p0_tools._run_supervised(
+                        command, cwd=root, env=dict(os.environ), label="synthetic-hang", timeout=0.2,
+                    )
         self.assertIn("started", caught.exception.stdout)
 
-    def test_v155_supervisor_rejects_undecodable_output_without_lossy_text(self):
+    def test_v156_supervisor_rejects_undecodable_output_without_lossy_text(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             p0_tools, "_output_encoding", return_value="utf-8"
         ):
@@ -143,16 +198,23 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
         self.assertEqual(caught.exception.stderr_bytes, b"")
         self.assertEqual(caught.exception.failure_record()["raw_stdout_size_bytes"], 1)
 
-    def test_v155_undecodable_timeout_output_stays_incomplete_with_raw_evidence(self):
+    def test_v156_undecodable_timeout_output_stays_incomplete_with_raw_evidence(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             p0_tools, "_output_encoding", return_value="utf-8"
         ):
-            with self.assertRaises(p0_tools.ProcessOutputDecodeError) as caught:
-                p0_tools._run_supervised(
-                    [sys.executable, "-u", "-c",
-                     "import sys,time; sys.stdout.buffer.write(b'\\xff'); sys.stdout.flush(); time.sleep(60)"],
-                    cwd=Path(directory), env=dict(os.environ), label="invalid-timeout", timeout=0.2,
-                )
+            root = Path(directory)
+            ready = root / "ready"
+            command = [
+                sys.executable, "-u", "-c",
+                "import sys,time; from pathlib import Path; "
+                "sys.stdout.buffer.write(b'\\xff'); sys.stdout.flush(); "
+                "Path('ready').write_text('ready'); time.sleep(60)",
+            ]
+            with _popen_waits_for_markers(ready):
+                with self.assertRaises(p0_tools.ProcessOutputDecodeError) as caught:
+                    p0_tools._run_supervised(
+                        command, cwd=root, env=dict(os.environ), label="invalid-timeout", timeout=0.2,
+                    )
         self.assertIsNotNone(caught.exception.timeout)
         self.assertTrue(caught.exception.failure_record()["timed_out"])
         self.assertEqual(caught.exception.stdout_bytes, b"\xff")
@@ -162,28 +224,42 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             child_pid = root / "child.pid"
-            child = "import os,time; from pathlib import Path; Path('child.pid').write_text(str(os.getpid())); time.sleep(60)"
-            parent = (
-                "import subprocess,sys,time; "
-                f"subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True); "
-                "print('parent started',flush=True); time.sleep(60)"
+            spawned_pid = root / "spawned.pid"
+            ready = root / "ready"
+            child = (
+                "import os,time\n"
+                "from pathlib import Path\n"
+                "Path('child.pid').write_text(str(os.getpid()))\n"
+                "time.sleep(60)\n"
             )
-            start = time.monotonic()
+            parent = (
+                "import subprocess,sys,time\n"
+                "from pathlib import Path\n"
+                f"spawned = subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True)\n"
+                "Path('spawned.pid').write_text(str(spawned.pid))\n"
+                "while not Path('child.pid').is_file():\n"
+                "    time.sleep(0.01)\n"
+                "print('parent started', flush=True)\n"
+                "Path('ready').write_text('ready')\n"
+                "time.sleep(60)\n"
+            )
             try:
-                with self.assertRaises(p0_tools.ProcessTimeout) as caught:
-                    p0_tools._run_supervised(
-                        [sys.executable, "-c", parent], cwd=root, env=dict(os.environ),
-                        label="detached-pipe-holder", timeout=0.2,
-                    )
-                self.assertLess(time.monotonic() - start, 6)
+                with _popen_waits_for_markers(ready) as readiness:
+                    with self.assertRaises(p0_tools.ProcessTimeout) as caught:
+                        p0_tools._run_supervised(
+                            [sys.executable, "-c", parent], cwd=root, env=dict(os.environ),
+                            label="detached-pipe-holder", timeout=0.2,
+                        )
+                self.assertLess(time.monotonic() - readiness["monotonic"], 6)
                 self.assertIn("parent started", caught.exception.stdout)
                 self.assertTrue(child_pid.is_file())
             finally:
-                if child_pid.is_file():
-                    try:
-                        os.kill(int(child_pid.read_text()), 9)
-                    except ProcessLookupError:
-                        pass
+                for pid_file in (child_pid, spawned_pid):
+                    if pid_file.is_file():
+                        try:
+                            os.kill(int(pid_file.read_text()), 9)
+                        except ProcessLookupError:
+                            pass
 
     def test_v100_startup_failures_save_a_discoverable_incomplete_report(self):
         for failure in (subprocess.CompletedProcess([], 1, "", "help failed"), OSError("launch failed")):
@@ -213,7 +289,7 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
                     path = "scripts/schema/" + name
                     self.assertEqual(decision_files[path]["sha256"], hashlib.sha256((p0_tools.REPO_ROOT / path).read_bytes()).hexdigest())
 
-    def test_v155_undecodable_xedit_case_keeps_report_and_raw_output_without_verdict(self):
+    def test_v156_undecodable_xedit_case_keeps_report_and_raw_output_without_verdict(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tool = root / "tools" / "xDump64.exe"
@@ -257,7 +333,7 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
             saved = json.loads((artifact / "probe-results.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["cases"][0]["status"], "incomplete")
 
-    def test_v155_undecodable_xedit_startup_keeps_report_and_raw_output(self):
+    def test_v156_undecodable_xedit_startup_keeps_report_and_raw_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tool = root / "tools" / "xDump64.exe"
