@@ -28,7 +28,9 @@ class ProcessSupervisorTests(unittest.TestCase):
             subprocess.TimeoutExpired("tool", 2, output=b"\xf0\x9f", stderr=b"partial stderr"),
         ]
         with mock.patch.object(supervisor.os, "name", "posix"), \
+             mock.patch.object(supervisor.signal, "SIGKILL", 9, create=True), \
              mock.patch.object(supervisor.os, "killpg", create=True), \
+             mock.patch.object(supervisor, "_output_encoding", return_value="utf-8", create=True), \
              mock.patch.object(supervisor.subprocess, "Popen", return_value=process):
             with self.assertRaises(run_mutagen_p0.QualificationError) as caught:
                 run_mutagen_p0._run_supervised(
@@ -160,6 +162,7 @@ class ProcessSupervisorTests(unittest.TestCase):
         ]
         process.wait.side_effect = subprocess.TimeoutExpired("tool", 2)
         with mock.patch.object(supervisor.os, "name", "posix"), \
+             mock.patch.object(supervisor.signal, "SIGKILL", 9, create=True), \
              mock.patch.object(supervisor.os, "killpg", create=True) as killpg, \
              mock.patch.object(supervisor.subprocess, "Popen", return_value=process):
             with self.assertRaises(run_mutagen_p0.ProcessTimeout) as caught:
