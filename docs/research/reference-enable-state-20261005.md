@@ -40,10 +40,21 @@ No Skyrim game process or clean-save observation was available during this revie
 
 ## Implemented bootstrap contract
 
-The database worker resolves initial state by global reference FormID, including parents outside the loaded cell and parents with no model. It memoizes resolved and unresolved chains without recursion. A null/zero parent uses the reference's own `0x800` flag; a nonzero parent supplies the state, with only bit 0 inverting it. Missing nonzero parents and cycles remain unresolved under inversion, receive a diagnostic, and do not spawn. Invalid column sets or malformed numeric/flag metadata fail the cell request. Legacy databases without any of the three columns remain readable, default enabled, and warn that reconversion is needed for filtering.
+The database worker resolves initial state by global reference FormID, including parents outside the loaded cell and parents with no model. It memoizes resolved and unresolved chains without recursion. A null/zero parent uses the reference's own `0x800` flag; a nonzero parent supplies the state, with only bit 0 inverting it. PlayerRef `0x14` is preseeded as enabled under the new-game assumption described above. Other missing nonzero parents and cycles remain unresolved under inversion, receive a diagnostic, and do not spawn. Invalid column sets or malformed numeric/flag metadata fail the cell request. Legacy databases without any of the three columns remain readable, default enabled, and warn that reconversion is needed for filtering.
 
-Every placement remains in the database and cell payload. The common exterior/interior spawn path skips disabled or unresolved placements before entity, light, model-load, or collider work. Profiling counts actual spawned references separately from suppressed references. This is an initial-state snapshot; quest/script/save changes and revival of an omitted resident placement are not implemented. The converter currently omits normalized rows for six additional placed types, so parents represented only in `records.data` remain unresolved.
+The filter retains rows in `references` and in each loaded cell payload. The common exterior/interior spawn path skips disabled or unresolved rows before any entity, light, model, or collider work for those references. Profiling counts actual spawned references separately from suppressed references. This is an initial-state snapshot; quest/script/save changes and revival of an omitted resident placement are not implemented. The converter currently omits normalized rows for six additional placed types, so parents represented only in `records.data` remain unresolved.
 
 Existing packs from before the parent-link fixes need reconversion. A schema number or the presence of the three columns alone does not certify that the stored XESP FormIDs were remapped correctly.
 
 An object LOD compiler must still exclude enable-dependent references from unconditional merged geometry, including references initially enabled by an enable parent. This filter does not certify that a placement will remain enabled.
+
+## Local verification
+
+Checks used Rust 1.98.1, kache 0.26.3, and the project Nix libraries. Generated test files used a task-owned tmpfs directory. The converted-content fixture loads the child cell before the parent cell to exercise uncached global parent lookup.
+
+- `cargo test --frozen -p engine --lib`: 338 passed.
+- `cargo test --frozen -p engine --test reference_enable_state`: 1 passed.
+- `cargo clippy --frozen -p engine --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+
+These checks cover the initial-state implementation; they do not establish retail runtime parity.

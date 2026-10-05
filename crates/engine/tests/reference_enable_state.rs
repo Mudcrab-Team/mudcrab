@@ -205,21 +205,23 @@ fn database_worker_resolves_initial_enable_state_across_exterior_cells() {
     drop(connection);
 
     let database = WorldDatabase::open(&database_path).unwrap();
-    let cell_zero = load_cell(
+    // Load the children first so their parents must be found outside the loaded
+    // cell, rather than only inherited from previously cached cell payloads.
+    let cell_one = load_cell(
         &database,
         1,
         CellKey::Exterior {
             worldspace_id,
-            grid_x: 0,
+            grid_x: 1,
             grid_y: 0,
         },
     );
-    let cell_one = load_cell(
+    let cell_zero = load_cell(
         &database,
         2,
         CellKey::Exterior {
             worldspace_id,
-            grid_x: 1,
+            grid_x: 0,
             grid_y: 0,
         },
     );
