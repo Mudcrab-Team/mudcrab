@@ -222,6 +222,8 @@ V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/
 
 V122: Mutagen comparison ! same-source checksums, independent full/light slots, winning plugin & interpreted placement fields; deleted overrides absent, no unexplained REFR/ACHR difference; finite comparisons; game inputs external.
 
+V123: Mutagen JSON flags ! preserve32-bit bitmask from signed/unsigned integers; non-integer & out-of-range flags fail.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -266,7 +268,7 @@ T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source
 T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V93,V96,V97,V98,V99,V100,V101,V102,V103,V104,V105
 T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
 
-T46|~|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122
+T46|~|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122,V123
 
 ## §B BUGS
 
@@ -353,3 +355,4 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B84|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan misclassified270 deleted overrides|V122
 
 B87|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V122; validate winner before deletion shortcut & require live position/rotation
+B89|2026-10-05|Mutagen exported high-bit record flags as negative JSON integers; unsigned-only test rejected real oracle at line12664|V123; bounded signed/unsigned32-bit deserialization

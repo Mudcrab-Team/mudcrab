@@ -4,7 +4,8 @@ This ignored test compares base FormIDs, positions (0.01 Creation units), rotati
 (0.0001 radians modulo a full turn), scale, record type, and winning plugin.
 Live rows must provide position and rotation; every winner must be loaded.
 Deleted winning overrides must be absent. Extra REFR/ACHR rows fail; PGRE and
-other types are outside this oracle mode. NaN and infinity fail comparisons.
+other types are outside this oracle mode. NaN and infinity fail comparisons. Record flags accept signed or unsigned
+32-bit JSON integers and preserve their bits; other values fail.
 
 Use a `placed-lo` JSONL produced by Mutagen for the same plugin files and order.
 The JSONL contains no checksums: choosing the matching oracle remains the caller's

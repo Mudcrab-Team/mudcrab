@@ -24,7 +24,18 @@ struct Oracle {
     pos: Option<[f64; 3]>,
     rot: Option<[f64; 3]>,
     scale: Option<f64>,
+    #[serde(deserialize_with = "deserialize_record_flags")]
     flags: u32,
+}
+
+fn deserialize_record_flags<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = i64::deserialize(deserializer)?;
+    u32::try_from(value)
+        .or_else(|_| i32::try_from(value).map(|signed| signed as u32))
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug)]
@@ -294,4 +305,32 @@ fn v122_rejects_missing_live_placement_and_unloaded_deleted_winner() {
     assert!(!compare(&o, None, &slots).unwrap());
     o.winner = "Missing.esm".into();
     assert!(compare(&o, None, &slots).is_err());
+}
+
+#[test]
+fn v123_oracle_flags_preserve_signed_and_unsigned_32_bit_masks() {
+    let mut row = serde_json::json!({"form":"000800:Base.esm","type":"REFR","winner":"Base.esm","base":"000801:Base.esm","pos":[0,0,0],"rot":[0,0,0],"scale":null,"flags":0});
+    for (json, expected) in [
+        (-2147482624i64, 0x80000400u32),
+        (-2147483616, 0x80000020),
+        (-2147483648, 0x80000000),
+        (4294967295, 0xFFFFFFFF),
+        (2147483647, 0x7FFFFFFF),
+    ] {
+        row["flags"] = serde_json::json!(json);
+        let parsed: Oracle = serde_json::from_value(row.clone()).unwrap();
+        assert_eq!(parsed.flags, expected);
+    }
+    row["flags"] = serde_json::json!(-2147483616i64);
+    let parsed: Oracle = serde_json::from_value(row.clone()).unwrap();
+    assert!(!compare(&parsed, None, &HashMap::from([("base.esm".into(), 0)])).unwrap());
+    for invalid in [
+        serde_json::json!(-2147483649i64),
+        serde_json::json!(4294967296i64),
+        serde_json::json!(1.5),
+        serde_json::json!("32"),
+    ] {
+        row["flags"] = invalid;
+        assert!(serde_json::from_value::<Oracle>(row.clone()).is_err());
+    }
 }
