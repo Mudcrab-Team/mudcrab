@@ -193,46 +193,46 @@
     }
   },
   "current": {
-    "commit": "5579f007ad296c2e7134f1dbf2b8eb8cec5369fd",
+    "commit": "db3a1dc3ed80795149e3a15a5047f4d313dd3e74",
     "files": {
       "crates/converter/src/esm/exporter.rs": {
-        "git_blob": "cdc918367805b8dbcfe2a9928d58152e85e341c5",
-        "sha256": "3020c4bb0fe7bf47006d8deb2c56268bfece948d15d71d0bca5f14c1300dc66c",
+        "git_blob": "822065efd7e1138484da4d90c80b58ffded23e29",
+        "sha256": "cb3e83cc6c89d41666d6d21f471287e5bdf574d3a95c37fd2b35628b2361df4e",
         "functions": {
           "create_tables": {
             "line_start": 90,
-            "line_end": 211,
-            "sha256": "9fceee4c9d57627f839ad23fa98fa3ee6e69ad511d1c34cbd750a1878395e052",
+            "line_end": 228,
+            "sha256": "75b0e72d44a98192389520616327253b8382fd498622d61bd2150a473e082e3c",
             "selected_anchors": {
               "CREATE TABLE IF NOT EXISTS records (": 97,
-              "CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(": 120,
-              "CREATE TABLE IF NOT EXISTS formid_map (": 199,
-              "CREATE TABLE IF NOT EXISTS conversion_cache (": 202
+              "CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(": 122,
+              "CREATE TABLE IF NOT EXISTS formid_map (": 216,
+              "CREATE TABLE IF NOT EXISTS conversion_cache (": 219
             }
           },
           "export_records": {
-            "line_start": 235,
-            "line_end": 493,
-            "sha256": "2395b1f7154f1102143a596412912c8d815130dc3e25e6a1cc914ceb19111646",
+            "line_start": 252,
+            "line_end": 511,
+            "sha256": "47fe72af080938b2793e8b061144a3b9e72530ac0df3478b6d4d25ec6caa13a5",
             "selected_anchors": {
-              "let tx = conn.unchecked_transaction()?;": 240,
-              "let blob = serialize_subrecords(&record.subrecords);": 284,
-              "INSERT OR REPLACE INTO records(form_id, record_type, cell_id, worldspace_id, load_order, data)": 286,
-              "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\"": 368,
-              "order.identity(form_id).map_err": 290
+              "let tx = conn.unchecked_transaction()?;": 257,
+              "let blob = serialize_subrecords(&record.subrecords);": 301,
+              "INSERT OR REPLACE INTO records(form_id, record_type, cell_id, worldspace_id, load_order, data)": 303,
+              "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\"": 386,
+              "order.identity(form_id).map_err": 307
             }
           },
           "insert_reference": {
-            "line_start": 635,
-            "line_end": 689,
-            "sha256": "b890cd8d14e1f61f0f52d645441b5e9f43f0fdf5db3d87737207a5da6d11487e",
+            "line_start": 653,
+            "line_end": 718,
+            "sha256": "a7edeb1e37671844d8c116a71b07f9575a1ba3f9072e90360be372a3f7526553",
             "selected_anchors": {
-              "let transform = view.get_f32_slice(b\"DATA\").unwrap_or_default();": 643,
-              "let scale = view": 654,
-              "let base_form_id = view.get_form_id(b\"NAME\").unwrap_or(0);": 659,
-              "let blob = serialize_subrecords(subs);": 668,
-              "let radius_override = view": 675,
-              "INSERT OR REPLACE INTO \\\"references\\\"(id, cell_id, worldspace_id, base_form_id": 681
+              "let transform = view.get_f32_slice(b\"DATA\").unwrap_or_default();": 662,
+              "let scale = view": 673,
+              "let base_form_id = view.get_form_id(b\"NAME\").unwrap_or(0);": 678,
+              "let blob = serialize_subrecords(subs);": 687,
+              "let radius_override = view": 694,
+              "INSERT OR REPLACE INTO \\\"references\\\"(id, cell_id, worldspace_id, base_form_id": 710
             }
           }
         }
@@ -291,64 +291,64 @@
         }
       },
       "crates/converter/src/esm/mod.rs": {
-        "git_blob": "1e97a26676f858c84fef610916280e3fc80c58f7",
-        "sha256": "5d6246c65107f02189eedb32a155e4dddbfb7b1d6e94e014a73967d206320d6e",
+        "git_blob": "5bb796b27baf556a4dce47a3ef97a6d232cea289",
+        "sha256": "0e15fa38afee8a498ebbf3b00a6c5411cb0d638d7e040a8622b63dc985451d57",
         "functions": {
           "convert_plugins": {
-            "line_start": 27,
-            "line_end": 29,
+            "line_start": 28,
+            "line_end": 30,
             "sha256": "fc623071b3b61e9cce20f0482fc68605b29a697254956f232607fe9393d2a1c5",
             "selected_anchors": {
-              "Self::convert_plugins_with_records(plugin_paths, db_path).map(|_| ())": 28
+              "Self::convert_plugins_with_records(plugin_paths, db_path).map(|_| ())": 29
             }
           },
           "convert_plugins_with_records": {
-            "line_start": 33,
-            "line_end": 51,
+            "line_start": 34,
+            "line_end": 52,
             "sha256": "f1642602eb140750f20316298f016b79ad81e4d99e2257b5ce7f15098438cf47",
             "selected_anchors": {
-              "let order = load_order::LoadOrder::read(plugin_paths)?;": 37,
-              "let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;": 38,
-              "let conn = Connection::open(db_path)?;": 39,
-              "let checksum = Sha256::digest(std::fs::read(path)?);": 42,
-              "export_to_db_with_load_order(&conn, &master, &order)?;": 48
+              "let order = load_order::LoadOrder::read(plugin_paths)?;": 38,
+              "let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;": 39,
+              "let conn = Connection::open(db_path)?;": 40,
+              "let checksum = Sha256::digest(std::fs::read(path)?);": 43,
+              "export_to_db_with_load_order(&conn, &master, &order)?;": 49
             }
           },
           "merge_plugins_with_load_order": {
-            "line_start": 60,
-            "line_end": 130,
+            "line_start": 61,
+            "line_end": 131,
             "sha256": "abc480a4806cf2095fa808ae043ee5395e2465e244559f0932cf3acd748905f1",
             "selected_anchors": {
-              "for (priority, path) in plugin_paths.iter().enumerate() {": 70,
-              "remap_record_form_ids(": 79,
-              "let Some(canonical) =": 108,
-              "if record.is_deleted() {": 121,
-              "merged.remove(&record.form_id);": 122,
-              "merged.insert(record.form_id, record);": 124
+              "for (priority, path) in plugin_paths.iter().enumerate() {": 71,
+              "remap_record_form_ids(": 80,
+              "let Some(canonical) =": 109,
+              "if record.is_deleted() {": 122,
+              "merged.remove(&record.form_id);": 123,
+              "merged.insert(record.form_id, record);": 125
             }
           },
           "resolve": {
-            "line_start": 190,
-            "line_end": 233,
+            "line_start": 191,
+            "line_end": 234,
             "sha256": "602d6ea286ec83f708361a443c53cd70d8138327f22b3f34cee245f3dfeff8be",
             "selected_anchors": {
-              ".map(|name| name.to_ascii_lowercase());": 200,
-              "let known = self.canonical_ids.get(&editor_id).copied();": 213,
-              "let canonical = known.unwrap_or(source_id);": 214,
-              "self.aliases.insert(source_id, canonical);": 229,
-              "self.canonical_ids.insert(editor_id, canonical);": 231
+              ".map(|name| name.to_ascii_lowercase());": 201,
+              "let known = self.canonical_ids.get(&editor_id).copied();": 214,
+              "let canonical = known.unwrap_or(source_id);": 215,
+              "self.aliases.insert(source_id, canonical);": 230,
+              "self.canonical_ids.insert(editor_id, canonical);": 232
             }
           },
           "remap_record_form_ids": {
-            "line_start": 316,
-            "line_end": 426,
-            "sha256": "7b6cefc115b818cf1eeffbc680b0ba845d0336f9400b9dcbb5aa890413e2cb56",
+            "line_start": 317,
+            "line_end": 438,
+            "sha256": "3b08770b495eca5f35f9109a0cfdf7de65a1bb09f3ac433490492296012e6e24",
             "selected_anchors": {
-              "b\"GRAS\" | b\"LTEX\" | b\"TXST\" | b\"LAND\" | b\"CELL\" | b\"WRLD\"": 329,
-              "return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));": 360,
-              "Ok((index << 24) | (form_id & 0x00FF_FFFF))": 365,
-              "record.form_id = remap(record.form_id)?;": 367,
-              "if tag.as_slice() == b\"VMAD\" {": 411
+              "b\"GRAS\" | b\"LTEX\" | b\"TXST\" | b\"LAND\" | b\"CELL\" | b\"WRLD\"": 330,
+              "return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));": 361,
+              "Ok((index << 24) | (form_id & 0x00FF_FFFF))": 366,
+              "record.form_id = remap(record.form_id)?;": 368,
+              "if tag.as_slice() == b\"VMAD\" {": 412
             }
           }
         }
@@ -385,9 +385,9 @@
   },
   "same_function_bodies": {
     "crates/converter/src/esm/exporter.rs": {
-      "create_tables": true,
-      "export_records": true,
-      "insert_reference": true
+      "create_tables": false,
+      "export_records": false,
+      "insert_reference": false
     },
     "crates/converter/src/esm/extractors.rs": {
       "extract_cell_info": true,
@@ -402,7 +402,7 @@
       "convert_plugins_with_records": true,
       "merge_plugins_with_load_order": true,
       "resolve": true,
-      "remap_record_form_ids": true
+      "remap_record_form_ids": false
     },
     "crates/converter/src/esm/load_order.rs": {
       "read": true,
@@ -410,10 +410,10 @@
     }
   },
   "same_file_bytes": {
-    "crates/converter/src/esm/exporter.rs": true,
+    "crates/converter/src/esm/exporter.rs": false,
     "crates/converter/src/esm/extractors.rs": true,
     "crates/converter/src/esm/cell_cache.rs": true,
-    "crates/converter/src/esm/mod.rs": true,
+    "crates/converter/src/esm/mod.rs": false,
     "crates/converter/src/esm/load_order.rs": true
   }
 }
