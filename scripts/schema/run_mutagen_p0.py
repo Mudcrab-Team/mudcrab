@@ -91,7 +91,9 @@ def _run_checked(
     except ProcessTimeout as exc:
         (log_dir / f"{label}.stdout.txt").write_text(exc.stdout, encoding="utf-8")
         (log_dir / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
-        _save_json(log_dir / f"{label}.timeout.json", {"timeout_seconds": timeout, "completed_verdict_saved": False})
+        _save_json(log_dir / f"{label}.timeout.json", {
+            "timeout_seconds": timeout, "completed_verdict_saved": False,
+        })
         _save_json(log_dir / f"{label}.command.json", command)
         raise QualificationError(f"{exc}; see {log_dir / (label + '.timeout.json')}") from exc
     (log_dir / f"{label}.stdout.txt").write_text(result.stdout, encoding="utf-8")
@@ -703,7 +705,9 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
         (logs_dir / "dotnet-version.stderr.txt").write_text(exc.stderr, encoding="utf-8")
         _save_json(
             logs_dir / "dotnet-version.timeout.json",
-            {"timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False},
+            {
+                "timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False,
+            },
         )
         raise QualificationError(str(exc)) from exc
     if version.returncode != 0 or version.stdout.strip() != PINNED_DOTNET:

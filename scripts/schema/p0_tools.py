@@ -173,7 +173,16 @@ def _run_supervised(
             except ProcessLookupError:
                 pass
         else:
-            process.terminate()
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=2, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            if process.poll() is None:
+                process.kill()
         try:
             stdout, stderr = process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
@@ -191,8 +200,11 @@ def _run_supervised(
                 # supervised process group has died. Keep captured evidence
                 # and close our readers instead of waiting for that descendant.
                 stdout, stderr = exc.output, exc.stderr
-                process.stdout.close()
-                process.stderr.close()
+                # Windows readers can own the pipe lock until a descendant
+                # exits. Closing those streams here could block this thread.
+                if os.name == "posix":
+                    process.stdout.close()
+                    process.stderr.close()
                 try:
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:

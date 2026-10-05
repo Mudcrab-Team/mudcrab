@@ -78,3 +78,18 @@ This starter work is part of [#157](https://github.com/Mudcrab-Team/mudcrab/issu
 The [next delivery notes](p0-next-delivery.md) record the newer corpus inputs, bounded xEdit probe, current pilot field/native ledger, validation fixes and remaining P0 gates. Exact runner-source hashes now accompany executable observations. T41/T56 remain in progress.
 
 The 2026-10-05 parent repair passed 40 offline schema tests, two portable extractor tests and 41 engine configuration tests on Linux. Three already-built CLI tests also passed; engine sources and build inputs are unchanged since that binary was built. The next repair passed 76 offline schema tests and the same two extractor tests. Native Windows checks remain a CI gate; these checks do not refresh historical external-tool qualification or accept P0.
+
+The follow-up Windows repair passed 45 offline schema tests and two extractor
+tests on Linux. Parent aliases and `..` are tested as separate native paths;
+Data-relative issue keys use POSIX separators on every host. Timeout cleanup
+now bounds the final drain, attempts Windows process-tree termination, and
+avoids closing pipes held by Windows reader threads. A real detached POSIX child
+and simulated Windows cleanup failures verify bounded incomplete outcomes.
+The parent's standalone runner saves undecodable partial timeout streams with
+raw bytes and availability metadata. The next layer keeps its binary supervisor
+and strict decoder; decode exceptions retain raw streams, and the xEdit probe
+saves their byte artifacts and metadata.
+If Windows tree termination fails, escaped child processes and reader threads
+can remain until those children exit; the runner still returns an incomplete
+timeout. Fresh native Windows CI remains required. Earlier external-tool
+qualification retains its original runner pins.

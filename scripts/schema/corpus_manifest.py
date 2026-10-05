@@ -826,7 +826,7 @@ def build_manifest(
             })
             issues.append({
                 "code": "missing_required_input" if missing else "source_drift",
-                "path": str(path.relative_to(data_root)),
+                "path": path.relative_to(data_root).as_posix(),
                 "detail": str(exc),
             })
 
@@ -897,7 +897,7 @@ def build_manifest(
             })
             issues.append({
                 "code": "missing_required_input" if missing else "source_drift",
-                "path": str(path.relative_to(data_root)),
+                "path": path.relative_to(data_root).as_posix(),
                 "detail": str(exc),
             })
 
@@ -918,7 +918,7 @@ def build_manifest(
             })
             issues.append({
                 "code": "missing_required_input" if missing else "source_drift",
-                "path": str(path.relative_to(data_root)),
+                "path": path.relative_to(data_root).as_posix(),
                 "detail": str(exc),
             })
 

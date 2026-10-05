@@ -288,6 +288,7 @@ V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descripto
 
 V155: P0 Git provenance reads ! deadline + inspected revision/path context; timeout → controlled nonzero, no new/replaced source report. Revision/file deadline & prior-report preservation regressions guard boundary.
 V156: P0 process output ! strict locale decoding before structured acceptance; invalid bytes → unavailable/incomplete, never replacement-text JSON. xEdit report retains raw stream bytes/hash/size and failed case/startup; decode/timeout/report regressions guard availability.
+V157: P0 repository/Data-relative evidence path keys ! POSIX separators on every host; issue/source joins & decision-runner identity use same canonical path spelling. Windows-path & nested-issue regressions guard serialization.
 
 ## §T TASKS
 
@@ -469,3 +470,7 @@ B111|2026-10-05|P0 source evidence used unbounded Git reads; stalled child preve
 B112|2026-10-05|locale text-mode subprocess decoding raised before xEdit saved incomplete report; replacement decoding could corrupt accepted typed JSON|V156; binary capture, strict decoding and fail-closed exception; xEdit raw-byte logs/incomplete report regressions
 B113|2026-10-05|real timeout fixtures assumed Python startup/flush within 0.2 seconds; concurrent builds exposed empty diagnostic race|V148,V156; bounded post-flush readiness before supervised timeout; retain real-process diagnostic/deadline assertions; no new invariant
 B114|2026-10-05|source miner could count Pascal call text inside literals; initial portable regressions used malformed fixtures|mask literals before call detection; correct fixture syntax/markers; source-miner regressions; existing evidence contract sufficient, no new invariant
+B115|2026-10-05|alias fixture relied on POSIX symlink traversal before `..`; Windows canonicalization described different parent|V152; separate parent-alias and real-directory `..` API/CLI fixtures; leaf-link rejection retained
+B116|2026-10-05|Data-relative issue paths used native Windows separators unlike hashed source keys|V157; POSIX serialization + nested plugin/string/archive issue regressions
+B117|2026-10-05|parent final pipe drain unbounded; Windows reader-thread close can block; partial Unicode decode bypassed timeout diagnostics|V144,V148; bounded tree termination/drains/wait; POSIX-only pipe close; retain undecodable raw bytes; real detached-child + failed-Windows-cleanup + partial-Unicode regressions
+B118|2026-10-05|parent issue-path fixture mocked archive stat helper removed by next layer's hashed archive owner|V157; next fixture targets existing hashed-file read + archive source-drift outcome; no new invariant
