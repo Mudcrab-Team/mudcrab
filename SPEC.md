@@ -220,6 +220,8 @@ V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publi
 V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed generated outputs rebuilt; source package unchanged.
 V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
 
+V120: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -263,6 +265,8 @@ T37|.|Launcher LOD B: add cooperative metadata cancellation with typed failure &
 T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source & new destination; reuse worker/messages/state ownership; verify reuse hashes, plugin mismatch, busy/engine/path guards & publication|V94,V95,I.launcher_lod
 T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V93,V96,V97,V98,V99,V100,V101,V102,V103,V104,V105
 T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
+
+T44|~|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V120
 
 ## §B BUGS
 
@@ -346,3 +350,4 @@ B75|2026-10-04|schema23 fixtures retained mesh-only count and normal-reuse allow
 B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional LOD addition; older JSON rejected|V114; failing legacy-report regression, serde defaults
 B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
+B82|2026-10-05|GPU tests validated shader/container without dispatching encoder|V120

@@ -166,6 +166,7 @@ jobs:
             libudev-dev \
             libwayland-dev \
             libxkbcommon-dev \
+            mesa-vulkan-drivers \
             pkg-config
 
       - name: Install Rust toolchain
@@ -186,6 +187,11 @@ jobs:
         run: cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
+
+      - name: Test GPU texture encoder on software Vulkan
+        run: cargo nextest run --locked -p converter --lib --run-ignored only -E 'test(v120_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips)'
+        env:
+          WGPU_BACKEND: vulkan
 
   security:
     needs: [orchestrate]

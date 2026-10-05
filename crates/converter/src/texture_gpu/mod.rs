@@ -682,6 +682,27 @@ impl GpuUastc {
             "only a software GPU ({}) is available",
             info.name
         );
+        Self::with_adapter(quality, batch_mb, adapter)
+    }
+
+    #[cfg(test)]
+    fn new_software_for_test() -> Result<Self> {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        descriptor.backends = wgpu::Backends::VULKAN;
+        let instance = wgpu::Instance::new(descriptor);
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            force_fallback_adapter: true,
+            ..Default::default()
+        }))?;
+        ensure!(
+            adapter.get_info().device_type == wgpu::DeviceType::Cpu,
+            "the test requires a software Vulkan adapter"
+        );
+        Self::with_adapter(2, 1, adapter)
+    }
+
+    fn with_adapter(quality: u32, batch_mb: u64, adapter: wgpu::Adapter) -> Result<Self> {
+        let info = adapter.get_info();
         let limits = adapter.limits();
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("texture_gpu"),
@@ -1467,6 +1488,124 @@ mod tests {
             assert_eq!(gpu_header.face_count, cpu_header.face_count);
             assert_eq!(gpu_header.level_count, cpu_header.level_count);
             inspect_ktx2(&gpu, encoding).unwrap();
+        }
+    }
+
+    /// CI runs this explicitly with Mesa's software Vulkan adapter. Missing support fails.
+    #[test]
+    #[ignore = "requires a software Vulkan adapter; CI runs explicitly"]
+    fn v120_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips() {
+        use crate::texture::{TextureConverter, tests::decode_uastc_level};
+        let gpu = GpuUastc::new_software_for_test().expect("open software Vulkan encoder");
+        let (sender, jobs) = job_channel(&gpu);
+        let mut cases = Vec::new();
+        for encoding in [
+            TextureEncoding::ColorSrgb,
+            TextureEncoding::DataLinear,
+            TextureEncoding::NormalLinear,
+        ] {
+            for (width, height) in [(8u32, 8u32), (7, 5)] {
+                let levels: Vec<Vec<u8>> = (0..3)
+                    .map(|mip| {
+                        let w = (width >> mip).max(1);
+                        let h = (height >> mip).max(1);
+                        (0..h)
+                            .flat_map(|y| {
+                                (0..w).flat_map(move |x| {
+                                    if encoding == TextureEncoding::NormalLinear {
+                                        if x < w.div_ceil(2) {
+                                            [224, 48, 196, 255]
+                                        } else {
+                                            [40, 208, 180, 255]
+                                        }
+                                    } else {
+                                        [
+                                            36 + x as u8 * 8,
+                                            61 + y as u8 * 7,
+                                            180 - x as u8 * 5,
+                                            if x < w.div_ceil(2) { 0 } else { 255 },
+                                        ]
+                                    }
+                                })
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let payload = levels.iter().map(Vec::len).sum();
+                let mut dds = bgra_dds(width, height, 3, payload);
+                let mut offset = 128;
+                for level in &levels {
+                    for pixel in level.chunks_exact(4) {
+                        dds[offset..offset + 4]
+                            .copy_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+                        offset += 4;
+                    }
+                }
+                let tag = cases.len();
+                sender
+                    .send(GpuJob {
+                        texture: PreparedTexture::from_dds(dds, encoding).unwrap(),
+                        encoding,
+                        tag,
+                    })
+                    .unwrap_or_else(|_| panic!("GPU queue rejected synthetic texture"));
+                cases.push((width, height, encoding, levels));
+            }
+        }
+        drop(sender);
+        let outputs = Mutex::new(std::collections::BTreeMap::new());
+        let stats = run_batcher(
+            &gpu,
+            jobs,
+            2,
+            || false,
+            |tag, result| {
+                outputs
+                    .lock()
+                    .unwrap()
+                    .insert(tag, result.expect("GPU encode").bytes);
+            },
+        );
+        assert_eq!(stats.textures, cases.len());
+        let outputs = outputs.into_inner().unwrap();
+        assert_eq!(outputs.len(), cases.len());
+        for (tag, (width, height, encoding, levels)) in cases.iter().enumerate() {
+            let bytes = &outputs[&tag];
+            let metadata = inspect_ktx2(bytes, *encoding).unwrap();
+            assert_eq!(
+                (
+                    metadata.width,
+                    metadata.height,
+                    metadata.faces,
+                    metadata.levels
+                ),
+                (*width, *height, 1, 3)
+            );
+            let cpu =
+                TextureConverter::encode_rgba_mips(*width, *height, levels, *encoding).unwrap();
+            for (mip, source) in levels.iter().enumerate() {
+                let gpu_pixels = decode_uastc_level(bytes, mip);
+                let cpu_pixels = decode_uastc_level(&cpu, mip);
+                assert_eq!(gpu_pixels.len(), source.len());
+                assert_eq!(cpu_pixels.len(), source.len());
+                for (label, actual) in [("GPU", &gpu_pixels), ("CPU", &cpu_pixels)] {
+                    for channel in 0..4 {
+                        let errors: Vec<u32> = actual
+                            .iter()
+                            .skip(channel)
+                            .step_by(4)
+                            .zip(source.iter().skip(channel).step_by(4))
+                            .map(|(a, b)| u32::from(a.abs_diff(*b)))
+                            .collect();
+                        let mean = errors.iter().sum::<u32>() as f32 / errors.len() as f32;
+                        let max = *errors.iter().max().unwrap();
+                        assert!(
+                            mean <= 8.0 && max <= 32,
+                            "{label} case {tag} ({encoding:?}) mip {mip} channel {channel}: mean={mean}, max={max}"
+                        );
+                    }
+                }
+            }
         }
     }
 
