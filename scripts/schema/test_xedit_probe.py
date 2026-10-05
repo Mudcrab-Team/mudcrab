@@ -64,7 +64,7 @@ def _popen_waits_for_markers(*markers: Path, readiness_timeout: float = 5):
 
 
 class XEditProbeTests(unittest.TestCase):
-    def test_v103_custom_wine_directory_cannot_receive_artifacts(self):
+    def test_v147_custom_wine_directory_cannot_receive_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tool = root / "source" / "xDump64.exe"
@@ -85,7 +85,7 @@ class XEditProbeTests(unittest.TestCase):
                 run.assert_not_called()
             self.assertFalse(artifact.exists())
 
-    def test_v100_zero_exit_after_wine_crash_is_incomplete(self):
+    def test_v144_zero_exit_after_wine_crash_is_incomplete(self):
         for stdout, stderr in [
             ("WineDbg attached", "<00:00:00.050> All Done.\n"),
             ("", "wine: Unhandled page fault\n<00:00:00.050> All Done.\n"),
@@ -95,17 +95,17 @@ class XEditProbeTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete")
             self.assertFalse(result["completed_verdict_saved"])
 
-    def test_v100_malformed_dump_diagnostics_do_not_prove_structural_rejection(self):
+    def test_v144_malformed_dump_diagnostics_do_not_prove_structural_rejection(self):
         for name in ("p0-truncated-tail.esp", "p0-truncated-header.esp", "p0-bad-tes4-length.esp"):
             result = probe.classify_dump(name, 0, "[ERROR: invalid data]", "<00:00:00.050> All Done.\n")
             self.assertEqual(result["status"], "unqualified_negative")
             self.assertFalse(result["completed_verdict_saved"])
 
-    def test_v100_completion_without_expected_records_fails(self):
+    def test_v144_completion_without_expected_records_fails(self):
         result = probe.classify_dump("p0-hand-full.esp", 0, "", "<00:00:00.050> All Done.\n")
         self.assertEqual(result["status"], "failed_observation")
 
-    def test_v100_clean_selected_values_do_not_claim_full_fixture_validation(self):
+    def test_v144_clean_selected_values_do_not_claim_full_fixture_validation(self):
         stdout = """  Signature: TES4
   FormID: NULL [00000000]
   Signature: GLOB
@@ -119,7 +119,7 @@ FLTV - Value: 2.500000
         self.assertFalse(result["schema_diagnostics_observed"])
         self.assertFalse(result["fixture_schema_validated"])
 
-    def test_v100_localized_id_and_schema_errors_stay_distinct(self):
+    def test_v144_localized_id_and_schema_errors_stay_distinct(self):
         stdout = """  Signature: TES4
   FormID: NULL [00000000]
   Signature: ARMO
@@ -135,7 +135,7 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
         self.assertFalse(result["completed_verdict_saved"])
         self.assertIn("memory addresses", result["physical_offsets"])
 
-    def test_v103_protected_destination_rejected_before_read_or_write(self):
+    def test_v147_protected_destination_rejected_before_read_or_write(self):
         artifact = p0_tools.REPO_ROOT / "xedit-test-no-write"
         args = SimpleNamespace(xdump="/nonexistent/xDump64.exe", artifact_dir=str(artifact), wine="wine")
         with mock.patch.object(probe, "_read_verified_bytes") as read:
@@ -144,14 +144,14 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
             read.assert_not_called()
         self.assertFalse(artifact.exists())
 
-    def test_v103_input_tool_directory_cannot_be_artifact_destination(self):
+    def test_v147_input_tool_directory_cannot_be_artifact_destination(self):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(xdump=str(Path(directory) / "xDump64.exe"), artifact_dir=directory, wine="wine")
             with self.assertRaisesRegex(probe.QualificationError, "protected path"):
                 probe.run_probe(args)
             self.assertEqual(list(Path(directory).iterdir()), [])
 
-    def test_v103_every_registered_checkout_is_protected_before_tool_read(self):
+    def test_v147_every_registered_checkout_is_protected_before_tool_read(self):
         roots = p0_tools._repository_worktree_roots()
         self.assertIn(p0_tools.REPO_ROOT, roots)
         for root in roots:
@@ -163,12 +163,12 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
                 read.assert_not_called()
                 self.assertFalse(candidate.exists())
 
-    def test_v103_worktree_discovery_failure_cannot_permit_artifact_writes(self):
+    def test_v147_worktree_discovery_failure_cannot_permit_artifact_writes(self):
         with mock.patch.object(p0_tools.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 5)):
             with self.assertRaisesRegex(probe.QualificationError, "cannot verify protected repository"):
                 p0_tools.validate_artifact_destination(Path("/tmp/p0-no-artifact-write"), Path("/tmp/source"))
 
-    def test_v104_supervisor_terminates_a_real_timed_out_process(self):
+    def test_v148_supervisor_terminates_a_real_timed_out_process(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ready = root / "ready"
@@ -220,7 +220,7 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
         self.assertEqual(caught.exception.stdout_bytes, b"\xff")
 
     @unittest.skipUnless(os.name == "posix", "requires a detached POSIX process group")
-    def test_v104_detached_descendant_cannot_hold_timeout_pipes_open(self):
+    def test_v148_detached_descendant_cannot_hold_timeout_pipes_open(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             child_pid = root / "child.pid"
@@ -261,7 +261,7 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
                         except ProcessLookupError:
                             pass
 
-    def test_v100_startup_failures_save_a_discoverable_incomplete_report(self):
+    def test_v144_startup_failures_save_a_discoverable_incomplete_report(self):
         for failure in (subprocess.CompletedProcess([], 1, "", "help failed"), OSError("launch failed")):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -365,7 +365,7 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
             saved = json.loads((artifact / "probe-results.json").read_text(encoding="utf-8"))
             self.assertIn("startup_output_decode_failure", saved)
 
-    def test_v103_capture_limit_rejects_oversized_pinned_input_before_hashing(self):
+    def test_v147_capture_limit_rejects_oversized_pinned_input_before_hashing(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "input"
             source.write_bytes(b"12345")

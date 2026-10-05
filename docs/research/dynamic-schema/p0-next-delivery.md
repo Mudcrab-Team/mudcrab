@@ -2,7 +2,7 @@
 
 This slice hashes installed archive bytes, adds strict candidate-evidence inputs,
 probes a pinned xEdit console binary, and refreshes selected converter/native
-field evidence. It does not accept P0. SPEC T35/T50 remain in progress, and no
+field evidence. It does not accept P0. SPEC T41/T56 remain in progress, and no
 P1/P2 ingestion implementation is introduced.
 
 ## Inputs and observations
@@ -146,7 +146,7 @@ coverage; qualified independent validators; and current-game SQL/cache/runtime
 output plus comparable cold/warm plugin time/RSS baselines. Static source hashes
 are not an executed output baseline. The parent CI failure was an engine-only
 script-option audit treating schema argparse/.NET flags as engine options;
-its narrow regression fix at `2cbc99f` is tracked with SPEC V105/B62 and merged
+its narrow regression fix at `2cbc99f` is tracked with SPEC V149/B97 and merged
 into this branch. Local verification passed 37 configuration tests and three
 CLI tests, the doctest command exited successfully with zero doctests, and
 formatting passed. The configuration audit also passed with the stacked

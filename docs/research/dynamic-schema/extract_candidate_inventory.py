@@ -121,6 +121,32 @@ def strip_pascal_comments(source: str) -> str:
     return "".join(out)
 
 
+def mask_pascal_strings(source: str) -> str:
+    """Blank Pascal string contents while retaining source offsets and lines."""
+    out = list(source)
+    i, n, state = 0, len(source), "normal"
+    while i < n:
+        char = source[i]
+        nxt = source[i + 1] if i + 1 < n else ""
+        if state == "normal":
+            if char == "'":
+                out[i] = " "
+                state = "string"
+            i += 1
+        elif char == "'" and nxt == "'":
+            out[i] = out[i + 1] = " "
+            i += 2
+        elif char == "'":
+            out[i] = " "
+            state = "normal"
+            i += 1
+        else:
+            if char != "\n":
+                out[i] = " "
+            i += 1
+    return "".join(out)
+
+
 def line_number(source: str, offset: int) -> int:
     return source.count("\n", 0, offset) + 1
 
@@ -137,29 +163,28 @@ def parse_xedit(root: Path) -> tuple[dict, list[tuple[str, str, int]], int, int]
         raise ValueError("Could not find DefineTES5 implementation end")
     procedure = active[start.start():end]
     calls: dict[str, list[dict]] = defaultdict(list)
-    record_call = re.compile(
-        r"\b(wbRefRecord|wbRecord)\s*\(\s*([A-Z0-9_]{4})\s*,\s*'((?:[^']|'')*)'", re.S
-    )
-    for match in record_call.finditer(procedure):
-        sig = match.group(2)
-        absolute = start.start() + match.start()
-        calls[sig].append({
-            "path": XEDIT_DEF, "line": line_number(source, absolute),
-            "declaration": match.group(1), "name": match.group(3).replace("''", "'"),
-            "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5",
-        })
     helper = []
-    helper_call = re.compile(r"\bReferenceRecord\s*\(\s*([A-Z0-9_]{4})\s*,\s*'((?:[^']|'')*)'")
-    for match in helper_call.finditer(procedure):
-        sig = match.group(1)
+    call_start = re.compile(r"\b(wbRefRecord|wbRecord|ReferenceRecord)\s*\(")
+    literal_arguments = re.compile(r"\s*([A-Z0-9_]{4})\s*,\s*'((?:[^']|'')*)'")
+    code = mask_pascal_strings(procedure)
+    for match in call_start.finditer(code):
+        arguments = literal_arguments.match(procedure, match.end())
+        if arguments is None:
+            continue
+        declaration = match.group(1)
+        sig = arguments.group(1)
+        name = arguments.group(2).replace("''", "'")
         absolute = start.start() + match.start()
-        name = match.group(2).replace("''", "'")
         line = line_number(source, absolute)
+        if declaration == "ReferenceRecord":
+            evidence_method = "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+            helper.append((sig, name, line))
+        else:
+            evidence_method = "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
         calls[sig].append({
-            "path": XEDIT_DEF, "line": line, "declaration": "ReferenceRecord", "name": name,
-            "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord",
+            "path": XEDIT_DEF, "line": line, "declaration": declaration, "name": name,
+            "evidence_method": evidence_method,
         })
-        helper.append((sig, name, line))
     procedure_start_line = line_number(source, start.start())
     procedure_end_line = line_number(source, end + len("\nend;"))
     if len(helper) != 8:
@@ -369,18 +394,20 @@ def build_inventory(xroot: Path, mroot: Path) -> dict:
             "this_kickoff_performed_note": "This artifact records source declarations only. It did not read a Skyrim.esm, execute the oracle, validate a package, run xEdit/Mutagen, or confirm a retail catalog.",
             "source_reference_pins": {"xedit": XEDIT_PIN, "mutagen": MUTAGEN_PIN},
             "separate_executable_pin_reported_by_parent": {
-                "status": "parent-reported repository lock evidence; not inspected in this kickoff",
-                "lock_file": "/home/dev/.t3/projects/mudcrab-reverse-engineering/tools.lock.toml",
+                "status": "parent-reported repository lock evidence; not inspected in this source inventory run",
+                "evidence_scope": "local-only; paths are relative to the separate mudcrab-reverse-engineering checkout",
+                "lock_file": "mudcrab-reverse-engineering/tools.lock.toml",
                 "game": "Skyrim SE/AE 1.7.104.0", "steam_build": "24914197",
                 "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
                 "scope_limit": "An executable/build pin does not pin the complete Data/Creation content corpus or establish that this is the newest released corpus.",
             },
             "separate_importer_and_oracle_context_reported_by_parent": {
                 "static_importer_native_evidence": "1.6.1170; source/validation meaning is importer-native only, not a current retail executable pin.",
-                "oracle_source": "/home/dev/.t3/projects/mudcrab-reverse-engineering/oracles/records/Program.cs",
+                "evidence_scope": "local-only; paths are relative to the separate mudcrab-reverse-engineering checkout",
+                "oracle_source": "mudcrab-reverse-engineering/oracles/records/Program.cs",
                 "oracle_dependencies": {"Mutagen.Bethesda.Skyrim": "0.54.4", ".NET SDK": "9.0.318"},
                 "reported_evidence": "Placed dump only; F0005 reports seven count categories matched on the same Skyrim.esm.",
-                "provenance_note": "These details were supplied by the parent and were not independently inspected or rerun during this source-only kickoff.",
+                "provenance_note": "These details remain parent-reported; this source inventory run did not independently inspect or rerun them.",
             },
             "remaining_p0_prerequisite": "Full Data/Creation manifest is not pinned (RE T18 pending). Pin and identify the official data/build corpus before treating this candidate inventory as an accepted newest-SE record catalog.",
         },

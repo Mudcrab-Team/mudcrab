@@ -122,7 +122,7 @@ def make_symlink_or_skip(link: Path, target: str | Path, *, target_is_directory=
 
 
 class CorpusManifestTests(unittest.TestCase):
-    def test_v106_deep_evidence_json_fails_cleanly_without_manifest(self):
+    def test_v150_deep_evidence_json_fails_cleanly_without_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             game, data, executable, _ = make_tree(root)
