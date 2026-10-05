@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "docs/research/dynamic-schema/pilot_code_evidence.py"
+SCRIPT = Path(__file__).resolve().with_name("pilot_code_evidence.py")
 SPEC = importlib.util.spec_from_file_location("pilot_code_evidence", SCRIPT)
 pilot_code_evidence = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pilot_code_evidence)

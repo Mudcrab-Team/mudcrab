@@ -244,3 +244,5 @@ a converter-owned immutable plugin archive separate from runtime output, staging
 and evictable caches; scanning and indexes bound to the retained blob; exact
 archive-reopened no-op output. Its implementation and acceptance remain P1 work
 after the P0 gate. Earlier SE/VR, LE and other games remain deferred.
+
+The next-layer Rust CI run `37283916889` at `3853f91` passed 1,072 of 1,073 tests. Its engine utility audit rejected a source-evidence unit-test fixture containing `--repo`. The tests now sit beside their responsible script in this directory, which the existing portable CI discovery already covers. The strict engine audit and parser are unchanged. Local verification passed 82 schema tests and nine research-tool tests, preserving the prior total of 91; the source report check also matched. A local Cargo attempt stalled while loading cached/toolchain files and stopped before tests ran. Fresh full Rust CI remains a separate gate.
