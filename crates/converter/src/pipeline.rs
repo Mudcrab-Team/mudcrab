@@ -6051,21 +6051,17 @@ mod tests {
     /// core, as a conversion does). Run with
     /// `cargo test --release -p converter validation_timing_on_a_real_output -- --ignored --nocapture`.
     ///
-    /// The timed call is the pipeline's own `validate_artifacts`. If it fails (an output from an
-    /// older converter, say), the failures are counted per kind and the passing artifacts are
-    /// timed again; that second timing runs with the files already in the OS cache.
+    /// Checks every manifest artifact present in this output (packages can contain a subset).
+    /// Failures are counted per kind and fail the test; timing never discards invalid artifacts.
     #[test]
     #[ignore = "needs a converted output; set MUDCRAB_VALIDATE_OUTPUT"]
     fn validation_timing_on_a_real_output() {
         use std::time::Instant;
 
-        let Some(output) = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
+        let output = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
             .or_else(|| std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT"))
             .map(PathBuf::from)
-        else {
-            eprintln!("MUDCRAB_VALIDATE_OUTPUT is not set; nothing to time");
-            return;
-        };
+            .expect("set MUDCRAB_VALIDATE_OUTPUT to run real-output validation");
         let limit = std::env::var("MUDCRAB_VALIDATE_LIMIT")
             .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_LIMIT"))
             .ok()
@@ -6115,10 +6111,7 @@ mod tests {
         {
             BTreeMap::new()
         } else {
-            collect_texture_semantics(&output).unwrap_or_else(|error| {
-                eprintln!("texture semantics unavailable, validating without them: {error:#}");
-                BTreeMap::new()
-            })
+            collect_texture_semantics(&output).expect("collect texture semantics")
         };
         eprintln!(
             "texture semantics: {} textures in {:.2} s (not part of the timing)",
@@ -6131,48 +6124,61 @@ mod tests {
             artifacts.len(),
             output.display()
         );
-        let started = Instant::now();
-        let result = validate_artifacts(&output, &artifacts, &texture_semantics, jobs);
-        let elapsed = started.elapsed().as_secs_f64();
-        match result {
-            Ok(()) => {
-                eprintln!(
-                    "RESULT artifacts={} seconds={elapsed:.2} errors=0",
-                    artifacts.len()
-                );
-                return;
-            }
-            Err(error) => {
-                eprintln!("validation failed after {elapsed:.2} s: {error:#}");
-            }
-        }
+        time_artifact_validation(&output, &artifacts, &texture_semantics, jobs)
+            .expect("all selected output artifacts must validate");
+    }
 
+    fn time_artifact_validation(
+        output: &Path,
+        artifacts: &[PathBuf],
+        texture_semantics: &BTreeMap<String, BTreeSet<TextureSemantic>>,
+        jobs: usize,
+    ) -> Result<()> {
+        ensure!(
+            !artifacts.is_empty(),
+            "no output artifacts selected for validation"
+        );
+        let started = std::time::Instant::now();
+        let result = validate_artifacts(output, artifacts, texture_semantics, jobs);
+        let elapsed = started.elapsed().as_secs_f64();
         let mut errors = BTreeMap::<String, (usize, String)>::new();
-        let mut passing = Vec::new();
-        let mut lua = None;
-        for relative in &artifacts {
-            match validate_artifact(&output, relative, &texture_semantics, &mut lua) {
-                Ok(()) => passing.push(relative.clone()),
-                Err(error) => {
+        if result.is_err() {
+            let mut lua = None;
+            for relative in artifacts {
+                if let Err(error) = validate_artifact(output, relative, texture_semantics, &mut lua)
+                {
                     let slot = errors
                         .entry(artifact_kind(relative))
                         .or_insert_with(|| (0, format!("{error:#}")));
                     slot.0 += 1;
+                    if slot.0 <= 10 {
+                        eprintln!("invalid output {}: {error:#}", relative.display());
+                    }
                 }
             }
-        }
-        for (kind, (count, first)) in &errors {
-            eprintln!("errors[{kind}] = {count}; first: {first}");
+            for (kind, (count, first)) in &errors {
+                eprintln!("errors[{kind}] = {count}; first: {first}");
+            }
         }
         let failed: usize = errors.values().map(|(count, _)| count).sum();
-        let started = Instant::now();
-        validate_artifacts(&output, &passing, &texture_semantics, jobs)
-            .expect("the passing artifacts validate");
-        let elapsed = started.elapsed().as_secs_f64();
         eprintln!(
-            "RESULT artifacts={} seconds={elapsed:.2} errors={failed} (passing set, warm cache)",
-            passing.len()
+            "RESULT artifacts={} seconds={elapsed:.2} errors={failed}",
+            artifacts.len()
         );
+        // Keep the original result even if files change during diagnostic enumeration.
+        result
+    }
+
+    #[test]
+    fn v119_timing_validation_rejects_any_bad_artifact_and_empty_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path();
+        let (artifacts, semantics) = staging_with_valid_artifacts(output, 2);
+        time_artifact_validation(output, &artifacts, &semantics, 2).unwrap();
+        fs::write(output.join("meshes/m1.glb"), b"broken").unwrap();
+        let error = time_artifact_validation(output, &artifacts, &semantics, 2).unwrap_err();
+        assert!(format!("{error:#}").contains("invalid GLB artifact"));
+        assert!(time_artifact_validation(output, &[], &semantics, 2).is_err());
     }
 
     fn artifact_kind(relative: &Path) -> String {
