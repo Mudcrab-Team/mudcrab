@@ -1,7 +1,7 @@
 {
   "artifact_kind": "provisional_newest_SE_record_source_candidate_inventory",
   "artifact_status": "P0_source_evidence_only_not_accepted_corpus",
-  "generated_at_utc": "2026-10-04T20:18:03Z",
+  "generated_at_utc": "2026-10-05T04:44:24Z",
   "scope": "Candidate inventory of declared four-character Skyrim plugin major RECORD signatures from pinned xEdit DefineTES5 and Mutagen Skyrim model XML. It does not assert semantic completeness, current retail coverage, or newest official game build identity.",
   "sources": {
     "xedit": {
@@ -4823,8 +4823,9 @@
       "mutagen": "4f533562ee0c70347d47c1979d5464d42b06ee6b"
     },
     "separate_executable_pin_reported_by_parent": {
-      "status": "parent-reported repository lock evidence; not inspected in this kickoff",
-      "lock_file": "/home/dev/.t3/projects/mudcrab-reverse-engineering/tools.lock.toml",
+      "status": "parent-reported repository lock evidence; not inspected in this source inventory run",
+      "evidence_scope": "local-only; paths are relative to the separate mudcrab-reverse-engineering checkout",
+      "lock_file": "mudcrab-reverse-engineering/tools.lock.toml",
       "game": "Skyrim SE/AE 1.7.104.0",
       "steam_build": "24914197",
       "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
@@ -4832,13 +4833,14 @@
     },
     "separate_importer_and_oracle_context_reported_by_parent": {
       "static_importer_native_evidence": "1.6.1170; source/validation meaning is importer-native only, not a current retail executable pin.",
-      "oracle_source": "/home/dev/.t3/projects/mudcrab-reverse-engineering/oracles/records/Program.cs",
+      "evidence_scope": "local-only; paths are relative to the separate mudcrab-reverse-engineering checkout",
+      "oracle_source": "mudcrab-reverse-engineering/oracles/records/Program.cs",
       "oracle_dependencies": {
         "Mutagen.Bethesda.Skyrim": "0.54.4",
         ".NET SDK": "9.0.318"
       },
       "reported_evidence": "Placed dump only; F0005 reports seven count categories matched on the same Skyrim.esm.",
-      "provenance_note": "These details were supplied by the parent and were not independently inspected or rerun during this source-only kickoff."
+      "provenance_note": "These details remain parent-reported; this source inventory run did not independently inspect or rerun them."
     },
     "remaining_p0_prerequisite": "Full Data/Creation manifest is not pinned (RE T18 pending). Pin and identify the official data/build corpus before treating this candidate inventory as an accepted newest-SE record catalog."
   }

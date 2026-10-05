@@ -4,15 +4,15 @@ The standard-library tool in [`scripts/schema/corpus_manifest.py`](../../../scri
 
 The read checks file identity, size, modification time and change time before and after hashing. It is not an immutable snapshot: concurrent same-size rewrites can retain both timestamps on this host. The manifest records the bytes read; immutable source retention remains separate P1 work.
 
-The 2026-10-04 observation targeted Steam Skyrim SE/AE `1.7.104.0`, build `24914197`, from `/home/dev/skyrim/Skyrim Special Edition`. `SkyrimSE.exe` matched the target SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f` and expected size `37,910,440` bytes.
+The 2026-10-04 author-run observation targeted Steam Skyrim SE/AE `1.7.104.0`, build `24914197`, from the local-only install path `/home/dev/skyrim/Skyrim Special Edition`. `SkyrimSE.exe` matched the target SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f` and expected size `37,910,440` bytes.
 
 The Data scan found 80 plugin files. All 80 had a bounded TES4 header that decoded, the dependency closure had no missing or ambiguous masters, and all five required base masters were present. The ordered `Skyrim.ccc` list had 75 names, all matching Data plugin filenames. That list is recorded as a declared content list; it does not establish active load order, official status, or entitlement.
 
 No loose `.strings`, `.dlstrings`, or `.ilstrings` files were present. The tool observed 93 BSA/BA2 filenames and sizes without hashing archive contents. Bundled string tables, active load order, and locale therefore remain unresolved. Plugin and loose-table hashes are first observations; no prior accepted corpus digest set was supplied. These gaps block `complete` and `successful_pin` even when the runtime pin and observed file metadata validate.
 
-The full local output is `/tmp/mudcrab-schema-p0-corpus.json` (297,635 bytes; SHA-256 `dce890a64ac05cd6065275e6c9055589c2ffcdf61b02a99289f3fd8cefc16042`). It contains source names, paths, file hashes/sizes, and TES4 metadata; proprietary file bytes and localization/record dumps remain outside the repository. This observation closes only the installed-file-manifest tooling slice. The broader P0 catalog, validator, archive/localization, and baseline gates remain open.
+The full output was saved to the author-host local-only path `/tmp/mudcrab-schema-p0-corpus.json` (297,635 bytes; SHA-256 `dce890a64ac05cd6065275e6c9055589c2ffcdf61b02a99289f3fd8cefc16042`). It contains source names, paths, file hashes/sizes, and TES4 metadata; proprietary file bytes and localization/record dumps remain outside the repository. This observation closes only the installed-file-manifest tooling slice. The broader P0 catalog, validator, archive/localization, and baseline gates remain open.
 
-Reproduce the scan with:
+The recorded invocation uses explicit local-only game paths. Replace them with the actual installation and an output path available on the host running a new scan:
 
 ```sh
 python3 scripts/schema/corpus_manifest.py \
