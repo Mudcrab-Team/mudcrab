@@ -43,9 +43,9 @@ ancestors of evidence paths are rejected before writes.
 
 ## Executed validator proof
 
-At tooling commit `a386361`, all 62 offline tests passed. New regressions cover
+At tooling commit `252bbca`, all 64 offline tests passed. New regressions cover
 deep evidence JSON, output/evidence aliases, every registered Mudcrab checkout,
-failed worktree discovery, protected process temp settings and detached children
+failed worktree discovery, custom SDK/Wine directories, protected process temp settings and detached children
 holding captured pipes. The detached-pipe regression waited 60.1 seconds before
 the fix; final output collection now has a deadline. The supervisor signals its
 original process group, but an escaped descendant can survive that signal. It
@@ -81,8 +81,8 @@ source are not committed. Paths below are relative to
 | --- | --- |
 | `corpus.json` | 300,001; `eda27707f636fbe7793054d58f2b63be57ff99d81b9957feca22f6d31899bc66` |
 | `bsarch/observations.json` | 165,369; `5c5167a2ceb77030720c9a575e8aa458c82631c4c47a4bdd973c66daad106e3d` |
-| `mutagen-a386361/qualification.json` | 7,632; `ac9ab5d07998aeef29addd072d24228c2c11b099a9ac86d7516c8ee98976039a` |
-| `xedit-a386361/probe-results.json` | 19,005; `89a0bb300a96d7d7484b67007686486065e6aae7704d7d2aff1bc3c91fddbb6b` |
+| `mutagen-252bbca/qualification.json` | 7,632; `d1d85546aaf901613d1fbaeb94e66429e780e2f3b21552da762792ee1c974501` |
+| `xedit-252bbca/probe-results.json` | 19,005; `3c242dd51597c9b648807ceb480dcae740a93045c8d20269f01e1ccb8c3523b2` |
 
 The [corpus notes](p0-corpus-manifest.md) reproduce the manifest scan; the tool
 README reproduces both synthetic probes. BSArch listing uses the copied binary

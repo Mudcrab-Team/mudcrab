@@ -19,7 +19,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/schema/run_mutagen_p0.py \
 
 The command prints its artifact directory on success. An explicit
 `--artifact-dir` must name a new or empty path outside every registered Mudcrab
-worktree, the RE project, the oracle/tool source, and the local game store. A
+worktree, the RE project, the oracle/tool source, supplied SDK/Wine executable
+directories, and the local game store. A
 failed worktree lookup rejects the destination. The runner keeps failed
 or timed-out observations marked incomplete and stores raw output separately
 from accepted JSON observations.
