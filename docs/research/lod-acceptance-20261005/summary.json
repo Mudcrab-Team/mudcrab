@@ -1,0 +1,124 @@
+{
+  "implementation_head": "c9894eded2e7c3dbe1732965b176f1a624b959ae",
+  "implementation_tree": "24690d6e15004bf91359269273958feec922f0ac",
+  "converter_sha256": "daf24867aa9aa4782b20712a6bcdafec45fcad6f4ee0d1fb2e1957af5a052f8a",
+  "terrain_compiler_version": 4,
+  "started_utc": "2026-10-05T17:53:21Z",
+  "finished_utc": "2026-10-05T18:39:08Z",
+  "cpu_jobs": 6,
+  "io_jobs": 4,
+  "minimum_free_disk_bytes": 15032385536,
+  "ordinary_proof": {
+    "count": 76213,
+    "digest": "d1d790983c95bd87160644d40444e46259877a522e3c03e076d92b2faf19e985",
+    "schema": 24,
+    "configuration": "cca2af2b67310e9bc99f97208cabb4edffbd5d04c007e01fb350fccc011a19a2"
+  },
+  "runs": [
+    {
+      "name": "cold-lod-v4",
+      "exit_code": 0,
+      "wall_seconds": 2040.887,
+      "disk_guard_interrupted": false,
+      "report_sha256": "81253cd2ae76e2f4ecc34d7f9a5dc53689ffe82c1c26eedade644e9c15071c63",
+      "report": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 257867,
+        "skipped": 0,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 0,
+        "lod_elapsed_ms": 1531532,
+        "publication_elapsed_ms": 125071,
+        "elapsed_ms": 2038579
+      },
+      "integration": {
+        "schema_version": 7,
+        "statics_total": 31180,
+        "statics_with_models": 29673,
+        "bounds_updated": 29517,
+        "references_total": 930419,
+        "exterior_cells": 73271,
+        "terrain_cells": 52362,
+        "cache_cells": 52362,
+        "texture_sets_with_diffuse": 947,
+        "waters_with_flow_normal": 4,
+        "missing_model_count": 0,
+        "invalid_model_count": 0,
+        "unavailable_model_source_count": 128,
+        "unbounded_model_count": 28,
+        "missing_texture_count": 0,
+        "unavailable_texture_source_count": 16,
+        "passed": true
+      },
+      "lod_warnings": 38,
+      "pruned_texture_references": 527
+    },
+    {
+      "name": "warm-lod-v4",
+      "exit_code": 0,
+      "wall_seconds": 691.461,
+      "disk_guard_interrupted": false,
+      "report_sha256": "a28540b59a4fb14670c8976d14216c0629414489575e074ce82d68055a70ae3a",
+      "report": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 257867,
+        "skipped": 0,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 4673,
+        "lod_elapsed_ms": 172750,
+        "publication_elapsed_ms": 126806,
+        "elapsed_ms": 686320
+      },
+      "integration": {
+        "schema_version": 7,
+        "statics_total": 31180,
+        "statics_with_models": 29673,
+        "bounds_updated": 29517,
+        "references_total": 930419,
+        "exterior_cells": 73271,
+        "terrain_cells": 52362,
+        "cache_cells": 52362,
+        "texture_sets_with_diffuse": 947,
+        "waters_with_flow_normal": 4,
+        "missing_model_count": 0,
+        "invalid_model_count": 0,
+        "unavailable_model_source_count": 128,
+        "unbounded_model_count": 28,
+        "missing_texture_count": 0,
+        "unavailable_texture_source_count": 16,
+        "passed": true
+      },
+      "lod_warnings": 38,
+      "pruned_texture_references": 527
+    }
+  ],
+  "lod_index_digest": "91e92656179452b16d25abe2ba7714b228a6e6ffc2b0870e265389245a7e1467",
+  "lod_build_identity": "31c0165bf5e010fb35327a353ad7381078dfa37fb234607e821cecf86d6d9ddc",
+  "chunk_inputs_digest": "da9dfc8a8f1979531c756e01f16ea6ec6302e41092bfe825159c36f3b6750a48",
+  "full_check_exit_code": 0,
+  "source_sha256": {
+    "measurement-v4.json": "31c4c2e49b25533d4a05c1c94051d1ebd79e24a822936d84fe3a46a1e2b580a5",
+    "provenance-v4.json": "cdc11722c64e69af71bf65c126a332132eb2739a51246edf18a497cd3ea98735",
+    "cold-lod-v4.json": "81253cd2ae76e2f4ecc34d7f9a5dc53689ffe82c1c26eedade644e9c15071c63",
+    "warm-lod-v4.json": "a28540b59a4fb14670c8976d14216c0629414489575e074ce82d68055a70ae3a",
+    "cold-lod-v4.log": "dc18cbc2d43cc41bb7794be4a561cf11d3c4bb0c50d41cdc86010b601e6012e9",
+    "warm-lod-v4.log": "59d231a9758cce271ba3698af6a8dd42a6ef72789f62fffa89d5c869fe7c2150",
+    "check-full-v4.log": "000a667916b8c7c1fffa4ec1381fda6f89cb155a6e1a73a0b7cf69febacffa45",
+    "setup-primary-proof-v4.json": "1c693da94a94bc84ed1f9265b59f36f7cfba40e85eefad520f06a5411bcfeb8f",
+    "measure_v4_fiji.py": "f07f2486dded080b70aa006163161b125e32a59feaae49344c72ef7f0e4c264c"
+  },
+  "published_hash_check": {
+    "ordinary_files_verified": 76213,
+    "lod_files_verified": 4673,
+    "bytes_verified": {
+      "ordinary": 13462818455,
+      "lod": 8924734348
+    },
+    "ordinary_manifest_sha256": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+    "lod_manifest_sha256": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85",
+    "original_seed_manifest_unchanged": true,
+    "native_binary_and_runtime_hashes_verified": true
+  }
+}

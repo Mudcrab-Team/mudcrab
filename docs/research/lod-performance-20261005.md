@@ -1,9 +1,15 @@
 # LOD build performance
 
-Implementation: `3ffcd9c23121da81df3364d30e9d47fea9124ffd` on
+Corrected implementation: `c9894eded2e7c3dbe1732965b176f1a624b959ae` on
 `db3a1dc3ed80795149e3a15a5047f4d313dd3e74`.
-Converter schema 24 and world schema 7 are unchanged. Terrain recipe revision 3
+Converter schema 24 and world schema 7 are unchanged. Terrain recipe revision 4
 invalidates earlier LOD payloads without invalidating ordinary assets.
+
+The corrected Fiji cold/warm pair passed: cold generated 4,673 chunks with zero
+chunk hits; warm reused **all 4,673 chunks**. Both runs completed, passed integration,
+converted/skipped zero ordinary inputs and preserved all 76,213 ordinary entry
+proofs. An independent pass verified every final ordinary output size/hash and
+every LOD payload hash. T41 is complete; runtime captures remain deferred under T40.
 
 The change removes a second, disposable atlas mip encoding; shares one validated
 cell snapshot and decoded terrain textures across worlds; publishes bounded chunk
@@ -28,11 +34,15 @@ The prior Fiji run at `9de099e2cb429cf6c143c384e5cf2baa17bf6318` spent 3,302.352
 
 The benchmark ran on `fiji-desktop`, in an isolated detached worktree,
 with six CPU workers, four I/O workers, Nice 5, CPUQuota 600%, MemoryHigh 20 GiB,
-and MemoryMax 24 GiB. A disk guard interrupts the verified owned converter PID
-below 15 GiB free space. The unchanged installation contains 93 BSAs and 80
-plugins; names and sizes match the baseline. Game inputs remain on Fiji.
+and MemoryMax 24 GiB. The original disk guard interrupted the verified owned converter PID
+below 15 GiB free space; corrected runs use a 14 GiB guard. Neither corrected run
+triggered it. The installation contains 93 BSAs and 80 plugins; names and sizes
+match the baseline. This does not establish historical input byte identity.
+Game inputs and converted payloads remain on Fiji.
 
-The cold LOD run starts with seeded ordinary/archive caches and no prior LOD.
+The original cold LOD run starts with seeded ordinary/archive caches and no prior LOD.
+The corrected cold run starts from the revision-3 benchmark package: revision 4
+rejects every prior chunk's compiler identity and rebuilds all 4,673 chunks.
 The warm acceptance run must reuse all 4,673 chunks. The driver requires complete reports,
 zero reconversions/skips, passing integration, unchanged manifest byte proofs for all
 76,213 ordinary entries, equal cold/warm chunk-index digests and build identities,
@@ -44,7 +54,7 @@ Cold LOD and the historical fresh conversion have different ordinary-cache and
 OS-cache conditions. Stage timings are comparable evidence under the same worker
 and resource limits; they do not isolate the contribution of each optimization.
 
-Final converter SHA256:
+Revision-3 converter SHA256:
 `974c831383d902a0423bb2e2047082d2c84aad758887f127c44a6d82a3fc1d98`.
 Remote evidence root:
 `/home/taylor/Projects/mudcrab-lod-performance/target/lod-performance/fiji-final-3ffcd9c`.
@@ -58,7 +68,76 @@ A fresh current-head attempt started at `2026-10-05T04:24:36Z` from the same unm
 that the dirty primary checkout's HEAD, status and index hash were unchanged.
 The original benchmark package and its manifest were preserved.
 
-## Completed cold result and pending warm acceptance
+## Completed corrected cold/warm acceptance
+
+The corrected pair ran from `2026-10-05T17:53:21Z` to `2026-10-05T18:39:08Z`,
+including the final ordinary full hash check.
+
+| Run | Converter elapsed | LOD stage | Publication | Chunks | Verified chunk hits |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Corrected cold LOD, `c9894ed` | 2,038.579 s | 1,531.532 s | 125.071 s | 4,673 | 0 |
+| Corrected warm LOD, `c9894ed` | 686.320 s | 172.750 s | 126.806 s | 4,673 | **4,673** |
+
+Driver wall times were 2,040.887 s cold and 691.461 s warm. The LOD stage fell
+from **25m 31.532s** cold to **2m 52.750s** warm, an 88.7% reduction for this pair.
+Corrected cold LOD was 53.6% below the historical 55m 02.352s stage. Different
+ordinary/OS-cache conditions prevent a controlled end-to-end speedup claim or
+isolating each optimization's contribution.
+
+Both corrected reports record 257,867 ordinary cache hits, zero ordinary
+conversions/skips and passing integration. Coverage remains 52,362 terrain/cache
+cells, zero missing/invalid models and zero missing textures. Existing limits
+remain: 28 unbounded models, 128 unavailable model sources, 16 unavailable texture
+sources, 38 warnings for worlds without LOD origins, and 527 pruned texture
+references absent from game data. Acceptance covers the same 4,673 produced chunks.
+
+Implementation tree:
+`24690d6e15004bf91359269273958feec922f0ac`.
+Corrected converter SHA256:
+`daf24867aa9aa4782b20712a6bcdafec45fcad6f4ee0d1fb2e1957af5a052f8a`.
+Cold report SHA256:
+`81253cd2ae76e2f4ecc34d7f9a5dc53689ffe82c1c26eedade644e9c15071c63`.
+Warm report SHA256:
+`a28540b59a4fb14670c8976d14216c0629414489575e074ce82d68055a70ae3a`.
+
+The saved cold/warm index rows and all 4,673 consumed-input fingerprints are exactly
+equal. Their shared chunk-index digest is
+`91e92656179452b16d25abe2ba7714b228a6e6ffc2b0870e265389245a7e1467`;
+their shared build identity is
+`31c0165bf5e010fb35327a353ad7381078dfa37fb234607e821cecf86d6d9ddc`.
+The final SQLite rows and LOD manifest match those saved proofs.
+
+All 76,213 ordinary entry proofs retain the seed digest, schema and configuration.
+The ordinary manifest itself is byte-identical to the original seed manifest:
+`67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297`.
+`converter check assets --full` exited zero after warm publication and checked all
+76,213 ordinary files in 13.7 s. That command covers ordinary manifest entries.
+A separate read-only pass, holding the converter's package lock, hashed all
+**76,213 ordinary files** (13,462,818,455 bytes) and **4,673 LOD files**
+(8,924,734,348 bytes), with zero mismatches. Each final LOD payload matches the
+recorded cold/warm hash. Warm reuse also validates every source payload's terrain
+structure in `LodReuse::checked_chunk`; the final hash pass binds published bytes
+to those validated payloads. Native binary and runtime hashes matched provenance.
+
+[Committed summary](lod-acceptance-20261005/summary.json),
+[read-only verifier](lod-acceptance-20261005/verify.py), and
+[ordinary full-check log](lod-acceptance-20261005/check-full-v4.log) retain the proof.
+The summary pins SHA256s for raw reports, measurement, provenance, driver and logs
+on Fiji. The remote evidence root above retains `*-v4` files for the corrected
+head despite its historical directory name. Metadata copies are retained in the
+proof worktree's `target/lod167-evidence/`; no inputs or payloads were copied.
+
+```sh
+python3 docs/research/lod-acceptance-20261005/verify.py target/lod167-evidence
+```
+
+On Fiji, copy the verifier beside the raw evidence and add `--assets` pointing to
+that root's `assets` directory to repeat every published-output hash check. A
+summary is emitted only after all requested checks pass. Native acceptance stays
+pinned to `c9894ed`; later implementation/base integration changes need their own
+validation.
+
+## Earlier revision-3 cold result and interruptions
 
 | Run | Converter elapsed | LOD stage | Publication | Chunks | Verified chunk hits |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -102,10 +181,10 @@ Cold metadata-only evidence is retained locally under
 `target/lod-performance/fiji-final-3ffcd9c-evidence/`, including the report, log,
 samples, provenance and native release regression results. The warm failure is
 recorded in `warm-interruption-observation.json` from the live SSH read. No game
-inputs or converted payloads were transferred. T41 remains open until a corrected producer passes cold-to-warm reuse
-and full ordinary-output hashing.
+inputs or converted payloads were transferred. This incomplete attempt is superseded
+by the completed corrected pair above.
 
-## Warm acceptance failure and LAND selection
+## Earlier revision-3 warm acceptance failure and LAND selection
 
 Two completed unchanged-input runs at `3ffcd9c` each reused 4,670 of 4,673
 chunks, converted/skipped zero ordinary inputs and passed integration. Both
@@ -133,8 +212,8 @@ The two projections therefore lacked one shared plugin-priority winner.
 The correction selects the highest-plugin-priority LAND for each cell in both
 projections, retains raw records, and rejects multiple candidates at the winning
 priority before replacing outputs. Terrain compiler revision 4 invalidates prior
-LOD packages. A corrected native cold/warm pair is still required; revision-3
-measurements cannot establish revision-4 acceptance.
+LOD packages. The completed corrected pair above establishes revision-4 acceptance;
+these revision-3 diagnostic measurements remain failed attempts.
 
 An independent `converter check assets --full` on the post-diagnostic package
 exited zero in 13.527 s. This verifies all 76,213 ordinary manifest outputs;
@@ -182,11 +261,19 @@ not an end-to-end LOD speedup claim.
 
 ## Verification
 
-Current-head CI (`3ffcd9c23121da81df3364d30e9d47fea9124ffd`) ran 1,083
+Corrected-head CI (`c9894eded2e7c3dbe1732965b176f1a624b959ae`) passed **1,085**
+workspace/all-target tests with 19 skipped, plus formatting, strict Clippy, security
+and performance checks. CodeRabbit completed and no review threads were open when
+checked. Local corrected-head verification passed 382 converter library tests with
+12 ignored; the LAND selection regression failed with the original projections
+restored. The evidence follow-up changes preserve the measured implementation.
+
+Earlier-head CI (`3ffcd9c23121da81df3364d30e9d47fea9124ffd`) ran 1,083
 workspace/all-target tests: 1,083 passed, 19 skipped. Formatting, strict Clippy,
 security and the CI performance checks pass. The cold measurement completed;
-warm acceptance failed as detailed below. An independent full ordinary-output
-hash check passed after the diagnostic repeat; corrected-head acceptance remains pending. CI performance checks
+revision-3 warm acceptance failed as detailed above. An independent full ordinary-output
+hash check passed after that diagnostic repeat. Corrected-head native acceptance
+passed separately as recorded above. CI performance checks
 do not substitute for these LOD measurements.
 CodeRabbit completed at this head without actionable findings; no inline review
 threads were open when checked.
