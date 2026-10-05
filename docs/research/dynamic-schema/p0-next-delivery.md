@@ -45,8 +45,9 @@ ancestors of evidence paths are rejected before writes.
 
 At tooling commit `252bbca`, all 64 offline tests passed. New regressions cover
 deep evidence JSON, output/evidence aliases, every registered Mudcrab checkout,
-failed worktree discovery, custom SDK/Wine directories, protected process temp settings and detached children
-holding captured pipes. The detached-pipe regression waited 60.1 seconds before
+failed worktree discovery, custom SDK/Wine directories, protected process temp
+settings and detached children holding captured pipes. The detached-pipe
+regression waited 60.1 seconds before
 the fix; final output collection now has a deadline. The supervisor signals its
 original process group, but an escaped descendant can survive that signal. It
 cannot keep the verdict path waiting indefinitely.
@@ -68,8 +69,43 @@ Physical offsets, opaque payload completeness, complete source occurrences,
 full-catalog correctness and native-runtime compatibility remain unavailable.
 The tool reports retain raw outputs and exact Python runner/helper/fixture
 source hashes separately from executable/package pins. The final reports' source
-hashes were checked against the frozen tooling files; later documentation and
-ledger integration do not change those files.
+hashes were checked against the frozen tooling files. Documentation and native
+ledger files are outside those runner-source hash sets.
+
+## Current-game consumer smokes
+
+On 2026-10-05 UTC, three existing opt-in tests ran at `2cbc99f` in the isolated
+CI worktree. Its converter and workspace dependency sources match this branch
+and observed main `5579f007`. The supplied order was `Skyrim.esm`, `Update.esm`,
+`Dawnguard.esm`, `HearthFires.esm`, `Dragonborn.esm`; active load order remains
+unresolved. All five plugin hashes/sizes (363,401,747 bytes total) and the
+plugin-list digest matched before and after the tests.
+
+Each command ran exactly one test and exited zero, using the same Rust/kache
+settings as the CI regression proof below, with a task-local temporary directory:
+
+```sh
+cargo test -p converter --lib esm::exporter::tests::lights_of_the_real_plugin_decode_through_export -- --ignored --exact --nocapture
+cargo test -p converter --test plugin_references full_local_load_order_merges -- --ignored --exact --nocapture
+cargo test -p converter --lib esm::cell_cache::tests::local_load_order_terrain_cache_passes_validation -- --ignored --exact --nocapture
+```
+
+| Check | Observation and scope |
+| --- | --- |
+| Selected SQLite fields | Parsed 435 `LIGH` records with 48-byte `DATA`; 10,810/12,148 light references had `XRDS`. Assertions export four selected records through in-memory SQLite. |
+| Base-master merge | Five plugins produced 1,168,387 effective records; the test also requires a `GRAS` record. |
+| Terrain cache | Validated 52,181 terrain cells from five plugins in a temporary cache. |
+
+The merge warned about `Skyrim.esm` GMST `0123C00E` and `Dawnguard.esm` ACTI
+`0307B5B9`: each names a master index past its plugin's declared list. The
+existing converter treats them as plugin-owned. These observations do not
+independently validate that identity policy; native resolution remains open.
+
+The test-profile timings include build/test overhead and are not comparable
+release-mode cold/warm time or RSS measurements. The tests remove temporary
+outputs and do not retain a complete on-disk SQL/cache baseline. Exact argv,
+exit codes, counts and log hashes are in the local run summary and artifact
+manifest below. Stat-checked input reads do not create an immutable snapshot.
 
 ## Local artifacts
 
@@ -83,6 +119,10 @@ source are not committed. Paths below are relative to
 | `bsarch/observations.json` | 165,369; `5c5167a2ceb77030720c9a575e8aa458c82631c4c47a4bdd973c66daad106e3d` |
 | `mutagen-252bbca/qualification.json` | 7,632; `d1d85546aaf901613d1fbaeb94e66429e780e2f3b21552da762792ee1c974501` |
 | `xedit-252bbca/probe-results.json` | 19,005; `3c242dd51597c9b648807ceb480dcae740a93045c8d20269f01e1ccb8c3523b2` |
+| `ci-fix/focused-validation.log` | 8,315; `556abe83364bfe0a92eeb38d87386d306e4ee4edc7c7e882f4649e7c5ce3224a` |
+| `consumer-smokes/inputs.after.json` | 1,596; `11aa3c165a39591cd716012d238124d73527250fdf14c8b68a9b7bd69ce340d9` |
+| `consumer-smokes/run-2026-10-05T00-48-05Z/summary.json` | 6,746; `666c6949bc7e51e317c8f1a8a8619970c3165f0be29685a712396737070bfaf6` |
+| `consumer-smokes/run-2026-10-05T00-48-05Z/artifact_manifest.json` | 2,822; `448190823390615511cc943dfd2bc9f742865fa5216fc699608013c1506db4d7` |
 
 The [corpus notes](p0-corpus-manifest.md) reproduce the manifest scan; the tool
 README reproduces both synthetic probes. BSArch listing uses the copied binary
@@ -106,7 +146,14 @@ coverage; qualified independent validators; and current-game SQL/cache/runtime
 output plus comparable cold/warm plugin time/RSS baselines. Static source hashes
 are not an executed output baseline. The parent CI failure was an engine-only
 script-option audit treating schema argparse/.NET flags as engine options;
-its narrow regression fix is tracked with SPEC V105/B62.
+its narrow regression fix at `2cbc99f` is tracked with SPEC V105/B62 and merged
+into this branch. Local verification passed 37 configuration tests and three
+CLI tests, the doctest command exited successfully with zero doctests, and
+formatting passed. The configuration audit also passed with the stacked
+tool-option set. These checks used `devenv shell`, Rust/Cargo `1.98.1`, opt-in
+kache, two jobs, `RUSTFLAGS=-C debuginfo=0` and the isolated CI worktree's own
+target. The local log is `ci-fix/focused-validation.log`; broad CI and engine
+runtime testing remain separate gates.
 
 The source-retention contract stays in [the approved phase plan](../../roadmap/dynamic-schema-initiative.md#immutable-structural-authority):
 a converter-owned immutable plugin archive separate from runtime output, staging

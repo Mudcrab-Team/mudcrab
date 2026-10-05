@@ -241,10 +241,9 @@ V101: P0 fixtures ! positive header counts/hierarchy match physical occurrences;
 V102: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
 V103: P0 oracle artifacts/temp/build/cache ! outside every registered Mudcrab worktree, active RE checkout/store & supplied oracle/tool roots; verify worktree discovery & validate destination before any write; tool temp env artifact-local. Protected-path fixtures guard both CLI & runner.
 V104: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
+V105: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
 V106: P0 corpus evidence ! bounded strict JSON + exact newest target + verified artifact hashes; supplied semantic claims remain unverified. Invalid/deep JSON → managed failure; output cannot overlap descriptor or evidence artifacts. Evidence CLI/deep-JSON regressions guard boundary.
 V107: P0 tool reports ! exact Python decision-runner/helper/fixture source hashes separate from external binary/package pins; release metadata ≠ verified source-to-binary build. Startup-report provenance regression + final executable artifacts guard identity.
-
-V105: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
 
 ## §T TASKS
 

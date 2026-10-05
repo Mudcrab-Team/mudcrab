@@ -10,7 +10,7 @@ The converter comparison uses the current task base `97ddf6966310061c859f9eb3db8
 
 The native target is Skyrim AE `1.7.104.0`, Steam build `24914197`, executable SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`. The cited Ghidra export is `/home/dev/mcrab-store/jobs/ghidra_export/90cde728697730a6` and its read-only SQLite index is `/home/dev/mcrab-store/index.db` (181,530 functions). The decompile artifact is `/home/dev/mcrab-store/jobs/ghidra_decompile/963643bdfcb81ae4`: 173,583 of 173,588 functions decompiled. The four functions used below all have decompilation output. Five other functions failed; `FUN_140b61450` is reachable through a long generic allocation chain, but the field-specific dispatch and payload reads cited here are in successfully decompiled bodies. Runtime inspection was not performed. Function names are Ghidra labels sourced from CommonLib fallback; claims below rest on the shown payload reads, dispatch, and data handling, not the names alone. No in-memory offset is treated as a serialized field offset.
 
-The source inventory currently has 133 xEdit plugin-record candidates, 127 Mutagen wire signatures, 127 shared candidates, and six xEdit-only candidates. This pilot involves three shared signatures: `REFR`, `CELL`, and `STAT`. That leaves 130 xEdit and 124 Mutagen signatures outside this pilot. The field rows and variant cases below are selected evidence, not a complete field denominator for those record types. F0008's Mutagen comparison database still lacks its producing converter commit; this work does not revalidate its result. F0009's function-name conflict is unrelated and was not used as evidence.
+The source inventory currently has 134 xEdit declared signatures including the `TES4` header: 133 plugin-record candidates, 127 Mutagen wire signatures, 127 shared candidates, and six xEdit-only candidates. This pilot involves three shared signatures: `REFR`, `CELL`, and `STAT`. That leaves 130 xEdit and 124 Mutagen signatures outside this pilot. The field rows and variant cases below are selected evidence, not a complete field denominator for those record types. F0008's Mutagen comparison database still lacks its producing converter commit; this work does not revalidate its result. F0009's function-name conflict is unrelated and was not used as evidence.
 
 ## Selected variant and conditional-layout cases
 
@@ -47,6 +47,13 @@ The public `EsmParser::convert_plugins` path reads the caller-supplied plugin or
 | SQLite projection | `records` is keyed by resolved FormID and stores record type, owner priority, cell/worldspace links, and serialized parsed subrecords. `formid_map` stores resolved ID to owner plugin/local ID. `references.data`, `cells.data`, and `records.data` carry tag/payload projections. The public conversion path creates the `conversion_cache` table but does not read or write it. | `crates/converter/src/esm/exporter.rs:90-211,235-300`; `crates/converter/src/esm/mod.rs:27-50` |
 | Typed fields | `CELL.flags` comes from the record header; `CELL/DATA` remains in its subrecord blob. `CELL` types only XCLC X/Y and EDID in this helper. `REFR` types NAME, DATA, XSCL, and XRDS; it does not type header flags or XESP/XPRM/XLIG/XEMI. `STAT` types EDID, model path, and record-header flags; its other listed fields remain in raw subrecord data. | `crates/converter/src/esm/exporter.rs:259-288,329-382,635-689`; `crates/converter/src/esm/extractors.rs:72-110` |
 | Terrain cache | `write_cell_cache` builds from the merged `LAND` records, sorts output cells by ID, writes and validates the cache. Cell XCLW/XCWT values override defaults; absent or sentinel heights can inherit the parent WRLD/DNAM height and NAM2 water form. | `crates/converter/src/esm/cell_cache.rs:8-111,114-159` |
+
+The [current-game consumer smokes](p0-next-delivery.md#current-game-consumer-smokes)
+also observed master-index overflow warnings for `Skyrim.esm` GMST `0123C00E`
+and `Dawnguard.esm` ACTI `0307B5B9`. The existing converter treats them as
+plugin-owned; the passing supplied-base merge does not independently establish
+the native owner mapping for either record. These identity cases remain outside
+the three-signature field pilot and require native resolution before acceptance.
 
 ## Targeted native-loader observations
 
@@ -87,3 +94,4 @@ All six remain unresolved applicability candidates. This pilot did not find a cu
 4. Follow `XCLL` and `LTMP` through cell initialization, including whether the `LTMP` load branch clears a value later populated elsewhere.
 5. Trace `STAT/DNAM` default/value handling and `MNAM` LOD loading from `TESObjectSTAT::Load` into downstream model selection.
 6. For each xEdit-only signature, identify an occurrence in the accepted current corpus or an executable serializer/loader registration path before changing candidate applicability.
+7. Resolve the two observed GMST/ACTI master-index overflow cases against native identity handling before accepting the converter's plugin-owned fallback.
