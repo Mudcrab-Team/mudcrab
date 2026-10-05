@@ -6,7 +6,7 @@ use ddsfile::{Caps2, D3DFormat, Dds, DxgiFormat, MiscFlag, PixelFormatFlags};
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     ffi::c_void,
     fs::{self, File},
     io::Cursor,
@@ -123,6 +123,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn opensky_basis_free(data: *mut c_void);
     fn opensky_basis_quiet_stdout();
+    fn opensky_basis_encode_uastc_block(rgba: *const u8, block: *mut u8, flags: u32);
 }
 
 pub struct TextureConverter;
@@ -134,16 +135,9 @@ impl TextureConverter {
         mip_rgba: &[Vec<u8>],
         encoding: TextureEncoding,
     ) -> Result<Vec<u8>> {
+        let mut blocks = HashMap::new();
         Self::encode_rgba_mips_with(width, height, mip_rgba, encoding, |width, height, rgba| {
-            encode_basis_ktx2(
-                width,
-                height,
-                rgba,
-                encoding,
-                false,
-                ETC1S_QUALITY_DEFAULT,
-                UASTC_LEVEL_DEFAULT,
-            )
+            encode_atlas_mip(width, height, rgba, encoding, &mut blocks)
         })
     }
 
@@ -1667,6 +1661,88 @@ pub(crate) fn has_tight_packed_rows(dds: &Dds, payload_len: usize) -> bool {
     })
 }
 
+// Keep the cache local to one atlas and bounded even for a large caller.
+const ATLAS_BLOCK_CACHE_LIMIT: usize = 65_536;
+
+#[repr(C, align(4))]
+struct UastcPixels([u8; 64]);
+
+#[repr(C, align(4))]
+struct UastcBlock([u8; 16]);
+
+fn initialize_basis_encoder() {
+    BASIS_INIT.call_once(|| {
+        basis_universal::encoder_init();
+        // Held so no Rust output is written while the bridge swaps the handles underneath it.
+        use std::io::Write as _;
+        let mut rust_stdout = std::io::stdout().lock();
+        let _ = rust_stdout.flush();
+        // SAFETY: points only the C library's stdout at the null device, once, before the encoder
+        // first runs; the process's standard output, which Rust writes to, is kept.
+        unsafe { opensky_basis_quiet_stdout() };
+    });
+}
+
+/// Encode with the exact upstream UASTC level-2 routine, once per distinct block.
+/// RDO is disabled in the existing atlas path, so no neighboring state is consumed.
+fn encode_atlas_mip(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    encoding: TextureEncoding,
+    cache: &mut HashMap<[u8; 64], [u8; 16]>,
+) -> Result<Vec<u8>> {
+    initialize_basis_encoder();
+    let (width, height) = (width as usize, height as usize);
+    let mut payload = Vec::with_capacity(width.div_ceil(4) * height.div_ceil(4) * 16);
+    for block_y in 0..height.div_ceil(4) {
+        for block_x in 0..width.div_ceil(4) {
+            let mut pixels = UastcPixels([0; 64]);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let source = ((block_y * 4 + y).min(height - 1) * width
+                        + (block_x * 4 + x).min(width - 1))
+                        * 4;
+                    let destination = (y * 4 + x) * 4;
+                    pixels.0[destination..destination + 4]
+                        .copy_from_slice(&rgba[source..source + 4]);
+                }
+            }
+            let encoded = if let Some(block) = cache.get(&pixels.0) {
+                *block
+            } else {
+                let mut block = UastcBlock([0; 16]);
+                // SAFETY: the initialized input is exactly 16 RGBA texels and the
+                // writable output is exactly one UASTC block, both 4-byte aligned.
+                // Initialization runs once before calls; the upstream routine has
+                // no mutable shared state, as in Basis's parallel slice encoder.
+                unsafe {
+                    opensky_basis_encode_uastc_block(
+                        pixels.0.as_ptr(),
+                        block.0.as_mut_ptr(),
+                        u32::from(UASTC_LEVEL_DEFAULT),
+                    );
+                }
+                if cache.len() < ATLAS_BLOCK_CACHE_LIMIT {
+                    cache.insert(pixels.0, block.0);
+                }
+                block.0
+            };
+            payload.extend_from_slice(&encoded);
+        }
+    }
+    let has_alpha = rgba.chunks_exact(4).any(|pixel| pixel[3] != 255);
+    Ok(crate::texture_ktx2::write_uastc(
+        width as u32,
+        height as u32,
+        1,
+        &[payload],
+        encoding.is_srgb(),
+        has_alpha,
+        "mudcrab terrain_atlas",
+    ))
+}
+
 fn encode_basis_ktx2(
     width: u32,
     height: u32,
@@ -1684,16 +1760,7 @@ fn encode_basis_ktx2(
         rgba.len() == width as usize * height as usize * 4,
         "RGBA payload size mismatch"
     );
-    BASIS_INIT.call_once(|| {
-        basis_universal::encoder_init();
-        // Held so no Rust output is written while the bridge swaps the handles underneath it.
-        use std::io::Write as _;
-        let mut rust_stdout = std::io::stdout().lock();
-        let _ = rust_stdout.flush();
-        // SAFETY: points only the C library's stdout at the null device, once, before the encoder
-        // first runs; the process's standard output, which Rust writes to, is kept.
-        unsafe { opensky_basis_quiet_stdout() };
-    });
+    initialize_basis_encoder();
     ensure!(etc1s_quality > 0, "ETC1S quality must be greater than zero");
     ensure!(uastc_level <= 4, "UASTC level must be between 0 and 4");
     let mut flags = FLAG_KTX2;
@@ -1762,6 +1829,108 @@ mod tests {
     };
     use ddsfile::{AlphaMode, D3D10ResourceDimension, DxgiFormat, NewD3dParams, NewDxgiParams};
     use std::io::{Read, Write};
+
+    #[test]
+    fn v117_block_reuse_preserves_upstream_payloads_and_dfd() {
+        for encoding in [TextureEncoding::ColorSrgb, TextureEncoding::DataLinear] {
+            for alpha in [0, 127, 255] {
+                let mut cache = HashMap::new();
+                for (w, h) in [(16, 12), (7, 5), (2, 1), (1, 1)] {
+                    let rgba: Vec<u8> = (0..w * h)
+                        .flat_map(|i| [(i % 7 * 37) as u8, (i % 3 * 83) as u8, 41, alpha])
+                        .collect();
+                    let expected = encode_basis_ktx2(
+                        w,
+                        h,
+                        &rgba,
+                        encoding,
+                        false,
+                        ETC1S_QUALITY_DEFAULT,
+                        UASTC_LEVEL_DEFAULT,
+                    )
+                    .unwrap();
+                    let actual = encode_atlas_mip(w, h, &rgba, encoding, &mut cache).unwrap();
+                    let expected_reader = ktx2::Reader::new(&expected[..]).unwrap();
+                    let actual_reader = ktx2::Reader::new(&actual[..]).unwrap();
+                    assert_eq!(
+                        actual_reader.levels().next().unwrap().data,
+                        expected_reader.levels().next().unwrap().data,
+                        "{w}x{h} {encoding:?} a={alpha}"
+                    );
+                    let descriptor = |bytes: &[u8], header: ktx2::Header| {
+                        let start = header.index.dfd_byte_offset as usize;
+                        bytes[start..start + header.index.dfd_byte_length as usize].to_vec()
+                    };
+                    assert_eq!(
+                        descriptor(&actual, actual_reader.header()),
+                        descriptor(&expected, expected_reader.header())
+                    );
+                    validate_ktx2(&actual, encoding).unwrap();
+                }
+                let rgba = [23, 45, 67, alpha].repeat(64);
+                let before = cache.len();
+                let first = encode_atlas_mip(8, 8, &rgba, encoding, &mut cache).unwrap();
+                let second = encode_atlas_mip(8, 8, &rgba, encoding, &mut cache).unwrap();
+                assert_eq!(first, second);
+                assert_eq!(cache.len(), before + 1);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release-mode atlas encoder timing"]
+    fn measure_atlas_block_reuse() {
+        let side = 512u32;
+        for pattern in ["solid", "repeating", "unique"] {
+            let rgba: Vec<u8> = (0..side * side)
+                .flat_map(|i| {
+                    let x = i % side;
+                    let y = i / side;
+                    let (x, y) = match pattern {
+                        "solid" => (0, 0),
+                        "repeating" => (x % 32, y % 32),
+                        _ => (x, y),
+                    };
+                    let value = if pattern == "unique" {
+                        let mut value = i.wrapping_add(1).wrapping_mul(0x9e37_79b9);
+                        value ^= value >> 16;
+                        value = value.wrapping_mul(0x85eb_ca6b);
+                        value ^ (value >> 13)
+                    } else {
+                        (x * 13 + y * 7) | ((x * 3 + y * 29) << 8) | ((x * 19 + y * 11) << 16)
+                    };
+                    [value as u8, (value >> 8) as u8, (value >> 16) as u8, 255]
+                })
+                .collect();
+            let started = std::time::Instant::now();
+            let old = encode_basis_ktx2(
+                side,
+                side,
+                &rgba,
+                TextureEncoding::ColorSrgb,
+                false,
+                ETC1S_QUALITY_DEFAULT,
+                UASTC_LEVEL_DEFAULT,
+            )
+            .unwrap();
+            let old_ms = started.elapsed().as_millis();
+            let started = std::time::Instant::now();
+            let mut cache = HashMap::new();
+            let new = encode_atlas_mip(side, side, &rgba, TextureEncoding::ColorSrgb, &mut cache)
+                .unwrap();
+            let new_ms = started.elapsed().as_millis();
+            let old = ktx2::Reader::new(&old[..]).unwrap();
+            let new = ktx2::Reader::new(&new[..]).unwrap();
+            assert_eq!(
+                old.levels().next().unwrap().data,
+                new.levels().next().unwrap().data
+            );
+            eprintln!(
+                "{pattern}: upstream={old_ms}ms deduplicated={new_ms}ms unique={}",
+                cache.len()
+            );
+        }
+    }
 
     #[test]
     fn v117_rgba_mips_are_encoded_once_and_preserved() {

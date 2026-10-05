@@ -137,7 +137,10 @@ Every stage reads and validates one aligned cell-cache snapshot. Diffuse images
 share decoded authored mips and prepared tier images across worlds and FormIDs;
 source bytes are rechecked before publication. Each chunk keeps atlas baking,
 linear-light mip generation and encoding together. Each supplied mip is encoded
-once; the KTX2 level table is assembled from the encoded base metadata. Only one
+once; a bounded atlas-local cache encodes identical 4x4 RGBA blocks once using
+the same upstream UASTC level-2 routine and transcode hints. The KTX2 writer is
+shared with the GPU path, and the level table uses the encoded base metadata.
+The terrain compiler revision changes when this output recipe changes. Only one
 CPU-worker-sized batch of payloads is retained at a time. World indexing is
 transactional: a later content failure removes earlier batch payloads and rolls
 back that whole world. Cancellation, source mutation and publication/database
