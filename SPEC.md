@@ -351,3 +351,5 @@ B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional 
 B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
 B84|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan misclassified270 deleted overrides|V122
+
+B87|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V122; validate winner before deletion shortcut & require live position/rotation

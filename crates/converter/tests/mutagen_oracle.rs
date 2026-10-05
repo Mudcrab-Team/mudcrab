@@ -62,6 +62,11 @@ fn close(actual: f64, expected: f64, tolerance: f64) -> bool {
 }
 
 fn compare(o: &Oracle, actual: Option<&Placed>, slots: &HashMap<String, u32>) -> Result<bool> {
+    ensure!(
+        slots.contains_key(&o.winner.to_ascii_lowercase()),
+        "oracle winner is unloaded: {}",
+        o.winner
+    );
     if o.flags & 0x20 != 0 {
         ensure!(actual.is_none(), "deleted override was resurrected");
         return Ok(false);
@@ -73,12 +78,18 @@ fn compare(o: &Oracle, actual: Option<&Placed>, slots: &HashMap<String, u32>) ->
         "winning plugin mismatch"
     );
     ensure!(a.base == form_id(&o.base, slots)?, "base FormID mismatch");
+    let pos = o
+        .pos
+        .ok_or_else(|| color_eyre::eyre::eyre!("live oracle row lacks position"))?;
+    let rot = o
+        .rot
+        .ok_or_else(|| color_eyre::eyre::eyre!("live oracle row lacks rotation"))?;
     for axis in 0..3 {
         ensure!(
-            close(a.pos[axis], o.pos.unwrap_or([0.0; 3])[axis], 0.01),
+            close(a.pos[axis], pos[axis], 0.01),
             "position axis {axis} mismatch"
         );
-        let expected = o.rot.unwrap_or([0.0; 3])[axis];
+        let expected = rot[axis];
         let delta = (a.rot[axis] - expected + std::f64::consts::PI)
             .rem_euclid(std::f64::consts::TAU)
             - std::f64::consts::PI;
@@ -259,4 +270,28 @@ fn v122_oracle_comparison_rejects_resurrection_mismatches_and_nonfinite_values()
     o.flags = 0x20;
     assert!(!compare(&o, None, &slots).unwrap());
     assert!(compare(&o, Some(&a), &slots).is_err());
+}
+
+#[test]
+fn v122_rejects_missing_live_placement_and_unloaded_deleted_winner() {
+    let slots = HashMap::from([("base.esm".into(), 0)]);
+    let mut o: Oracle = serde_json::from_str(r#"{"form":"000800:Base.esm","type":"REFR","winner":"Base.esm","base":"000801:Base.esm","pos":[0,0,0],"rot":[0,0,0],"scale":null,"flags":0}"#).unwrap();
+    let a = Placed {
+        kind: "REFR".into(),
+        winner: "Base.esm".into(),
+        base: 0x801,
+        pos: [0.0; 3],
+        rot: [0.0; 3],
+        scale: 1.0,
+    };
+    assert!(compare(&o, Some(&a), &slots).unwrap());
+    o.pos = None;
+    assert!(compare(&o, Some(&a), &slots).is_err());
+    o.pos = Some([0.0; 3]);
+    o.rot = None;
+    assert!(compare(&o, Some(&a), &slots).is_err());
+    o.flags = 0x20;
+    assert!(!compare(&o, None, &slots).unwrap());
+    o.winner = "Missing.esm".into();
+    assert!(compare(&o, None, &slots).is_err());
 }
