@@ -60,3 +60,15 @@ The historical Mutagen qualification evidence was saved to the author-host local
 This starter work is part of [#157](https://github.com/Mudcrab-Team/mudcrab/issues/157) and [#158](https://github.com/Mudcrab-Team/mudcrab/issues/158), with root SPEC T41/T56 still in progress. Remaining P0 work includes accepted official-content/archive/localization/load-order pins, source-candidate applicability, the complete variant/field/range ledger, current-game output/time/RSS baselines, archive contracts and qualified independent validators. Newest-SE-native disagreements become build-tagged research items. Earlier SE/VR, LE and other-game implementation remains deferred.
 
 The 2026-10-05 parent repair passed 40 offline schema tests, two portable extractor tests and 41 engine configuration tests on Linux. Three already-built CLI tests also passed; the engine sources and build inputs are unchanged since that binary was built. Native Windows checks remain a CI gate. These checks do not refresh the historical external-tool qualification or accept P0.
+
+The follow-up Windows repair passed 45 offline schema tests and two extractor
+tests on Linux. Parent aliases and `..` are tested as separate native paths;
+Data-relative issue keys use POSIX separators on every host. Timeout cleanup
+now bounds the final drain, attempts Windows process-tree termination, and
+avoids closing pipes held by Windows reader threads. A real detached POSIX child
+and simulated Windows cleanup failures verify bounded incomplete outcomes.
+Undecodable partial timeout streams retain raw bytes and availability metadata.
+If Windows tree termination fails, escaped child processes and reader threads
+can remain until those children exit; the runner still returns an incomplete
+timeout. Fresh native Windows CI remains required. Earlier external-tool
+qualification retains its original runner pins.

@@ -431,30 +431,37 @@ class CorpusManifestTests(unittest.TestCase):
             nested = game_root / "nested"
             nested.mkdir()
             alias = root / "install-parent-alias"
-            make_symlink_or_skip(alias, nested, target_is_directory=True)
-            executable_alias = alias / ".." / executable.name
-            ccc_alias = alias / ".." / ccc.name
-
-            api_manifest = manifest_tool.build_manifest(game_root, data_root, executable_alias, ccc_alias)
-
-            self.assertEqual(api_manifest["target"]["runtime"]["source"]["relative_path"], "SkyrimSE.exe")
-            self.assertEqual(api_manifest["ccc"]["status"], "observed")
-            self.assertEqual(api_manifest["ccc"]["source"]["relative_path"], "Skyrim.ccc")
-
+            make_symlink_or_skip(alias, game_root, target_is_directory=True)
+            # Keep these forms separate: Windows collapses alias/.. lexically;
+            # POSIX follows the symlink before applying the parent component.
+            parent_forms = (
+                alias,
+                nested / "..",
+            )
             output = root / "cli-manifest.json"
-            status = manifest_tool.main([
-                "--game-root", str(game_root),
-                "--data-dir", str(data_root),
-                "--executable", str(executable_alias),
-                "--ccc", str(ccc_alias),
-                "--output", str(output),
-            ])
+            for parent in parent_forms:
+                executable_alias = parent / executable.name
+                ccc_alias = parent / ccc.name
 
-            self.assertEqual(status, 2)
-            cli_manifest = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(cli_manifest["target"]["runtime"]["source"]["relative_path"], "SkyrimSE.exe")
-            self.assertEqual(cli_manifest["ccc"]["status"], "observed")
-            self.assertEqual(cli_manifest["ccc"]["source"]["relative_path"], "Skyrim.ccc")
+                api_manifest = manifest_tool.build_manifest(game_root, data_root, executable_alias, ccc_alias)
+
+                self.assertEqual(api_manifest["target"]["runtime"]["source"]["relative_path"], "SkyrimSE.exe")
+                self.assertEqual(api_manifest["ccc"]["status"], "observed")
+                self.assertEqual(api_manifest["ccc"]["source"]["relative_path"], "Skyrim.ccc")
+
+                status = manifest_tool.main([
+                    "--game-root", str(game_root),
+                    "--data-dir", str(data_root),
+                    "--executable", str(executable_alias),
+                    "--ccc", str(ccc_alias),
+                    "--output", str(output),
+                ])
+
+                self.assertEqual(status, 2)
+                cli_manifest = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(cli_manifest["target"]["runtime"]["source"]["relative_path"], "SkyrimSE.exe")
+                self.assertEqual(cli_manifest["ccc"]["status"], "observed")
+                self.assertEqual(cli_manifest["ccc"]["source"]["relative_path"], "Skyrim.ccc")
 
     def test_api_and_cli_reject_leaf_symlinks_after_parent_normalization(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -544,6 +551,48 @@ class CorpusManifestTests(unittest.TestCase):
             self.assertEqual(len(manifest["corpus_hashes"]["loose_string_tables"]), 1)
             self.assertEqual(manifest["corpus_hashes"]["loose_string_tables"][0]["source"]["relative_path"], "Strings/Addon_English.strings")
             self.assertEqual(manifest["corpus_hashes"]["loose_string_tables"][0]["sha256"], hashlib.sha256(b"fixture table").hexdigest())
+
+    def test_v157_issue_paths_use_posix_relative_paths_for_nested_sources(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root, {"Addon.esp": ()})
+            strings = data_root / "Strings" / "Addon_English.strings"
+            strings.parent.mkdir()
+            strings.write_bytes(b"fixture table")
+            archive = data_root / "Archives" / "Addon.bsa"
+            archive.parent.mkdir()
+            archive.write_bytes(b"fixture archive")
+
+            original_scan_plugin = manifest_tool.scan_plugin
+
+            def fail_addon_plugin(path, source_root, root_label="data"):
+                if path.name == "Addon.esp":
+                    raise manifest_tool.MissingSourceError(f"required source is missing: {path}")
+                return original_scan_plugin(path, source_root, root_label)
+
+            with (
+                mock.patch.object(manifest_tool, "scan_plugin", side_effect=fail_addon_plugin),
+                mock.patch.object(
+                    manifest_tool,
+                    "_scan_hashed_file",
+                    side_effect=manifest_tool.SourceDriftError("fixture table read failed"),
+                ),
+                mock.patch.object(
+                    manifest_tool,
+                    "_source_observation",
+                    side_effect=manifest_tool.SourceDriftError("fixture archive stat failed"),
+                ),
+            ):
+                manifest = manifest_tool.build_manifest(game_root, data_root, executable, ccc)
+
+            issues_by_path = {
+                issue["path"]: issue["code"]
+                for issue in manifest["issues"]
+                if "path" in issue
+            }
+            self.assertEqual(issues_by_path["Addon.esp"], "missing_required_input")
+            self.assertEqual(issues_by_path["Strings/Addon_English.strings"], "source_drift")
+            self.assertEqual(issues_by_path["Archives/Addon.bsa"], "source_stat_error")
 
     def test_manifest_is_deterministic_and_serializable(self):
         with tempfile.TemporaryDirectory() as temp_dir:

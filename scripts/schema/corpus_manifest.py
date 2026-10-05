@@ -571,7 +571,7 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
             })
             issues.append({
                 "code": "missing_required_input" if missing else "source_drift",
-                "path": str(path.relative_to(data_root)),
+                "path": path.relative_to(data_root).as_posix(),
                 "detail": str(exc),
             })
 
@@ -642,7 +642,7 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
             })
             issues.append({
                 "code": "missing_required_input" if missing else "source_drift",
-                "path": str(path.relative_to(data_root)),
+                "path": path.relative_to(data_root).as_posix(),
                 "detail": str(exc),
             })
 
@@ -652,7 +652,7 @@ def build_manifest(game_root: Path, data_root: Path, executable: Path, ccc_path:
         try:
             archives.append(_source_observation(path, data_root, "archive_unhashed"))
         except SourceDriftError as exc:
-            issues.append({"code": "source_stat_error", "path": str(path.relative_to(data_root)), "detail": str(exc)})
+            issues.append({"code": "source_stat_error", "path": path.relative_to(data_root).as_posix(), "detail": str(exc)})
 
     if not ccc_path.exists():
         ccc = {

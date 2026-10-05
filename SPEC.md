@@ -284,6 +284,8 @@ V152: P0 manifest API/CLI ! resolve containing directories before immediate-chil
 V153: P0 runtime-loadable plugin set ! Data top level only; nested plugins separately hashed/reported, never satisfy masters/base presence/CCC loadable matches. Loose string tables remain recursively observed; nested-master/base/duplicate regressions guard partition.
 V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descriptor-before/after full metadata equality retained for drift. POSIX path/descriptor full metadata equality unchanged; platform-skew and existing drift regressions guard boundary.
 
+V157: P0 repository/Data-relative evidence path keys ! POSIX separators on every host; issue/source joins & decision-runner identity use same canonical path spelling. Windows-path & nested-issue regressions guard serialization.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -452,3 +454,6 @@ B108|2026-10-05|recursive Data plugin discovery let nested masters/base names sa
 B109|2026-10-05|Windows lstat/fstat timestamp skew classified unchanged file as source drift|V154; cross-interface identity/size checks on Windows, full same-descriptor drift checks; synthetic platform regression + Windows CI
 B110|2026-10-05|synthetic corpus `plugins or defaults` treated explicit empty mapping as five base plugins|V145; only None selects defaults; empty-corpus regression
 B114|2026-10-05|source miner could count Pascal call text inside literals; initial portable regressions used malformed fixtures|mask literals before call detection; correct fixture syntax/markers; source-miner regressions; existing evidence contract sufficient, no new invariant
+B115|2026-10-05|alias fixture relied on POSIX symlink traversal before `..`; Windows canonicalization described different parent|V152; separate parent-alias and real-directory `..` API/CLI fixtures; leaf-link rejection retained
+B116|2026-10-05|Data-relative issue paths used native Windows separators unlike hashed source keys|V157; POSIX serialization + nested plugin/string/archive issue regressions
+B117|2026-10-05|parent final pipe drain unbounded; Windows reader-thread close can block; partial Unicode decode bypassed timeout diagnostics|V144,V148; bounded tree termination/drains/wait; POSIX-only pipe close; retain undecodable raw bytes; real detached-child + failed-Windows-cleanup + partial-Unicode regressions

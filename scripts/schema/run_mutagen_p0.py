@@ -48,10 +48,26 @@ class ProcessTimeout(QualificationError):
         self.timeout = timeout
         self.stdout = stdout
         self.stderr = stderr
+        self.raw_output: tuple[bytes, bytes] | None = None
 
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _save_timeout_raw(exc: ProcessTimeout, stdout_path: Path, stderr_path: Path) -> dict:
+    """Retain undecodable partial timeout streams without inventing text."""
+    raw_output = getattr(exc, "raw_output", None)
+    if raw_output is None:
+        return {}
+    evidence = {"decoded_output": "unavailable"}
+    for name, path, raw in zip(("stdout", "stderr"), (stdout_path, stderr_path), raw_output):
+        path = path.with_suffix(".bin")
+        path.write_bytes(raw)
+        evidence[f"raw_{name}_file"] = path.name
+        evidence[f"raw_{name}_sha256"] = _sha256(raw)
+        evidence[f"raw_{name}_size_bytes"] = len(raw)
+    return evidence
 
 
 def _read_verified_bytes(path: Path) -> tuple[str, int, bytes]:
@@ -153,7 +169,18 @@ def _run_supervised(
             except ProcessLookupError:
                 pass
         else:
-            process.terminate()
+            # Stop descendants before their parent so inherited pipe handles
+            # do not keep the timeout cleanup waiting for compiler workers.
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=2, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            if process.poll() is None:
+                process.kill()
         try:
             stdout, stderr = process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
@@ -164,7 +191,29 @@ def _run_supervised(
                     pass
             else:
                 process.kill()
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired as exc:
+                stdout, stderr = exc.output, exc.stderr
+                # Windows communicate() has reader threads: closing a pipe
+                # still being read can itself block on the reader's lock.
+                if os.name == "posix":
+                    process.stdout.close()
+                    process.stderr.close()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                raw_output = (stdout or b"", stderr or b"")
+                try:
+                    if isinstance(stdout, bytes):
+                        stdout = stdout.decode(process.stdout.encoding)
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode(process.stderr.encoding)
+                except UnicodeDecodeError as exc:
+                    failure = ProcessTimeout(label, timeout, "", "")
+                    failure.raw_output = raw_output
+                    raise failure from exc
         raise ProcessTimeout(label, timeout, stdout or "", stderr or "")
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
@@ -183,7 +232,10 @@ def _run_checked(
     except ProcessTimeout as exc:
         (log_dir / f"{label}.stdout.txt").write_text(exc.stdout, encoding="utf-8")
         (log_dir / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
-        _save_json(log_dir / f"{label}.timeout.json", {"timeout_seconds": timeout, "completed_verdict_saved": False})
+        _save_json(log_dir / f"{label}.timeout.json", {
+            "timeout_seconds": timeout, "completed_verdict_saved": False,
+            **_save_timeout_raw(exc, log_dir / f"{label}.stdout.txt", log_dir / f"{label}.stderr.txt"),
+        })
         _save_json(log_dir / f"{label}.command.json", command)
         raise QualificationError(f"{exc}; see {log_dir / (label + '.timeout.json')}") from exc
     (log_dir / f"{label}.stdout.txt").write_text(result.stdout, encoding="utf-8")
@@ -556,6 +608,7 @@ def _case_run(
             {
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
+                **_save_timeout_raw(exc, case_base.with_suffix(".raw.stdout.txt"), case_base.with_suffix(".stderr.txt")),
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
                 "stderr_sha256": _sha256(exc.stderr.encode("utf-8")),
@@ -644,6 +697,7 @@ def _run_legacy_command(
             {
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
+                **_save_timeout_raw(exc, base.with_suffix(".timeout.stdout.txt"), base.with_suffix(".timeout.stderr.txt")),
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
                 "stderr_sha256": _sha256(exc.stderr.encode("utf-8")),
@@ -793,7 +847,10 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
         (logs_dir / "dotnet-version.stderr.txt").write_text(exc.stderr, encoding="utf-8")
         _save_json(
             logs_dir / "dotnet-version.timeout.json",
-            {"timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False},
+            {
+                "timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False,
+                **_save_timeout_raw(exc, logs_dir / "dotnet-version.stdout.txt", logs_dir / "dotnet-version.stderr.txt"),
+            },
         )
         raise QualificationError(str(exc)) from exc
     if version.returncode != 0 or version.stdout.strip() != PINNED_DOTNET:
