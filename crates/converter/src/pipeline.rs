@@ -3277,6 +3277,7 @@ mod stop_hook {
         CANCEL_AFTER.lock().unwrap().push((output, checks));
     }
 
+    /// Counts one stop check for `output` and cancels the run once its armed count reaches zero.
     pub(super) fn tick(output: &Path, cancellation: &Cancellation) {
         let mut hooks = CANCEL_AFTER.lock().unwrap();
         if let Some(index) = hooks.iter().position(|(path, _)| path == output) {
