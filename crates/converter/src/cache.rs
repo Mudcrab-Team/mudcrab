@@ -8,11 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Unique combined producer: authored surface GLBs and native-BC DDS.
-/// Schema 18 was used independently by specular and native-BC producers; older
-/// numeric identities do not establish mesh or texture compatibility. Schema 23
-/// also rebuilds schema 22 meshes for normal/UV/alpha source-surface publication.
-pub const CONVERTER_SCHEMA_VERSION: u32 = 23;
+// Combined native-BC, lighting and LOD producer. Earlier numeric identities
+// alone do not establish compatible output semantics.
+pub const CONVERTER_SCHEMA_VERSION: u32 = shared::LOD_CONVERTER_SCHEMA_VERSION;
 
 /// Provenance journal the converter keeps inside a staging directory.
 ///
@@ -180,6 +178,13 @@ pub struct IngestionCacheEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversionManifest {
     pub schema_version: u32,
+    /// Metadata-only rebuilds do not upgrade the retained mesh cache contract.
+    /// Absent means the meshes follow `schema_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_mesh_schema_version: Option<u32>,
+    /// Producer settings of retained bytes, independent of rebuilt metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_asset_configuration_hash: Option<String>,
     pub complete: bool,
     #[serde(default)]
     pub configuration_hash: String,
@@ -202,12 +207,10 @@ pub struct ConversionManifest {
     pub entries: BTreeMap<String, CacheEntry>,
 }
 
-/// Known legacy producers change mesh, texture or world contracts, while their
-/// script/archive bytes remain compatible. Never use this predicate to infer
-/// mesh or texture compatibility; source/configuration/output proof is required
-/// even for the unchanged asset kinds.
+/// These schema changes affect GLBs/textures/world data, leaving script/archive
+/// bytes compatible. Configuration and source hashes still have to match.
 pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
-    matches!(schema, 12..=22)
+    matches!(schema, 12..=23)
 }
 
 impl ConversionManifest {
@@ -222,11 +225,19 @@ impl ConversionManifest {
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let mut manifest: Self =
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
-        if can_reuse_scripts_and_archives(manifest.schema_version) {
-            // Separate branches reused schema 18 for specular GLBs and native
-            // BC textures. Rebuild all GLBs/KTX2/world outputs rather than infer
-            // either contract from the ambiguous number. Scripts and archive
-            // ingestion still require their original configuration/source proof.
+        let retained_meshes_are_stale = (manifest.schema_version == CONVERTER_SCHEMA_VERSION)
+            && match manifest.retained_mesh_schema_version {
+                Some(schema) => schema != CONVERTER_SCHEMA_VERSION,
+                None => path
+                    .parent()
+                    .is_some_and(|root| root.join("metadata-rebuild.json").exists()),
+            };
+        if (can_reuse_scripts_and_archives(manifest.schema_version)
+            && manifest.schema_version != CONVERTER_SCHEMA_VERSION)
+            || retained_meshes_are_stale
+        {
+            // Legacy producers lack the combined texture and lighting contracts.
+            // Preserve only verified scripts; regenerate GLBs, textures and world data.
             manifest.complete = false;
             manifest
                 .entries
@@ -259,6 +270,8 @@ impl ConversionManifest {
 }
 
 pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<String> {
+    // no_lod only selects regenerated outputs; it does not change converted asset
+    // bytes. Resume invalidates database/LOD outputs before evaluating this proof.
     configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION)
 }
 
@@ -392,6 +405,29 @@ fn same_path(from: &Path, to: &Path) -> bool {
     }
 }
 
+/// The native collision producer includes its fixed Zstd level in schema 16.
+/// This compatibility route verifies retained bytes, not normal cache reuse.
+pub(crate) fn retained_configuration_matches(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    recorded: &str,
+) -> Result<bool> {
+    if recorded == configuration_hash_for_schema(config, schema)? {
+        return Ok(true);
+    }
+    if schema != 16 {
+        return Ok(false);
+    }
+    let native = serde_json::json!({
+        "schema": schema,
+        "texture_etc1s_quality": config.texture_fallback_quality,
+        "texture_uastc_level": config.texture_uastc_level,
+        "texture_zstd_level": 6,
+        "script_abi_version": config.script_abi_version,
+    });
+    Ok(recorded == hash_bytes(&serde_json::to_vec(&native)?))
+}
+
 pub fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -429,7 +465,7 @@ mod tests {
         for name in ["old.glb", "old.ktx2"] {
             let path = directory.path().join(name);
             fs::write(&path, b"verified old bytes").unwrap();
-            for schema_version in [17, 18, 19, 20, 21, 22] {
+            for schema_version in [17, 18, 19, 20, 21, 22, 23] {
                 let record = StagedOutput {
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
@@ -667,8 +703,39 @@ mod tests {
     }
 
     #[test]
+    fn v91_lod_staging_identity_excludes_lighting_and_old_lod_schemas() {
+        let directory = tempfile::tempdir().unwrap();
+        let config =
+            crate::config::PipelineConfig::new(directory.path(), directory.path().join("output"));
+        let current_hash = configuration_hash(&config).unwrap();
+        for schema in [16, 17, 18, 19, 20, 21, 22, 23] {
+            assert_ne!(
+                current_hash,
+                configuration_hash_for_schema(&config, schema).unwrap()
+            );
+        }
+        let path = directory.path().join("mesh.glb");
+        fs::write(&path, b"verified mesh").unwrap();
+        let record = StagedOutput {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash: "config".into(),
+            source_hash: "source".into(),
+            output_size: 13,
+            output_hash: hash_file(&path).unwrap(),
+        };
+        assert!(record.is_current(&path, "source", "config"));
+        for schema_version in [16, 17, 18, 19, 20, 21, 22, 23] {
+            let stale = StagedOutput {
+                schema_version,
+                ..record.clone()
+            };
+            assert!(!stale.is_current(&path, "source", "config"));
+        }
+    }
+
+    #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
+        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {
@@ -696,6 +763,48 @@ mod tests {
             assert!(!migrated.entries.contains_key("meshes/a.glb"));
             assert!(!migrated.entries.contains_key("textures/a.ktx2"));
             assert!(migrated.entries.contains_key("scripts/a.luau"));
+        }
+    }
+
+    #[test]
+    fn current_metadata_never_promotes_an_older_or_unknown_mesh_contract() {
+        for mesh_schema in [
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            CONVERTER_SCHEMA_VERSION + 1,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("conversion-manifest.json");
+            let mut manifest = ConversionManifest {
+                schema_version: CONVERTER_SCHEMA_VERSION,
+                retained_mesh_schema_version: Some(mesh_schema),
+                complete: true,
+                ..ConversionManifest::default()
+            };
+            for output in ["meshes/a.GLB", "textures/a.ktx2", "scripts/a.luau"] {
+                manifest.entries.insert(
+                    output.to_owned(),
+                    CacheEntry {
+                        source_hash: "source".to_owned(),
+                        output: output.to_owned(),
+                        output_size: 1,
+                        output_hash: "output".to_owned(),
+                    },
+                );
+            }
+            manifest.save(&path).unwrap();
+            let eligible = ConversionManifest::load(&path).unwrap();
+            assert!(!eligible.complete);
+            assert!(!eligible.entries.contains_key("meshes/a.GLB"));
+            assert!(!eligible.entries.contains_key("textures/a.ktx2"));
+            assert!(eligible.entries.contains_key("scripts/a.luau"));
         }
     }
 }

@@ -39,7 +39,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
-- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Current producer 23 combines native BC textures, emission/specular and source-surface fixes. Rebuild all legacy GLB/KTX2/world outputs from schemas 12–22; retain only source/configuration/output-verified scripts/archive ingestion. Exact producer 23 required for staged meshes/textures; encoder mode and GPU quality participate in configuration identity. Runtime/launcher accept complete converter schemas 15–23 and world schemas 3–5. Schema 5 grass worlds need no LOD tables.
+- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Current producer 24 combines native BC textures, emission/specular and source-surface fixes. Rebuild all legacy GLB/KTX2/world outputs from schemas 12–23; retain only source/configuration/output-verified scripts/archive ingestion. Exact producer 24 required for staged meshes/textures; encoder mode and GPU quality participate in configuration identity. Runtime/launcher accept complete converter schemas 15–24 and world schemas 3–7. Schema 5 grass worlds need no LOD tables.
 - V12: Scene-only glTF loads ! reach and retain recursively loaded state after unused subassets release. Native material override retains stock hook's recorded source dependency; scene cloning preserves source and native handles. Probe ! no root-glTF or explicit material loads that mask dependency lifetime failures.
 
 - V13: Converted tangent-space NIF normals ! DirectX Y convention exactly once at native material construction; generic glTF/model-space maps unchanged. Preserve linear RGB & source alpha. ±X/±Y/asymmetric GPU swatches ! match independent geometric normals ≤2/255; legacy no-flip control ! fail.
@@ -70,7 +70,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 ## Static emission publication (historical schema-17 slice)
 
-Historical packages and probes retain their original producer identities. Current producer 23 regeneration and compatibility are recorded in V11.
+Historical packages and probes retain their original producer identities. Current producer 24 regeneration and compatibility are recorded in V11.
 
 [Emission issue #82](https://github.com/Mudcrab-Team/mudcrab/issues/82): `Own_Emit` declares own emittance; `Glow_Map` declares third-slot glow (`vendor/project-wormhole-nif/src/nif_flags.rs`). Glow shader type also permits slot 2. Own_Emit alone retains slot 2 as unclassified source data; no emissive texture sampling.
 
@@ -80,11 +80,11 @@ Signed NIF tints remain valid. Negative channels retain previous glTF lower-clam
 
 `material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Nine cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas, signed tint. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×900, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
 
-Historical emission migration (schema 17): schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Current runtime/launcher accept complete converter schemas 15–23 and world database schemas 3–5; cell-cache version unchanged.
+Historical emission migration (schema 17): schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Current runtime/launcher accept complete converter schemas 15–24 and world database schemas 3–7; cell-cache version unchanged.
 
 For testing, reconvert to separate output directory with converter built from this branch, then run matching engine against that directory. Existing packs remain valid in engine but retain old emission until reconverted. Preserve old pack for rollback; older #137 engine rejects schema 17, so use new engine for new pack. Retail reconversion ! isolated matching package; delivery evidence recorded after successful conversion/startup.
 
-Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `legacy_producers_rebuild_meshes_and_textures_and_reuse_scripts`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
+Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v15_old_material_schemas_rebuild_meshes_and_reuse_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
 
 ## Local verification, 2026-10-02
 
@@ -137,15 +137,15 @@ RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: final exterior/interior probes pass, pai
 
 Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/riverwood-comparison/{before-matched.png,after-candidate.png,roof-comparison.png,metrics.json}`, `roof-material-audit.json`, final scene-only probe JSON. Before/after compare #139 versus #141 Mudcrab; blue wash, remaining lighting work, native BRDF/model-space gaps remain. Test-profile 20-second smoke benchmarks pass their configured gates; no release performance or vanilla Skyrim parity acceptance.
 
-## Source material completion (historical schema 19; current producer 23)
+## Source material completion (historical schema 19; current producer 24)
 
 `NifMaterialPlugin` extends existing native glTF hook: retain source dependency,
 apply tagged normal Y once, preserve mask compensation, apply common native UV
 transform even without diffuse. Generic glTF remains unchanged. Alias identity
 includes transfer space and S/T clamp mode so shared image loads cannot overwrite
 another material's sampler. UV transform remains per material. Historical schema 19 rebuilt GLBs and reused
-then-compatible nonmesh outputs. Current producer 23 rebuilds legacy meshes and
-textures, including schema 22, and retains only verified scripts/archive ingestion.
+then-compatible nonmesh outputs. Current producer 24 rebuilds legacy meshes and
+textures, including schema 23, and retains only verified scripts/archive ingestion.
 
 Riverwood gate source basis: packed NIF tangent follows texture V; split tangent
 components follow U. Bevy-generated tangents negate Mikk handedness. Native shader

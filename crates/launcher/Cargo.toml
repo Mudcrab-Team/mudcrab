@@ -13,3 +13,6 @@ tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+
+[dev-dependencies]
+rusqlite.workspace = true
