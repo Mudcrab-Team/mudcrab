@@ -1781,13 +1781,14 @@ fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub(crate) fn discover(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files: Vec<_> = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .collect();
+    let mut files = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry =
+            entry.wrap_err_with(|| format!("failed to discover inputs in {}", root.display()))?;
+        if entry.file_type().is_file() {
+            files.push(entry.into_path());
+        }
+    }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
 }
@@ -3311,6 +3312,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn discovery_rejects_missing_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let error = discover(&missing).unwrap_err();
+        assert!(error.to_string().contains(&missing.display().to_string()));
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<walkdir::Error>()
+                .and_then(walkdir::Error::io_error)
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        }));
+    }
 
     #[test]
     fn a_dotted_output_name_keeps_its_whole_name_in_the_staging_folder() {
