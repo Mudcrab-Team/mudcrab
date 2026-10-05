@@ -30,8 +30,8 @@ project, the oracle source, and the local game store. The runner keeps failed
 or timed-out observations marked incomplete and stores raw output separately
 from accepted JSON observations.
 
-This pilot reports xEdit as unavailable because no executable or qualified
-runner is present. Mutagen typed traversal does not establish physical source
+This parent pilot has no xEdit execution adapter and reports its observations
+as unavailable. The stacked delivery explores that capability separately. Mutagen typed traversal does not establish physical source
 framing, complete record-occurrence coverage, full-catalog acceptance, retail
 corpus acceptance, or native-runtime compatibility. All fixture inputs are
 synthetic.
