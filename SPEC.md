@@ -244,6 +244,8 @@ V104: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonz
 V106: P0 corpus evidence ! bounded strict JSON + exact newest target + verified artifact hashes; supplied semantic claims remain unverified. Invalid/deep JSON → managed failure; output cannot overlap descriptor or evidence artifacts. Evidence CLI/deep-JSON regressions guard boundary.
 V107: P0 tool reports ! exact Python decision-runner/helper/fixture source hashes separate from external binary/package pins; release metadata ≠ verified source-to-binary build. Startup-report provenance regression + final executable artifacts guard identity.
 
+V105: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -364,6 +366,7 @@ B58|2026-10-04|optional typed StringsKey null could convert to empty string unde
 B59|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader success masked inconsistent source fixtures|V101; include major + group occurrences, independent physical count checks & regenerated golden digest
 B60|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V100; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
 B61|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V99; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
+B62|2026-10-04|engine script-option audit treated standalone schema argparse/dotnet options as engine options; parent CI failed after 918/919 passing tests|V105; extend existing NON_ENGINE_FLAGS + script/help/doc regressions
 B63|2026-10-04|supplied load-order descriptor normalized artifact under `source`; CLI indexed nonexistent `evidence` key|V106; responsible source key + supplied-evidence CLI regression
 B64|2026-10-04|manifest output could alias or overlap external evidence input; source-only guard missed new descriptor artifacts|V106; resolved overlap guard before writes + alias/ancestor regressions
 B65|2026-10-04|deep evidence JSON escaped decode handler with `RecursionError` despite byte limit|V106; managed invalid-JSON failure + 20000-level input regression

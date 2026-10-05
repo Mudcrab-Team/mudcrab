@@ -797,29 +797,48 @@ mod tests {
     /// scripts goes to the engine. None of the audit tools starts the engine,
     /// so their own options must not be mistaken for engine options.
     const NON_ENGINE_FLAGS: &[&str] = &[
-        "--all",               // cargo fmt
-        "--all-targets",       // cargo test, cargo clippy
-        "--bin",               // cargo test
-        "--bins",              // cargo build
-        "--check",             // cargo fmt
-        "--release",           // cargo build
-        "--workspace",         // cargo build, cargo test, cargo clippy
-        "--ignore-submodules", // git diff
-        "--quiet",             // git diff
-        "--short",             // git rev-parse
-        "--output",            // world-inspect
-        "--radius",            // world-inspect
-        "--library-path",      // ld-linux
-        "--meshes",            // audit-collision.py
-        "--min-x",             // audit-collision.py
-        "--max-x",             // audit-collision.py
-        "--min-y",             // audit-collision.py
-        "--max-y",             // audit-collision.py
-        "--out",               // audit-collision.py
-        "--expect-solid",      // audit-collision.py
-        "--expect-passable",   // audit-collision.py
-        "--original",          // audit_asset_sizes.py
-        "--json",              // audit_asset_sizes.py
+        "--artifact-dir",          // run_mutagen_p0.py
+        "--all",                   // cargo fmt
+        "--all-targets",           // cargo test, cargo clippy
+        "--bin",                   // cargo test
+        "--bins",                  // cargo build
+        "--check",                 // cargo fmt
+        "--ccc",                   // corpus_manifest.py
+        "--configfile",            // dotnet restore
+        "--configuration",         // dotnet build
+        "--corpus-evidence",       // corpus_manifest.py
+        "--data-dir",              // corpus_manifest.py
+        "--disable-build-servers", // dotnet build
+        "--dotnet",                // run_mutagen_p0.py
+        "--executable",            // corpus_manifest.py
+        "--release",               // cargo build
+        "--workspace",             // cargo build, cargo test, cargo clippy
+        "--game-root",             // corpus_manifest.py
+        "--ignore-submodules",     // git diff
+        "--no-restore",            // dotnet build
+        "--nologo",                // dotnet build
+        "--oracle-source",         // run_mutagen_p0.py
+        "--porcelain",             // p0_tools.py (git worktree list)
+        "--quiet",                 // git diff
+        "--short",                 // git rev-parse
+        "--use-lock-file",         // dotnet restore
+        "--version",               // dotnet SDK
+        "--verbosity",             // dotnet restore and build
+        "--wine",                  // run_xedit_p0.py
+        "--output",                // world-inspect, corpus_manifest.py, dotnet build
+        "--radius",                // world-inspect
+        "--library-path",          // ld-linux
+        "--meshes",                // audit-collision.py
+        "--min-x",                 // audit-collision.py
+        "--max-x",                 // audit-collision.py
+        "--min-y",                 // audit-collision.py
+        "--max-y",                 // audit-collision.py
+        "--out",                   // audit-collision.py
+        "--expect-solid",          // audit-collision.py
+        "--expect-passable",       // audit-collision.py
+        "--original",              // audit_asset_sizes.py
+        "--json",                  // audit_asset_sizes.py
+        "--xdump",                 // run_xedit_p0.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
