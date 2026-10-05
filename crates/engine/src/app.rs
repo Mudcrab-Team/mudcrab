@@ -8,6 +8,7 @@ use crate::{
         VercidiumRendererPlugin, WATER_LAYER, WaterExtension, WaterMaterial,
         WaterReflectionTexture, terrain_layer_sampler,
     },
+    renderer_init::RendererInitPlugin,
     shots::{ShotsFile, ShotsPlugin, ShotsRun, default_output_dir},
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
@@ -145,6 +146,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .init_resource::<StreamingMetrics>()
         .add_plugins(
             DefaultPlugins
+                .build()
+                .disable::<bevy::render::RenderPlugin>()
+                .add_before::<bevy::render::RenderPlugin>(RendererInitPlugin::default())
                 .set(AssetPlugin {
                     file_path: asset_path,
                     ..default()
