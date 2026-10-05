@@ -1535,7 +1535,7 @@ mod tests {
                 let mut dds = bgra_dds(width, height, 3, payload);
                 let mut offset = 128;
                 for level in &levels {
-                    for pixel in level.chunks_exact(4) {
+                    for pixel in level.as_chunks::<4>().0 {
                         dds[offset..offset + 4]
                             .copy_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
                         offset += 4;
