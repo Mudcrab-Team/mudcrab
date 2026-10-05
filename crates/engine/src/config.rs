@@ -914,14 +914,14 @@ mod tests {
         "--original",              // audit_asset_sizes.py
         "--json",                  // audit_asset_sizes.py
         "--xdump",                 // run_xedit_p0.py
-        "--candidate-inventory", // audit-riverwood-reuse.py
-        "--reference-inventory", // audit-riverwood-reuse.py
-        "--manifest",            // audit-riverwood-reuse.py
-        "--locked",              // cargo run
-        "--manifest-path",       // cargo run
-        "--cpu-jobs",            // converter
-        "--io-jobs",             // converter
-        "--binary",              // git diff
+        "--candidate-inventory",   // audit-riverwood-reuse.py
+        "--reference-inventory",   // audit-riverwood-reuse.py
+        "--manifest",              // audit-riverwood-reuse.py
+        "--locked",                // cargo run
+        "--manifest-path",         // cargo run
+        "--cpu-jobs",              // converter
+        "--io-jobs",               // converter
+        "--binary",                // git diff
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {

@@ -280,6 +280,10 @@ V148: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonz
 
 V149: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
 
+V152: P0 manifest API/CLI ! resolve containing directories before immediate-child checks; final executable/CCC filename remains unresolved so leaf symlinks rejected. Directory-alias/`..` and leaf-symlink regressions guard both routes.
+V153: P0 runtime-loadable plugin set ! Data top level only; nested plugins separately hashed/reported, never satisfy masters/base presence/CCC loadable matches. Loose string tables remain recursively observed; nested-master/base/duplicate regressions guard partition.
+V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descriptor-before/after full metadata equality retained for drift. POSIX path/descriptor full metadata equality unchanged; platform-skew and existing drift regressions guard boundary.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -443,3 +447,7 @@ B94|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader succes
 B95|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V144; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
 B96|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V143; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
 B97|2026-10-04|engine script-option audit treated standalone schema argparse/dotnet options as engine options; parent CI failed after 918/919 passing tests|V149; extend existing NON_ENGINE_FLAGS + script/help/doc regressions
+B107|2026-10-05|P0 `.absolute()` normalized lexical `..` before resolving directory aliases; valid executable/CCC parents failed immediate-child checks|V152; normalize parent only, retain leaf symlink rejection; API/CLI regressions
+B108|2026-10-05|recursive Data plugin discovery let nested masters/base names satisfy runtime-loadable closure/presence|V153; separate loadable top-level set and hashed nested observations; nested master/base/duplicate regressions
+B109|2026-10-05|Windows lstat/fstat timestamp skew classified unchanged file as source drift|V154; cross-interface identity/size checks on Windows, full same-descriptor drift checks; synthetic platform regression + Windows CI
+B110|2026-10-05|synthetic corpus `plugins or defaults` treated explicit empty mapping as five base plugins|V145; only None selects defaults; empty-corpus regression
