@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import locale
 import os
 import signal
 import subprocess
@@ -30,6 +31,51 @@ class ProcessTimeout(QualificationError):
         self.timeout = timeout
         self.stdout = stdout
         self.stderr = stderr
+
+
+class ProcessOutputDecodeError(QualificationError):
+    """Child output was not valid text in the runner's current locale."""
+
+    def __init__(
+        self,
+        label: str,
+        encoding: str,
+        stdout: bytes,
+        stderr: bytes,
+        *,
+        stream: str,
+        error: UnicodeDecodeError,
+        timeout: float | None = None,
+    ):
+        outcome = f"{label} output has undecodable {stream} bytes"
+        if timeout is not None:
+            outcome = f"{label} timed out after {timeout:g} seconds and produced undecodable {stream} bytes"
+        super().__init__(
+            f"{outcome} using {encoding} at bytes {error.start}:{error.end}: {error.reason}"
+        )
+        self.label = label
+        self.encoding = encoding
+        self.stdout_bytes = stdout
+        self.stderr_bytes = stderr
+        self.stream = stream
+        self.byte_start = error.start
+        self.byte_end = error.end
+        self.reason = error.reason
+        self.timeout = timeout
+
+    def failure_record(self) -> dict:
+        return {
+            "encoding": self.encoding,
+            "stream": self.stream,
+            "byte_start": self.byte_start,
+            "byte_end": self.byte_end,
+            "reason": self.reason,
+            "timed_out": self.timeout is not None,
+            "raw_stdout_sha256": _sha256(self.stdout_bytes),
+            "raw_stdout_size_bytes": len(self.stdout_bytes),
+            "raw_stderr_sha256": _sha256(self.stderr_bytes),
+            "raw_stderr_size_bytes": len(self.stderr_bytes),
+        }
 
 
 def _read_verified_bytes(path: Path, *, max_bytes: int = 32 * 1024 * 1024) -> tuple[str, int, bytes]:
@@ -116,7 +162,6 @@ def _run_supervised(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         start_new_session=(os.name == "posix"),
     )
     try:
@@ -145,15 +190,42 @@ def _run_supervised(
                 # A detached descendant can retain these pipes after the
                 # supervised process group has died. Keep captured evidence
                 # and close our readers instead of waiting for that descendant.
-                def captured_text(value: str | bytes | None) -> str:
-                    return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
-
-                stdout, stderr = captured_text(exc.output), captured_text(exc.stderr)
+                stdout, stderr = exc.output, exc.stderr
                 process.stdout.close()
                 process.stderr.close()
                 try:
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
-        raise ProcessTimeout(label, timeout, stdout or "", stderr or "")
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        output = _decode_process_output(
+            label, stdout or b"", stderr or b"", timeout=timeout
+        )
+        raise ProcessTimeout(label, timeout, output[0], output[1])
+    decoded_stdout, decoded_stderr = _decode_process_output(
+        label, stdout or b"", stderr or b""
+    )
+    return subprocess.CompletedProcess(
+        command, process.returncode, decoded_stdout, decoded_stderr
+    )
+
+
+def _output_encoding() -> str:
+    if sys.flags.utf8_mode:
+        return "utf-8"
+    getencoding = getattr(locale, "getencoding", None)
+    return getencoding() if getencoding else locale.getpreferredencoding(False)
+
+
+def _decode_process_output(
+    label: str, stdout: bytes, stderr: bytes, *, timeout: float | None = None
+) -> tuple[str, str]:
+    encoding = _output_encoding()
+    decoded: list[str] = []
+    for stream, raw in (("stdout", stdout), ("stderr", stderr)):
+        try:
+            decoded.append(raw.decode(encoding))
+        except UnicodeDecodeError as exc:
+            raise ProcessOutputDecodeError(
+                label, encoding, stdout, stderr, stream=stream, error=exc, timeout=timeout
+            ) from exc
+    return decoded[0], decoded[1]

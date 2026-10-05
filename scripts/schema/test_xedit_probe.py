@@ -1,6 +1,7 @@
 """Trust-boundary tests for the incomplete xEdit console capability probe."""
 import os
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -128,6 +129,34 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
                 )
         self.assertIn("started", caught.exception.stdout)
 
+    def test_v117_supervisor_rejects_undecodable_output_without_lossy_text(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            p0_tools, "_output_encoding", return_value="utf-8"
+        ):
+            with self.assertRaises(p0_tools.ProcessOutputDecodeError) as caught:
+                p0_tools._run_supervised(
+                    [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"],
+                    cwd=Path(directory), env=dict(os.environ), label="invalid-output", timeout=5,
+                )
+        self.assertIn("undecodable stdout bytes", str(caught.exception))
+        self.assertEqual(caught.exception.stdout_bytes, b"\xff")
+        self.assertEqual(caught.exception.stderr_bytes, b"")
+        self.assertEqual(caught.exception.failure_record()["raw_stdout_size_bytes"], 1)
+
+    def test_v117_undecodable_timeout_output_stays_incomplete_with_raw_evidence(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            p0_tools, "_output_encoding", return_value="utf-8"
+        ):
+            with self.assertRaises(p0_tools.ProcessOutputDecodeError) as caught:
+                p0_tools._run_supervised(
+                    [sys.executable, "-u", "-c",
+                     "import sys,time; sys.stdout.buffer.write(b'\\xff'); sys.stdout.flush(); time.sleep(60)"],
+                    cwd=Path(directory), env=dict(os.environ), label="invalid-timeout", timeout=0.2,
+                )
+        self.assertIsNotNone(caught.exception.timeout)
+        self.assertTrue(caught.exception.failure_record()["timed_out"])
+        self.assertEqual(caught.exception.stdout_bytes, b"\xff")
+
     @unittest.skipUnless(os.name == "posix", "requires a detached POSIX process group")
     def test_v104_detached_descendant_cannot_hold_timeout_pipes_open(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,6 +212,82 @@ FULL - Name: <Error: No strings file for lstring ID 12345678>
                 for name in ("run_xedit_p0.py", "p0_tools.py", "corpus_manifest.py", "p0_fixtures.py"):
                     path = "scripts/schema/" + name
                     self.assertEqual(decision_files[path]["sha256"], hashlib.sha256((p0_tools.REPO_ROOT / path).read_bytes()).hexdigest())
+
+    def test_v117_undecodable_xedit_case_keeps_report_and_raw_output_without_verdict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tools" / "xDump64.exe"
+            tool.parent.mkdir()
+            with tool.open("wb") as stream:
+                stream.truncate(probe.XDUMP_SIZE)
+            args = SimpleNamespace(
+                xdump=str(tool), wine=sys.executable, artifact_dir=str(root / "artifacts")
+            )
+            cases = {"p0-hand-light.esl": (b"synthetic plugin", "hand-encoded provenance")}
+            invalid_output = p0_tools.ProcessOutputDecodeError(
+                "p0-hand-light.esl", "utf-8", b"\xffraw stdout", b"raw stderr",
+                stream="stdout", error=UnicodeDecodeError(
+                    "utf-8", b"\xffraw stdout", 0, 1, "invalid start byte"
+                ),
+            )
+            outcomes = [
+                subprocess.CompletedProcess([], 0, "wine-test\n", ""),
+                subprocess.CompletedProcess([], 0, "", "SSEDump 4.1.5f x64"),
+                invalid_output,
+            ]
+            with mock.patch.object(
+                probe, "_read_verified_bytes",
+                return_value=(probe.XDUMP_SHA256, probe.XDUMP_SIZE, b"synthetic tool"),
+            ), mock.patch.object(probe.p0_fixtures, "hand_encoded_cases", return_value=cases), \
+                 mock.patch.dict(os.environ, {
+                     name: str(p0_tools.REPO_ROOT) for name in ("TMPDIR", "TMP", "TEMP")
+                 }), mock.patch.object(probe, "_run_supervised", side_effect=outcomes):
+                report, artifact = probe.run_probe(args)
+            observation = report["cases"][0]
+            self.assertEqual(observation["status"], "incomplete")
+            self.assertFalse(observation["completed_verdict_saved"])
+            self.assertEqual(observation["diagnostic_output_decode_failure"]["stream"], "stdout")
+            self.assertEqual(observation["diagnostic_output_decode_failure"]["raw_stdout_size_bytes"], 11)
+            self.assertEqual(
+                (artifact / "logs/p0-hand-light.esl.stdout.raw.bin").read_bytes(), b"\xffraw stdout"
+            )
+            self.assertEqual(
+                (artifact / "logs/p0-hand-light.esl.stderr.raw.bin").read_bytes(), b"raw stderr"
+            )
+            saved = json.loads((artifact / "probe-results.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["cases"][0]["status"], "incomplete")
+
+    def test_v117_undecodable_xedit_startup_keeps_report_and_raw_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tools" / "xDump64.exe"
+            tool.parent.mkdir()
+            with tool.open("wb") as stream:
+                stream.truncate(probe.XDUMP_SIZE)
+            args = SimpleNamespace(
+                xdump=str(tool), wine=sys.executable, artifact_dir=str(root / "artifacts")
+            )
+            invalid_output = p0_tools.ProcessOutputDecodeError(
+                "wine-version", "utf-8", b"\xffwine version", b"",
+                stream="stdout", error=UnicodeDecodeError(
+                    "utf-8", b"\xffwine version", 0, 1, "invalid start byte"
+                ),
+            )
+            with mock.patch.object(
+                probe, "_read_verified_bytes",
+                return_value=(probe.XDUMP_SHA256, probe.XDUMP_SIZE, b"synthetic tool"),
+            ), mock.patch.dict(os.environ, {
+                name: str(p0_tools.REPO_ROOT) for name in ("TMPDIR", "TMP", "TEMP")
+            }), mock.patch.object(probe, "_run_supervised", side_effect=[invalid_output]):
+                report, artifact = probe.run_probe(args)
+            self.assertIn("startup_failure", report)
+            self.assertFalse(report["completed_verdict_saved"])
+            self.assertEqual(report["startup_output_decode_failure"]["stream"], "stdout")
+            self.assertEqual(
+                (artifact / "logs/wine-version.stdout.raw.bin").read_bytes(), b"\xffwine version"
+            )
+            saved = json.loads((artifact / "probe-results.json").read_text(encoding="utf-8"))
+            self.assertIn("startup_output_decode_failure", saved)
 
     def test_v103_capture_limit_rejects_oversized_pinned_input_before_hashing(self):
         with tempfile.TemporaryDirectory() as directory:
