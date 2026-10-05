@@ -353,3 +353,5 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B82|2026-10-05|GPU tests validated shader/container without dispatching encoder|V120
 
 B86|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V120 unchanged
+
+B88|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V120,V121; same workspace/target selection for both test steps
