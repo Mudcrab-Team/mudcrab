@@ -75,6 +75,125 @@ fn texture_layer(id: u32, quadrant: u8, index: u16) -> Vec<u8> {
     .concat()
 }
 
+/// Independent field cases: do not derive expectations from the remapper's allowlist.
+#[test]
+fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
+    let cases: &[(&[u8; 4], &[u8; 4], usize)] = &[
+        (b"TREE", b"SNAM", 4),
+        (b"TREE", b"PFIG", 4),
+        (b"LTEX", b"TNAM", 4),
+        (b"LTEX", b"GNAM", 4),
+        (b"LTEX", b"MNAM", 4),
+        (b"CELL", b"XCWT", 4),
+        (b"WRLD", b"NAM2", 4),
+        (b"WRLD", b"NAM3", 4),
+        (b"WRLD", b"WNAM", 4),
+        (b"WRLD", b"CNAM", 4),
+        (b"NPC_", b"RNAM", 4),
+        (b"NPC_", b"CNAM", 4),
+        (b"NPC_", b"INAM", 4),
+        // xEdit 9fb016884bec: wbDefinitionsCommon.pas:8801 and TES5 NPC_:8351.
+        // Faction FormID, signed rank, then three unused bytes.
+        (b"NPC_", b"SNAM", 8),
+        (b"RACE", b"WKMV", 4),
+        (b"RACE", b"RNMV", 4),
+    ];
+    for (light, expected_prefix) in [(false, 0x0500_0000u32), (true, 0xFE00_2000)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = vec![plugin(dir.path(), "Base.esm", &[], 0, vec![])];
+        for i in 0..4 {
+            paths.push(plugin(
+                dir.path(),
+                &format!("Filler{i}.esm"),
+                &[],
+                0,
+                vec![],
+            ));
+        }
+        if light {
+            for i in 0..2 {
+                paths.push(plugin(
+                    dir.path(),
+                    &format!("Light{i}.esl"),
+                    &[],
+                    0x200,
+                    vec![],
+                ));
+            }
+        }
+        let mut records = Vec::new();
+        let mut all_cases = cases.to_vec();
+        for record_type in [b"CELL", b"REFR", b"ACHR", b"ACRE", b"PGRE", b"PMIS"] {
+            for tag in [b"XOWN", b"XGLB", b"XEZN", b"XLCN", b"XLRL"] {
+                all_cases.push((record_type, tag, 4));
+            }
+            if record_type != b"CELL" {
+                all_cases.push((record_type, b"NAME", 4));
+            }
+        }
+        for (i, (kind, tag, len)) in all_cases.iter().enumerate() {
+            let mut data = vec![0xAB; *len];
+            data[..4].copy_from_slice(&0x0100_0801u32.to_le_bytes());
+            records.extend(record(kind, 0x0100_0900 + i as u32, 0, sub(tag, &data)));
+        }
+        paths.push(plugin(
+            dir.path(),
+            if light { "Patch.esl" } else { "Patch.esp" },
+            &["Base.esm"],
+            if light { 0x200 } else { 0 },
+            records,
+        ));
+        let merged = EsmParser::merge_plugins(&paths).unwrap();
+        for (i, (kind, tag, len)) in all_cases.iter().enumerate() {
+            let data = &merged[&(expected_prefix | (0x900 + i as u32))].subrecords[0].1;
+            let mut expected = vec![0xAB; *len];
+            expected[..4].copy_from_slice(&(expected_prefix | 0x801).to_le_bytes());
+            assert_eq!(data, &expected, "light={light}, {kind:?}.{tag:?}");
+        }
+    }
+}
+
+#[test]
+fn aliased_tags_and_wrong_length_factions_keep_their_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 0, vec![]);
+    let filler = plugin(dir.path(), "Filler.esm", &[], 0, vec![]);
+    let cases: &[(&[u8; 4], &[u8; 4], usize)] = &[
+        (b"TES4", b"SNAM", 4),
+        (b"CLFM", b"CNAM", 4),
+        (b"AACT", b"CNAM", 4),
+        (b"TREE", b"CNAM", 4),
+        // RNAM starts with cell coordinates; TNAM is a texture path, even at four bytes.
+        (b"WRLD", b"RNAM", 4),
+        (b"WRLD", b"TNAM", 4),
+        (b"NPC_", b"SNAM", 0),
+        (b"NPC_", b"SNAM", 3),
+        (b"NPC_", b"SNAM", 4),
+        (b"NPC_", b"SNAM", 5),
+        (b"NPC_", b"SNAM", 9),
+    ];
+    let payload = cases
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (kind, tag, len))| {
+            let mut data = vec![0xAB; *len];
+            if *len >= 4 {
+                data[..4].copy_from_slice(&0x0100_0801u32.to_le_bytes());
+            }
+            record(kind, 0x0100_0900 + i as u32, 0, sub(tag, &data))
+        })
+        .collect();
+    let patch = plugin(dir.path(), "Patch.esp", &["Base.esm"], 0, payload);
+    let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
+    for (i, (_, _, len)) in cases.iter().enumerate() {
+        let mut expected = vec![0xAB; *len];
+        if *len >= 4 {
+            expected[..4].copy_from_slice(&0x0100_0801u32.to_le_bytes());
+        }
+        assert_eq!(merged[&(0x0200_0900 + i as u32)].subrecords[0].1, expected);
+    }
+}
+
 #[test]
 fn remaps_reordered_masters_light_plugins_terrain_and_alternate_textures() {
     let dir = tempfile::tempdir().unwrap();

@@ -222,6 +222,16 @@ V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/
 
 V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
 
+V118: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
+
+V119: Real-output timing validation ! propagate full selected-set failure; missing configuration, empty selection & semantics collection errors fail; diagnostics never certify passing subset.
+
+V120: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
+
+V121: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
+
+V122: Mutagen comparison ! same-source checksums, independent full/light slots, winning plugin & interpreted placement fields; deleted overrides absent, no unexplained REFR/ACHR difference; finite comparisons; game inputs external.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -267,6 +277,16 @@ T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, s
 T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
 
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
+
+T42|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V118
+
+T43|x|Make validation timing fail on bad output; valid/broken generated artifact regression|V119
+
+T44|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V120
+
+T45|~|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V121
+
+T46|~|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122
 
 ## §B BUGS
 
@@ -351,3 +371,11 @@ B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional 
 B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
+B80|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V118
+B81|2026-10-05|Timing harness discarded invalid artifacts & asserted passing subset|V119
+B82|2026-10-05|GPU tests validated shader/container without dispatching encoder|V120
+B83|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V121
+B84|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan misclassified270 deleted overrides|V122
+B85|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V121; measured40x gate, keep warmed medians & absolute budgets
+
+B86|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V120 unchanged

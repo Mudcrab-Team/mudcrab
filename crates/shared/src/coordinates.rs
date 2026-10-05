@@ -100,6 +100,30 @@ mod tests {
     }
 
     #[test]
+    fn v121_invalid_quaternions_return_identity() {
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        assert_eq!(normalize_quaternion([0.0; 4]), identity);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
+            for axis in 0..4 {
+                let mut q = [1.0; 4];
+                q[axis] = invalid;
+                assert_eq!(normalize_quaternion(q), identity, "axis {axis}, {invalid}");
+            }
+        }
+    }
+
+    #[test]
+    fn v121_normalizes_nonunit_quaternions() {
+        for (input, expected) in [
+            ([0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0]),
+            ([1.0; 4], [0.5; 4]),
+            ([-1.0, 1.0, -1.0, 1.0], [-0.5, 0.5, -0.5, 0.5]),
+        ] {
+            assert_eq!(normalize_quaternion(input), expected);
+        }
+    }
+
+    #[test]
     fn basis_maps_creation_axes_to_runtime_axes() {
         assert_eq!(creation_to_runtime_vector([1.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
         assert_eq!(
