@@ -248,6 +248,7 @@ impl GameSettingIdentities {
     }
 }
 
+/// Read selected plugins from `data_dir`, normalizing master priority before merging.
 pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
     let contents = std::fs::read_to_string(path)?;
     let mut plugins = Vec::new();
@@ -290,7 +291,8 @@ pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
             color_eyre::eyre::bail!("active plugin not found: {name}");
         }
     }
-    Ok(plugins)
+    // Normalize master priority before consumers assign slots or merge overrides (#108).
+    load_order::order_explicit_plugins(plugins)
 }
 
 /// Determines whether a subrecord within a given parent record type represents
