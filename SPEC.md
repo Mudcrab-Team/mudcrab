@@ -386,3 +386,4 @@ B87|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for ab
 
 B88|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V120,V121; same workspace/target selection for both test steps
 B89|2026-10-05|Mutagen exported high-bit record flags as negative JSON integers; unsigned-only test rejected real oracle at line12664|V123; bounded signed/unsigned32-bit deserialization
+B90|2026-10-05|Disk-backed verification exceeded unchanged extraction test60s deadline amid I/O stalls|task-owned memory TMPDIR; isolated0.382s & full1073 passed; no production change or new invariant
