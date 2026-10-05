@@ -11,7 +11,7 @@ use std::fs;
 #[test]
 fn plugin_repairs_preserve_historical_asset_configuration_hashes() {
     let config = PipelineConfig::new("synthetic-data", "synthetic-output");
-    for schema in 12..=16 {
+    for schema in 12..=21 {
         let mut historical = serde_json::json!({
             "schema": schema,
             "texture_etc1s_quality": config.texture_fallback_quality,

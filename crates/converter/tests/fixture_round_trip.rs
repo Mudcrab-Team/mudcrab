@@ -356,8 +356,28 @@ async fn generated_data_directory_converts_end_to_end() {
 
     assert!(report.complete);
     assert_eq!(report.skipped, 0);
+    assert!(report.lod_chunks > 0);
     assert!(output.join("conversion-manifest.json").is_file());
+    let lod_manifest_path = output.join("lod-manifest.json");
+    assert!(lod_manifest_path.is_file());
+    let lod_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&lod_manifest_path).unwrap()).unwrap();
+    let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let database_identity: String = database
+        .query_row(
+            "SELECT build_identity FROM lod_build WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let database_chunks: i64 = database
+        .query_row("SELECT count(*) FROM lod_chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(lod_manifest["build_identity"], database_identity);
+    assert_eq!(lod_manifest["chunks"].as_i64(), Some(database_chunks));
+    assert_eq!(database_chunks as u64, report.lod_chunks);
     for relative in [
+        "lod-manifest.json",
         "scripts/generated.luau",
         "scripts/second.luau",
         "textures/generated_color.ktx2",
@@ -442,7 +462,7 @@ async fn generated_data_directory_converts_end_to_end() {
             .unwrap();
         drain.await.unwrap();
         assert!(report.complete, "schema {schema}");
-        // Combined producer 23 rebuilds all five textures and the model:
+        // The current combined producer rebuilds all five textures and the model:
         // old schema/hash identities cannot prove both output contracts.
         // The two scripts retain their historical source/configuration proof.
         assert_eq!(report.converted, 6, "schema {schema}");

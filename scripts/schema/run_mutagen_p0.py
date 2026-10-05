@@ -30,9 +30,6 @@ PINNED_PROGRAM_SHA256 = "8e61a44f4f953c0491aab3c0519021fb67ca1b7528c607797cd4a2d
 PINNED_CSPROJ_SHA256 = "de51c55aa0b0d56e722cefc3b8b0b4505c28114537468ba3d7ae5c0ce69129be"
 PINNED_DOTNET = "9.0.318"
 PINNED_MUTAGEN = "0.54.4"
-DEFAULT_ORACLE_SOURCE = Path(
-    "/home/dev/.t3/projects/mudcrab-reverse-engineering/oracles/records"
-)
 ORACLE_ENTRY = 'if (args.Length >= 3 && args[0] == "placed-lo")'
 INSPECT_ENTRY = b'if (args.Length == 2 && args[0] == "inspect")\n    return MutagenP0Inspect.Run(args[1]);\n'
 RESTORE_TIMEOUT_SECONDS = 240
@@ -902,7 +899,10 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dotnet", help="path to the pinned .NET SDK executable")
-    parser.add_argument("--oracle-source", default=str(DEFAULT_ORACLE_SOURCE))
+    parser.add_argument(
+        "--oracle-source", required=True,
+        help="explicit path to the separately supplied, hash-pinned qualification oracle",
+    )
     parser.add_argument("--artifact-dir", help="new or empty path outside the repository")
     args = parser.parse_args(argv)
     candidate = (

@@ -57,6 +57,7 @@ P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passe
 
 ## §I INTERFACES
 
+- I.launcher_lod: implemented launcher LOD reporting; planned existing-assets build action; contract and gates in `docs/specs/modding/launcher-lod.md`. Fiji RC excludes build action.
 - cmd: `--physics-fixture` → interactive primitive hill/wall arena, WALK/NOCLIP toggle, auto-spawned debug tankards; no Skyrim asset install required.
 - runtime: P1+ interactive exterior → first-person NOCLIP at start-cell view; fixture supports both modes from P1. P2 enables WALK over streamed terrain.
 - key: NOCLIP `W/A/S/D` fly relative to view; `Space` rise; `Ctrl` descend; `Shift` accelerate.
@@ -162,8 +163,8 @@ V25: P3 lumbermill walkway `MASK` primitive → proxy; masked roof/rope & unrela
 V26: WALK crosses adjacent 15-unit floor rises without jump while existing wall/24-unit step tests remain green.
 V27: P3 converted `STAT`/`TREE` with physical NIF Havok layer + supported shape → authored collider; absent collision or `NONCOLLIDABLE` layer → passable; unsupported shape → counted reason. Legacy GLBs alone use narrow proxy policy.
 V28: P3 bridge/stair compressed mesh follows authored triangles, chunk transforms, body and node transforms; WALK crosses deck/treads without render-beam snag; tankard contacts deck. Invalid refs, indices, transforms → skipped reason, no invented collider.
-V29: Converter collision-contract change bumps cache schema; engine accepts complete schema 15 legacy packages via proxy fallback and current schema 16 packages; older/incomplete assets fail startup.
-V30: Converter schema 12–15 → 16 migration marks manifest incomplete, invalidates every GLB cache entry, preserves unchanged texture/script cache entries.
+V29: Converter output-contract change bumps producer schema; combined converter 24/world 7 includes native-BC DDS, authored emission/specular/normal/UV/alpha, rigid-body metadata, grass & LOD. Runtime accepts complete converter schemas 15–24 & world schemas 3–7; LOD package ! exact 24/7 identity; older/newer/incomplete assets fail startup.
+V30: Historical converter schema 12–15 → 16 migration invalidated GLBs while preserving unchanged texture/script entries. Current producer 24 migration follows V73 & V112; older schema number alone grants no mesh/texture compatibility.
 V31: Packaged Riverwood 5×5 and wider grid `x=-1..11,y=-18..-6` audits → zero unsupported fixed `STAT`/`TREE` models; bridge, stairs, lumbermill, pine solid & clover passable.
 V32: P3 authored multi-shape placement → each mesh/primitive attached as child collider to one fixed body; ⊥ nested Rapier compounds; all child colliders use world groups and answer contact queries without panic.
 V33: P3 placed `FURN` with supported authored NIF collision → fixed streamed collider; authored absence → passable; `FURN` gets no render proxy. MillLogPile contact blocks WALK and tankards. `MISC`/`FLOR` remain outside fixed path.
@@ -204,46 +205,86 @@ V67: `Space` press remains latched across Update frames until WALK fixed tick co
 V68: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
 V69: Active airborne WALK with no downward collision ray continues descending across fixed ticks; ground-ray miss alone never resets velocity or reports terrain loading.
 V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
-V71: Runtime accepts passed integration report & world database schema 3 or additive schema 4; rejects older/newer schemas; schema 4 Riverwood package reaches world loading without `--allow-incomplete-assets`.
+V71: Runtime accepts passed integration report & world database schemas 3–7; grass-only world 5 loads without LOD tables; legacy world 6 LOD query remains valid; older/newer schemas rejected.
 
 V72: ∀ staged GLB used by texture pruning or world integration → accepted current-run mesh artifact with current schema/configuration, source/dependency hash & output-byte proof; prune audit record alone grants no provenance. Removed source → no bounds update or published GLB; unavailable-source accounting preserved. Same-schema verified pruned resume retains mesh & audit record.
 
+V73: Converter 24 migration from known legacy producers 12–23 rebuilds every GLB/KTX2 & world output; unchanged scripts/archive ingestion reuse ! source/configuration/output proof. Ambiguous schema 18 native-BC/specular identity grants no mesh/texture reuse. Current configuration hash ! encoder selection & GPU quality; batch size scheduling-only. Staged mesh/texture records ! exact current producer 24 & V72 proof; ⊥ relabel old bytes.
 
-V73: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
-V74: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
-V75: Dynamic ingestion: Resolution, interpretation and winner merging cannot mutate source bytes or remove source occurrences/tombstones.
-V76: Dynamic ingestion: Compressed subrecord spans identify decoded address space; encoded stream and all original length/header encodings remain preserved.
-V77: Dynamic ingestion: Structural bounds/zlib failures and resource limits have distinct bounded outcomes; per-record and aggregate decoded-byte/work budgets enforced; no partial output receives complete status.
-V78: Dynamic ingestion: Layout selection uses declared context and record observations; ambiguous/unsupported selection never silently chooses another variant.
-V79: Dynamic ingestion: Reference decoding belongs to evidenced layout fields/codecs; unknown payloads receive no guessed remapping.
-V80: Dynamic ingestion: Source occurrence, owning identity and winner identity remain distinct; Skyrim override/deletion/reference and GMST/full/light-slot exceptions retain tested behavior; newest capability changes require explicit proof.
-V81: Dynamic ingestion: Canonical outcomes distinguish absent, unknown, invalid and unresolved; field provenance includes source range, layout and evidence.
-V82: Dynamic ingestion: Registry/generator output deterministic and offline; invalid selectors, spans, mappings and codec references fail validation.
-V83: Dynamic ingestion: Coverage denominators and evidence tiers explicit; structural completeness and runtime readiness independent.
-V84: Dynamic ingestion: Qualified xEdit SSE/Mutagen SE traverse the full acceptance corpus; missing observations require independent native resolution, never assumed agreement; unresolved discrepancies remain gaps; reused logic cannot corroborate itself.
-V85: Dynamic ingestion: Runtime DB/cache share one effective view; existing supported outputs and legacy package acceptance retain parity.
-V86: Dynamic ingestion: Source, layout, canonical and runtime artifact identities distinct; relevant changes invalidate affected products while unrelated verified assets retain reuse.
-V87: Dynamic ingestion: Archive/output persistence atomic and hash-verified; scanner/index bound to exact retained snapshot; failed interpretation preserves successful raw import; asset-cache eviction cannot delete source authority.
-V88: Dynamic ingestion: Projection, annotation and registry updates leave the required no-op round-trip byte-identical; canonical editing remains separately scoped.
-V89: Dynamic ingestion: Localized IDs/table provenance retained; missing required tables remain unresolved and block affected interpretation acceptance; supplied bundles round-trip exactly.
-V90: Dynamic ingestion: Profile acceptance requires pinned corpus/source/tool evidence and declared resource/performance results; unknown semantics do not imply supported gameplay.
-V91: Dynamic ingestion: Delivery order is accepted newest SE (P6), then earlier SE/VR (P7), then LE (P8), then eventual other games (P9); future work cannot open before its predecessor gate.
-V92: Dynamic ingestion: SE source/occurrence and owner identities never collapse distinct records; future native-key/source-namespace generalization waits for P9 and must preserve each game's own identities.
-V93: Dynamic ingestion: SE coordinates/extents, terrain dimensions and text bytes retain native facts; future opened games retain theirs; cell splitting/resampling/record replacement have separate conversion contracts.
-V94: Dynamic ingestion: Every reused module/algorithm/test vector records source pin, author/license/notice and adaptations; provenance and independent evidence remain visible in accepted layouts.
-V95: Dynamic ingestion: Complete SE canonical fields, including data unused by current gameplay, survive persist/reopen/query/report; current SQL/cache columns never limit the interpretation contract.
-V96: Dynamic ingestion: Newest-SE acceptance requires 100% catalog signatures, valid variants, fields/flags/ranges and valid corpus occurrences correctly interpreted; raw-only fallback, unexplained tails, disputed semantics and failed required references are blockers.
-V97: Dynamic ingestion: Newest-SE runtime/distribution/data/tool pins and corpus/catalog denominators are explicit and fixed per acceptance run; newly discovered variants update the ledger and reopen completeness.
-V98: Dynamic ingestion: P0–P6 have no earlier-SE/VR/LE/other-game implementation, corpus, native-key, adapter or framework prerequisite; newest-game-compatible older serialized forms remain part of the newest-SE input contract.
-V99: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs, digest/size + observed header/master metadata from same verified read; source drift → fail pin. Installed filename ≠ official-content proof; unresolved load order/locale remain explicit.
-V100: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
-V101: P0 fixtures ! positive header counts/hierarchy match physical occurrences; unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
-V102: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
-V103: P0 oracle artifacts/temp/build/cache ! outside every registered Mudcrab worktree, active RE checkout/store & supplied oracle/tool roots; verify worktree discovery & validate destination before any write; tool temp env artifact-local. Protected-path fixtures guard both CLI & runner.
-V104: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
-V105: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
-V106: P0 corpus evidence ! bounded strict JSON + exact newest target + verified artifact hashes; supplied semantic claims remain unverified. Invalid/deep JSON → managed failure; output cannot overlap descriptor or evidence artifacts. Evidence CLI/deep-JSON regressions guard boundary.
-V107: P0 tool reports ! exact Python decision-runner/helper/fixture source hashes separate from external binary/package pins; release metadata ≠ verified source-to-binary build. Startup-report provenance regression + final executable artifacts guard identity.
+V74: Source-surface contract from producer 23 retained by combined 24; schema 22 meshes regenerate. Tangent normal convention, authored UV/clamp aliases & enabled vertex/alpha channels survive conversion and native loading; legacy producers ⊥ relabel to current; V72 provenance & V73 encoder identity retained.
+
+V92: Launcher conversion runs existing terrain LOD stage exactly once before final validation/publication; LOD failure cannot report successful conversion. No second compiler or duplicate post-publication job.
+V93: Launcher retains LOD chunk count & LOD warnings; zero chunks, partial world coverage & compiler failure remain distinct. LOD stage label/count accurate; no invented ETA or benchmark acceptance.
+V94: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-24/7 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
+V95: Existing-assets LOD build unavailable until cancellable metadata API & worker/state tests pass; cancellation checked between retained files & worlds and before publication; in-flight file/world allowed to finish; never reports resumable staging without journal support. Engine-running/path/asset-lock guards retained.
+V96: Publication backups identified by full output name; record-owned recovery restores supported manifests with verified retained output sizes/hashes; incomplete status retained; invalid or symlink backups remain untouched.
+V97: Equivalent existing asset paths share one canonical lock; acquisition fails on resolution errors; missing-tail paths normalized before report containment checks.
+V98: LOD readiness counts unique queued, loading & scheduled retry work; current unrecovered failures block screenshot; recovered failures retain cumulative diagnostics; smoke capture still rejects historical failures.
+V99: Shared commit cap unchanged; continuous near-cell work cannot starve queued LOD & LOD cannot starve near cells; center changes retain only in-world/in-range immutable metadata; queries retry at most three times with 1/2/4-second backoff.
+V100: Publication recovery ! recorded destination/backup ownership, unchanged manifest & sealed generated artifacts; ambiguous legacy backups untouched. Missing/corrupt DB/cache/LOD prevents recovery. Symlink output rejected; one exclusive output guard spans prior-pack reads through publication.
+V101: Shared lock opens existing read-only descriptor; missing lock on read-only parent fails closed. Terminal metadata errors never retry; transient SQLite busy/locked/IO errors retain bounded retries.
+V102: Mesh producer reuse ! explicit compatible producer allowlist & source/dependency/output/configuration proof; older numeric identity alone insufficient. Tier residency bounded by tier distance + margin across query/admission/queue/unload; coarse inner fallback retained.
+V103: Near/baked terrain use shared repeats-per-cell; tiling change participates in LOD build identity. World-local compiler content failure skips world with explicit warning; input mutation/cancellation/publication/DB errors fatal.
+V104: Completed launcher summary & bounded conversion notices survive; post-run notices bounded separately. Generic smoke rejects historical query failures & pending queries. Atlas documentation states actual UASTC encoding & native loader limits.
+V105: Interrupted publication cleanup ! validated replacement plus sealed generated files before deleting owned prior package; ownership record atomically published before directory rename.
+
+V106: Record-owned publication recovery accepts sealed structurally valid incomplete packages at every directory-swap boundary; completeness/failures/integration pass status retained, never promoted; schema/hash/cache/DB/LOD checks unchanged.
+V107: Legacy pre-prune GLB replay ! manifest-matched raw NIF & dependencies; unavailable raw source → actionable rejection before publication; retained source bytes unchanged.
+V108: `--ini` retains strict CLI missing/option-shaped value rejection, help precedence & file-layer/CLI override order; INI loaded-grid radius ≤ `MAX_STREAM_RADIUS`.
+
+V109: Script CLI drift checks cover utility commands, excluding script-test assertions; non-engine flags classified by owner; comma-separated values remain whole and PowerShell list delimiters still split.
+V110: Serialized legacy `PipelineConfig` without `lod_origins` → empty map, no invented world origin; explicit signed origins retained; existing config fields/defaults unchanged.
+
+V111: LOD producer 24/world 7 distinct from native-BC/lighting 22–23 & grass world 5; staged outputs ! exact current producer/configuration; older numeric staging identities rejected; grass-only world 5 loads without LOD tables.
+
+V112: Combined converter 24/world 7 ! native-BC, lighting, grass & LOD contracts; normal mesh reuse only verified current producer 24, with source/dependency/configuration/output proof. Producer 23 shared before/after rigid-body dynamics export; ⊥ compatible legacy identity. All producers 12–23 regenerate meshes/textures; unchanged scripts/archive ingestion require exact source/configuration/output proof. Metadata-only retained bytes keep explicit original producer/configuration & original manifest/output hashes; ⊥ certify legacy bytes as producer 24.
+
+V113: Launcher Play readiness & runtime startup share read-only world DB/LOD validation; actual schema ! report schema. Empty/corrupt/unsupported DB ⊥ ready; grass-only schema 5 requires no LOD tables. Advertised current LOD ! exact producer/world/build identity & chunk count; stale/missing/mismatched identity ⊥ ready.
+
+V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publication timings → zero/empty defaults; explicit values retained. Timings measured by monotonic clock; absent historical values ≠ measured zero.
+V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed generated outputs rebuilt; source package unchanged.
+V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
+
+V117: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
+V118: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
+V119: Dynamic ingestion: Resolution, interpretation and winner merging cannot mutate source bytes or remove source occurrences/tombstones.
+V120: Dynamic ingestion: Compressed subrecord spans identify decoded address space; encoded stream and all original length/header encodings remain preserved.
+V121: Dynamic ingestion: Structural bounds/zlib failures and resource limits have distinct bounded outcomes; per-record and aggregate decoded-byte/work budgets enforced; no partial output receives complete status.
+V122: Dynamic ingestion: Layout selection uses declared context and record observations; ambiguous/unsupported selection never silently chooses another variant.
+V123: Dynamic ingestion: Reference decoding belongs to evidenced layout fields/codecs; unknown payloads receive no guessed remapping.
+V124: Dynamic ingestion: Source occurrence, owning identity and winner identity remain distinct; Skyrim override/deletion/reference and GMST/full/light-slot exceptions retain tested behavior; newest capability changes require explicit proof.
+V125: Dynamic ingestion: Canonical outcomes distinguish absent, unknown, invalid and unresolved; field provenance includes source range, layout and evidence.
+V126: Dynamic ingestion: Registry/generator output deterministic and offline; invalid selectors, spans, mappings and codec references fail validation.
+V127: Dynamic ingestion: Coverage denominators and evidence tiers explicit; structural completeness and runtime readiness independent.
+V128: Dynamic ingestion: Qualified xEdit SSE/Mutagen SE traverse the full acceptance corpus; missing observations require independent native resolution, never assumed agreement; unresolved discrepancies remain gaps; reused logic cannot corroborate itself.
+V129: Dynamic ingestion: Runtime DB/cache share one effective view; existing supported outputs and legacy package acceptance retain parity.
+V130: Dynamic ingestion: Source, layout, canonical and runtime artifact identities distinct; relevant changes invalidate affected products while unrelated verified assets retain reuse.
+V131: Dynamic ingestion: Archive/output persistence atomic and hash-verified; scanner/index bound to exact retained snapshot; failed interpretation preserves successful raw import; asset-cache eviction cannot delete source authority.
+V132: Dynamic ingestion: Projection, annotation and registry updates leave the required no-op round-trip byte-identical; canonical editing remains separately scoped.
+V133: Dynamic ingestion: Localized IDs/table provenance retained; missing required tables remain unresolved and block affected interpretation acceptance; supplied bundles round-trip exactly.
+V134: Dynamic ingestion: Profile acceptance requires pinned corpus/source/tool evidence and declared resource/performance results; unknown semantics do not imply supported gameplay.
+V135: Dynamic ingestion: Delivery order is accepted newest SE (P6), then earlier SE/VR (P7), then LE (P8), then eventual other games (P9); future work cannot open before its predecessor gate.
+V136: Dynamic ingestion: SE source/occurrence and owner identities never collapse distinct records; future native-key/source-namespace generalization waits for P9 and must preserve each game's own identities.
+V137: Dynamic ingestion: SE coordinates/extents, terrain dimensions and text bytes retain native facts; future opened games retain theirs; cell splitting/resampling/record replacement have separate conversion contracts.
+V138: Dynamic ingestion: Every reused module/algorithm/test vector records source pin, author/license/notice and adaptations; provenance and independent evidence remain visible in accepted layouts.
+V139: Dynamic ingestion: Complete SE canonical fields, including data unused by current gameplay, survive persist/reopen/query/report; current SQL/cache columns never limit the interpretation contract.
+V140: Dynamic ingestion: Newest-SE acceptance requires 100% catalog signatures, valid variants, fields/flags/ranges and valid corpus occurrences correctly interpreted; raw-only fallback, unexplained tails, disputed semantics and failed required references are blockers.
+V141: Dynamic ingestion: Newest-SE runtime/distribution/data/tool pins and corpus/catalog denominators are explicit and fixed per acceptance run; newly discovered variants update the ledger and reopen completeness.
+V142: Dynamic ingestion: P0–P6 have no earlier-SE/VR/LE/other-game implementation, corpus, native-key, adapter or framework prerequisite; newest-game-compatible older serialized forms remain part of the newest-SE input contract.
+V143: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs, digest/size + observed header/master metadata from same verified read; source drift → fail pin. Installed filename ≠ official-content proof; unresolved load order/locale remain explicit.
+V144: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
+V145: P0 fixtures ! positive header counts/hierarchy match physical occurrences; unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
+V146: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
+V147: P0 oracle artifacts/temp/build/cache ! outside every registered Mudcrab worktree, active RE checkout/store & supplied oracle/tool roots; verify worktree discovery & validate destination before any write; tool temp env artifact-local. Protected-path fixtures guard both CLI & runner.
+V148: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
+
+V149: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
+
+V150: P0 corpus evidence ! bounded strict JSON + exact newest target + verified artifact hashes; supplied semantic claims remain unverified. Invalid/deep JSON → managed failure; output cannot overlap descriptor or evidence artifacts. Evidence CLI/deep-JSON regressions guard boundary.
+V151: P0 tool reports ! exact Python decision-runner/helper/fixture source hashes separate from external binary/package pins; release metadata ≠ verified source-to-binary build. Startup-report provenance regression + final executable artifacts guard identity.
+V152: P0 manifest API/CLI ! resolve containing directories before immediate-child checks; final executable/CCC filename remains unresolved so leaf symlinks rejected. Directory-alias/`..` and leaf-symlink regressions guard both routes.
+V153: P0 runtime-loadable plugin set ! Data top level only; nested plugins separately hashed/reported, never satisfy masters/base presence/CCC loadable matches. Loose string tables remain recursively observed; nested-master/base/duplicate regressions guard partition.
+V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descriptor-before/after full metadata equality retained for drift. POSIX path/descriptor full metadata equality unchanged; platform-skew and existing drift regressions guard boundary.
 
 ## §T TASKS
 
@@ -282,24 +323,29 @@ T31|.|Deferred Q5: bind relevant Papyrus native controls and script records to e
 T32|.|Deferred Q6: resolve state-specific records and implement mount/furniture/transformation/bleedout/dragon paths; report scoped parity|V55,R12,R13
 T33|x|Latch provisional unlimited WALK sprint on `Alt` press until movement stops; reset on focus loss and mode switch; test key edge and gait changes|V10,V14,V57
 T34|~|Make sprint perceptible; display actual speed and latch; ease controlled camera FOV; package laptop and verify manual launch|V10,V57,V60,V61
+T35|x|Launcher LOD A: retain chunk count/warnings in `RunReport`; label LOD world progress; preserve final summary & warning visibility; document automatic conversion-stage build|V92,V93,I.launcher_lod
+T36|~|Launcher LOD A: focused report/status/worker tests; tiny conversion verifies payload/DB/manifest identities; stop/failure never enables new incomplete output; scripted launcher capture|V92,V93,I.launcher_lod
+T37|.|Launcher LOD B: add cooperative metadata cancellation with typed failure & no-resume contract; tests cover preflight, retained-file copy, world boundary, pre-publication, source preservation|V94,V95,I.launcher_lod
+T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source & new destination; reuse worker/messages/state ownership; verify reuse hashes, plugin mismatch, busy/engine/path guards & publication|V94,V95,I.launcher_lod
+T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V93,V96,V97,V98,V99,V100,V101,V102,V103,V104,V105
+T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
 
-
-T35|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V73,V74,V84,V90,V94,V97,V98,V99,V102,V106
-T36|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V73,V75,V76,V77,V92,V98
-T37|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V74,V77,V87,V98
-T38|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V78,V79,V82,V94,V97
-T39|.|Dynamic ingestion P2 prove newest capability/encoding/variant/union/repetition cases and deterministic offline generated accessors|V76,V78,V82,V89,V98
-T40|.|Dynamic ingestion P3 define canonical SE outcomes/references and separate occurrences/owners/winners; persist and query pilot data|V75,V79,V80,V81,V92,V95
-T41|.|Dynamic ingestion P3 migrate current Skyrim SQL/cache/runtime consumers with identity/reference/native-geometry parity|V80,V81,V85,V93
-T42|.|Dynamic ingestion P4 qualify whole-corpus xEdit/Mutagen differential checks and reviewed miners; independently resolve omitted/disputed observations|V83,V84,V90,V94,V96
-T43|.|Dynamic ingestion P5 integrate complete SE canonical persistence/query, source/layout invalidation, atomic recovery and legacy product compatibility|V85,V86,V87,V95
-T44|.|Dynamic ingestion P6 accept 100% newest-SE interpretation, current-game compatibility, no-op/bundle preservation and performance/resource campaign|V74,V77,V88,V89,V90,V91,V96,V97,V98
-T45|.|Dynamic ingestion P4 close every newest-SE signature/variant/field/flag/reference gap through registry/codec work and controlled native research|V78,V79,V81,V83,V84,V95,V96,V97
-T46|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evidence, automated verdict, accepted limits and dependency handoff|V90,V91,V94
-T47|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V78,V84,V89,V90,V91,V96
-T48|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V78,V84,V89,V90,V91,V93
-T49|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V73,V84,V90,V91,V92,V93,V94
-T50|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V84,V90,V99,V100,V101,V103,V104,V107,R26
+T41|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V117,V118,V128,V134,V138,V141,V142,V143,V146,V150
+T42|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V117,V119,V120,V121,V136,V142
+T43|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V118,V121,V131,V142
+T44|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V122,V123,V126,V138,V141
+T45|.|Dynamic ingestion P2 prove newest capability/encoding/variant/union/repetition cases and deterministic offline generated accessors|V120,V122,V126,V133,V142
+T46|.|Dynamic ingestion P3 define canonical SE outcomes/references and separate occurrences/owners/winners; persist and query pilot data|V119,V123,V124,V125,V136,V139
+T47|.|Dynamic ingestion P3 migrate current Skyrim SQL/cache/runtime consumers with identity/reference/native-geometry parity|V124,V125,V129,V137
+T48|.|Dynamic ingestion P4 qualify whole-corpus xEdit/Mutagen differential checks and reviewed miners; independently resolve omitted/disputed observations|V127,V128,V134,V138,V140
+T49|.|Dynamic ingestion P5 integrate complete SE canonical persistence/query, source/layout invalidation, atomic recovery and legacy product compatibility|V129,V130,V131,V139
+T50|.|Dynamic ingestion P6 accept 100% newest-SE interpretation, current-game compatibility, no-op/bundle preservation and performance/resource campaign|V118,V121,V132,V133,V134,V135,V140,V141,V142
+T51|.|Dynamic ingestion P4 close every newest-SE signature/variant/field/flag/reference gap through registry/codec work and controlled native research|V122,V123,V125,V127,V128,V139,V140,V141
+T52|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evidence, automated verdict, accepted limits and dependency handoff|V134,V135,V138
+T53|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V122,V128,V133,V134,V135,V140
+T54|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V122,V128,V133,V134,V135,V137
+T55|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V117,V128,V134,V135,V136,V137,V138
+T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V128,V134,V143,V144,V145,V147,V148,V151,R26
 
 ## §B BUGS
 
@@ -347,31 +393,72 @@ B40|2026-09-29|schema 3 runtime binary paired with schema 4 Riverwood assets; re
 B41|2026-10-01|floating CI `stable` upgraded 1.98.1→1.99.0; new macro warnings failed unchanged workspace under `-D warnings`|§C fixed Rust toolchain; restore 1.98.1
 B42|2026-10-01|PR #102 merge retained local LAND tiling constant alongside shared import; engine failed E0255|reuse shared constant; workspace compile + Clippy gates
 B43|2026-10-03|resume cleanup exempted historical prune-record GLBs without schema/source/output proof; removed NIF let unpublished stale mesh supply world bounds & hide unavailable source|V72
-B44|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V102; stdlib iterative dependency traversal + chain/cycle fixtures
-B45|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V99; explicit completion blockers + matched-runtime base-only regression
-B46|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V99; shared source provenance + custom missing-descriptor regression
-B47|2026-10-04|P0 hand-authored CELL fixtures omitted interior block/subblock & type-6 children groups; skipped references could mask invalid qualification inputs|V101; legal sourced hierarchy + exact expected typed record/reference checks
-B48|2026-10-04|P0 localization fixture used unsupported `STAT/FULL`; absence could masquerade as a string-resolution observation|V100,V101; translated `ARMO/FULL` fixture + exact ID & explicit missing-table outcome
-B49|2026-10-04|P0 inspect redirected library stdout but discarded captured diagnostics|V100; retain library output in observation/error evidence
-B50|2026-10-04|P0 runner appended helper to Program.cs & also wrote helper `.cs` under SDK default compile glob|V100; keep one compiled helper definition
-B51|2026-10-04|P0 runner guarded only current repo; CLI could create artifacts inside protected RE/store/source roots|V103; shared destination guard before writes + protected-path fixtures
-B52|2026-10-04|P0 runner subprocess calls had no timeouts; hung tool could prevent qualification failure reporting|V104; bounded supervised calls + timeout fixture
-B53|2026-10-04|renamed unknown-subrecord fixture expected original full-plugin FormKeys instead of actual source filename|V100,V101; current-plugin owner/reference expectations
-B54|2026-10-04|negative-case classifier accepted exit `-9`/startup failure as expected malformed rejection|V100; require managed rejection exit 2 + diagnostic marker; signal/startup/timeout regressions
-B55|2026-10-04|P0 runner saved parsed JSON before validation while reporting no completed verdict on rejection|V100; raw diagnostic logs first, validated observation JSON only after contract passes
-B56|2026-10-04|P0 typed model-path check compared wire backslashes with Mutagen slash normalization|V100,V101; declared path comparison normalization; raw fixture bytes/digest unchanged
-B57|2026-10-04|P0 localized check assumed typed printer exposed `FULL` ID; missing table yielded blank Name output|V100; fixture wire ID provenance separate from typed ID/text availability
-B58|2026-10-04|optional typed StringsKey null could convert to empty string under available status|V100; nullable-key guard before reporting availability
-B59|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader success masked inconsistent source fixtures|V101; include major + group occurrences, independent physical count checks & regenerated golden digest
-B60|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V100; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
-B61|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V99; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
-B62|2026-10-04|engine script-option audit treated standalone schema argparse/dotnet options as engine options; parent CI failed after 918/919 passing tests|V105; extend existing NON_ENGINE_FLAGS + script/help/doc regressions
-B63|2026-10-04|supplied load-order descriptor normalized artifact under `source`; CLI indexed nonexistent `evidence` key|V106; responsible source key + supplied-evidence CLI regression
-B64|2026-10-04|manifest output could alias or overlap external evidence input; source-only guard missed new descriptor artifacts|V106; resolved overlap guard before writes + alias/ancestor regressions
-B65|2026-10-04|deep evidence JSON escaped decode handler with `RecursionError` despite byte limit|V106; managed invalid-JSON failure + 20000-level input regression
-B66|2026-10-04|detached descendant retained stdout after process-group termination; final unbounded `communicate()` waited 60 seconds|V104; bounded final collection + pipe close; detached-pipe regression; escaped descendant cleanup separately limited
-B67|2026-10-04|oracle artifact guard protected only current Mudcrab worktree; primary dirty checkout remained writable destination|V103; timed registered-worktree discovery before writes + every-checkout/failure regressions
-B68|2026-10-04|xEdit console exited zero after Wine crash & tolerated malformed dump; exit code alone could masquerade as qualification|V100,V101; crash/completion/identity diagnostics; malformed dumps remain unqualified; original schema diagnostics retained
-B69|2026-10-04|tool reports omitted Python classification source identity; xEdit inherited potentially protected temp paths|V103,V107; decision-source hashes + artifact-local Wine temp env + startup/provenance regression
-B70|2026-10-04|static XESP summary omitted flag-write condition after zero-parent removes extra entry|native shard cross-check; flag write only when entry exists
-B71|2026-10-04|oracle artifact guard omitted custom SDK/Wine executable directories; temporary outputs could enter supplied runtime roots|V103; resolve runtime & guard directory before writes in runner/CLI; custom-runtime regressions
+B44|2026-10-04|native-BC DDS & specular branches both used converter 18; numeric identity could accept incompatible output bytes|V73,V112
+B45|2026-10-04|configuration hash omitted CPU/native-BC vs GPU/UASTC selection & GPU quality|V73
+B46|2026-10-04|normal/UV/alpha source-surface slice originally producer 19 predates merged native-BC/specular producer 22; 22 mesh reuse omits new material contract|V74
+B47|2026-09-30|launcher LOD report fields omitted from Play-availability fixture outside conversion module|migrate fixture; launcher compile/test gate
+B48|2026-09-30|ignored layout performance test retained 12-file count after LOD sidecar addition|migrate count; assert sidecar output; preserve 10-second budget; no new invariant
+B49|2026-10-01|world-inspect queried absent legacy LOD table; capture scripts passed unsupported log flag|legacy table guard; preserve malformed-table errors; existing stdout/stderr redirection
+B50|2026-10-01|publication recovery adopted newest backup by name without validating completeness or outputs|V96
+B51|2026-10-01|dotted outputs shared backup namespace; raw path aliases bypassed asset locks; completed notices trimmed results|V96,V97,V93
+B52|2026-10-01|near cells exhausted shared budget; center changes dropped relevant LOD metadata; pending counts omitted queue/retry work; failed queries stayed requested|V98,V99
+B53|2026-10-01|metadata LOD extraction let unmatched archives override package-matched plugin sources|filter unmatched archives before settings/diffuse extraction; record omission; preserve loose precedence
+B54|2026-10-01|screenshot readiness treated recovered LOD failures as current errors|V98
+B55|2026-10-01|first fair-budget draft derived reservation from shrinking remainder and released it after a near commit|V99; reserve from frame limit before collectors
+B56|2026-10-01|backup validation omitted generated artifacts & destination ownership; output alias changed lock identity; publication lock checked too late|V100,V101
+B57|2026-10-01|schema17 invalidated unchanged schema16 GLBs; all tiers loaded largest radius; deterministic metadata errors retried|V101,V102
+B58|2026-10-01|generic capture omitted query failures; launcher replaced progress notices then allowed unbounded post-run growth; ADR misstated UASTC encoding; PR91 tiling diverged|V103,V104
+B59|2026-10-01|new preflight IO used `?` across `PipelineFailure` boundary without `Report` conversion|named `WrapErr` context; compile oracle catches mechanical error; no new invariant
+B60|2026-10-01|interrupted replacement cleanup trusted next manifest alone; missing generated files could discard last-good backup|V105
+B61|2026-10-03|record-owned recovery applied Play-readiness completeness gate to structurally valid incomplete packs|V106
+B62|2026-10-03|legacy prune replay assumed published packs retained raw `vfs/` NIFs; missing source produced opaque hash IO error|V107
+B63|2026-10-03|INI integration bypassed strict CLI value contract & loaded-grid overflow bound; GPU result channel omitted fatal cleanup flag|V108,V103; preserve upstream parser & shared cleanup semantics
+B64|2026-10-03|metadata payload validation retained old three-argument API after main parallelized validation; new recovery test used absent runner; compiler fixture retained removed export helper|pass configured CPU jobs; reuse existing runners/merged-record exporter; compile oracle, no new invariant
+B65|2026-10-03|script drift scanner mistook audit/Cargo/Git flags & negative test assertions for engine arguments; comma splitting turned camera CSV into scalar|V109
+B66|2026-10-03|conflict splice placed `notices` before LOD keys in sorted JSON snapshot|restore observed sorted order; fixture oracle, no new invariant
+
+B67|2026-10-03|new `lod_origins` lacked serde default, rejecting legacy serialized configs|V110
+B68|2026-10-03|schema docs claimed legacy `lod` removal while exporter retained unused table|document retained placeholder and external GLB payloads; documentation correction, no new invariant
+B69|2026-10-03|V29/V71 retained pre-LOD current schema limits after runtime range expanded to converter 17/world 5|align existing invariants with supported ranges; existing runtime/launcher range tests, no new invariant
+B70|2026-10-03|LOD & grass both stamped world 5; LOD & emission both stamped converter 17; range reuse hid distinct producer contracts|V111; allocate LOD 20/6; preserve explicit cache gates; refresh schema-dependent snapshot/error fixtures; downstream failure not reproduced
+B71|2026-10-04|combined LOD engine fixture retained producer21 success expectation after current producer advanced24; runtime correctly rejected stale identity|V112; shared current constants & explicit21/22/23 rejection regressions; mechanical fixture migration, no new invariant
+B72|2026-10-04|conflict splice dropped async regression test attribute; legacy producer regeneration function compiled without execution|V73,V112; restore test registration; strict Clippy unused-function gate, no new invariant
+B73|2026-10-04|schema 23 retained across rigid-body GLB payload change; honest old source/config/output proof reused mesh without body dynamics|V73,V112; valid legacy GLB negative control, current24 unchanged resume
+B74|2026-10-04|launcher readiness checked only world DB file existence; empty SQLite fixture enabled Play while runtime rejected|V113; shared read-only DB/LOD contract, real SQLite readiness fixtures
+B75|2026-10-04|schema23 fixtures retained mesh-only count and normal-reuse allowlist after legacy mesh/texture regeneration became required|V73,V112; align output-byte/count assertions and current-only normal reuse; preserve honest metadata-only provenance; existing invariants sufficient
+B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional LOD addition; older JSON rejected|V114; failing legacy-report regression, serde defaults
+B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
+B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
+
+B79|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V146; stdlib iterative dependency traversal + chain/cycle fixtures
+B80|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V143; explicit completion blockers + matched-runtime base-only regression
+B81|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V143; shared source provenance + custom missing-descriptor regression
+B82|2026-10-04|P0 hand-authored CELL fixtures omitted interior block/subblock & type-6 children groups; skipped references could mask invalid qualification inputs|V145; legal sourced hierarchy + exact expected typed record/reference checks
+B83|2026-10-04|P0 localization fixture used unsupported `STAT/FULL`; absence could masquerade as a string-resolution observation|V144,V145; translated `ARMO/FULL` fixture + exact ID & explicit missing-table outcome
+B84|2026-10-04|P0 inspect redirected library stdout but discarded captured diagnostics|V144; retain library output in observation/error evidence
+B85|2026-10-04|P0 runner appended helper to Program.cs & also wrote helper `.cs` under SDK default compile glob|V144; keep one compiled helper definition
+B86|2026-10-04|P0 runner guarded only current repo; CLI could create artifacts inside protected RE/store/source roots|V147; shared destination guard before writes + protected-path fixtures
+B87|2026-10-04|P0 runner subprocess calls had no timeouts; hung tool could prevent qualification failure reporting|V148; bounded supervised calls + timeout fixture
+B88|2026-10-04|renamed unknown-subrecord fixture expected original full-plugin FormKeys instead of actual source filename|V144,V145; current-plugin owner/reference expectations
+B89|2026-10-04|negative-case classifier accepted exit `-9`/startup failure as expected malformed rejection|V144; require managed rejection exit 2 + diagnostic marker; signal/startup/timeout regressions
+B90|2026-10-04|P0 runner saved parsed JSON before validation while reporting no completed verdict on rejection|V144; raw diagnostic logs first, validated observation JSON only after contract passes
+B91|2026-10-04|P0 typed model-path check compared wire backslashes with Mutagen slash normalization|V144,V145; declared path comparison normalization; raw fixture bytes/digest unchanged
+B92|2026-10-04|P0 localized check assumed typed printer exposed `FULL` ID; missing table yielded blank Name output|V144; fixture wire ID provenance separate from typed ID/text availability
+B93|2026-10-04|optional typed StringsKey null could convert to empty string under available status|V144; nullable-key guard before reporting availability
+B94|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader success masked inconsistent source fixtures|V145; include major + group occurrences, independent physical count checks & regenerated golden digest
+B95|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V144; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
+B96|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V143; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
+B97|2026-10-04|engine script-option audit treated standalone schema argparse/dotnet options as engine options; parent CI failed after 918/919 passing tests|V149; extend existing NON_ENGINE_FLAGS + script/help/doc regressions
+B98|2026-10-04|supplied load-order descriptor normalized artifact under `source`; CLI indexed nonexistent `evidence` key|V150; responsible source key + supplied-evidence CLI regression
+B99|2026-10-04|manifest output could alias or overlap external evidence input; source-only guard missed new descriptor artifacts|V150; resolved overlap guard before writes + alias/ancestor regressions
+B100|2026-10-04|deep evidence JSON escaped decode handler with `RecursionError` despite byte limit|V150; managed invalid-JSON failure + 20000-level input regression
+B101|2026-10-04|detached descendant retained stdout after process-group termination; final unbounded `communicate()` waited 60 seconds|V148; bounded final collection + pipe close; detached-pipe regression; escaped descendant cleanup separately limited
+B102|2026-10-04|oracle artifact guard protected only current Mudcrab worktree; primary dirty checkout remained writable destination|V147; timed registered-worktree discovery before writes + every-checkout/failure regressions
+B103|2026-10-04|xEdit console exited zero after Wine crash & tolerated malformed dump; exit code alone could masquerade as qualification|V144,V145; crash/completion/identity diagnostics; malformed dumps remain unqualified; original schema diagnostics retained
+B104|2026-10-04|tool reports omitted Python classification source identity; xEdit inherited potentially protected temp paths|V147,V151; decision-source hashes + artifact-local Wine temp env + startup/provenance regression
+B105|2026-10-04|static XESP summary omitted flag-write condition after zero-parent removes extra entry|native shard cross-check; flag write only when entry exists
+B106|2026-10-04|oracle artifact guard omitted custom SDK/Wine executable directories; temporary outputs could enter supplied runtime roots|V147; resolve runtime & guard directory before writes in runner/CLI; custom-runtime regressions
+B107|2026-10-05|P0 `.absolute()` normalized lexical `..` before resolving directory aliases; valid executable/CCC parents failed immediate-child checks|V152; normalize parent only, retain leaf symlink rejection; API/CLI regressions
+B108|2026-10-05|recursive Data plugin discovery let nested masters/base names satisfy runtime-loadable closure/presence|V153; separate loadable top-level set and hashed nested observations; nested master/base/duplicate regressions
+B109|2026-10-05|Windows lstat/fstat timestamp skew classified unchanged file as source drift|V154; cross-interface identity/size checks on Windows, full same-descriptor drift checks; synthetic platform regression + Windows CI
+B110|2026-10-05|synthetic corpus `plugins or defaults` treated explicit empty mapping as five base plugins|V145; only None selects defaults; empty-corpus regression

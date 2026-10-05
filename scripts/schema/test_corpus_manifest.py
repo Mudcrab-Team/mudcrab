@@ -1,3 +1,4 @@
+import errno
 import hashlib
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import corpus_manifest as manifest_tool
@@ -50,7 +52,8 @@ def make_tree(root: Path, plugins=None, executable=b"test runtime", ccc=b""):
     data_root.mkdir(parents=True)
     (game_root / "SkyrimSE.exe").write_bytes(executable)
     (game_root / "Skyrim.ccc").write_bytes(ccc)
-    plugins = plugins or {name: () for name in BASE_PLUGINS}
+    if plugins is None:
+        plugins = {name: () for name in BASE_PLUGINS}
     for name, masters in plugins.items():
         path = data_root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +105,22 @@ def make_corpus_evidence(root: Path, active_plugins, unloaded_optional_plugins=(
     return path, descriptor
 
 
+def make_symlink_or_skip(link: Path, target: str | Path, *, target_is_directory=False):
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        unavailable_errnos = {
+            errno.EACCES,
+            errno.EPERM,
+            getattr(errno, "ENOSYS", -1),
+            getattr(errno, "ENOTSUP", -1),
+            getattr(errno, "EOPNOTSUPP", -1),
+        }
+        if exc.errno in unavailable_errnos or getattr(exc, "winerror", None) == 1314:
+            raise unittest.SkipTest(f"the OS denied or does not support symlinks: {exc}") from exc
+        raise
+
+
 class CorpusManifestTests(unittest.TestCase):
     def test_v106_deep_evidence_json_fails_cleanly_without_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -134,6 +153,7 @@ class CorpusManifestTests(unittest.TestCase):
 
             manifest = manifest_tool.build_manifest(game_root, data_root, executable, ccc)
 
+            self.assertEqual(manifest["manifest_version"], 3)
             plugin = next(item for item in manifest["corpus_hashes"]["plugins"] if item["name"] == "Skyrim.esm")
             self.assertEqual(plugin["source"], {"root": "data", "relative_path": "Skyrim.esm"})
             self.assertEqual(plugin["size"], len(raw))
@@ -167,7 +187,53 @@ class CorpusManifestTests(unittest.TestCase):
             self.assertFalse(manifest["dependency_closure"]["complete"])
             self.assertIn("missing_base_plugin", {item["code"] for item in manifest["issues"]})
 
-    def test_duplicate_casefold_plugin_names_are_reported(self):
+    def test_nested_plugins_are_observed_but_do_not_satisfy_loadable_dependencies_or_bases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(
+                root,
+                {"Addon.esl": ("NestedMaster.esm",)},
+                ccc=b"NestedMaster.esm\nUpdate.esm\n",
+            )
+            nested = data_root / "nested"
+            nested.mkdir()
+            (nested / "NestedMaster.esm").write_bytes(tes4_plugin())
+            (nested / "Update.esm").write_bytes(tes4_plugin())
+
+            manifest = manifest_tool.build_manifest(game_root, data_root, executable, ccc)
+
+            self.assertEqual(manifest["plugin_count"], 1)
+            self.assertEqual([item["name"] for item in manifest["corpus_hashes"]["plugins"]], ["Addon.esl"])
+            self.assertEqual(
+                [item["source"]["relative_path"] for item in manifest["corpus_hashes"]["nested_plugins"]],
+                ["nested/NestedMaster.esm", "nested/Update.esm"],
+            )
+            self.assertEqual(manifest["dependency_closure"]["missing_masters"], [
+                {"plugin": "Addon.esl", "master": "NestedMaster.esm"}
+            ])
+            update = next(item for item in manifest["base_plugins"] if item["name"] == "Update.esm")
+            self.assertFalse(update["present"])
+            self.assertEqual(update["paths"], [])
+            self.assertEqual(
+                {item["code"] for item in manifest["issues"]} & {"nested_plugin_not_loadable"},
+                {"nested_plugin_not_loadable"},
+            )
+            self.assertEqual(manifest["ccc"]["matching_data_plugin_names"], [])
+            self.assertEqual(manifest["ccc"]["matching_nested_plugin_names"], ["NestedMaster.esm", "Update.esm"])
+            self.assertEqual(manifest["ccc"]["declared_names_only_nested"], ["NestedMaster.esm", "Update.esm"])
+            self.assertEqual(manifest["ccc"]["declared_names_missing_from_data"], [])
+
+    def test_empty_plugin_fixture_is_really_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root, {})
+
+            manifest = manifest_tool.build_manifest(game_root, data_root, executable, ccc)
+
+            self.assertEqual(manifest["plugin_count"], 0)
+            self.assertEqual(manifest["corpus_hashes"]["plugins"], [])
+
+    def test_nested_duplicate_name_does_not_create_loadable_plugin_ambiguity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             game_root, data_root, executable, ccc = make_tree(
@@ -180,10 +246,9 @@ class CorpusManifestTests(unittest.TestCase):
 
             manifest = manifest_tool.build_manifest(game_root, data_root, executable, ccc)
 
-            self.assertIn(
-                "duplicate_casefold_plugin_name",
-                {item["code"] for item in manifest["issues"]},
-            )
+            self.assertTrue(manifest["dependency_closure"]["complete"])
+            self.assertNotIn("duplicate_casefold_plugin_name", {item["code"] for item in manifest["issues"]})
+            self.assertIn("nested_plugin_not_loadable", {item["code"] for item in manifest["issues"]})
 
     def test_dependency_graph_is_stack_safe_and_reports_a_cycle(self):
         long_chain = []
@@ -327,6 +392,42 @@ class CorpusManifestTests(unittest.TestCase):
                 with self.assertRaises(manifest_tool.SourceDriftError):
                     manifest_tool.scan_plugin(source, data_root, "data")
 
+    def test_path_descriptor_timestamp_skew_keeps_same_file_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_root = root / "Data"
+            data_root.mkdir()
+            source = data_root / "Skyrim.esm"
+            source.write_bytes(tes4_plugin())
+            original_path_stat = manifest_tool._path_stat
+
+            def skewed_path_stat(path):
+                observed = original_path_stat(path)
+                return SimpleNamespace(
+                    st_dev=observed.st_dev,
+                    st_ino=observed.st_ino,
+                    st_mode=observed.st_mode,
+                    st_size=observed.st_size,
+                    st_mtime=observed.st_mtime + 2,
+                    st_ctime=observed.st_ctime + 2,
+                    st_mtime_ns=observed.st_mtime_ns + 2_000_000_000,
+                    st_ctime_ns=observed.st_ctime_ns + 2_000_000_000,
+                )
+
+            with (
+                mock.patch.object(manifest_tool, "_path_stat", side_effect=skewed_path_stat),
+                mock.patch.object(manifest_tool.os, "name", "nt"),
+            ):
+                plugin = manifest_tool.scan_plugin(source, data_root, "data")
+
+            self.assertEqual(plugin["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            with (
+                mock.patch.object(manifest_tool, "_path_stat", side_effect=skewed_path_stat),
+                mock.patch.object(manifest_tool.os, "name", "posix"),
+                self.assertRaises(manifest_tool.SourceDriftError),
+            ):
+                manifest_tool.scan_plugin(source, data_root, "data")
+
     def test_source_path_replacement_during_hash_fails_the_pin(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -380,7 +481,7 @@ class CorpusManifestTests(unittest.TestCase):
             root = Path(temp_dir)
             game_root, data_root, executable, ccc = make_tree(root)
             alternate_ccc = game_root / "Alternate.ccc"
-            alternate_ccc.symlink_to(ccc.name)
+            make_symlink_or_skip(alternate_ccc, ccc.name)
 
             manifest = manifest_tool.build_manifest(game_root, data_root, executable, alternate_ccc)
 
@@ -388,6 +489,66 @@ class CorpusManifestTests(unittest.TestCase):
             self.assertEqual(manifest["ccc"]["source"]["relative_path"], "Alternate.ccc")
             issue = next(item for item in manifest["issues"] if item["code"] == "source_drift")
             self.assertEqual(issue["path"], "Alternate.ccc")
+
+    def test_api_and_cli_resolve_executable_and_ccc_directory_aliases_without_resolving_leaf(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root)
+            nested = game_root / "nested"
+            nested.mkdir()
+            alias = root / "install-parent-alias"
+            make_symlink_or_skip(alias, nested, target_is_directory=True)
+            executable_alias = alias / ".." / executable.name
+            ccc_alias = alias / ".." / ccc.name
+
+            api_manifest = manifest_tool.build_manifest(game_root, data_root, executable_alias, ccc_alias)
+
+            self.assertEqual(api_manifest["target"]["runtime"]["source"]["relative_path"], "SkyrimSE.exe")
+            self.assertEqual(api_manifest["ccc"]["status"], "observed")
+            self.assertEqual(api_manifest["ccc"]["source"]["relative_path"], "Skyrim.ccc")
+
+            output = root / "cli-manifest.json"
+            status = manifest_tool.main([
+                "--game-root", str(game_root),
+                "--data-dir", str(data_root),
+                "--executable", str(executable_alias),
+                "--ccc", str(ccc_alias),
+                "--output", str(output),
+            ])
+
+            self.assertEqual(status, 2)
+            cli_manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(cli_manifest["target"]["runtime"]["source"]["relative_path"], "SkyrimSE.exe")
+            self.assertEqual(cli_manifest["ccc"]["status"], "observed")
+            self.assertEqual(cli_manifest["ccc"]["source"]["relative_path"], "Skyrim.ccc")
+
+    def test_api_and_cli_reject_leaf_symlinks_after_parent_normalization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            game_root, data_root, executable, ccc = make_tree(root)
+            executable_link = game_root / "RuntimeAlias.exe"
+            ccc_link = game_root / "CccAlias.ccc"
+            make_symlink_or_skip(executable_link, executable.name)
+            make_symlink_or_skip(ccc_link, ccc.name)
+
+            api_manifest = manifest_tool.build_manifest(game_root, data_root, executable_link, ccc_link)
+
+            self.assertEqual(api_manifest["target"]["runtime"]["status"], "source_drift")
+            self.assertEqual(api_manifest["ccc"]["status"], "source_drift")
+
+            output = root / "leaf-link-manifest.json"
+            status = manifest_tool.main([
+                "--game-root", str(game_root),
+                "--data-dir", str(data_root),
+                "--executable", str(executable_link),
+                "--ccc", str(ccc_link),
+                "--output", str(output),
+            ])
+
+            self.assertEqual(status, 2)
+            cli_manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(cli_manifest["target"]["runtime"]["status"], "source_drift")
+            self.assertEqual(cli_manifest["ccc"]["status"], "source_drift")
 
     def test_output_must_be_outside_game_and_data_sources(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -506,7 +667,7 @@ class CorpusManifestTests(unittest.TestCase):
                 game_root, data_root, executable, ccc, evidence_path
             )
 
-            self.assertEqual(manifest["manifest_version"], 2)
+            self.assertEqual(manifest["manifest_version"], 3)
             self.assertEqual(manifest["locale"]["value"], "ENGLISH")
             self.assertEqual(manifest["locale"]["status"], "supplied_evidence_hash_verified")
             self.assertEqual(manifest["locale"]["semantic_status"], "unverified")
@@ -660,7 +821,7 @@ class CorpusManifestTests(unittest.TestCase):
             profile_artifact = root / "evidence" / "profile-source.txt"
             original = profile_artifact.read_bytes()
             alias = root / "artifact-alias.json"
-            alias.symlink_to(profile_artifact)
+            make_symlink_or_skip(alias, profile_artifact)
             stdout = StringIO()
             stderr = StringIO()
 

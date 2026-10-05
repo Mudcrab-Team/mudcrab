@@ -252,3 +252,77 @@ fn unknown_body_fields_are_ignored() {
     assert_eq!((body.kind, body.node), (BodyKind::Dynamic, 7));
     assert_eq!(body.shapes, [0, 1]);
 }
+
+/// Producer 23 predates body dynamics even though #118 retained its schema number.
+/// Matching source/configuration/output proof must not hide the changed mesh contract.
+#[tokio::test]
+async fn schema23_cached_mesh_rebuilds_body_dynamics_and_current24_reuses() {
+    use converter::{
+        cache::{ConversionManifest, configuration_hash_for_schema, hash_bytes},
+        config::PipelineConfig,
+        pipeline::AssetPipeline,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("assets");
+    fs::create_dir_all(data.join("meshes")).unwrap();
+    let source = data.join("meshes/bodies.nif");
+    fs::write(
+        &source,
+        static_shape_with_bodies(&QUAD, &[crate_body()]).unwrap(),
+    )
+    .unwrap();
+    let config = PipelineConfig::new(&data, &output);
+    async fn run(config: PipelineConfig) -> converter::pipeline::PipelineReport {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let report = AssetPipeline::run_async(config, tx).await.unwrap();
+        drain.await.unwrap();
+        report
+    }
+    assert!(run(config.clone()).await.complete);
+    let mesh = output.join("meshes/bodies.glb");
+    let (mut json, collision) = read_glb(&mesh);
+    assert_eq!(collision.bodies.len(), 1);
+    let current_bytes = fs::read(&mesh).unwrap();
+    // Keep a valid historical GLB while removing the dynamics fields absent before #118.
+    json["scenes"][0]["extras"]["mudcrabCollision"]
+        .as_object_mut()
+        .unwrap()
+        .remove("bodies");
+    json["scenes"][0]["extras"]["mudcrabCollision"]["version"] = serde_json::json!(1);
+    let mut json_bytes = serde_json::to_vec(&json).unwrap();
+    while !json_bytes.len().is_multiple_of(4) {
+        json_bytes.push(b' ');
+    }
+    let previous_json_len = u32::from_le_bytes(current_bytes[12..16].try_into().unwrap()) as usize;
+    let mut old_bytes = current_bytes[..12].to_vec();
+    old_bytes.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    old_bytes.extend_from_slice(&current_bytes[16..20]);
+    old_bytes.extend_from_slice(&json_bytes);
+    old_bytes.extend_from_slice(&current_bytes[20 + previous_json_len..]);
+    let length = old_bytes.len() as u32;
+    old_bytes[8..12].copy_from_slice(&length.to_le_bytes());
+    fs::write(&mesh, &old_bytes).unwrap();
+    assert!(read_glb(&mesh).1.bodies.is_empty());
+    let manifest_path = output.join("conversion-manifest.json");
+    let mut manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.schema_version = 23;
+    manifest.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
+    let entry = manifest.entries.get_mut("meshes/bodies.nif").unwrap();
+    entry.output_size = old_bytes.len() as u64;
+    entry.output_hash = hash_bytes(&old_bytes);
+    manifest.save(&manifest_path).unwrap();
+    let migrated = run(config.clone()).await;
+    assert_eq!(
+        migrated.converted, 1,
+        "producer 23 must rebuild even with verified old GLB bytes"
+    );
+    assert_eq!(read_glb(&mesh).1.bodies.len(), 1);
+    assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
+    let reused = run(config).await;
+    assert_eq!(reused.converted, 0);
+    assert_eq!(reused.cache_hits, 1);
+    assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
+}

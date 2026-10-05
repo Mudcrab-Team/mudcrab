@@ -17,7 +17,7 @@ import zlib
 from pathlib import Path
 
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 CORPUS_EVIDENCE_VERSION = 1
 TARGET_RUNTIME = {
     "game": "Skyrim Special Edition",
@@ -70,6 +70,24 @@ def _stat_token(file_stat: os.stat_result) -> tuple[int, int, int, int, int, int
     )
 
 
+def _file_identity_token(file_stat: os.stat_result) -> tuple[int, int, int]:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        stat.S_IFMT(file_stat.st_mode),
+    )
+
+
+def _same_path_descriptor_state(path_stat: os.stat_result, descriptor_stat: os.stat_result) -> bool:
+    if _file_identity_token(path_stat) != _file_identity_token(descriptor_stat):
+        return False
+    if path_stat.st_size != descriptor_stat.st_size:
+        return False
+    # Windows can report different timestamps through lstat and fstat for the
+    # same file. Descriptor-to-descriptor checks below still detect mutations.
+    return os.name == "nt" or _stat_token(path_stat) == _stat_token(descriptor_stat)
+
+
 def _path_stat(path: Path) -> os.stat_result:
     try:
         result = path.lstat()
@@ -104,7 +122,7 @@ def _read_verified_file(
         with os.fdopen(descriptor, "rb", closefd=True) as stream:
             descriptor = -1
             before = os.fstat(stream.fileno())
-            if _stat_token(before) != _stat_token(path_before):
+            if not _same_path_descriptor_state(path_before, before):
                 raise SourceDriftError(f"source path changed while opening: {path}")
 
             initial_capture = RECORD_HEADER_SIZE if capture_tes4 else min(capture_bytes, before.st_size)
@@ -141,7 +159,7 @@ def _read_verified_file(
         path_after = _path_stat(path)
         if _stat_token(before) != _stat_token(after):
             raise SourceDriftError(f"source changed while hashing: {path}")
-        if _stat_token(after) != _stat_token(path_after):
+        if not _same_path_descriptor_state(path_after, after):
             raise SourceDriftError(f"source path identity changed while hashing: {path}")
         if byte_count != after.st_size:
             raise SourceDriftError(
@@ -730,6 +748,12 @@ def _dependency_closure(plugins: list[dict], issues: list[dict]) -> dict:
     }
 
 
+def _normalize_leaf_path(path: Path) -> Path:
+    """Resolve directory aliases and `..` while keeping the final name unresolved."""
+    path = Path(path).expanduser()
+    return path.parent.resolve(strict=True) / path.name
+
+
 def build_manifest(
     game_root: Path,
     data_root: Path,
@@ -739,8 +763,8 @@ def build_manifest(
 ) -> dict:
     game_root = Path(game_root).resolve(strict=True)
     data_root = Path(data_root).resolve(strict=True)
-    executable = Path(executable).expanduser().absolute()
-    ccc_path = Path(ccc_path).expanduser().absolute() if ccc_path is not None else game_root / "Skyrim.ccc"
+    executable = _normalize_leaf_path(executable)
+    ccc_path = _normalize_leaf_path(ccc_path) if ccc_path is not None else game_root / "Skyrim.ccc"
     if not game_root.is_dir():
         raise ValueError(f"game root is not a directory: {game_root}")
     if not data_root.is_dir():
@@ -776,7 +800,9 @@ def build_manifest(
             "detail": str(exc),
         })
 
-    plugin_paths = _discover_files(data_root, PLUGIN_SUFFIXES, issues)
+    discovered_plugin_paths = _discover_files(data_root, PLUGIN_SUFFIXES, issues)
+    plugin_paths = [path for path in discovered_plugin_paths if path.parent == data_root]
+    nested_plugin_paths = [path for path in discovered_plugin_paths if path.parent != data_root]
     plugins = []
     for path in plugin_paths:
         try:
@@ -801,6 +827,41 @@ def build_manifest(
             issues.append({
                 "code": "missing_required_input" if missing else "source_drift",
                 "path": str(path.relative_to(data_root)),
+                "detail": str(exc),
+            })
+
+    nested_plugins = []
+    for path in nested_plugin_paths:
+        relative_path = path.relative_to(data_root).as_posix()
+        issues.append({
+            "code": "nested_plugin_not_loadable",
+            "name": path.name,
+            "path": relative_path,
+            "detail": "plugin files below Data's top level are observed but excluded from the loadable plugin set",
+        })
+        try:
+            plugin = scan_plugin(path, data_root)
+            nested_plugins.append(plugin)
+            if plugin["tes4"].get("status") != "decoded":
+                issues.append({
+                    "code": plugin["tes4"]["error"]["code"],
+                    "plugin": plugin["name"],
+                    "path": relative_path,
+                    "detail": plugin["tes4"]["error"]["detail"],
+                })
+        except SourceDriftError as exc:
+            missing = isinstance(exc, MissingSourceError)
+            nested_plugins.append({
+                "name": path.name,
+                "source": _source_path(data_root, path, "data"),
+                "size": None,
+                "sha256": None,
+                "hash_status": "failed_source_missing" if missing else "failed_source_drift",
+                "tes4": {"status": "unread"},
+            })
+            issues.append({
+                "code": "missing_required_input" if missing else "source_drift",
+                "path": relative_path,
                 "detail": str(exc),
             })
 
@@ -888,11 +949,24 @@ def build_manifest(
             })
 
     declared_names = ccc.get("listed_plugin_names", [])
-    by_plugin_name = {plugin["name"].casefold(): plugin for plugin in plugins}
-    ccc["matching_data_plugin_names"] = [name for name in declared_names if name.casefold() in by_plugin_name]
-    ccc["declared_names_missing_from_data"] = [name for name in declared_names if name.casefold() not in by_plugin_name]
+    loadable_plugin_names = {plugin["name"].casefold() for plugin in plugins}
+    nested_plugin_names = {plugin["name"].casefold() for plugin in nested_plugins}
+    observed_plugin_names = loadable_plugin_names | nested_plugin_names
+    ccc["matching_data_plugin_names"] = [name for name in declared_names if name.casefold() in loadable_plugin_names]
+    ccc["matching_nested_plugin_names"] = [
+        name for name in declared_names
+        if name.casefold() in nested_plugin_names and name.casefold() not in loadable_plugin_names
+    ]
+    ccc["declared_names_only_nested"] = [
+        name for name in declared_names
+        if name.casefold() in nested_plugin_names and name.casefold() not in loadable_plugin_names
+    ]
+    ccc["declared_names_missing_from_data"] = [name for name in declared_names if name.casefold() not in observed_plugin_names]
     ccc["data_plugin_names_not_declared_by_ccc"] = [
         plugin["name"] for plugin in plugins if plugin["name"].casefold() not in {name.casefold() for name in declared_names}
+    ]
+    ccc["nested_plugin_names_not_declared_by_ccc"] = [
+        plugin["name"] for plugin in nested_plugins if plugin["name"].casefold() not in {name.casefold() for name in declared_names}
     ]
 
     if not string_tables:
@@ -995,9 +1069,11 @@ def build_manifest(
         "corpus_hashes": {
             "status": corpus_pin_status,
             "plugins": plugins,
+            "nested_plugins": nested_plugins,
             "loose_string_tables": string_tables,
         },
         "plugin_count": len(plugins),
+        "nested_plugin_count": len(nested_plugins),
         "string_table_count": len(string_tables),
         "archive_observations": {
             "status": "archive_inventory_incomplete" if not archive_inventory_complete else (
@@ -1122,8 +1198,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         game_root = args.game_root.expanduser().resolve(strict=True)
         data_root = args.data_dir.expanduser().resolve(strict=True)
-        executable = args.executable.expanduser().absolute()
-        ccc_path = args.ccc.expanduser().absolute() if args.ccc else game_root / "Skyrim.ccc"
+        executable = args.executable.expanduser()
+        ccc_path = args.ccc.expanduser() if args.ccc else game_root / "Skyrim.ccc"
         output = ensure_output_outside_sources(args.output, game_root, data_root)
         manifest = build_manifest(game_root, data_root, executable, ccc_path, args.corpus_evidence)
         evidence_paths = set()

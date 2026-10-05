@@ -1,4 +1,4 @@
-//! V72: only accepted current-run mesh artifacts may affect the world audit.
+//! Proposed V92: only accepted current-run mesh artifacts may affect the world audit.
 //! Historical prune records describe omissions; they do not prove mesh provenance.
 
 use converter::{
@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 
 const MESH: &str = "meshes/generated.glb";
 const SOURCE: &str = "meshes/generated.nif";
+// The NIF fixture clamps both axes; lighting publishes the wrap0 alias.
 const MISSING_TEXTURE: &str = "textures/absent_n.opensky-wrap0.ktx2";
 
 fn generate_data(data: &Path) {
@@ -89,7 +90,7 @@ fn assert_removed_mesh_is_unavailable(report: &PipelineReport, output: &Path, sc
 
 #[tokio::test]
 async fn v72_historical_prune_record_cannot_certify_a_removed_source() {
-    for schema in [16, CONVERTER_SCHEMA_VERSION] {
+    for schema in [16, 19, 20, CONVERTER_SCHEMA_VERSION] {
         for with_prune_record in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let data = temp.path().join("Data");
@@ -131,7 +132,7 @@ async fn v72_historical_prune_record_cannot_certify_a_removed_source() {
 
 #[tokio::test]
 async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
-    for schema in [16, CONVERTER_SCHEMA_VERSION] {
+    for schema in [16, 19, 20, CONVERTER_SCHEMA_VERSION] {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("Data");
         let output = temp.path().join("output");
