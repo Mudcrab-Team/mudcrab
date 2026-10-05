@@ -254,6 +254,12 @@ fn export_records(
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
 ) -> Result<()> {
+    let land_winners = super::records::land_by_cell(master).map_err(|error| {
+        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        )))
+    })?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
     tx.execute("DELETE FROM movement_game_settings", [])?;
@@ -356,8 +362,11 @@ fn export_records(
                 )?;
             }
             "LAND" => {
-                let (heightmap, vtex, vclr, normals) = extract_land_data(&record.subrecords);
                 let cell_id = record.cell_form_id.unwrap_or(form_id);
+                if land_winners[&cell_id].form_id != form_id {
+                    continue;
+                }
+                let (heightmap, vtex, vclr, normals) = extract_land_data(&record.subrecords);
                 tx.execute("INSERT OR REPLACE INTO land(cell_id, heightmap, vtex, vclr, normals) VALUES (?1, ?2, ?3, ?4, ?5)", params![cell_id, heightmap, vtex, vclr, normals])?;
             }
             "LIGH" => {

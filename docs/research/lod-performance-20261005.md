@@ -48,7 +48,9 @@ Final converter SHA256:
 `974c831383d902a0423bb2e2047082d2c84aad758887f127c44a6d82a3fc1d98`.
 Remote evidence root:
 `/home/taylor/Projects/mudcrab-lod-performance/target/lod-performance/fiji-final-3ffcd9c`.
-The driver and transient service survive SSH/T3 restarts. A Fiji machine reboot
+The driver runs in a transient user service. After Fiji returned with user
+lingering disabled, closing the last SSH session stopped an initial retry;
+subsequent runs kept an SSH session open until service completion. A Fiji machine reboot
 stopped the `0518df8` run at 28m 6.8s, before publication; its last sample showed
 2,636 staged chunks and the journal recorded a 17.1 GiB memory peak. This attempt
 supplies no completed timing result. Its logs and reboot record are preserved.
@@ -92,14 +94,54 @@ published source. The driver exited 1 and left its measurement status as
 `running`, so that field alone does not establish liveness or completion. This
 attempt supplies no completed warm timing or reuse verdict. The full ordinary
 hash check did not run. Fiji subsequently went offline in Tailscale and stopped
-answering SSH; disk recovery and a fresh warm attempt remain pending.
+answering SSH; task-owned staging cleanup recovered 10,522,361,856 bytes without changing
+the published cold manifest. Retries recorded a 14 GiB harness disk guard;
+the artifact acceptance assertions remained unchanged.
 
 Cold metadata-only evidence is retained locally under
 `target/lod-performance/fiji-final-3ffcd9c-evidence/`, including the report, log,
 samples, provenance and native release regression results. The warm failure is
 recorded in `warm-interruption-observation.json` from the live SSH read. No game
-inputs or converted payloads were transferred. T41 remains open until warm reuse
-and the full ordinary-output hash check finish.
+inputs or converted payloads were transferred. T41 remains open until a corrected producer passes cold-to-warm reuse
+and full ordinary-output hashing.
+
+## Warm acceptance failure and LAND selection
+
+Two completed unchanged-input runs at `3ffcd9c` each reused 4,670 of 4,673
+chunks, converted/skipped zero ordinary inputs and passed integration. Both
+failed the driver's all-chunk reuse requirement. The first took 691.244 s
+(LOD 181.758 s, publication 125.532 s); the diagnostic repeat took 664.559 s
+(LOD 180.085 s, publication 126.069 s). No disk guard fired.
+
+The diagnostic saved per-chunk input fingerprints and index rows before running.
+Exactly three Tamriel chunks changed both fingerprints and payload hashes:
+`lod/0000003c/4/cell_13_33.glb`, `lod/0000003c/8/cell_6_16.glb`, and
+`lod/0000003c/16/cell_3_8.glb`. Their source-cell lists remained equal.
+The build identity changed from
+`8286276fd93567bee8bc4ca7ed081beeb3c7629feef534e9e86a7cf633824a62` to
+`e8e356364e449f673aa5e0b73e6fbda3c14116b205755dbfa1ec3075db986c30`.
+This is a reproduced stability failure, not completed warm acceptance.
+
+Live record metadata identifies two overlapping LAND definitions per cell:
+cell `000018DF` at (-44,37) has forms `000028DF` (priority 0) and
+`00222222` (priority 2); cell `000018FD` at (-43,36) has forms
+`000028FD` (priority 0) and `000179DB` (priority 2).
+`write_cell_cache` overwrote LAND by cell through unordered `HashMap` traversal;
+`export_records` overwrote the database LAND row in ascending FormID order.
+The two projections therefore lacked one shared plugin-priority winner.
+
+The correction selects the highest-plugin-priority LAND for each cell in both
+projections, retains raw records, and rejects multiple candidates at the winning
+priority before replacing outputs. Terrain compiler revision 4 invalidates prior
+LOD packages. A corrected native cold/warm pair is still required; revision-3
+measurements cannot establish revision-4 acceptance.
+
+An independent `converter check assets --full` on the post-diagnostic package
+exited zero in 13.527 s. This verifies all 76,213 ordinary manifest outputs;
+it does not resolve the failed LOD identity/reuse gate. Metadata evidence is
+retained as `diagnostic-baseline-v2.json`,
+`warm-diagnostic-v3-measurement.json`, and
+`check-full-post-diagnostic-v3.{json,log}`. Inputs and payloads remain on Fiji.
 
 ## Remaining compression cost
 
@@ -143,7 +185,8 @@ not an end-to-end LOD speedup claim.
 Current-head CI (`3ffcd9c23121da81df3364d30e9d47fea9124ffd`) ran 1,083
 workspace/all-target tests: 1,083 passed, 19 skipped. Formatting, strict Clippy,
 security and the CI performance checks pass. The cold measurement completed;
-warm acceptance and the full hash check remain pending. CI performance checks
+warm acceptance failed as detailed below. An independent full ordinary-output
+hash check passed after the diagnostic repeat; corrected-head acceptance remains pending. CI performance checks
 do not substitute for these LOD measurements.
 CodeRabbit completed at this head without actionable findings; no inline review
 threads were open when checked.
