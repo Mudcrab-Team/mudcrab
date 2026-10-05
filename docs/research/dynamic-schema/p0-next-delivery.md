@@ -108,16 +108,19 @@ original commits and hashes.
 | Repair source | SHA-256 |
 | --- | --- |
 | `pilot_code_evidence.py` | `f718cabc93c96800306d212126cc28aebbf38a07fbaff93b05d732f93fdd7322` |
-| `run_mutagen_p0.py` | `7f445c18a7c4cd89d808dc3bf2902938a510e1011ee1cb5ad956295133fa891b` |
+| `run_mutagen_p0.py` | `8b0c0e9d39f77258f4d32c698b20fdf8b6cf3bee5aef3c9d25cf0f389e0d557a` |
 | `run_xedit_p0.py` | `796de43b47653f2c0fe7baef1e9e7f5d226cc1058bb44a726b1b2b2e40625fb1` |
 | `p0_tools.py` | `e2b6eba29a28083e1cd38ef0e66a51d793b495e0967963af08a6f1b94953b2fc` |
 | `corpus_manifest.py` | `3746e7c9025be97ef6da0e3606363d08421496e15643ea829f69336fad8494f6` |
 | `p0_fixtures.py` | `fc442f973609f0baf8cfe8bba6801364e29c6125dc6049f98e7ab30e708a922b` |
 
 The parent repair passed 45 schema tests and two extractor tests on Linux. The
-next repair passed 87 schema tests and two extractor tests. They cover native
+next repair passed 89 schema tests and two extractor tests. They cover native
 path fixtures, canonical report keys, UTF-8 artifact writes, bounded descendant
-cleanup and source-span lifetimes. Native Windows CI remains required; these
+cleanup and source-span lifetimes. Mutagen and xEdit decode failures preserve
+raw stream artifacts, hashes and explicit unavailable text; the Mutagen cases
+cover checked, fixture, legacy and SDK-startup commands. Native Windows CI
+remains required; these
 offline checks do not accept P0.
 
 At tooling commit `252bbca`, all 64 offline tests passed. Regressions there cover

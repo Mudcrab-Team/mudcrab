@@ -87,8 +87,9 @@ avoids closing pipes held by Windows reader threads. A real detached POSIX child
 and simulated Windows cleanup failures verify bounded incomplete outcomes.
 The parent's standalone runner saves undecodable partial timeout streams with
 raw bytes and availability metadata. The next layer keeps its binary supervisor
-and strict decoder; decode exceptions retain raw streams, and the xEdit probe
-saves their byte artifacts and metadata.
+and strict decoder; both Mutagen and xEdit save decode-failure byte artifacts
+and metadata. The Mutagen regression covers checked, fixture, legacy and
+SDK-startup commands.
 If Windows tree termination fails, escaped child processes and reader threads
 can remain until those children exit; the runner still returns an incomplete
 timeout. Fresh native Windows CI remains required. Earlier external-tool

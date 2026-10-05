@@ -287,7 +287,7 @@ V153: P0 runtime-loadable plugin set ! Data top level only; nested plugins separ
 V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descriptor-before/after full metadata equality retained for drift. POSIX path/descriptor full metadata equality unchanged; platform-skew and existing drift regressions guard boundary.
 
 V155: P0 Git provenance reads ! deadline + inspected revision/path context; timeout → controlled nonzero, no new/replaced source report. Revision/file deadline & prior-report preservation regressions guard boundary.
-V156: P0 process output ! strict locale decoding before structured acceptance; invalid bytes → unavailable/incomplete, never replacement-text JSON. xEdit report retains raw stream bytes/hash/size and failed case/startup; decode/timeout/report regressions guard availability.
+V156: P0 process output ! strict locale decoding before structured acceptance; invalid bytes → unavailable/incomplete, never replacement-text JSON. Oracle reports retain raw stream bytes/hash/size and failed case/startup; decode/timeout/report regressions guard availability.
 V157: P0 repository/Data-relative evidence path keys ! POSIX separators on every host; issue/source joins & decision-runner identity use same canonical path spelling. Windows-path & nested-issue regressions guard serialization.
 V158: P0 saved text logs/JSON ! explicit UTF-8 regardless host locale; strict child-output decoding separate. Non-CP1252 xEdit artifact regression guards writer encoding.
 
@@ -480,3 +480,4 @@ B120|2026-10-05|extensionless SDK/Wine fixtures failed Windows executable lookup
 B121|2026-10-05|xEdit text artifact writes inherited host encoding; non-CP1252 diagnostics could prevent saved report|V158; explicit UTF-8 every text write + Unicode artifact regression; strict child decoding retained
 B122|2026-10-05|source-span lexer classified Rust lifetimes as character literals; matcher missed generic lifetime declarations|V134; bounded char-literal recognition + lifetime/declaration/character-brace regressions; no new invariant
 B123|2026-10-05|source report `--check` read errors escaped as tracebacks and mismatches used uncontrolled exit|V134,V155; managed exit 2 for missing/malformed reports and mismatches; report-read regression; no new invariant
+B124|2026-10-05|next Mutagen callers handled timeout text only; shared binary decode errors lost raw artifacts at generic failure summary|V144,V156; persist raw streams/hash/size + unavailable decoded-output metadata for checked/case/legacy/SDK commands; partial-Unicode artifact regression; no new invariant

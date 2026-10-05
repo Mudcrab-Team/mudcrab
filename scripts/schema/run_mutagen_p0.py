@@ -19,7 +19,7 @@ from pathlib import Path
 
 import p0_fixtures
 from p0_tools import (
-    QualificationError, ProcessTimeout, _read_verified_bytes,
+    QualificationError, ProcessTimeout, ProcessOutputDecodeError, _read_verified_bytes,
     validate_artifact_destination, _run_supervised,
     RE_PROJECT_ROOT, MCRAB_STORE, REPO_ROOT,
     runner_provenance,
@@ -40,6 +40,23 @@ CLI_TIMEOUT_SECONDS = 15
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _save_decode_failure(exc: ProcessOutputDecodeError, base: Path) -> Path:
+    """Save unavailable text and its exact raw evidence at the report owner."""
+    stdout_path = base.with_suffix(".decode.stdout.bin")
+    stderr_path = base.with_suffix(".decode.stderr.bin")
+    stdout_path.write_bytes(exc.stdout_bytes)
+    stderr_path.write_bytes(exc.stderr_bytes)
+    report_path = base.with_suffix(".decode-error.json")
+    _save_json(report_path, {
+        "status": "incomplete", "completed_verdict_saved": False,
+        "decoded_output": "unavailable", "label": exc.label,
+        "timeout_seconds": exc.timeout,
+        "raw_stdout_file": stdout_path.name, "raw_stderr_file": stderr_path.name,
+        **exc.failure_record(),
+    })
+    return report_path
 
 
 def default_artifact_destination(env: dict[str, str] | None = None) -> Path:
@@ -88,6 +105,10 @@ def _run_checked(
 ):
     try:
         result = _run_supervised(command, cwd=cwd, env=env, label=label, timeout=timeout)
+    except ProcessOutputDecodeError as exc:
+        report_path = _save_decode_failure(exc, log_dir / label)
+        _save_json(log_dir / f"{label}.command.json", command)
+        raise QualificationError(f"{exc}; see {report_path}") from exc
     except ProcessTimeout as exc:
         (log_dir / f"{label}.stdout.txt").write_text(exc.stdout, encoding="utf-8")
         (log_dir / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
@@ -457,6 +478,15 @@ def _case_run(
             label=f"inspect-{Path(filename).stem}",
             timeout=ORACLE_TIMEOUT_SECONDS,
         )
+    except ProcessOutputDecodeError as exc:
+        case_base = observations_dir / Path(filename).stem
+        report_path = _save_decode_failure(exc, case_base)
+        _save_json(case_base.with_suffix(".command.json"), command)
+        return {
+            "status": "failed", "file_name": filename,
+            "failure": f"{exc}; see {report_path}",
+            "completed_verdict_saved": False,
+        }, None
     except ProcessTimeout as exc:
         case_base = observations_dir / Path(filename).stem
         (case_base.with_suffix(".raw.stdout.txt")).write_text(exc.stdout, encoding="utf-8")
@@ -544,6 +574,11 @@ def _run_legacy_command(
             label=label,
             timeout=ORACLE_TIMEOUT_SECONDS,
         )
+    except ProcessOutputDecodeError as exc:
+        base = observations_dir / label
+        report_path = _save_decode_failure(exc, base)
+        _save_json(base.with_suffix(".command.json"), command)
+        raise QualificationError(f"{exc}; see {report_path}") from exc
     except ProcessTimeout as exc:
         base = observations_dir / label
         base.with_suffix(".timeout.stdout.txt").write_text(exc.stdout, encoding="utf-8")
@@ -700,6 +735,10 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             label="dotnet-version",
             timeout=CLI_TIMEOUT_SECONDS,
         )
+    except ProcessOutputDecodeError as exc:
+        report_path = _save_decode_failure(exc, logs_dir / "dotnet-version")
+        _save_json(logs_dir / "dotnet-version.command.json", [str(dotnet), "--version"])
+        raise QualificationError(f"{exc}; see {report_path}") from exc
     except ProcessTimeout as exc:
         (logs_dir / "dotnet-version.stdout.txt").write_text(exc.stdout, encoding="utf-8")
         (logs_dir / "dotnet-version.stderr.txt").write_text(exc.stderr, encoding="utf-8")

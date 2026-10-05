@@ -54,9 +54,22 @@ class ProcessSupervisorTests(unittest.TestCase):
                 self.assertEqual(metadata["raw_stdout_sha256"], hashlib.sha256(b"\xf0\x9f").hexdigest())
         else:
             # The next layer's binary supervisor owns strict decoding and
-            # exposes retained streams through ProcessDecodeError.
+            # exposes retained streams through ProcessOutputDecodeError.
             self.assertEqual(caught.exception.stdout_bytes, b"\xf0\x9f")
             self.assertEqual(caught.exception.stderr_bytes, b"partial stderr")
+            with tempfile.TemporaryDirectory() as directory:
+                logs = Path(directory)
+                with mock.patch.object(run_mutagen_p0, "_run_supervised", side_effect=caught.exception):
+                    with self.assertRaises(run_mutagen_p0.QualificationError):
+                        run_mutagen_p0._run_checked(
+                            ["synthetic-tool"], cwd=logs, env={}, label="partial-unicode",
+                            log_dir=logs, timeout=0.1,
+                        )
+                metadata = json.loads((logs / "partial-unicode.decode-error.json").read_text(encoding="utf-8"))
+                self.assertEqual(metadata["decoded_output"], "unavailable")
+                self.assertFalse(metadata["completed_verdict_saved"])
+                self.assertEqual((logs / metadata["raw_stdout_file"]).read_bytes(), b"\xf0\x9f")
+                self.assertEqual(metadata["raw_stdout_sha256"], hashlib.sha256(b"\xf0\x9f").hexdigest())
 
     def test_v148_real_descendant_cannot_keep_timeout_open(self):
         with tempfile.TemporaryDirectory() as directory:
