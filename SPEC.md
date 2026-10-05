@@ -286,6 +286,9 @@ V152: P0 manifest API/CLI ! resolve containing directories before immediate-chil
 V153: P0 runtime-loadable plugin set ! Data top level only; nested plugins separately hashed/reported, never satisfy masters/base presence/CCC loadable matches. Loose string tables remain recursively observed; nested-master/base/duplicate regressions guard partition.
 V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descriptor-before/after full metadata equality retained for drift. POSIX path/descriptor full metadata equality unchanged; platform-skew and existing drift regressions guard boundary.
 
+V155: P0 Git provenance reads ! deadline + inspected revision/path context; timeout → controlled nonzero, no new/replaced source report. Revision/file deadline & prior-report preservation regressions guard boundary.
+V156: P0 process output ! strict locale decoding before structured acceptance; invalid bytes → unavailable/incomplete, never replacement-text JSON. xEdit report retains raw stream bytes/hash/size and failed case/startup; decode/timeout/report regressions guard availability.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -462,3 +465,5 @@ B107|2026-10-05|P0 `.absolute()` normalized lexical `..` before resolving direct
 B108|2026-10-05|recursive Data plugin discovery let nested masters/base names satisfy runtime-loadable closure/presence|V153; separate loadable top-level set and hashed nested observations; nested master/base/duplicate regressions
 B109|2026-10-05|Windows lstat/fstat timestamp skew classified unchanged file as source drift|V154; cross-interface identity/size checks on Windows, full same-descriptor drift checks; synthetic platform regression + Windows CI
 B110|2026-10-05|synthetic corpus `plugins or defaults` treated explicit empty mapping as five base plugins|V145; only None selects defaults; empty-corpus regression
+B111|2026-10-05|P0 source evidence used unbounded Git reads; stalled child prevented controlled report outcome|V155; bounded reads with revision/path diagnostics; preserve previous report on timeout
+B112|2026-10-05|locale text-mode subprocess decoding raised before xEdit saved incomplete report; replacement decoding could corrupt accepted typed JSON|V156; binary capture, strict decoding and fail-closed exception; xEdit raw-byte logs/incomplete report regressions

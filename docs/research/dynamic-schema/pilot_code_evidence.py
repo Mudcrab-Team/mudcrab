@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -117,14 +118,37 @@ PILOT_FUNCTIONS = {
 }
 
 
-def git(repo: Path, *args: str) -> str:
-    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+GIT_TIMEOUT_SECONDS = 30
+
+
+class SourceInspectionTimeout(RuntimeError):
+    """A bounded Git read did not finish before its deadline."""
+
+
+def git(repo: Path, *args: str, context: str) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args], text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        ).strip()
+    except subprocess.TimeoutExpired as exc:
+        raise SourceInspectionTimeout(
+            f"Git timed out after {GIT_TIMEOUT_SECONDS}s while {context}"
+        ) from exc
 
 
 def file_at(repo: Path, revision: str, path: str) -> str:
-    return subprocess.check_output(
-        ["git", "-C", str(repo), "show", f"{revision}:{path}"]
-    ).decode("utf-8")
+    context = f"reading {path} at inspected revision {revision}"
+    try:
+        raw = subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"{revision}:{path}"],
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SourceInspectionTimeout(
+            f"Git timed out after {GIT_TIMEOUT_SECONDS}s while {context}"
+        ) from exc
+    return raw.decode("utf-8")
 
 
 def function_span(text: str, name: str) -> tuple[int, int]:
@@ -188,7 +212,10 @@ def line_for(text: str, anchor: str) -> int:
 
 
 def describe_revision(repo: Path, revision: str) -> dict:
-    commit = git(repo, "rev-parse", f"{revision}^{{commit}}")
+    commit = git(
+        repo, "rev-parse", f"{revision}^{{commit}}",
+        context=f"resolving inspected revision {revision}",
+    )
     files = {}
     for path, functions in PILOT_FUNCTIONS.items():
         contents = file_at(repo, commit, path)
@@ -206,7 +233,10 @@ def describe_revision(repo: Path, revision: str) -> dict:
                 },
             }
         files[path] = {
-            "git_blob": git(repo, "rev-parse", f"{commit}:{path}"),
+            "git_blob": git(
+                repo, "rev-parse", f"{commit}:{path}",
+                context=f"resolving source blob at inspected revision {commit}, path {path}",
+            ),
             "sha256": hashlib.sha256(contents.encode("utf-8")).hexdigest(),
             "functions": function_rows,
         }
@@ -224,7 +254,7 @@ def function_comparison(base: dict, current: dict) -> dict:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--base", required=True, help="Mudcrab base revision")
@@ -235,10 +265,14 @@ def main() -> int:
         action="store_true",
         help="compare the generated report with --output without rewriting it",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    base = describe_revision(args.repo, args.base)
-    current = describe_revision(args.repo, args.current)
+    try:
+        base = describe_revision(args.repo, args.base)
+        current = describe_revision(args.repo, args.current)
+    except SourceInspectionTimeout as exc:
+        print(f"pilot code evidence failed: {exc}", file=sys.stderr)
+        return 2
     output = {
         "artifact_kind": "bounded_P0_converter_projection_identity_sql_cache_source_anchor_check",
         "scope": "Named pilot anchors and source hashes only; no exhaustive field scan or catalog claim.",

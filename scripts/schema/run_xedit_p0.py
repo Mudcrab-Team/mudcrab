@@ -18,7 +18,7 @@ from pathlib import Path
 
 import p0_fixtures
 from p0_tools import (
-    ProcessTimeout, QualificationError, _read_verified_bytes,
+    ProcessOutputDecodeError, ProcessTimeout, QualificationError, _read_verified_bytes,
     _run_supervised, validate_artifact_destination, runner_provenance,
 )
 
@@ -87,6 +87,15 @@ def classify_dump(filename: str, returncode: int, stdout: str, stderr: str) -> d
             "translated_text": "unavailable" if filename == "p0-localized.esp" else "not_checked"}
 
 
+def _retain_undecodable_output(logs: Path, label: str, error: ProcessOutputDecodeError) -> dict:
+    raw_files = {}
+    for stream, raw in (("stdout", error.stdout_bytes), ("stderr", error.stderr_bytes)):
+        name = f"{label}.{stream}.raw.bin"
+        (logs / name).write_bytes(raw)
+        raw_files[stream] = f"logs/{name}"
+    return {**error.failure_record(), "raw_files": raw_files}
+
+
 def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
     tool = Path(args.xdump).expanduser().absolute()
     artifact = Path(args.artifact_dir).expanduser().resolve() if args.artifact_dir else (
@@ -145,6 +154,11 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
                 raise QualificationError(f"{label} did not confirm the required tool")
             if label == "wine-version":
                 report["tool"]["wine_version"] = result.stdout.strip()
+        except ProcessOutputDecodeError as exc:
+            report["startup_failure"] = str(exc)
+            report["startup_output_decode_failure"] = _retain_undecodable_output(logs, label, exc)
+            (artifact / "probe-results.json").write_text(json.dumps(report, indent=2) + "\n")
+            return report, artifact
         except (ProcessTimeout, QualificationError, OSError) as exc:
             if isinstance(exc, ProcessTimeout):
                 (logs / f"{label}.stdout.txt").write_text(exc.stdout)
@@ -160,6 +174,15 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
             result = _run_supervised(command, cwd=artifact, env=env, label=name, timeout=COMMAND_TIMEOUT)
             stdout, stderr = result.stdout, result.stderr
             observation = classify_dump(name, result.returncode, stdout, stderr)
+        except ProcessOutputDecodeError as exc:
+            stdout, stderr = "", "[child output could not be decoded; raw bytes are retained]"
+            observation = {
+                "file_name": name,
+                "status": "incomplete",
+                "failure": str(exc),
+                "diagnostic_output_decode_failure": _retain_undecodable_output(logs, name, exc),
+                "completed_verdict_saved": False,
+            }
         except ProcessTimeout as exc:
             stdout, stderr = exc.stdout, exc.stderr
             observation = {"file_name": name, "status": "incomplete", "failure": str(exc),
