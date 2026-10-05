@@ -51,7 +51,7 @@ with main `db3a1dc3ed80795149e3a15a5047f4d313dd3e74`. `exporter.rs` and
 `2ce397734fa59c1dd8749928376b439a99edff39` matches main byte-for-byte across all
 five inspected converter files. The tracked report is 18,092 bytes with SHA-256
 `6da7df0e559d5f2b594d1d3ff1648488e76f79340d7aef85064a30e60d555e0d`; its
-generator `pilot_code_evidence.py` has SHA-256
+generator `pilot_code_evidence.py` at that refresh has SHA-256
 `9a3d6bf25df64022daaa1af220e4293084d1181492f0136dc32ec8d36ea58ef9`.
 Supplemental branch comparisons and their hashes appear in the refreshed local
 artifact table below. These reports cover selected source anchors only.
@@ -95,7 +95,30 @@ translated text remain distinct. The earlier xEdit report at
 `1dd3789789c8d13e6e301c766bb93de9b916e13642d43e8ecbf16ba4ce57565f`; it
 recorded ten cases and remained unqualified with exit 2. These are historical
 runner results. They do not replace the incomplete attempts against the current
-runner sources.
+runner sources at `2ce3977`.
+
+The later Windows repair changes the Python sources below. The source report
+still matches its generator and retains the same 18,092-byte hash; lifetime and
+character-literal parsing regressions do not change the selected source spans.
+All five inspected converter files still match main `db3a1dc`. These source pins
+identify the repair code only. No external-tool qualification was rerun against
+them, so the startup attempts and earlier successful reports above retain their
+original commits and hashes.
+
+| Repair source | SHA-256 |
+| --- | --- |
+| `pilot_code_evidence.py` | `f718cabc93c96800306d212126cc28aebbf38a07fbaff93b05d732f93fdd7322` |
+| `run_mutagen_p0.py` | `7f445c18a7c4cd89d808dc3bf2902938a510e1011ee1cb5ad956295133fa891b` |
+| `run_xedit_p0.py` | `796de43b47653f2c0fe7baef1e9e7f5d226cc1058bb44a726b1b2b2e40625fb1` |
+| `p0_tools.py` | `e2b6eba29a28083e1cd38ef0e66a51d793b495e0967963af08a6f1b94953b2fc` |
+| `corpus_manifest.py` | `3746e7c9025be97ef6da0e3606363d08421496e15643ea829f69336fad8494f6` |
+| `p0_fixtures.py` | `fc442f973609f0baf8cfe8bba6801364e29c6125dc6049f98e7ab30e708a922b` |
+
+The parent repair passed 45 schema tests and two extractor tests on Linux. The
+next repair passed 87 schema tests and two extractor tests. They cover native
+path fixtures, canonical report keys, UTF-8 artifact writes, bounded descendant
+cleanup and source-span lifetimes. Native Windows CI remains required; these
+offline checks do not accept P0.
 
 At tooling commit `252bbca`, all 64 offline tests passed. Regressions there cover
 deep evidence JSON, output/evidence aliases, every registered Mudcrab checkout,

@@ -151,9 +151,42 @@ def file_at(repo: Path, revision: str, path: str) -> str:
     return raw.decode("utf-8")
 
 
+def _char_literal_end(text: str, start: int) -> int | None:
+    """Return the end of a Rust character literal, or None for a lifetime."""
+    if start >= len(text) or text[start] != "'":
+        return None
+    index = start + 1
+    if index >= len(text) or text[index] in "\r\n":
+        return None
+
+    if text[index] == "\\":
+        index += 1
+        if index >= len(text) or text[index] in "\r\n":
+            return None
+        escape = text[index]
+        if escape == "u" and index + 1 < len(text) and text[index + 1] == "{":
+            close = text.find("}", index + 2)
+            if close < 0:
+                return None
+            index = close + 1
+        elif escape == "x":
+            index += 3
+        else:
+            index += 1
+    else:
+        index += 1
+
+    if index < len(text) and text[index] == "'":
+        return index + 1
+    return None
+
+
 def function_span(text: str, name: str) -> tuple[int, int]:
     lines = text.splitlines(keepends=True)
-    declaration = re.compile(rf"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+{re.escape(name)}\s*\(")
+    declaration = re.compile(
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+{re.escape(name)}"
+        r"\s*(?:<[^>\n]*>)?\s*\("
+    )
     start_lines = [i for i, line in enumerate(lines) if declaration.search(line)]
     if len(start_lines) != 1:
         raise ValueError(f"expected one function declaration for {name}; found {start_lines}")
@@ -177,7 +210,7 @@ def function_span(text: str, name: str) -> tuple[int, int]:
             if char == "*" and next_char == "/":
                 state = "normal"
                 index += 1
-        elif state in {"string", "char"}:
+        elif state == "string":
             if escaped:
                 escaped = False
             elif char == "\\":
@@ -193,7 +226,9 @@ def function_span(text: str, name: str) -> tuple[int, int]:
         elif char == '"':
             state = "string"
         elif char == "'":
-            state = "char"
+            char_end = _char_literal_end(text, index)
+            if char_end is not None:
+                index = char_end - 1
         elif char == "{":
             depth += 1
         elif char == "}":
@@ -285,9 +320,17 @@ def main(argv: list[str] | None = None) -> int:
         },
     }
     if args.check:
-        existing = json.loads(args.output.read_text(encoding="utf-8"))
+        try:
+            existing = json.loads(args.output.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+            print(
+                f"pilot code evidence failed: cannot read valid JSON from {args.output}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         if existing != output:
-            raise SystemExit(f"source evidence differs from {args.output}")
+            print(f"pilot code evidence failed: source evidence differs from {args.output}", file=sys.stderr)
+            return 2
         print(json.dumps({"checked": str(args.output.resolve()), "matches": True}, indent=2))
         return 0
     args.output.parent.mkdir(parents=True, exist_ok=True)

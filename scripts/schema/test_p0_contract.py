@@ -188,12 +188,12 @@ class P0WireFixtureTests(unittest.TestCase):
 
 
 class P0RunnerContractTests(unittest.TestCase):
-    def test_v103_custom_sdk_directory_rejected_by_runner_and_cli_before_writes(self):
+    def test_v147_custom_sdk_directory_rejected_by_runner_and_cli_before_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sdk = root / "sdk"
             sdk.mkdir()
-            dotnet = sdk / "dotnet"
+            dotnet = sdk / "dotnet.exe"
             dotnet.write_bytes(b"synthetic SDK path; never executed")
             artifact = sdk / "artifacts"
             oracle = root / "oracle"

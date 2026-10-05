@@ -16,6 +16,47 @@ SPEC.loader.exec_module(pilot_code_evidence)
 
 
 class PilotCodeEvidenceTests(unittest.TestCase):
+    def test_v134_lifetime_in_body_does_not_hide_nested_braces(self):
+        source = """fn inspect() {
+    let value: &'static str = "text";
+    if !value.is_empty() {
+        finish();
+    }
+}
+fn following() {}
+"""
+
+        start, end = pilot_code_evidence.function_span(source, "inspect")
+        body = source[start:end]
+
+        self.assertIn("finish();", body)
+        self.assertTrue(body.endswith("}"))
+        self.assertNotIn("fn following", body)
+
+    def test_v134_generic_lifetime_function_declaration_is_found(self):
+        source = """fn inspect<'a>(value: &'a str) {
+    if !value.is_empty() {
+        finish();
+    }
+}
+"""
+
+        start, end = pilot_code_evidence.function_span(source, "inspect")
+        self.assertIn("finish();", source[start:end])
+
+    def test_v134_braces_inside_character_literals_are_ignored(self):
+        source = """fn inspect() {
+    let open = '{';
+    let close = '}';
+    if open != close {
+        finish();
+    }
+}
+"""
+
+        start, end = pilot_code_evidence.function_span(source, "inspect")
+        self.assertIn("finish();", source[start:end])
+
     def test_v155_git_revision_timeout_is_bounded_and_names_inspected_revision(self):
         timeout = subprocess.TimeoutExpired("git", pilot_code_evidence.GIT_TIMEOUT_SECONDS)
         with mock.patch.object(pilot_code_evidence.subprocess, "check_output", side_effect=timeout) as run:
@@ -61,6 +102,35 @@ class PilotCodeEvidenceTests(unittest.TestCase):
             self.assertEqual(status, 2)
             self.assertIn("current-ref", stderr.getvalue())
             self.assertEqual(output.read_text(encoding="utf-8"), "existing report bytes\n")
+
+    def test_v134_check_missing_or_invalid_report_returns_controlled_failure(self):
+        revision = {
+            "commit": "resolved-revision",
+            "files": {path: {"sha256": "same"} for path in pilot_code_evidence.PILOT_FUNCTIONS},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for initial_content in (None, "{"):
+                with self.subTest(initial_content=initial_content):
+                    output = Path(directory) / "source-report.json"
+                    output.unlink(missing_ok=True)
+                    if initial_content is not None:
+                        output.write_text(initial_content, encoding="utf-8")
+                    stderr = io.StringIO()
+                    with mock.patch.object(
+                        pilot_code_evidence, "describe_revision", side_effect=[revision, revision]
+                    ), mock.patch.object(
+                        pilot_code_evidence, "function_comparison", return_value={}
+                    ), contextlib.redirect_stderr(stderr):
+                        status = pilot_code_evidence.main([
+                            "--repo", "/synthetic/repo",
+                            "--base", "base-ref",
+                            "--current", "current-ref",
+                            "--output", str(output),
+                            "--check",
+                        ])
+                    self.assertEqual(status, 2)
+                    self.assertIn("pilot code evidence failed", stderr.getvalue())
+                    self.assertNotIn("Traceback", stderr.getvalue())
 
 
 if __name__ == "__main__":

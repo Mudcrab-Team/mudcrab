@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from unittest import mock
 
@@ -64,6 +64,57 @@ def _popen_waits_for_markers(*markers: Path, readiness_timeout: float = 5):
 
 
 class XEditProbeTests(unittest.TestCase):
+    def test_v157_runner_provenance_paths_use_posix_separators(self):
+        path = PureWindowsPath(r"C:\repo\scripts\schema\run_xedit_p0.py")
+        root = PureWindowsPath(r"C:\repo")
+        self.assertEqual(
+            p0_tools._repo_relative_posix(path, root),
+            "scripts/schema/run_xedit_p0.py",
+        )
+
+    def test_v158_xedit_text_artifacts_use_utf8_for_non_cp1252_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tools" / "xDump64.exe"
+            tool.parent.mkdir()
+            with tool.open("wb") as stream:
+                stream.truncate(probe.XDUMP_SIZE)
+            args = SimpleNamespace(
+                xdump=str(tool), wine=sys.executable, artifact_dir=str(root / "artifacts")
+            )
+            outcomes = [
+                subprocess.CompletedProcess([], 0, "wine-test\n", ""),
+                subprocess.CompletedProcess([], 0, "", "SSEDump 4.1.5f x64"),
+                subprocess.CompletedProcess(
+                    [], 0, "🙂", "<00:00:00.050> All Done.\n"
+                ),
+            ]
+            original_write_text = Path.write_text
+            encodings = []
+
+            def inspect_encoding(path, data, *args, **kwargs):
+                encodings.append(kwargs.get("encoding", args[0] if args else None))
+                return original_write_text(path, data, *args, **kwargs)
+
+            with mock.patch.object(
+                probe, "_read_verified_bytes",
+                return_value=(probe.XDUMP_SHA256, probe.XDUMP_SIZE, b"synthetic tool"),
+            ), mock.patch.object(
+                probe.p0_fixtures, "hand_encoded_cases",
+                return_value={"p0-hand-light.esl": (b"synthetic plugin", "fixture")},
+            ), mock.patch.object(
+                probe, "_run_supervised", side_effect=outcomes,
+            ), mock.patch.object(Path, "write_text", new=inspect_encoding):
+                report, artifact = probe.run_probe(args)
+
+            self.assertEqual(report["cases"][0]["status"], "failed_observation")
+            self.assertTrue(encodings)
+            self.assertEqual(set(encodings), {"utf-8"})
+            self.assertEqual(
+                (artifact / "logs/p0-hand-light.esl.stdout.txt").read_bytes(),
+                "🙂".encode("utf-8"),
+            )
+
     def test_v147_custom_wine_directory_cannot_receive_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -73,7 +124,7 @@ class XEditProbeTests(unittest.TestCase):
                 stream.truncate(probe.XDUMP_SIZE)
             runtime = root / "wine-runtime"
             runtime.mkdir()
-            wine = runtime / "wine"
+            wine = runtime / "wine.exe"
             wine.write_text("#!/bin/sh\nexit 1\n")
             wine.chmod(0o700)
             artifact = runtime / "artifacts"

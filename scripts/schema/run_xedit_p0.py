@@ -148,8 +148,8 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
                            ("help", [str(wine), str(artifact / "xDump64.exe"), "-SSE", "-?"])]:
         try:
             result = _run_supervised(command, cwd=artifact, env=env, label=label, timeout=COMMAND_TIMEOUT)
-            (logs / f"{label}.stdout.txt").write_text(result.stdout)
-            (logs / f"{label}.stderr.txt").write_text(result.stderr)
+            (logs / f"{label}.stdout.txt").write_text(result.stdout, encoding="utf-8")
+            (logs / f"{label}.stderr.txt").write_text(result.stderr, encoding="utf-8")
             if result.returncode != 0 or (label == "help" and "SSEDump 4.1.5f x64" not in result.stderr):
                 raise QualificationError(f"{label} did not confirm the required tool")
             if label == "wine-version":
@@ -157,19 +157,25 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
         except ProcessOutputDecodeError as exc:
             report["startup_failure"] = str(exc)
             report["startup_output_decode_failure"] = _retain_undecodable_output(logs, label, exc)
-            (artifact / "probe-results.json").write_text(json.dumps(report, indent=2) + "\n")
+            (artifact / "probe-results.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
             return report, artifact
         except (ProcessTimeout, QualificationError, OSError) as exc:
             if isinstance(exc, ProcessTimeout):
-                (logs / f"{label}.stdout.txt").write_text(exc.stdout)
-                (logs / f"{label}.stderr.txt").write_text(exc.stderr)
+                (logs / f"{label}.stdout.txt").write_text(exc.stdout, encoding="utf-8")
+                (logs / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
             report["startup_failure"] = str(exc)
-            (artifact / "probe-results.json").write_text(json.dumps(report, indent=2) + "\n")
+            (artifact / "probe-results.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
             return report, artifact
     for name, (raw, provenance) in cases.items():
         command = [str(wine), str(artifact / "xDump64.exe"), "-SSE", "-q",
                    "-D:" + windows_path(data), "-dcr", "-nobsa", name]
-        (logs / f"{name}.command.json").write_text(json.dumps(command, indent=2) + "\n")
+        (logs / f"{name}.command.json").write_text(
+            json.dumps(command, indent=2) + "\n", encoding="utf-8"
+        )
         try:
             result = _run_supervised(command, cwd=artifact, env=env, label=name, timeout=COMMAND_TIMEOUT)
             stdout, stderr = result.stdout, result.stderr
@@ -191,12 +197,14 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
             stdout, stderr = "", str(exc)
             observation = {"file_name": name, "status": "incomplete", "failure": str(exc),
                            "completed_verdict_saved": False}
-        (logs / f"{name}.stdout.txt").write_text(stdout)
-        (logs / f"{name}.stderr.txt").write_text(stderr)
+        (logs / f"{name}.stdout.txt").write_text(stdout, encoding="utf-8")
+        (logs / f"{name}.stderr.txt").write_text(stderr, encoding="utf-8")
         observation.update(input_sha256=hashlib.sha256(raw).hexdigest(), size_bytes=len(raw),
                            input_provenance=provenance)
         report["cases"].append(observation)
-    (artifact / "probe-results.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    (artifact / "probe-results.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return report, artifact
 
 

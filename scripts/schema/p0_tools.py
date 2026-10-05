@@ -7,7 +7,7 @@ import os
 import signal
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import corpus_manifest
 
@@ -104,8 +104,17 @@ def runner_provenance(runner: Path) -> dict:
     files = []
     for path in paths:
         digest, size, _ = _read_verified_bytes(path)
-        files.append({"path": str(path.resolve().relative_to(REPO_ROOT)), "sha256": digest, "size": size})
+        files.append({
+            "path": _repo_relative_posix(path.resolve(), REPO_ROOT),
+            "sha256": digest,
+            "size": size,
+        })
     return {"python": sys.version, "files": files}
+
+
+def _repo_relative_posix(path: PurePath, repository_root: PurePath) -> str:
+    """Serialize repository-relative paths with stable JSON separators."""
+    return path.relative_to(repository_root).as_posix()
 
 
 def validate_artifact_destination(
