@@ -2,6 +2,22 @@
 
 Status: provisional P0 research, 2026-10-04. This supports filed issue [#157](https://github.com/Mudcrab-Team/mudcrab/issues/157); it does not accept a schema, corpus or phase. The [initiative](../../roadmap/dynamic-schema-initiative.md) owns delivery order and the 100% newest-SE interpretation gate.
 
+Open the [schema explorer](schema-explorer.html) in a browser to browse the human record names, current SQL tables/columns, selected field evidence, and known unknowns. The single HTML file works offline, with embedded data and no backend, fonts, framework or runtime MCP connection. Source links open pinned public files; RE ledger/store references are labelled local-only.
+
+The catalog retains all 134 source entries: 133 plugin-record candidates and the separate `TES4` header. The builder derives the table view by executing the pinned `create_tables` SQL in an empty in-memory SQLite database: 26 logical tables, including two RTree virtual tables, with six implementation shadow tables excluded. Column facts preserve composite PK order, declared `NOT NULL`, SQL defaults and indexes. All 26 foreign-key lists are empty; code and semantic relationships are labelled separately. This is DDL evidence, not a populated database browser or an accepted field schema.
+
+Use `/` or `Ctrl K` to focus the current view's search. Browse catalog links with the keyboard; the arrow keys move focus within the list. Tables have a separate column search. Hash links retain the selected item or column, for example `#record/REFR`, `#evidence/REFR.XESP` and `#table/references/enable_parent_flags`. The Guide distinguishes the current partial winning-record projection from the planned immutable archive and canonical registry.
+
+The [builder](build_schema_explorer.py) uses Python's standard library and a fixed code-evidence pin, `5891b31a1be5670248e61ef925d4dcd337279754`. It reads the source inventory, current source files, [curated annotations](schema-explorer-annotations.json), and a [sanitized read-only MCP brief](schema-explorer-re-evidence.json). The brief records actual `mudcrab-re` calls and separate repository/build/tool identities. It contains factual labels and limits, with no decompiled bodies or proprietary payload bytes. Historical finding access does not rerun or qualify the historical producer.
+
+```sh
+python3 -B docs/research/dynamic-schema/build_schema_explorer.py
+python3 -B docs/research/dynamic-schema/build_schema_explorer.py --check
+python3 -B -m unittest discover -s docs/research/dynamic-schema -p 'test_*.py'
+```
+
+Generation is deterministic. The builder hashes strict UTF-8 text after converting only CRLF to LF; it preserves lone CR, Unicode and all other whitespace. The displayed text digests and the pinned LF source identities use that convention. Equivalent LF/CRLF checkouts produce identical embedded data and HTML. Other source drift fails closed and requires reviewed pins/annotations before regeneration. The regressions also exercise actual SQL null/default/key behavior, the full catalog denominator, safe script embedding and generated-output drift. The [browser smoke report](schema-explorer-browser-check.json) records 18 passing checks in Chromium 138 on Linux: search/filters, columns, deep links/back navigation, keyboard/skip focus, 390px layout, offline loading with HTTP/HTTPS blocked, and literal rendering of hostile labels. The 82 schema-tool and 22 research-tool tests passed; native Windows CI remains a separate check.
+
 The [candidate inventory](candidate-inventory.json) records source declarations, paths/lines, pins, duplicate model declarations, release gates and extraction limits. It contains no proprietary game data or copied record-definition bodies.
 
 | Source comparison | Result |

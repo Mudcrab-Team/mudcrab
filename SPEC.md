@@ -101,6 +101,8 @@ Q6|state-specific forms from earlier rows|identify exact links for mount, furnit
 - artifact: qualified oracle JSONL → before-merge major-record observations, tool/input provenance, typed values/references where exposed, explicit unavailable observations & errors. Existing placed-record command retains behavior.
 - document: `docs/roadmap/dynamic-schema-initiative.md` → complete phase/gate contracts; `docs/research/dynamic-schema/` → reproducible candidate evidence, not accepted schemas.
 
+- artifact: `docs/research/dynamic-schema/schema-explorer.html` → offline searchable source catalog, current SQL tables/columns, selected field/native evidence & labeled unknowns; generated from pinned project/MCP facts.
+
 ## §R RESEARCH
 
 id|topic|finding|src
@@ -291,6 +293,10 @@ V156: P0 process output ! strict locale decoding before structured acceptance; i
 V157: P0 repository/Data-relative evidence path keys ! POSIX separators on every host; issue/source joins & decision-runner identity use same canonical path spelling. Windows-path & nested-issue regressions guard serialization.
 V158: P0 saved text logs/JSON ! explicit UTF-8 regardless host locale; strict child-output decoding separate. Non-CP1252 xEdit artifact regression guards writer encoding.
 
+V159: Schema explorer ! pinned code-derived catalog/SQL facts, source citations & distinct declaration/static/current/unknown labels; inferred relationships ≠ SQLite foreign keys; selected field evidence ≠ complete interpretation; future ingestion visibly planned; offline navigation/search & embedded text safety verified.
+
+V160: Explorer UTF-8 text identities ! explicit CRLF→LF normalization; LF/CRLF checkouts → identical facts/HTML; semantic source drift → managed failure. Hash labels state normalization; retail/archive byte identities retain existing raw-byte contracts.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -351,6 +357,8 @@ T53|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, compl
 T54|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V122,V128,V133,V134,V135,V137
 T55|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V117,V128,V134,V135,V136,V137,V138
 T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V128,V134,V143,V144,V145,V147,V148,V151,R26
+
+T57|x|P0 human schema explorer: compact offline HTML, searchable candidate catalog/current SQL, selected field/variant labels from project + read-only mudcrab-re MCP; verify source data, navigation, citations & unknowns|V134,V138,V140,V141,V159,V160
 
 ## §B BUGS
 
@@ -482,3 +490,5 @@ B122|2026-10-05|source-span lexer classified Rust lifetimes as character literal
 B123|2026-10-05|source report `--check` read errors escaped as tracebacks and mismatches used uncontrolled exit|V134,V155; managed exit 2 for missing/malformed reports and mismatches; report-read regression; no new invariant
 B124|2026-10-05|next Mutagen callers handled timeout text only; shared binary decode errors lost raw artifacts at generic failure summary|V144,V156; persist raw streams/hash/size + unavailable decoded-output metadata for checked/case/legacy/SDK commands; partial-Unicode artifact regression; no new invariant
 B125|2026-10-05|docs-owned source evidence tests placed under engine utility scan; next CI rejected test-only `--repo`|V149; move tests beside responsible script; existing portable CI discovery retains every regression and strict engine audit unchanged
+B126|2026-10-05|explorer hashed checkout text bytes; CRLF-only conversion falsely reported code drift & changed generated input identities|V160; explicit UTF-8 CRLF→LF source/evidence hashes + equivalent-checkout regression
+B127|2026-10-05|explorer skip link changed hash to `#detail`; route parser reset selected table/evidence to REFR|V159; prevent route mutation, focus/scroll existing detail; real browser route/focus check
