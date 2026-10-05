@@ -1731,7 +1731,7 @@ fn encode_atlas_mip(
             payload.extend_from_slice(&encoded);
         }
     }
-    let has_alpha = rgba.chunks_exact(4).any(|pixel| pixel[3] != 255);
+    let has_alpha = rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255);
     Ok(crate::texture_ktx2::write_uastc(
         width as u32,
         height as u32,
