@@ -188,6 +188,29 @@ class P0WireFixtureTests(unittest.TestCase):
 
 
 class P0RunnerContractTests(unittest.TestCase):
+    def test_v103_custom_sdk_directory_rejected_by_runner_and_cli_before_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = root / "sdk"
+            sdk.mkdir()
+            dotnet = sdk / "dotnet"
+            dotnet.write_bytes(b"synthetic SDK path; never executed")
+            artifact = sdk / "artifacts"
+            oracle = root / "oracle"
+            args = SimpleNamespace(artifact_dir=str(artifact), oracle_source=str(oracle), dotnet=str(dotnet))
+            with mock.patch.object(run_mutagen_p0, "_read_verified_bytes") as read:
+                with self.assertRaisesRegex(run_mutagen_p0.QualificationError, "protected path"):
+                    run_mutagen_p0.run_suite(args)
+                read.assert_not_called()
+            with mock.patch.object(run_mutagen_p0, "run_suite") as suite:
+                status = run_mutagen_p0.main([
+                    "--artifact-dir", str(artifact), "--oracle-source", str(oracle),
+                    "--dotnet", str(dotnet),
+                ])
+                suite.assert_not_called()
+            self.assertEqual(status, 1)
+            self.assertFalse(artifact.exists())
+
     def test_dispatch_patch_anchors_before_commands_and_preserves_legacy_body(self):
         original = (
             "using System.Text.Json;\n"

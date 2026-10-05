@@ -103,6 +103,7 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
     if not wine_path:
         raise QualificationError(f"Wine executable not found: {args.wine}")
     wine = Path(wine_path).resolve()
+    validate_artifact_destination(artifact, tool.parent, additional_protected=(wine.parent,))
     if artifact.exists() and (not artifact.is_dir() or any(artifact.iterdir())):
         raise QualificationError("artifact directory must be new or empty")
     artifact.mkdir(parents=True, exist_ok=True)

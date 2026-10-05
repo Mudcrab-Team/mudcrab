@@ -15,6 +15,27 @@ import run_xedit_p0 as probe
 
 
 class XEditProbeTests(unittest.TestCase):
+    def test_v103_custom_wine_directory_cannot_receive_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "source" / "xDump64.exe"
+            tool.parent.mkdir()
+            with tool.open("wb") as stream:
+                stream.truncate(probe.XDUMP_SIZE)
+            runtime = root / "wine-runtime"
+            runtime.mkdir()
+            wine = runtime / "wine"
+            wine.write_text("#!/bin/sh\nexit 1\n")
+            wine.chmod(0o700)
+            artifact = runtime / "artifacts"
+            args = SimpleNamespace(xdump=str(tool), wine=str(wine), artifact_dir=str(artifact))
+            with mock.patch.object(probe, "_read_verified_bytes", return_value=(probe.XDUMP_SHA256, probe.XDUMP_SIZE, b"synthetic tool")), \
+                 mock.patch.object(probe, "_run_supervised") as run:
+                with self.assertRaisesRegex(probe.QualificationError, "protected path"):
+                    probe.run_probe(args)
+                run.assert_not_called()
+            self.assertFalse(artifact.exists())
+
     def test_v100_zero_exit_after_wine_crash_is_incomplete(self):
         for stdout, stderr in [
             ("WineDbg attached", "<00:00:00.050> All Done.\n"),

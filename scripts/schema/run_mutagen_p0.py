@@ -637,6 +637,8 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     )
     oracle_dir = Path(args.oracle_source).expanduser().resolve()
     validate_artifact_destination(artifact_dir, oracle_dir)
+    dotnet = _resolve_dotnet(args.dotnet)
+    validate_artifact_destination(artifact_dir, oracle_dir, additional_protected=(dotnet.parent,))
     runner_source = runner_provenance(Path(__file__))
     if artifact_dir.exists() and any(artifact_dir.iterdir()):
         raise QualificationError(f"artifact directory must be empty: {artifact_dir}")
@@ -673,7 +675,6 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     (provenance_dir / "Program.base.txt").write_bytes(program_raw)
     (provenance_dir / "mutagen_inspect_extension.txt").write_bytes(extension_raw)
 
-    dotnet = _resolve_dotnet(args.dotnet)
     env = os.environ.copy()
     env.update(
         {
@@ -912,6 +913,8 @@ def main(argv: list[str] | None = None) -> int:
     artifact_owned = False
     try:
         validate_artifact_destination(candidate, Path(args.oracle_source))
+        dotnet = _resolve_dotnet(args.dotnet)
+        validate_artifact_destination(candidate, Path(args.oracle_source), additional_protected=(dotnet.parent,))
         if candidate.exists() and (not candidate.is_dir() or any(candidate.iterdir())):
             raise QualificationError(f"artifact directory must be empty: {candidate}")
         candidate.mkdir(parents=True, exist_ok=True)
