@@ -210,7 +210,7 @@ class P0RunnerContractTests(unittest.TestCase):
         self.assertEqual(original_body.rstrip() + "\n", original)
         self.assertEqual(patched.count(run_mutagen_p0.ORACLE_ENTRY), 1)
 
-    def test_v104_managed_negative_rejection_requires_nonzero_error_and_no_stdout(self):
+    def test_v148_managed_negative_rejection_requires_nonzero_error_and_no_stdout(self):
         accepted = run_mutagen_p0.classify_negative_run(
             "bad.esp", b"bad", 2, "", "Mutagen inspect failed: malformed plugin\n"
         )
@@ -228,7 +228,7 @@ class P0RunnerContractTests(unittest.TestCase):
         self.assertEqual(unhandled["status"], "failed")
         self.assertFalse(unhandled["completed_verdict_saved"])
 
-    def test_v100_unavailable_physical_observations_do_not_collapse_to_empty(self):
+    def test_v144_unavailable_physical_observations_do_not_collapse_to_empty(self):
         record = {
             "signature": {"value": "STAT"},
             "form_key": "000800:test.esp",
@@ -259,7 +259,7 @@ class P0RunnerContractTests(unittest.TestCase):
                 raw_flags=0,
             )
 
-    def test_v101_typed_model_path_matches_wire_value_after_separator_normalization(self):
+    def test_v145_typed_model_path_matches_wire_value_after_separator_normalization(self):
         record = {
             "signature": {"value": "STAT"},
             "form_key": "000800:test.esp",
@@ -284,7 +284,7 @@ class P0RunnerContractTests(unittest.TestCase):
             printed_contains="meshes\\p0_stat.nif",
         )
 
-    def test_v101_localized_id_and_translated_text_remain_separate_observations(self):
+    def test_v145_localized_id_and_translated_text_remain_separate_observations(self):
         filename = "p0-localized.esp"
         input_bytes = b"localized fixture input"
         record = {
@@ -336,7 +336,7 @@ class P0RunnerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(run_mutagen_p0.QualificationError, "did not match"):
             run_mutagen_p0.validate_report(report, filename, input_bytes)
 
-    def test_v103_default_artifact_under_protected_tmp_is_rejected_before_write(self):
+    def test_v147_default_artifact_under_protected_tmp_is_rejected_before_write(self):
         args = SimpleNamespace(artifact_dir=None, oracle_source="/tmp/not-the-oracle")
         candidate = run_mutagen_p0.REPO_ROOT / "mudcrab-p0-mutagen-test-no-write"
         with mock.patch.dict(
@@ -347,7 +347,7 @@ class P0RunnerContractTests(unittest.TestCase):
                 run_mutagen_p0.run_suite(args)
         self.assertFalse(candidate.exists())
 
-    def test_v103_explicit_artifact_ancestor_of_oracle_is_rejected_without_write(self):
+    def test_v147_explicit_artifact_ancestor_of_oracle_is_rejected_without_write(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             oracle = root / "oracle"
@@ -356,7 +356,7 @@ class P0RunnerContractTests(unittest.TestCase):
                 run_mutagen_p0.validate_artifact_destination(candidate, oracle)
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_v104_case_timeout_preserves_incomplete_evidence_without_verdict(self):
+    def test_v148_case_timeout_preserves_incomplete_evidence_without_verdict(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixtures = root / "fixtures"
@@ -384,7 +384,7 @@ class P0RunnerContractTests(unittest.TestCase):
             self.assertFalse(timeout_evidence["completed_verdict_saved"])
             self.assertFalse((observations / "p0-timeout.json").exists())
 
-    def test_v104_legacy_timeout_preserves_incomplete_evidence(self):
+    def test_v148_legacy_timeout_preserves_incomplete_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixtures = root / "fixtures"
@@ -407,7 +407,7 @@ class P0RunnerContractTests(unittest.TestCase):
                 (observations / "legacy-placed.timeout.stderr.txt").read_text(), "slow parser"
             )
 
-    def test_v104_wrong_shaped_json_is_raw_evidence_not_completed_observation(self):
+    def test_v148_wrong_shaped_json_is_raw_evidence_not_completed_observation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixtures = root / "fixtures"
