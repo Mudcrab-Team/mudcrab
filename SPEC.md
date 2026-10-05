@@ -268,7 +268,7 @@ T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source
 T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V93,V96,V97,V98,V99,V100,V101,V102,V103,V104,V105
 T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
 
-T46|~|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122,V123
+T46|x|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122,V123
 
 ## §B BUGS
 
