@@ -171,13 +171,43 @@ are not the same directory.
 `converter <Data> [output]` writes progress to **stderr** and the final summary to stdout, so a
 pipeline can keep the outcome while the status goes to the terminal.
 
+`--no-lod` skips generated terrain LOD in normal conversion and `--reuse-assets`.
+Full-detail terrain, meshes, textures, scripts and world metadata are still produced.
+The resulting database has empty LOD tables and no LOD manifest or payload directory;
+an existing package's chunks are not carried forward. Omit the flag on a later run to
+build LOD. Toggling it does not change ordinary asset byte identity, so verified current
+mesh/texture outputs remain reusable. Resume rebuilds generated database/LOD outputs
+before publishing, including when this flag changes.
+
+Conversion owns an exclusive sibling `<output>.lock` for the entire run, including
+reads of the previous package. Engine and inspector readers hold shared locks. An
+engine using that output prevents conversion from starting, and conversion prevents
+new readers from starting. Convert into a separate output directory to keep another
+package running. Lock acquisition fails immediately rather than waiting.
+
+Readers open an existing lock file read-only. A read-only installation therefore needs
+its owner to provision a readable sibling lock before making the parent read-only.
+If that file is missing and cannot be created, startup fails; reading without a lock
+would permit replacement of a package while it is in use.
+
+Publication recovery requires the destination's sibling publication record and verified
+manifest/generated-file seals. An unowned `<output>.backup-*` directory stops recovery
+and remains untouched. Preserve the backup and record for inspection; do not fabricate
+a record, delete the backup, or rename it over an existing output. A conversion to a
+different new output directory can proceed independently while the old transaction is
+investigated. This applies even when the leftover backup predates this recovery protocol.
+
+Every conversion exports remapped `XESP` enable-parent FormIDs, reference `header_flags`,
+`enable_parent_id` and `enable_parent_flags`. These database changes also apply to
+packages built with `--no-lod`; they are not limited to distant rendering.
+
 ### Progress events
 
 `ProgressEvent` (`crates/converter/src/progress.rs`) carries what a status line or a GUI needs:
 
 | Field | Meaning |
 | :--- | :--- |
-| `stage` | `Discovering`, `Extracting`, `Database`, `Meshes`, `Textures`, `Scripts`, `Validating`, `Publishing`, `Complete` |
+| `stage` | `Discovering`, `Extracting`, `Database`, `Meshes`, `Textures`, `Scripts`, `LodChunks`, `Validating`, `Publishing`, `Complete` |
 | `completed`, `total` | Items done and expected for the stage; `fraction()` is `completed / total` |
 | `current_file` | The asset or archive in flight |
 | `bytes_completed`, `bytes_total` | Bytes done and expected, where the stage knows them cheaply: an archive's file table, or the source sizes a conversion batch sums before it starts |
@@ -189,6 +219,12 @@ textures about 4 h 30 m of it, extraction 24.2 GB written, meshes about 3 minute
 re-reading every artifact), which is what makes `overall` a time-based bar rather than a
 stage-count one. A reconversion that reuses most outputs moves through the early stages faster
 than the weights assume, so the bar runs ahead of the wall clock; that is expected.
+
+LOD has no calibrated share of total run time. During that stage the launcher bar
+shows completed/total worldspaces and is labeled `LOD <percent>%`; after the stage it
+returns to the overall estimate. The underlying overall estimate remains monotonic.
+No LOD ETA is shown. A long first world can keep stage completion at zero while work
+continues; completed-world counts do not describe work inside that world.
 
 Extraction reports every 512 files (its file table gives both the count and the bytes), each
 conversion batch reports every asset with its source size, and validation reports per artifact.
@@ -223,6 +259,13 @@ A finished run prints the converted, reused and failed counts, the total time, t
 converted artifacts, the manifest and `--report-json` paths, and when each stage ran (first event
 to last, so overlapping stages are still readable). An incomplete run names the first few skipped
 inputs and exits non-zero.
+
+`--report-json` includes `lod_elapsed_ms` and `publication_elapsed_ms` measured with a
+monotonic clock. LOD time covers compilation; publication time covers runtime pack
+construction, seals, verification and directory publication in normal conversion, or
+the new-directory rename in a metadata rebuild. It excludes later ingestion-cache
+persistence/pruning. Old reports without these fields or `lod_chunks` deserialize with
+zero values; zero in an old report is not a recorded measurement.
 
 ### Interruption and failure
 

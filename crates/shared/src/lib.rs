@@ -1,11 +1,18 @@
 //! Stable data contracts shared by the offline converter and the runtime.
 
+pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
+pub mod lod;
+pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 5;
+// Schema 5 belongs to grass data (#152); LOD tables first appear in schema 6.
+pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 7;
+/// Latest producer required when a package advertises the combined LOD contract.
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 24;
+pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
 /// so the oldest the launcher calls ready. Schemas 4 and 5 only added tables and columns (`lights`,

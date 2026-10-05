@@ -69,12 +69,12 @@ reason is chained onto a later failure's error. Cubemaps and volumes of these la
 formats, palettes and L8 also fall back to UASTC. Under `--texture-encoder gpu` these textures are
 encoded to UASTC on the GPU instead.
 
-The combined native-BC DDS and authored surface-input producer uses converter schema 23.
+The combined native-BC DDS and authored surface-input producer uses converter schema 24.
 Schema 18 was allocated independently to native-BC DDS and specular changes, so its numeric identity
-cannot prove mesh or texture compatibility. Manifests from known schemas 12–22 rebuild all textures,
+cannot prove mesh or texture compatibility. Manifests from known schemas 12–23 rebuild all textures,
 GLBs and world outputs, while source/configuration/output-verified scripts and archive ingestion
 remain reusable. Schemas 22 and 23 configuration hashes include CPU/GPU encoder selection and GPU quality;
-GPU batch size changes scheduling only. Staged outputs require exact schema 23 provenance; old bytes
+GPU batch size changes scheduling only. Staged outputs require exact schema 24 provenance; old bytes
 are never relabeled.
 
 Byte preservation is asserted per mip level in fixtures, and a Bevy engine test loads native

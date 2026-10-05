@@ -6,15 +6,22 @@ Run the offline contract and corpus-manifest tests with:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/schema -p 'test_*.py' -v
 ```
 
-The separate synthetic Mutagen qualification requires .NET SDK 9.0.318 and the
-pinned local `oracles/records` source. It restores Mutagen 0.54.4 into a fresh
+The offline tests use only repository fixtures and Python's standard library;
+CI runs them on Linux/Python 3.11 and Windows/Python 3.13.
+
+The separate synthetic Mutagen qualification is an author-run evidence tool.
+It requires .NET SDK 9.0.318 and a separately supplied, hash-pinned
+`oracles/records` source that is not included in this public repository. Its
+recorded execution cannot yet be reproduced from this repository alone. The
+CLI requires an explicit `--oracle-source`; there is no machine-local default.
+It restores Mutagen 0.54.4 into a fresh
 temporary artifact directory, builds a guarded source copy, and inspects only
 the hand-encoded fixtures in this pilot:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/schema/run_mutagen_p0.py \
-  --dotnet /home/dev/mcrab-store/tools/dotnet-sdk-9/bin/dotnet \
-  --oracle-source /home/dev/.t3/projects/mudcrab-reverse-engineering/oracles/records
+  --dotnet /path/to/dotnet \
+  --oracle-source /path/to/supplied/oracles/records
 ```
 
 The command prints its artifact directory on success. An explicit
