@@ -1352,6 +1352,7 @@ mod tests {
             inputs_by_kind: Default::default(),
             pruned_texture_references: 0,
             lod_chunks: 1693,
+            lod_cache_hits: 0,
             lod_elapsed_ms: 0,
             publication_elapsed_ms: 0,
             lod_warnings: vec!["Solstheim terrain skipped".into()],

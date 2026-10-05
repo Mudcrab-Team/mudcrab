@@ -16,9 +16,11 @@ use crate::{
     },
     integration::{IntegrationReport, finalize_world_database},
     lod::{
-        albedo::TerrainTextures,
+        albedo::{TerrainTextureCache, TerrainTextures},
+        reuse::{LodManifest, LodReuse},
         terrain::{
-            compile_world_terrain, exterior_terrain_cells, publish_chunks, read_cached_heights,
+            TerrainCellCache, exterior_terrain_cells, publish_chunk, read_cached_heights,
+            terrain_jobs, validate_chunk_members,
         },
     },
     mesh::{MeshConverter, nif_source_hash},
@@ -66,11 +68,14 @@ pub struct PipelineReport {
     /// separately from `skipped` and `warnings`: nothing failed to convert, so a
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
-    /// Terrain LOD chunks compiled this run. Zero when no worldspace had a
+    /// Terrain LOD chunks produced this run, including verified reused chunks. Zero when no worldspace had a
     /// valid origin or LOD was disabled; a world without one is recorded as an LOD omission, never
     /// given an assumed origin (GEOM-02).
     #[serde(default)]
     pub lod_chunks: u64,
+    /// Verified prior-package chunks reused without baking/encoding.
+    #[serde(default)]
+    pub lod_cache_hits: u64,
     /// Wall time spent compiling terrain LOD, excluding other conversion stages.
     #[serde(default)]
     pub lod_elapsed_ms: u128,
@@ -836,6 +841,7 @@ impl AssetPipeline {
         compile_lod_chunks_with_cancel(
             config,
             staging,
+            &config.output_dir,
             &plugins,
             &plugin_hashes,
             progress_tx,
@@ -2382,6 +2388,7 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
 pub(crate) async fn compile_lod_chunks(
     config: &PipelineConfig,
     staging: &Path,
+    reuse_root: &Path,
     plugins: &[PathBuf],
     plugin_hashes: &[String],
     progress_tx: &Sender<ProgressEvent>,
@@ -2390,6 +2397,7 @@ pub(crate) async fn compile_lod_chunks(
     compile_lod_chunks_with_cancel(
         config,
         staging,
+        reuse_root,
         plugins,
         plugin_hashes,
         progress_tx,
@@ -2399,9 +2407,11 @@ pub(crate) async fn compile_lod_chunks(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compile_lod_chunks_with_cancel(
     config: &PipelineConfig,
     staging: &Path,
+    reuse_root: &Path,
     plugins: &[PathBuf],
     plugin_hashes: &[String],
     progress_tx: &Sender<ProgressEvent>,
@@ -2425,7 +2435,16 @@ async fn compile_lod_chunks_with_cancel(
     if plugins.is_empty() || !db_path.is_file() {
         return Ok(());
     }
+    use rayon::prelude::*;
     let connection = Connection::open(&db_path)?;
+    let reuse = if config.invalidate_cache {
+        None
+    } else {
+        LodReuse::open(reuse_root).ok()
+    };
+    let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
+    let mut texture_cache = TerrainTextureCache::default();
+    let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -2449,7 +2468,7 @@ async fn compile_lod_chunks_with_cancel(
         .num_threads(config.cpu_jobs)
         .build()
         .wrap_err("failed to create terrain LOD compiler pool")?;
-    for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
+    'world: for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
         interrupt(cancellation)?;
         let settings = match resolve_lod_settings(config, &staging.join("vfs"), editor_id) {
             Ok(Some(settings)) => settings,
@@ -2528,8 +2547,13 @@ async fn compile_lod_chunks_with_cancel(
             .iter()
             .map(|(grid_x, grid_y, cell_id)| (*cell_id, (*grid_x, *grid_y)))
             .collect();
-        let inputs = read_cached_heights(&staging.join("cell_cache.rkyv"), &lookup)?;
-        let textures = match TerrainTextures::load(&connection, &staging.join("vfs"), &inputs) {
+        let inputs = cell_cache.cells(&lookup)?;
+        let textures = match TerrainTextures::load_with_cache(
+            &connection,
+            &staging.join("vfs"),
+            &inputs,
+            &mut texture_cache,
+        ) {
             Ok(textures) => textures,
             Err(error) => {
                 report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid material inputs: {error:#}"));
@@ -2549,47 +2573,103 @@ async fn compile_lod_chunks_with_cancel(
                 continue;
             }
         };
-        let compiled = compiler_pool
-            .install(|| compile_world_terrain(*worldspace_id, origin, &inputs, &textures));
-        interrupt(cancellation)?;
-        textures.verify_sources(&staging.join("vfs"))?;
-        let chunks = match compiled {
-            Ok(chunks) => chunks,
-            Err(error) => {
-                report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid compiler content: {error:#}"));
-                if let Some(settings) = world_settings.last_mut() {
-                    settings["status"] = serde_json::json!("invalid_content");
-                    settings["compiler_error"] = serde_json::json!(format!("{error:#}"));
-                }
-                send(
-                    progress_tx,
-                    ProgressStage::LodChunks,
-                    (index + 1) as u64,
-                    worlds.len() as u64,
-                    None,
-                    "Compiling terrain LOD chunks",
-                )
-                .await;
-                continue;
+        let jobs = terrain_jobs(*worldspace_id, origin, &inputs);
+        // Validate before fingerprinting: a cache hit cannot bypass source checks.
+        let validation = jobs
+            .iter()
+            .try_for_each(|job| validate_chunk_members(job.key, &job.members));
+        let mut cell_hashes = std::collections::HashMap::with_capacity(inputs.len());
+        if validation.is_ok() {
+            for cell in &inputs {
+                cell_hashes.insert(cell.cell_id, cell.fingerprint());
             }
-        };
-        terrain_sources.extend(textures.source_hashes);
-        for chunk in &chunks {
-            chunk_hashes.push(format!(
-                "{}:{}",
-                shared::lod::chunk_payload_path(chunk.key),
-                hash_bytes(&chunk.glb)
-            ));
         }
-        // Payloads and their index rows now; the single `lod_build` row
-        // after every world is compiled, once the identity is final.
-        publish_chunks(&connection, staging, None, &chunks)?;
-        report.lod_chunks += chunks.len() as u64;
-        report.artifacts.extend(
-            chunks
-                .iter()
-                .map(|chunk| PathBuf::from(shared::lod::chunk_payload_path(chunk.key))),
-        );
+        let tx = connection.unchecked_transaction()?;
+        let mut accepted = Vec::with_capacity(jobs.len());
+        let mut reused = 0u64;
+        let mut content_error = validation.err();
+        for batch in jobs.chunks(compiler_pool.current_num_threads()) {
+            if content_error.is_some() {
+                break;
+            }
+            interrupt(cancellation)?;
+            // Baking, mip generation and encoding finish together per chunk. Only
+            // this bounded batch holds GLB payloads; SQLite remains on this thread.
+            let compiled: Result<Vec<_>> = compiler_pool.install(|| {
+                batch
+                    .par_iter()
+                    .map(|job| {
+                        let input_hash = job.fingerprint(origin, &cell_hashes, &textures)?;
+                        if let Some(chunk) = reuse
+                            .as_ref()
+                            .and_then(|reuse| reuse.chunk(job, origin, &input_hash))
+                        {
+                            return Ok((chunk, input_hash, true));
+                        }
+                        Ok((job.compile(origin, &textures)?, input_hash, false))
+                    })
+                    .collect()
+            });
+            let chunks = match compiled {
+                Ok(chunks) => chunks,
+                Err(error) => {
+                    content_error = Some(error);
+                    break;
+                }
+            };
+            interrupt(cancellation)?;
+            for (chunk, input_hash, hit) in chunks {
+                publish_chunk(&tx, staging, &chunk)?;
+                let relative = shared::lod::chunk_payload_path(chunk.key);
+                accepted.push((relative, input_hash, hash_bytes(&chunk.glb)));
+                reused += u64::from(hit);
+            }
+            send(
+                progress_tx,
+                ProgressStage::LodChunks,
+                index as u64,
+                worlds.len() as u64,
+                None,
+                &format!(
+                    "Terrain LOD {editor_id}: {}/{} chunks ({reused} reused)",
+                    accepted.len(),
+                    jobs.len()
+                ),
+            )
+            .await;
+        }
+        textures.verify_sources(&staging.join("vfs"))?;
+        if let Some(error) = content_error {
+            tx.rollback()?;
+            let partial_world = staging.join(format!("lod/{worldspace_id:08x}"));
+            if partial_world.exists() {
+                fs::remove_dir_all(partial_world)?;
+            }
+            report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid compiler content: {error:#}"));
+            if let Some(settings) = world_settings.last_mut() {
+                settings["status"] = serde_json::json!("invalid_content");
+                settings["compiler_error"] = serde_json::json!(format!("{error:#}"));
+            }
+            send(
+                progress_tx,
+                ProgressStage::LodChunks,
+                (index + 1) as u64,
+                worlds.len() as u64,
+                None,
+                "Compiling terrain LOD chunks",
+            )
+            .await;
+            continue 'world;
+        }
+        tx.commit()?;
+        terrain_sources.extend(textures.source_hashes);
+        report.lod_chunks += accepted.len() as u64;
+        report.lod_cache_hits += reused;
+        for (relative, input_hash, output_hash) in accepted {
+            chunk_hashes.push(format!("{relative}:{output_hash}"));
+            report.artifacts.push(PathBuf::from(&relative));
+            chunk_inputs.insert(relative, input_hash);
+        }
         compiled_worlds += 1;
         send(
             progress_tx,
@@ -2600,6 +2680,19 @@ async fn compile_lod_chunks_with_cancel(
             "Compiling terrain LOD chunks",
         )
         .await;
+    }
+    for (path, hash) in &terrain_sources {
+        ensure!(
+            hash_file(&staging.join("vfs").join(path))? == *hash,
+            "terrain input changed during bake: {path}"
+        );
+    }
+    if report.lod_cache_hits > 0 {
+        let message = format!(
+            "Reused {}/{} terrain LOD chunks with verified inputs and payloads",
+            report.lod_cache_hits, report.lod_chunks
+        );
+        report.notices.push(message);
     }
     chunk_hashes.sort();
     let current_plugin_hashes = plugins
@@ -2630,6 +2723,8 @@ async fn compile_lod_chunks_with_cancel(
             chunks: report.lod_chunks,
             land_texture_repeats_per_cell: shared::LAND_TEXTURE_REPEATS_PER_CELL,
             terrain_sources,
+            compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
+            chunk_inputs,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -2722,6 +2817,7 @@ fn build_identity(
 ) -> Result<String> {
     let canonical = serde_json::json!({
         "converter_schema": CONVERTER_SCHEMA_VERSION,
+        "terrain_compiler": crate::lod::TERRAIN_COMPILER_VERSION,
         "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
         "configuration": configuration_hash,
         "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
@@ -2731,19 +2827,6 @@ fn build_identity(
         "terrain_sources": terrain_sources,
     });
     Ok(hash_bytes(&serde_json::to_vec(&canonical)?))
-}
-
-/// The published `lod-manifest.json`: the identity the runtime checks before
-/// trusting any chunk row or payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LodManifest {
-    build_identity: String,
-    converter_schema: u32,
-    world_database_schema: u32,
-    chunks: u64,
-    #[serde(default)]
-    land_texture_repeats_per_cell: f32,
-    terrain_sources: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -3295,6 +3378,7 @@ mod tests {
     fn legacy_report_without_lod_fields_deserializes() {
         let mut legacy = serde_json::to_value(super::PipelineReport::default()).unwrap();
         legacy.as_object_mut().unwrap().remove("lod_chunks");
+        legacy.as_object_mut().unwrap().remove("lod_cache_hits");
         legacy.as_object_mut().unwrap().remove("lod_warnings");
         legacy.as_object_mut().unwrap().remove("lod_elapsed_ms");
         legacy
@@ -3303,6 +3387,7 @@ mod tests {
             .remove("publication_elapsed_ms");
         let report: super::PipelineReport = serde_json::from_value(legacy).unwrap();
         assert_eq!(report.lod_chunks, 0);
+        assert_eq!(report.lod_cache_hits, 0);
         assert!(report.lod_warnings.is_empty());
         assert_eq!(report.lod_elapsed_ms, 0);
         assert_eq!(report.publication_elapsed_ms, 0);
@@ -3831,9 +3916,17 @@ mod tests {
             .iter()
             .map(|path| hash_file(path).unwrap())
             .collect::<Vec<_>>();
-        compile_lod_chunks(&config, &staging, &plugins, &hashes, &tx, &mut report)
-            .await
-            .unwrap();
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &config.output_dir,
+            &plugins,
+            &hashes,
+            &tx,
+            &mut report,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.lod_chunks, 0);
         assert!(
             report
@@ -3874,9 +3967,17 @@ mod tests {
         .unwrap();
         config.lod_origins.insert("ValidWorld".into(), [0, 0]);
         let mut mixed = PipelineReport::default();
-        compile_lod_chunks(&config, &staging, &plugins, &hashes, &tx, &mut mixed)
-            .await
-            .unwrap();
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &config.output_dir,
+            &plugins,
+            &hashes,
+            &tx,
+            &mut mixed,
+        )
+        .await
+        .unwrap();
         assert!(mixed.lod_chunks > 0);
         assert!(
             mixed
@@ -3894,6 +3995,118 @@ mod tests {
             0
         );
         assert!(staging.join("lod-manifest.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn v119_late_batch_failure_rolls_back_entire_world() {
+        use dummy_content::{esm, layout};
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let staging = directory.path().join("staging");
+        layout::prepare_directory(&data, false).unwrap();
+        layout::generate(
+            &data,
+            layout::DEFAULT_SEED,
+            layout::Formats::parse("dds,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let cells = [
+            esm::Cell {
+                grid_x: 0,
+                grid_y: 0,
+            },
+            esm::Cell {
+                grid_x: 64,
+                grid_y: 0,
+            },
+        ];
+        fs::write(
+            data.join("Skyrim.esm"),
+            esm::plugin(&esm::Plugin {
+                author: layout::GENERATED_AUTHOR,
+                worldspace: layout::GENERATED_WORLDSPACE,
+                cells: &cells,
+                model_path: layout::GENERATED_MODEL_PATH,
+                diffuse: layout::GENERATED_DIFFUSE_PATH,
+                normal_texture: layout::GENERATED_NORMAL_PATH,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(staging.join("vfs")).unwrap();
+        overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
+        let plugins = vec![data.join("Skyrim.esm")];
+        let records =
+            EsmParser::convert_plugins_with_records(&plugins, &staging.join("skyrim_world.db"))
+                .unwrap();
+        write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
+        let mut cache = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(
+            &fs::read(staging.join("cell_cache.rkyv")).unwrap(),
+        )
+        .unwrap();
+        let last = cache
+            .cells
+            .iter_mut()
+            .max_by_key(|cell| cell.cell_id)
+            .unwrap();
+        last.layers.push(shared::TerrainLayer {
+            texture_form_id: last.layers[0].texture_form_id,
+            quadrant: 0,
+            layer: 1,
+            is_base: false,
+            weights: vec![shared::TerrainWeight {
+                vertex: 0,
+                opacity: f32::NAN,
+            }],
+        });
+        fs::write(
+            staging.join("cell_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        let mut config = PipelineConfig::new(&data, directory.path().join("output"));
+        config.cpu_jobs = 1;
+        let hashes = plugins
+            .iter()
+            .map(|path| hash_file(path).unwrap())
+            .collect::<Vec<_>>();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut report = PipelineReport::default();
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &config.output_dir,
+            &plugins,
+            &hashes,
+            &tx,
+            &mut report,
+        )
+        .await
+        .unwrap();
+        let mut first_batch_published = false;
+        while let Ok(event) = rx.try_recv() {
+            first_batch_published |= event.message.contains("1/6 chunks");
+        }
+        assert!(
+            first_batch_published,
+            "exercise a later failure after a successful batch"
+        );
+        assert_eq!(report.lod_chunks, 0);
+        assert_eq!(report.lod_cache_hits, 0);
+        assert_eq!(report.lod_warnings.len(), 1);
+        let database = Connection::open(staging.join("skyrim_world.db")).unwrap();
+        for table in ["lod_chunks", "lod_chunks_spatial"] {
+            assert_eq!(
+                database
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                        .get::<_, u64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        assert!(!staging.join("lod/00000001").exists());
+        assert!(!staging.join("lod-manifest.json").exists());
+        assert!(!report.artifacts.iter().any(|path| path.starts_with("lod")));
     }
 
     #[tokio::test]

@@ -134,6 +134,26 @@ impl TextureConverter {
         mip_rgba: &[Vec<u8>],
         encoding: TextureEncoding,
     ) -> Result<Vec<u8>> {
+        Self::encode_rgba_mips_with(width, height, mip_rgba, encoding, |width, height, rgba| {
+            encode_basis_ktx2(
+                width,
+                height,
+                rgba,
+                encoding,
+                false,
+                ETC1S_QUALITY_DEFAULT,
+                UASTC_LEVEL_DEFAULT,
+            )
+        })
+    }
+
+    fn encode_rgba_mips_with(
+        width: u32,
+        height: u32,
+        mip_rgba: &[Vec<u8>],
+        encoding: TextureEncoding,
+        mut encode: impl FnMut(u32, u32, &[u8]) -> Result<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
         ensure!(
             width > 0 && height > 0,
             "texture dimensions must be non-zero"
@@ -153,26 +173,9 @@ impl TextureConverter {
                 rgba.len() == mip_width as usize * mip_height as usize * 4,
                 "RGBA mip {mip} has an invalid byte length"
             );
-            encoded_levels.push(encode_basis_ktx2(
-                mip_width,
-                mip_height,
-                rgba,
-                encoding,
-                false,
-                ETC1S_QUALITY_DEFAULT,
-                UASTC_LEVEL_DEFAULT,
-            )?);
+            encoded_levels.push(encode(mip_width, mip_height, rgba)?);
         }
-        let template = encode_basis_ktx2(
-            width,
-            height,
-            &mip_rgba[0],
-            encoding,
-            true,
-            ETC1S_QUALITY_DEFAULT,
-            UASTC_LEVEL_DEFAULT,
-        )?;
-        let bytes = combine_ktx2_mip_levels(&template, &encoded_levels)?;
+        let bytes = assemble_ktx2_mip_levels(&encoded_levels)?;
         validate_ktx2(&bytes, encoding)?;
         Ok(bytes)
     }
@@ -798,8 +801,52 @@ fn combine_ktx2_mip_levels(template: &[u8], levels: &[Vec<u8>]) -> Result<Vec<u8
         })
         .min()
         .ok_or_else(|| color_eyre::eyre::eyre!("KTX2 mip template has no levels"))?;
-    let mut output = template[..first_data_offset].to_vec();
+    let output = template[..first_data_offset].to_vec();
     reference.level_count = u32::try_from(level_count).wrap_err("too many DDS mip levels")?;
+    write_ktx2_mip_levels(reference, output, levels)
+}
+
+/// Assemble independently encoded UASTC levels using the base level's DFD/KVD.
+/// Reserving the level index explicitly avoids compressing a disposable pyramid.
+fn assemble_ktx2_mip_levels(levels: &[Vec<u8>]) -> Result<Vec<u8>> {
+    let base = levels
+        .first()
+        .ok_or_else(|| color_eyre::eyre::eyre!("KTX2 mip chain is empty"))?;
+    let reader = ktx2::Reader::new(base)
+        .map_err(|error| color_eyre::eyre::eyre!("invalid KTX2 base mip: {error:?}"))?;
+    let mut reference = reader.header();
+    ensure!(
+        reference.index.sgd_byte_length == 0,
+        "independent KTX2 mips cannot share supercompression global data"
+    );
+    reference.level_count = u32::try_from(levels.len()).wrap_err("too many RGBA mip levels")?;
+    let mut output = vec![0; ktx2::Header::LENGTH + levels.len() * ktx2::LevelIndex::LENGTH];
+    let index = reference.index;
+    reference.index.dfd_byte_offset = u32::try_from(output.len())?;
+    output.extend_from_slice(
+        &base[index.dfd_byte_offset as usize
+            ..(index.dfd_byte_offset + index.dfd_byte_length) as usize],
+    );
+    reference.index.kvd_byte_offset = if index.kvd_byte_length > 0 {
+        let offset = u32::try_from(output.len())?;
+        output.extend_from_slice(
+            &base[index.kvd_byte_offset as usize
+                ..(index.kvd_byte_offset + index.kvd_byte_length) as usize],
+        );
+        offset
+    } else {
+        0
+    };
+    reference.index.sgd_byte_offset = 0;
+    write_ktx2_mip_levels(reference, output, levels)
+}
+
+fn write_ktx2_mip_levels(
+    reference: ktx2::Header,
+    mut output: Vec<u8>,
+    levels: &[Vec<u8>],
+) -> Result<Vec<u8>> {
+    let level_count = levels.len();
     output[..ktx2::Header::LENGTH].copy_from_slice(&reference.as_bytes());
     let mut indexes = Vec::with_capacity(level_count);
     for (mip, level) in levels.iter().enumerate() {
@@ -1715,6 +1762,59 @@ mod tests {
     };
     use ddsfile::{AlphaMode, D3D10ResourceDimension, DxgiFormat, NewD3dParams, NewDxgiParams};
     use std::io::{Read, Write};
+
+    #[test]
+    fn v117_rgba_mips_are_encoded_once_and_preserved() {
+        let rgba: Vec<_> = [16, 8, 4]
+            .into_iter()
+            .map(|side| gradient(side, side))
+            .collect();
+        let mut calls = Vec::new();
+        let mut encoded = Vec::new();
+        let bytes = TextureConverter::encode_rgba_mips_with(
+            16,
+            16,
+            &rgba,
+            TextureEncoding::ColorSrgb,
+            |w, h, pixels| {
+                calls.push((w, h));
+                let level = encode_basis_ktx2(
+                    w,
+                    h,
+                    pixels,
+                    TextureEncoding::ColorSrgb,
+                    false,
+                    ETC1S_QUALITY_DEFAULT,
+                    UASTC_LEVEL_DEFAULT,
+                )?;
+                encoded.push(level.clone());
+                Ok(level)
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, [(16, 16), (8, 8), (4, 4)]);
+        let reader = ktx2::Reader::new(&bytes).unwrap();
+        assert_eq!(reader.header().level_count, 3);
+        assert_eq!(
+            reader.transfer_function(),
+            Some(ktx2::TransferFunction::SRGB)
+        );
+        for (actual, original) in reader.levels().zip(&encoded) {
+            let original = ktx2::Reader::new(original).unwrap();
+            assert_eq!(actual.data, original.levels().next().unwrap().data);
+            assert_eq!(
+                actual.uncompressed_byte_length,
+                original.levels().next().unwrap().uncompressed_byte_length
+            );
+        }
+        let base = ktx2::Reader::new(&encoded[0]).unwrap();
+        assert_eq!(reader.color_model(), base.color_model());
+        assert_eq!(
+            reader.key_value_data().collect::<Vec<_>>(),
+            base.key_value_data().collect::<Vec<_>>()
+        );
+        assert!(assemble_ktx2_mip_levels(&[encoded[1].clone(), encoded[0].clone()]).is_err());
+    }
 
     #[test]
     fn derives_encoding_from_slot_semantics_and_resolves_shared_textures() {

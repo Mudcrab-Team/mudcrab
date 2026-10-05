@@ -5,4 +5,8 @@
 //! the same chunk files beneath per-cell `objects` groups.
 
 pub mod albedo;
+pub(crate) mod reuse;
 pub mod terrain;
+
+/// Explicit LOD producer revision; ordinary conversion bytes are unchanged.
+pub(crate) const TERRAIN_COMPILER_VERSION: u32 = 2;
