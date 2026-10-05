@@ -242,6 +242,8 @@ V102: P0 manifest dependency closure ! deep acyclic chains & cycles handled with
 V103: P0 oracle artifacts/temp/build/cache ! outside Mudcrab source, active RE checkout/store & supplied oracle roots; validate destination before any write. Protected-path fixtures guard both CLI & runner.
 V104: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
 
+V105: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -362,3 +364,4 @@ B58|2026-10-04|optional typed StringsKey null could convert to empty string unde
 B59|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader success masked inconsistent source fixtures|V101; include major + group occurrences, independent physical count checks & regenerated golden digest
 B60|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V100; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
 B61|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V99; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
+B62|2026-10-04|engine script-option audit treated standalone schema argparse/dotnet options as engine options; parent CI failed after 918/919 passing tests|V105; extend existing NON_ENGINE_FLAGS + script/help/doc regressions
