@@ -232,6 +232,8 @@ V121: Quaternion normalization ! identity for zero/non-finite norm & unit finite
 
 V122: Mutagen comparison ! same-source checksums, independent full/light slots, winning plugin & interpreted placement fields; deleted overrides absent, no unexplained REFR/ACHR difference; finite comparisons; game inputs external.
 
+V123: Mutagen JSON flags ! preserve32-bit bitmask from signed/unsigned integers; non-integer & out-of-range flags fail.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -284,9 +286,9 @@ T43|x|Make validation timing fail on bad output; valid/broken generated artifact
 
 T44|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V120
 
-T45|~|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V121
+T45|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V121
 
-T46|~|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122
+T46|x|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V122,V123
 
 ## §B BUGS
 
@@ -381,3 +383,6 @@ B85|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass
 B86|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V120 unchanged
 
 B87|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V122; validate winner before deletion shortcut & require live position/rotation
+
+B88|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V120,V121; same workspace/target selection for both test steps
+B89|2026-10-05|Mutagen exported high-bit record flags as negative JSON integers; unsigned-only test rejected real oracle at line12664|V123; bounded signed/unsigned32-bit deserialization

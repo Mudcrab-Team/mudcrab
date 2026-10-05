@@ -1,5 +1,8 @@
 //! Release-mode performance budgets.
 //!
+//! CI calibration: BSA 2.88 ms, ESM 0.099 ms, layout 8.73 ms (seven-sample medians).
+//! CPU budgets retain about tenfold headroom; filesystem layout retains over fivefold.
+//!
 //! These tests are ignored by default because they assert wall-clock budgets
 //! with generous headroom. Run them with:
 //!
@@ -55,7 +58,7 @@ fn performance_bsa_generation_stays_within_budget() {
         black_box(archive);
     });
     assert!(
-        elapsed < Duration::from_millis(100),
+        elapsed < Duration::from_millis(30),
         "10k-entry BSA generation took {elapsed:?}"
     );
 }
@@ -112,7 +115,7 @@ fn performance_esm_generation_stays_within_budget() {
         black_box(plugin);
     });
     assert!(
-        elapsed < Duration::from_millis(5),
+        elapsed < Duration::from_millis(1),
         "81-cell plugin generation took {elapsed:?}"
     );
 }
