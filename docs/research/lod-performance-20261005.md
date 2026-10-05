@@ -64,7 +64,7 @@ subsequent runs kept an SSH session open until service completion. A Fiji machin
 stopped the `0518df8` run at 28m 6.8s, before publication; its last sample showed
 2,636 staged chunks and the journal recorded a 17.1 GiB memory peak. This attempt
 supplies no completed timing result. Its logs and reboot record are preserved.
-A fresh current-head attempt started at `2026-10-05T04:24:36Z` from the same unmodified seed. Setup verified
+A fresh revision-3 (`3ffcd9c`) attempt started at `2026-10-05T04:24:36Z` from the same unmodified seed. Setup verified
 that the dirty primary checkout's HEAD, status and index hash were unchanged.
 The original benchmark package and its manifest were preserved.
 
@@ -142,7 +142,7 @@ validation.
 | Run | Converter elapsed | LOD stage | Publication | Chunks | Verified chunk hits |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Historical fresh full conversion | 5,581.549 s | 3,302.352 s | 1.356 s | 4,673 | 0 |
-| Current cold LOD, ordinary/archive caches seeded | 2,303.725 s | 1,680.650 s | 157.716 s | 4,673 | 0 |
+| Revision-3 cold LOD, ordinary/archive caches seeded | 2,303.725 s | 1,680.650 s | 157.716 s | 4,673 | 0 |
 
 The completed current cold run exited zero, passed integration, converted zero
 ordinary inputs and skipped zero inputs. All 76,213 ordinary manifest entries
