@@ -379,3 +379,5 @@ B84|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan miscla
 B85|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V121; measured40x gate, keep warmed medians & absolute budgets
 
 B86|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V120 unchanged
+
+B87|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V122; validate winner before deletion shortcut & require live position/rotation

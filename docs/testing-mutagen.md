@@ -2,6 +2,7 @@
 
 This ignored test compares base FormIDs, positions (0.01 Creation units), rotations
 (0.0001 radians modulo a full turn), scale, record type, and winning plugin.
+Live rows must provide position and rotation; every winner must be loaded.
 Deleted winning overrides must be absent. Extra REFR/ACHR rows fail; PGRE and
 other types are outside this oracle mode. NaN and infinity fail comparisons.
 
