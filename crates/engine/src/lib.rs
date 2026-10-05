@@ -13,6 +13,7 @@ pub mod render_timing;
 mod renderer_init;
 pub mod shots;
 pub mod sky;
+pub mod skyrim_ini;
 pub mod streaming;
 pub mod world;
 
