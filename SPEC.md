@@ -220,7 +220,9 @@ V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publi
 V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed generated outputs rebuilt; source package unchanged.
 V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
 
-V121: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
+V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
+
+V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
 
 ## §T TASKS
 
@@ -266,7 +268,9 @@ T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source
 T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V93,V96,V97,V98,V99,V100,V101,V102,V103,V104,V105
 T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
 
-T45|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V121
+T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
+
+T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
 
 ## §B BUGS
 
@@ -350,5 +354,6 @@ B75|2026-10-04|schema23 fixtures retained mesh-only count and normal-reuse allow
 B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional LOD addition; older JSON rejected|V114; failing legacy-report regression, serde defaults
 B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
-B83|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V121
-B85|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V121; measured40x gate, keep warmed medians & absolute budgets
+B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
+B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
+B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets

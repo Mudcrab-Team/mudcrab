@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn v121_invalid_quaternions_return_identity() {
+    fn v118_invalid_quaternions_return_identity() {
         let identity = [0.0, 0.0, 0.0, 1.0];
         assert_eq!(normalize_quaternion([0.0; 4]), identity);
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn v121_normalizes_nonunit_quaternions() {
+    fn v118_normalizes_nonunit_quaternions() {
         for (input, expected) in [
             ([0.0, 0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0]),
             ([1.0; 4], [0.5; 4]),
