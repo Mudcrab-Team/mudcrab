@@ -16,15 +16,15 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 # An evidence revision, never the viewer's eventual HEAD (which would self-reference).
-CODE_PIN = "5891b31a1be5670248e61ef925d4dcd337279754"
+CODE_PIN = "44499b22274e3e951f8aa5e630c833e39acf88cb"
 XEDIT_PIN = "9fb016884bec138ea6c7b872cec831537d464c3e"
 MUTAGEN_PIN = "4f533562ee0c70347d47c1979d5464d42b06ee6b"
 CODE_HASHES = {
     "crates/converter/src/esm/exporter.rs": "cb3e83cc6c89d41666d6d21f471287e5bdf574d3a95c37fd2b35628b2361df4e",
     "crates/shared/src/lib.rs": "691bde5cb1ace0287992aafe75b35ba8b340de80b1fd15cd020c2223ca175050",
     "crates/converter/src/esm/records/mod.rs": "e4efc3290da5eb3e00794d20b8726763ef759353274bc67f05af69e5eba1eab6",
-    "crates/converter/src/esm/mod.rs": "0e15fa38afee8a498ebbf3b00a6c5411cb0d638d7e040a8622b63dc985451d57",
-    "crates/converter/src/esm/load_order.rs": "9a592d3e70923971e40323defceeede600763744d5e5338d2f3a5f012fea3d48",
+    "crates/converter/src/esm/mod.rs": "5b420c29a06888c571d491bd4e9a643a224d1e5b429e9a76f65b5b58f3366126",
+    "crates/converter/src/esm/load_order.rs": "d99a576a6a89fdb640ac9f2942bb26bae96453f73f0d0f74ecd9db6c4b074057",
     "crates/converter/src/esm/extractors.rs": "3df9d88db6a3e591d0f1f3833bfc50c21b6c8892144e2da4ab2b9e0acacac4a2",
     "crates/converter/src/esm/cell_cache.rs": "b81172c62f74193a4e97167f9d742bb325a856d1e461face28173162c935bae7",
 }
@@ -207,7 +207,7 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
             raise ValueError(f"Unknown field record {field['record']}")
         field["id"] = f"{field['record']}.{field['tag']}"
         field["sources"] = [source_link(**s) for s in field.pop("anchors")]
-        field["sources"].append(source_link("project", "docs/research/dynamic-schema/native-field-ledger.md", field["ledger_line"], "Project field ledger"))
+        field["sources"].append(source_link("project", "docs/research/dynamic-schema/native-field-ledger.md", field["ledger_line"], "Historical field ledger (2026-10-05)"))
         for target in field["columns"]:
             tab, col = target.split(".")
             if tab not in table_names or col not in {c["name"] for t in tables if t["name"] == tab for c in t["columns"]}:
@@ -236,8 +236,8 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
         "mcp": evidence,
         "links": {
             "inventory": source_link("project", "docs/research/dynamic-schema/candidate-inventory.json", 1, "Candidate inventory"),
-            "ledger": source_link("project", "docs/research/dynamic-schema/native-field-ledger.md", 1, "Field/native ledger"),
-            "pilot": source_link("project", "docs/research/dynamic-schema/pilot-code-evidence.json", 1, "Code comparison report"),
+            "ledger": source_link("project", "docs/research/dynamic-schema/native-field-ledger.md", 1, "Historical field/native ledger"),
+            "pilot": source_link("project", "docs/research/dynamic-schema/pilot-code-evidence.json", 1, "Historical code comparison report"),
             "plan": source_link("project", "docs/roadmap/dynamic-schema-initiative.md", 14, "Ingestion initiative"),
             "versions": source_link("project", "crates/shared/src/lib.rs", 12, "Version constants"),
         },
