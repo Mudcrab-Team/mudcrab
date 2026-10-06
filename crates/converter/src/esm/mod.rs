@@ -87,7 +87,7 @@ impl EsmParser {
                 )
                 .wrap_err_with(|| {
                     format!(
-                        "{} record {} {:08X}",
+                        "{} record {} source {source_id:08X} (load-order {:08X})",
                         order.names[priority],
                         String::from_utf8_lossy(&record.record_type),
                         record.form_id
@@ -143,6 +143,8 @@ struct RemapWarnings {
     /// IDs whose master index lies past the plugin's master list, keyed by the plugin that
     /// contains them; the example keeps its record type.
     out_of_range: RefCell<OutOfRangeCounts>,
+    /// Invalid optional links, counted per containing plugin with the first diagnostic.
+    skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
 }
 
 impl RemapWarnings {
@@ -162,6 +164,13 @@ impl RemapWarnings {
         entry.0 += 1;
     }
 
+    /// Retain one example per plugin rather than logging every broken optional link.
+    fn skipped_optional(&self, plugin: &str, example: String) {
+        let mut counts = self.skipped_optional.borrow_mut();
+        let entry = counts.entry(plugin.to_owned()).or_insert((0, example));
+        entry.0 += 1;
+    }
+
     /// Emit one deterministic summary per affected plugin after a successful merge.
     fn report(&self) {
         for (owner, (count, example)) in self.truncations.borrow().iter() {
@@ -173,6 +182,11 @@ impl RemapWarnings {
             eprintln!(
                 "warning: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
                 String::from_utf8_lossy(record_type)
+            );
+        }
+        for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
+            eprintln!(
+                "warning: {plugin}: skipped {count} invalid optional FormID links (cleared or removed; first: {example})"
             );
         }
     }
@@ -234,6 +248,7 @@ impl GameSettingIdentities {
     }
 }
 
+/// Read selected plugins from `data_dir`, normalizing master priority before merging.
 pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
     let contents = std::fs::read_to_string(path)?;
     let mut plugins = Vec::new();
@@ -276,7 +291,8 @@ pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
             color_eyre::eyre::bail!("active plugin not found: {name}");
         }
     }
-    Ok(plugins)
+    // Normalize master priority before consumers assign slots or merge overrides (#108).
+    load_order::order_explicit_plugins(plugins)
 }
 
 /// Determines whether a subrecord within a given parent record type represents
@@ -304,17 +320,80 @@ fn is_form_id_subrecord(record_type: &[u8; 4], tag: &[u8], len: usize) -> bool {
         (b"LTEX", b"TNAM" | b"GNAM" | b"MNAM") => true,
         (b"CELL", b"XCWT") => true,
         (b"WRLD", b"NAM2" | b"NAM3") => true,
+        // xEdit TES5Edit @ 9fb016884bec138ea6c7b872cec831537d464c3e defines
+        // WRLD.RNAM as cell-coordinate rows (Common:10011-10038) and TNAM as
+        // a string (TES5:10708); neither field is a FormID.
         (b"WRLD", b"WNAM" | b"CNAM") => true,
         (b"CELL", b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") => true,
         (b"NPC_", b"RNAM" | b"CNAM" | b"INAM") => true,
         (b"RACE", b"WKMV" | b"RNMV") => true,
         (
-            b"REFR" | b"ACHR" | b"ACRE" | b"PGRE" | b"PMIS",
+            b"REFR" | b"ACHR" | b"ACRE" | b"PGRE" | b"PMIS" | b"PHZD" | b"PARW" | b"PBAR" | b"PBEA"
+            | b"PCON" | b"PFLA",
             b"NAME" | b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL",
         ) => true,
         (_, b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") => true,
         _ => false,
     }
+}
+
+/// Where FormIDs sit inside a reference or cell subrecord that `is_form_id_subrecord`
+/// does not cover (it only matches single four-byte fields).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormIdLayout {
+    /// A fixed-size structure: each accepted byte length with its FormID offsets.
+    Fixed(&'static [(usize, &'static [usize])]),
+    /// A packed array of `stride`-byte entries, each starting with a FormID.
+    Array { stride: usize },
+}
+
+/// Field layouts per xEdit's TES5 definitions
+/// (https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas).
+fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
+    use FormIdLayout::{Array, Fixed};
+    let tag: &[u8; 4] = tag.try_into().ok()?;
+    let placed = matches!(
+        record_type,
+        b"REFR"
+            | b"ACHR"
+            | b"ACRE"
+            | b"PGRE"
+            | b"PMIS"
+            | b"PHZD"
+            | b"PARW"
+            | b"PBAR"
+            | b"PBEA"
+            | b"PCON"
+            | b"PFLA"
+    );
+    const SINGLE: &[(usize, &[usize])] = &[(4, &[0])];
+    Some(match tag {
+        // Door destination reference, then position, rotation and flags.
+        b"XTEL" if placed => Fixed(&[(32, &[0])]),
+        // Enable parent, followed by flags and three unused bytes.
+        b"XESP" if placed => Fixed(&[(8, &[0])]),
+        // Linked-reference keyword, then the linked reference. 14 references in the
+        // official plugins use the older 4-byte form holding only the linked reference.
+        b"XLKR" if placed => Fixed(&[(8, &[0, 4]), (4, &[0])]),
+        // Navmesh, then a u16 teleport-marker triangle and padding.
+        b"XNDP" if placed => Fixed(&[(8, &[0])]),
+        // Emitted light or region.
+        b"XEMI" if placed => Fixed(SINGLE),
+        // Each activate parent is a separate subrecord: reference plus f32 delay.
+        b"XAPR" if placed => Fixed(&[(8, &[0])]),
+        // Location reference types.
+        b"XLRT" if placed => Array { stride: 4 },
+        // A rider's horse.
+        b"XHOR" if record_type == b"ACHR" => Fixed(SINGLE),
+        // Lighting template, on cells and on worldspaces.
+        b"LTMP" if matches!(record_type, b"CELL" | b"WRLD") => Fixed(SINGLE),
+        // Image space, music, acoustic space, and the region a cell takes its sky and weather
+        // from (`XCCM` names a REGN, not a climate).
+        b"XCIM" | b"XCMO" | b"XCAS" | b"XCCM" if record_type == b"CELL" => Fixed(SINGLE),
+        // Regions.
+        b"XCLR" if record_type == b"CELL" => Array { stride: 4 },
+        _ => return None,
+    })
 }
 
 /// Remaps local FormIDs within a record header, parent cell/worldspace references,
@@ -330,12 +409,14 @@ fn remap_record_form_ids(
     // Enforce strict reference validation for landscape and grass record kinds.
     // Preserve legacy handling elsewhere until their record-specific exceptions
     // (including shipped GMST IDs outside the master table) have been audited.
+    // Optional link fields in `form_id_layout` clear invalid IDs or drop malformed
+    // subrecords instead, even on these record kinds; see the layout branch below.
     let strict = matches!(
         &record.record_type,
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
     );
     let record_type = record.record_type;
-    let remap = |form_id: u32| -> Result<u32> {
+    let remap_with_validation = |form_id: u32, strict: bool| -> Result<u32> {
         if form_id == 0 {
             return Ok(0);
         }
@@ -370,10 +451,13 @@ fn remap_record_form_ids(
         })?;
         Ok((index << 24) | (form_id & 0x00FF_FFFF))
     };
+    let remap = |form_id| remap_with_validation(form_id, strict);
+    let source_id = record.form_id;
     record.form_id = remap(record.form_id)?;
     record.cell_form_id = record.cell_form_id.map(&remap).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap).transpose()?;
-    for (tag, data) in &mut record.subrecords {
+    let mut malformed_subrecords = Vec::new();
+    for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
         if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
             color_eyre::eyre::ensure!(data.len() >= 4, "truncated GRAS alternate textures");
             let count = u32::from_le_bytes(data[..4].try_into().unwrap());
@@ -419,15 +503,70 @@ fn remap_record_form_ids(
                 .wrap_err("VMAD references")?;
             continue;
         }
-        if tag.as_slice() == b"XESP"
-            && data.len() >= 8
-            && matches!(
-                &record.record_type,
-                b"REFR" | b"ACHR" | b"ACRE" | b"PGRE" | b"PMIS"
-            )
-        {
-            let parent = u32::from_le_bytes(data[..4].try_into().unwrap());
-            data[..4].copy_from_slice(&remap(parent)?.to_le_bytes());
+        if let Some(layout) = form_id_layout(&record.record_type, tag) {
+            // Broken optional links, including wrong lengths, must not block unrelated
+            // content. Drop a malformed subrecord: its FormID offsets cannot be trusted.
+            let name = String::from_utf8_lossy(tag).into_owned();
+            let offsets = match layout {
+                FormIdLayout::Fixed(variants) => variants
+                    .iter()
+                    .find(|(len, _)| *len == data.len())
+                    .map(|(_, offsets)| offsets.to_vec())
+                    .ok_or_else(|| {
+                        let sizes: Vec<String> =
+                            variants.iter().map(|(len, _)| len.to_string()).collect();
+                        format!(
+                            "{name} must be {} bytes, found {}",
+                            sizes.join(" or "),
+                            data.len()
+                        )
+                    }),
+                FormIdLayout::Array { stride } => {
+                    if data.len().is_multiple_of(stride) {
+                        Ok((0..data.len()).step_by(stride).collect())
+                    } else {
+                        Err(format!(
+                            "{name} length {} is not a multiple of {stride}",
+                            data.len()
+                        ))
+                    }
+                }
+            };
+            let offsets = match offsets {
+                Ok(offsets) => offsets,
+                Err(reason) => {
+                    warnings.skipped_optional(
+                        plugin_name,
+                        format!(
+                            "{} record source {source_id:08X} (load-order {:08X}) {reason}",
+                            String::from_utf8_lossy(&record_type),
+                            record.form_id
+                        ),
+                    );
+                    malformed_subrecords.push(index);
+                    continue;
+                }
+            };
+            for offset in offsets {
+                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                // Keep valid payload bytes, but publish null for an invalid FormID rather
+                // than retaining a plugin-local value or guessing its owner.
+                let resolved = match remap_with_validation(value, true) {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        warnings.skipped_optional(
+                            plugin_name,
+                            format!(
+                                "{} record source {source_id:08X} (load-order {:08X}) {name} reference {value:08X}: {error}",
+                                String::from_utf8_lossy(&record_type),
+                                record.form_id
+                            ),
+                        );
+                        0
+                    }
+                };
+                data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
+            }
             continue;
         }
         if is_form_id_subrecord(&record.record_type, tag, data.len()) {
@@ -439,12 +578,134 @@ fn remap_record_form_ids(
             );
         }
     }
+    if !malformed_subrecords.is_empty() {
+        // Indices are sorted by traversal order. Remove only those occurrences, so a
+        // repeated field such as XAPR keeps its valid siblings and their relative order.
+        let mut index = 0;
+        record.subrecords.retain(|_| {
+            let keep = malformed_subrecords.binary_search(&index).is_err();
+            index += 1;
+            keep
+        });
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_optional_links_are_cleared_and_warnings_are_aggregated() {
+        let indices = HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]);
+        let warnings = RemapWarnings::default();
+        let mut record = RawRecord {
+            form_id: 0x0100_0800,
+            record_type: *b"REFR",
+            flags: 0,
+            subrecords: vec![
+                (
+                    b"XESP".to_vec(),
+                    [0x0200_0900u32.to_le_bytes(), [1, 2, 3, 4]].concat(),
+                ),
+                (
+                    b"XAPR".to_vec(),
+                    [0x0300_0901u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat(),
+                ),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        remap_record_form_ids(
+            &mut record,
+            "patch.esp",
+            &["base.esm".into()],
+            &indices,
+            &HashMap::new(),
+            &warnings,
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords[0].1,
+            [0u32.to_le_bytes(), [1, 2, 3, 4]].concat()
+        );
+        assert_eq!(
+            record.subrecords[1].1,
+            [0u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat()
+        );
+        let counts = warnings.skipped_optional.borrow();
+        assert_eq!(counts.len(), 1);
+        let (count, example) = &counts["patch.esp"];
+        assert_eq!(*count, 2);
+        for expected in [
+            "REFR",
+            "source 01000800",
+            "load-order 02000800",
+            "XESP",
+            "02000900",
+            "invalid master index",
+        ] {
+            assert!(example.contains(expected), "{example}");
+        }
+    }
+
+    /// Bad lengths and bad values share one plugin summary with one contextual example.
+    #[test]
+    fn malformed_optional_links_are_removed_and_share_value_warnings() {
+        for (tag, length, expected) in [
+            (b"XTEL", 28, "XTEL must be 32 bytes, found 28"),
+            (b"XLRT", 6, "XLRT length 6 is not a multiple of 4"),
+        ] {
+            let indices = HashMap::from([("base.esm".into(), 0), ("patch.esp".into(), 2)]);
+            let warnings = RemapWarnings::default();
+            let mut record = RawRecord {
+                form_id: 0x0100_0800,
+                record_type: *b"PHZD",
+                flags: 0,
+                subrecords: vec![
+                    (tag.to_vec(), vec![0xAB; length]),
+                    (
+                        b"XESP".to_vec(),
+                        [0x0200_0900u32.to_le_bytes(), [1, 2, 3, 4]].concat(),
+                    ),
+                    (b"XEMI".to_vec(), 0x0100_0901u32.to_le_bytes().to_vec()),
+                ],
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            };
+            remap_record_form_ids(
+                &mut record,
+                "patch.esp",
+                &["base.esm".into()],
+                &indices,
+                &HashMap::new(),
+                &warnings,
+            )
+            .unwrap();
+            assert_eq!(
+                record.subrecords,
+                [
+                    (
+                        b"XESP".to_vec(),
+                        [0u32.to_le_bytes(), [1, 2, 3, 4]].concat()
+                    ),
+                    (b"XEMI".to_vec(), 0x0200_0901u32.to_le_bytes().to_vec()),
+                ]
+            );
+            let counts = warnings.skipped_optional.borrow();
+            assert_eq!(counts.len(), 1);
+            let (count, example) = &counts["patch.esp"];
+            assert_eq!(*count, 2);
+            assert_eq!(
+                example,
+                &format!("PHZD record source 01000800 (load-order 02000800) {expected}")
+            );
+            assert!(warnings.out_of_range.borrow().is_empty());
+            assert!(warnings.truncations.borrow().is_empty());
+        }
+    }
 
     #[test]
     fn remaps_optional_race_movement_links() {
