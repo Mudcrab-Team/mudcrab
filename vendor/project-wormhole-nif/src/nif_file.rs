@@ -650,7 +650,6 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
     Ok(())
 }
 
-
 /// Marks the blocks a distant-LOD container holds: every `BSMultiBoundNode`
 /// (the root of the `.btr`/`.bto` meshes under `meshes/terrain/`) and its
 /// subtree. Shapes there can carry per-vertex tint, so they keep that

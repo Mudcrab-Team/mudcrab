@@ -82,7 +82,7 @@ impl MeshConverter {
                     nif_path.display()
                 )
             })?;
-            Some(open_nif_resilient(&skeleton_path)?.0)
+            Some(open_nif_resilient(skeleton_path)?.0)
         } else {
             None
         };

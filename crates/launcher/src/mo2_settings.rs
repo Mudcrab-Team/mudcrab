@@ -359,7 +359,7 @@ mod tests {
         let mut config = converter::PipelineConfig::new("Data", "out");
         settings.use_mo2 = true;
         assert!(settings.apply(&mut config).is_err());
-        settings.set_instance(&root);
+        settings.set_instance(root);
         assert_eq!(settings.selection.as_ref().unwrap().profile, "Zed");
         settings.selection.as_mut().unwrap().profile = "Alpha".into();
         settings.set_instance(root);

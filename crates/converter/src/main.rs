@@ -1062,16 +1062,19 @@ mod tests {
 
     #[test]
     fn repair_rejects_metadata_rebuild_options() {
-        for options in [vec!["--reuse-assets", "original"]] {
-            let mut arguments = args(&["repair-failed", "Data", "out"]);
-            arguments.extend(args(&options));
-            let error = parse_command(arguments).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only")
-            );
-        }
+        let error = parse_command(args(&[
+            "repair-failed",
+            "Data",
+            "out",
+            "--reuse-assets",
+            "original",
+        ]))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only")
+        );
         assert!(matches!(
             parse_command(args(&["repair-failed", "Data", "out", "--apply"])).unwrap(),
             Command::Repair(_, true)

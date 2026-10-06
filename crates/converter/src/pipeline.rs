@@ -1379,31 +1379,30 @@ impl ConversionBatch<'_> {
                         } else {
                             None
                         };
-                        if source_kind == "nif" {
-                            if let Some(dependency) = &skeleton {
-                                match hash_file(dependency) {
-                                    Ok(dep_hash) => {
-                                        hash.push(':');
-                                        hash.push_str(&dep_hash);
-                                    }
-                                    Err(err) => {
-                                        let (err, fatal) =
-                                            match remove_invalid_staged_output(&target) {
-                                                Ok(()) => (err, false),
-                                                Err(remove_error) => (remove_error, true),
-                                            };
-                                        let _ = outcome_tx.send((
-                                            index,
-                                            key,
-                                            hash,
-                                            target_rel,
-                                            relative.clone(),
-                                            Err(err),
-                                            target,
-                                            fatal,
-                                        ));
-                                        return;
-                                    }
+                        if source_kind == "nif"
+                            && let Some(dependency) = &skeleton
+                        {
+                            match hash_file(dependency) {
+                                Ok(dep_hash) => {
+                                    hash.push(':');
+                                    hash.push_str(&dep_hash);
+                                }
+                                Err(err) => {
+                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
+                                        Ok(()) => (err, false),
+                                        Err(remove_error) => (remove_error, true),
+                                    };
+                                    let _ = outcome_tx.send((
+                                        index,
+                                        key,
+                                        hash,
+                                        target_rel,
+                                        relative.clone(),
+                                        Err(err),
+                                        target,
+                                        fatal,
+                                    ));
+                                    return;
                                 }
                             }
                         }
