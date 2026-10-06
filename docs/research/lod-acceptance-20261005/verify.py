@@ -172,6 +172,10 @@ def main():
     result, measurement, provenance = check_evidence(root)
     if args.assets:
         result["published_hash_check"] = check_published(root, args.assets.resolve(strict=True), measurement, provenance)
+    expected = load(Path(__file__).with_name("summary.json"))
+    if not args.assets:
+        del expected["published_hash_check"]
+    require(result == expected, "Evidence differs from committed summary.json")
     print(json.dumps(result, indent=2) + "\n", end="")
 
 

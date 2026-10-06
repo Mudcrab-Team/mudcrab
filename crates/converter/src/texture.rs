@@ -1878,6 +1878,56 @@ mod tests {
     }
 
     #[test]
+    fn v117_mixed_atlas_block_reuse_preserves_upstream_payloads_and_dfd() {
+        let side = 64u32;
+        // One half repeats blocks; the other has distinct colors and alpha.
+        // This exercises cache hits and misses together in a larger atlas mip.
+        let rgba: Vec<u8> = (0..side * side)
+            .flat_map(|i| {
+                let (x, y) = (i % side, i / side);
+                if x < side / 2 {
+                    [(x % 8 * 31) as u8, (y % 8 * 29) as u8, 41, 255]
+                } else {
+                    [(x * 3) as u8, (y * 4) as u8, (x ^ y) as u8, (x + y) as u8]
+                }
+            })
+            .collect();
+        for encoding in [TextureEncoding::ColorSrgb, TextureEncoding::DataLinear] {
+            let expected = encode_basis_ktx2(
+                side,
+                side,
+                &rgba,
+                encoding,
+                false,
+                ETC1S_QUALITY_DEFAULT,
+                UASTC_LEVEL_DEFAULT,
+            )
+            .unwrap();
+            let mut cache = HashMap::new();
+            let actual = encode_atlas_mip(side, side, &rgba, encoding, &mut cache).unwrap();
+            let expected_reader = ktx2::Reader::new(&expected[..]).unwrap();
+            let actual_reader = ktx2::Reader::new(&actual[..]).unwrap();
+            assert_eq!(
+                actual_reader.levels().next().unwrap().data,
+                expected_reader.levels().next().unwrap().data,
+                "64x64 {encoding:?}"
+            );
+            let descriptor = |bytes: &[u8], header: ktx2::Header| {
+                let start = header.index.dfd_byte_offset as usize;
+                bytes[start..start + header.index.dfd_byte_length as usize].to_vec()
+            };
+            assert_eq!(
+                descriptor(&actual, actual_reader.header()),
+                descriptor(&expected, expected_reader.header())
+            );
+            assert!(cache.len() > 1 && cache.len() < (side / 4).pow(2) as usize);
+            let reused = encode_atlas_mip(side, side, &rgba, encoding, &mut cache).unwrap();
+            assert_eq!(reused, actual);
+            validate_ktx2(&actual, encoding).unwrap();
+        }
+    }
+
+    #[test]
     #[ignore = "manual release-mode atlas encoder timing"]
     fn measure_atlas_block_reuse() {
         let side = 512u32;

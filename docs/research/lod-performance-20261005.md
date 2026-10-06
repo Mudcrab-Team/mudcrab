@@ -131,10 +131,13 @@ proof worktree's `target/lod167-evidence/`; no inputs or payloads were copied.
 python3 docs/research/lod-acceptance-20261005/verify.py target/lod167-evidence
 ```
 
-On Fiji, copy the verifier beside the raw evidence and add `--assets` pointing to
-that root's `assets` directory to repeat every published-output hash check. A
-summary is emitted only after all requested checks pass. Native acceptance stays
-pinned to `c9894ed`; later implementation/base integration changes need their own
+On Fiji, copy the verifier and its committed `summary.json` beside the raw evidence.
+Add `--assets` pointing to that root's `assets` directory to repeat every
+published-output hash check. A
+summary is emitted only after all requested checks pass and the result matches
+the committed summary. Metadata-only verification excludes only `published_hash_check`
+from that comparison. Matching alterations to both runs cannot replace the pinned proof.
+Native acceptance stays pinned to `c9894ed`; later implementation/base integration changes need their own
 validation.
 
 ## Earlier revision-3 cold result and interruptions
@@ -211,9 +214,16 @@ The two projections therefore lacked one shared plugin-priority winner.
 
 The correction selects the highest-plugin-priority LAND for each cell in both
 projections, retains raw records, and rejects multiple candidates at the winning
-priority before replacing outputs. Terrain compiler revision 4 invalidates prior
+priority before replacing outputs. This abort is intentional for ambiguous
+same-priority LAND definitions in a mod list; ordinary overrides at different
+plugin priorities still select the highest priority. Terrain compiler revision 4 invalidates prior
 LOD packages. The completed corrected pair above establishes revision-4 acceptance;
 these revision-3 diagnostic measurements remain failed attempts.
+
+Converter/world schema numbers remain 24/7. The winning LAND row and
+`cell_cache.rkyv` bytes can change when plugin priority selects a different record
+than the former FormID ordering. The unchanged ordinary proof above covers the
+seed's mesh, texture and script outputs; it does not claim identical world metadata.
 
 An independent `converter check assets --full` on the post-diagnostic package
 exited zero in 13.527 s. This verifies all 76,213 ordinary manifest outputs;
