@@ -105,7 +105,12 @@ def _path_stat(path: Path) -> os.stat_result:
 def _read_verified_file(
     path: Path, *, capture_tes4: bool = False, capture_bytes: int = 0
 ) -> tuple[str, int, bytes]:
-    """Hash one descriptor and capture only the bounded TES4 prefix, if requested."""
+    """Hash one descriptor and optionally capture a bounded prefix.
+
+    Path/descriptor checks and O_NOFOLLOW protect the final path component.
+    Ancestor directories are not pinned: a parent-directory symlink swap after
+    discovery can redirect this read outside the recorded source root.
+    """
     path_before = _path_stat(path)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -1126,6 +1131,8 @@ def build_manifest(
             "corpus-profile input cannot establish official-content provenance or entitlement",
             "official-content provenance is unresolved; filenames and CCC declarations are not proof",
             "plugin and loose string-table hashes are first observations without a prior accepted corpus pin set",
+            "stat-checked reads do not pin ancestor directories; a parent-directory symlink swap after discovery "
+            "can associate bytes outside Data with the original Data-relative path",
         ],
         "issues": sorted(issues, key=lambda item: (item["code"], item.get("path", item.get("plugin", item.get("name", ""))).casefold())),
     }
