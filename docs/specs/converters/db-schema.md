@@ -138,10 +138,13 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 
 The reference flag and enable-parent columns preserve winning raw-record
 metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header; `enable_parent_id` and
-`enable_parent_flags` are the two little-endian words of the eight-byte XESP
-subrecord, with the parent FormID resolved through plugin load order. The raw
-subrecord payload remains in `data`.
+them. `header_flags` comes from the record header. The eight-byte XESP
+subrecord holds a four-byte little-endian parent FormID, one flags byte, and
+three unused bytes. `enable_parent_id` is resolved through plugin load order;
+`enable_parent_flags` stores only the flags byte, excluding the unused bytes
+even when they are non-zero. The complete raw subrecord payload remains in
+`data`. Normal conversion and metadata rebuild re-export these columns;
+previously published databases retain their values until rebuilt.
 
 ---
 

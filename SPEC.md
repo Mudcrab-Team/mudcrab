@@ -224,6 +224,7 @@ V117: LOD atlas mip chain ! each supplied mip encoded once; container assembly r
 V118: LOD chunk reuse ! current explicit compiler/producer identity, exact consumed cell/grid/height/VCLR/layer/opacity/material-byte/origin/tier/tiling proof & verified payload hash/structure. Changed/removed/corrupt/unproven inputs or output → rebuild affected chunk; fresh world/index/build metadata includes only accepted current chunks; no-lod publishes none.
 V119: LOD pipeline retains ≤ CPU worker count completed chunk payloads per batch; invalid content rolls back entire world & removes partial payloads; cancellation/input mutation/publication/DB errors remain fatal.
 V120: LOD cell-cache snapshot read/validated once per stage; each winning diffuse source read once & each selected authored DDS mip decoded once per stage; tier images shared across worlds/FormIDs; source bytes reverified before publication.
+V121: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; bytes 5–7 unused, excluded from typed/exported flags; original subrecord bytes retained. Missing/truncated XESP → absent parent/flags.
 
 ## §T TASKS
 
@@ -355,3 +356,4 @@ B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; u
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
 
 B79|2026-10-04|Fiji terrain LOD took 3302.352s for 4673 chunks; every enabled run rebuilt all chunks; atlas independently encoded supplied mips then discarded extra generated pyramid; per-world cache reads & per-tier DDS decodes repeated; world retained all GLBs|V117,V118,V119,V120; measured contributions pending
+B80|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused bytes as u32, persisting non-zero retail padding as flags|V121; shared one-byte decoder; padded/missing/truncated regressions
