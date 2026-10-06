@@ -216,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v121_achr_enable_parent_ignores_xesp_padding() {
+    fn v122_achr_enable_parent_ignores_xesp_padding() {
         for flags in 0..=u8::MAX {
             let raw = RawRecord {
                 form_id: 0x1000,
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn v121_achr_enable_parent_requires_complete_xesp() {
+    fn v122_achr_enable_parent_requires_complete_xesp() {
         for length in 0..8 {
             let raw = RawRecord {
                 form_id: 0x1000,

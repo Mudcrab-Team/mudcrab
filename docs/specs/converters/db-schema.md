@@ -6,7 +6,7 @@ This specification details the canonical DDL schema, tables, indices, and column
 
 ## 1. Schema Overview
 
-`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, its explicit order is validated and preserved. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
+`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, ESM-flagged plugins and `.esm`/`.esl` files take priority, keeping the listed order within each category except that regular dependencies are moved ahead of the master files that need them. The resulting order is validated before assigning full/light slots, ordering archive (BSA/BA2) priority, and merging database records and terrain caches. Unrelated regular plugins retain the user's order. This is not a general dependency sort: any inversions remaining after normalization, including a master file listed before another master it depends on, are rejected. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
 
 The database stamps its version in `schema_info`; the current version is **7**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`). Schema 4 added lights and
@@ -142,9 +142,14 @@ them. `header_flags` comes from the record header. The eight-byte XESP
 subrecord holds a four-byte little-endian parent FormID, one flags byte, and
 three unused bytes. `enable_parent_id` is resolved through plugin load order;
 `enable_parent_flags` stores only the flags byte, excluding the unused bytes
-even when they are non-zero. The complete raw subrecord payload remains in
-`data`. Normal conversion and metadata rebuild re-export these columns;
-previously published databases retain their values until rebuilt.
+even when they are non-zero. The complete subrecord payload remains in `data`
+with its parent remapped and its flags and unused bytes unchanged. Normal
+conversion and metadata rebuild re-export these columns;
+previously published databases retain their values until rebuilt. An invalid
+parent link is published as
+`enable_parent_id = 0` (no parent) with its flags byte kept; a malformed XESP
+is dropped before projection, so both columns are NULL. See the remapped-field
+table below.
 
 ---
 
@@ -248,6 +253,63 @@ resolves through any previously encountered non-null FormID alias; an unknown
 header-only deletion is skipped with a warning. Later restorations keep the
 original identity. Ambiguous aliases and live settings without an EDID are
 errors, rather than silently replacing or dropping another record.
+
+Known FormID fields inside the published subrecord blobs (`records.data`,
+`cells.data`, `references.data`) are rewritten into the same load-order numbering
+as the record keys, so a consumer can look them up directly. That covers the
+single-FormID fields in the converter's `is_form_id_subrecord`, the
+LAND/GRAS/LTEX payloads, the primary VMAD script-property references, and these
+reference and cell fields, validated against their expected sizes:
+
+| Field | Records | FormIDs |
+| --- | --- | --- |
+| `XTEL` | placed references | door destination reference (bytes 0-3 of 32) |
+| `XESP` | placed references | enable parent (bytes 0-3 of 8; flags and unused bytes preserved) |
+| `XLKR` | placed references | keyword and linked reference (8 bytes), or the linked reference alone (legacy 4 bytes) |
+| `XNDP` | placed references | navmesh (bytes 0-3 of 8) |
+| `XEMI` | placed references | emitted light or region |
+| `XAPR` | placed references | activate-parent reference (one 8-byte subrecord per parent) |
+| `XLRT` | placed references | location reference types (array) |
+| `XHOR` | ACHR | horse reference |
+| `LTMP` | CELL, WRLD | lighting template |
+| `XCIM`, `XCMO`, `XCAS` | CELL | image space, music type, acoustic space |
+| `XCCM` | CELL | region the cell takes its sky and weather from |
+| `XCLR` | CELL | regions (array) |
+
+For blob remapping, placed references are REFR, ACHR, ACRE, PGRE, PMIS, PHZD,
+PARW, PBAR, PBEA, PCON and PFLA. This does not expand the record types exported
+to the `references` table; the six newly covered types retain their blobs in
+`records` without adding `references` rows.
+Fields not covered may still hold plugin-local FormIDs. In particular, do not
+consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys, `XPWR` water
+reflections, or `XPOD`/`XLRM` room and portal links as resolved IDs. Other
+unconverted fields include `XLIB`, `XMBR`, `XATR`, `XTNM`, `PDTO`, `CELL.XILL`
+and `WRLD.ZNAM`. Check the converter's field-specific handling before using
+these payloads; this list is not exhaustive.
+
+The fields in this table validate master indices and light-plugin local IDs.
+An out-of-range index or light-plugin local ID wider than 12 bits is an invalid
+optional link: the converter sets that FormID to zero and reports a warning,
+aggregated per source plugin with the count and first record/field diagnostic.
+Other records and valid links continue to convert. Malformed field lengths cause
+the entire subrecord to be dropped and counted in the same per-plugin warning,
+since its FormID offsets cannot be decoded safely. An array with an incomplete
+entry is dropped in full; valid repeated subrecords are retained. Existing
+validation of record headers and required fields is unchanged. Zero FormIDs
+remain zero. Other bytes in retained subrecords (such as teleport coordinates,
+enable flags, navmesh triangles and activation delays) are preserved. Unlisted fields remain opaque,
+not an assurance that all FormIDs in arbitrary Skyrim or mod subrecords have
+been resolved.
+
+Existing packs must be converted again to obtain these corrected links. This
+does not change the schema-4 table or blob layout, so the database and asset
+cache versions are unchanged. Every pipeline run, including resume, rebuilds
+the database from source plugins while reusing unaffected assets. Old packs
+are still accepted by the runtime: schema 4 alone does not certify these links
+were remapped. A future consumer of these fields must account for old packs.
+`export_to_db` without a load order refreshes already-resolved records (for
+example movement annotations), preserving established `formid_map` ownership;
+it neither resolves plugin-local IDs nor upgrades an old pack.
 
 ```sql
 CREATE TABLE IF NOT EXISTS formid_map (

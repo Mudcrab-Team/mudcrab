@@ -376,6 +376,8 @@ async fn generated_data_directory_converts_end_to_end() {
     assert_eq!(lod_manifest["build_identity"], database_identity);
     assert_eq!(lod_manifest["chunks"].as_i64(), Some(database_chunks));
     assert_eq!(database_chunks as u64, report.lod_chunks);
+    // Windows needs the database closed before the next conversion renames the output folder.
+    drop(database);
     for relative in [
         "lod-manifest.json",
         "scripts/generated.luau",
