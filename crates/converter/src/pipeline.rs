@@ -3269,13 +3269,15 @@ mod stop_hook {
 
     static CANCEL_AFTER: Mutex<Vec<(PathBuf, usize)>> = Mutex::new(Vec::new());
 
+    /// Arms cancellation for one output after the requested number of stop checks.
     pub(super) fn cancel_after(output: &Path, checks: usize) {
-        CANCEL_AFTER
-            .lock()
-            .unwrap()
-            .push((output.to_path_buf(), checks));
+        // Match the pipeline's resolved path, including Windows' \\?\ prefix.
+        let output =
+            shared::asset_lock::resolve_asset_path(output).unwrap_or_else(|_| output.to_path_buf());
+        CANCEL_AFTER.lock().unwrap().push((output, checks));
     }
 
+    /// Counts one stop check for `output` and cancels the run once its armed count reaches zero.
     pub(super) fn tick(output: &Path, cancellation: &Cancellation) {
         let mut hooks = CANCEL_AFTER.lock().unwrap();
         if let Some(index) = hooks.iter().position(|(path, _)| path == output) {

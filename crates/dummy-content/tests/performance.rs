@@ -1,5 +1,8 @@
 //! Release-mode performance budgets.
 //!
+//! CI calibration: BSA 2.88 ms, ESM 0.099 ms, layout 8.73 ms (seven-sample medians).
+//! CPU budgets retain about tenfold headroom; filesystem layout retains over fivefold.
+//!
 //! These tests are ignored by default because they assert wall-clock budgets
 //! with generous headroom. Run them with:
 //!
@@ -25,15 +28,19 @@ fn median(mut samples: Vec<Duration>) -> Duration {
 }
 
 fn timed(generate: impl Fn()) -> Duration {
-    median(
-        (0..3)
+    // Warm allocations and filesystem state before collecting comparable samples.
+    generate();
+    let elapsed = median(
+        (0..7)
             .map(|_| {
                 let start = Instant::now();
                 generate();
                 start.elapsed()
             })
             .collect(),
-    )
+    );
+    eprintln!("median (7 samples): {elapsed:?}");
+    elapsed
 }
 
 #[test]
@@ -51,7 +58,7 @@ fn performance_bsa_generation_stays_within_budget() {
         black_box(archive);
     });
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_millis(30),
         "10k-entry BSA generation took {elapsed:?}"
     );
 }
@@ -70,17 +77,17 @@ fn performance_bsa_generation_scales_subquadratically() {
         .map(|(name, data)| Entry::new(name, data))
         .collect();
 
-    let baseline = Duration::from_micros(500);
     let small_time = timed(|| {
         black_box(bsa::v105(&small_entries, bsa::Compression::None).unwrap());
-    })
-    .max(baseline);
+    });
     let large_time = timed(|| {
         black_box(bsa::v105(&large_entries, bsa::Compression::None).unwrap());
     });
 
+    // The unchanged writer measures about 27x locally for a 10x input increase
+    // (allocation/cache effects). Forty leaves headroom while rejecting 100x growth.
     assert!(
-        large_time < small_time * 50,
+        large_time < small_time * 40,
         "BSA generation grew from {small_time:?} to {large_time:?}"
     );
 }
@@ -108,7 +115,7 @@ fn performance_esm_generation_stays_within_budget() {
         black_box(plugin);
     });
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_millis(1),
         "81-cell plugin generation took {elapsed:?}"
     );
 }
@@ -129,7 +136,7 @@ fn performance_layout_generation_stays_within_budget() {
         black_box(written);
     });
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_millis(50),
         "layout generation took {elapsed:?}"
     );
 }
