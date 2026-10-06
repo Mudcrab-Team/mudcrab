@@ -66,6 +66,7 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
     fs::remove_file(output.join("meshes/generated.glb")).unwrap();
     let before_manifest = fs::read(&manifest_path).unwrap();
     let before_database = fs::read(&database).unwrap();
+    let before_integration = fs::read(output.join("integration-report.json")).unwrap();
 
     let preview = repair_failed(&config, false).unwrap();
     assert!(!preview.published);
@@ -83,6 +84,10 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
     assert!(preview.failures.is_empty());
     assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
     assert_eq!(fs::read(&database).unwrap(), before_database);
+    assert_eq!(
+        fs::read(output.join("integration-report.json")).unwrap(),
+        before_integration
+    );
     assert!(!output.join("meshes/generated.glb").exists());
     let staged = preview.directory.join("assets");
     let connection = rusqlite::Connection::open(staged.join("skyrim_world.db")).unwrap();

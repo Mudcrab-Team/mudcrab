@@ -179,6 +179,37 @@ fn validates_game_name_and_selected_profile() {
     }
 }
 
+/// Qt byte arrays select the discovered spelling after decoding UTF-8 bytes and escapes.
+#[test]
+fn selects_qt_byte_array_profile() {
+    let (_dir, root) = fixture();
+    fs::create_dir(root.join("profiles/Café's profile")).unwrap();
+    for (encoded, expected) in [
+        ("@ByteArray(default)", "Default"),
+        (r"@ByteArray(\x64\x65\x66\x61ult)", "Default"),
+        (r"@ByteArray(CAF\xc3\xa9\'s profile)", "Café's profile"),
+    ] {
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[General]\ngameName=Skyrim\nselected_profile=\"{encoded}\"\n"),
+        );
+        assert_eq!(
+            Instance::open(&root).unwrap().selected_profile.as_deref(),
+            Some(expected),
+            "{encoded}"
+        );
+    }
+    for encoded in [r"@ByteArray(\xff)", r"@ByteArray(\x)", "@ByteArray(Default"] {
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[General]\ngameName=Skyrim\nselected_profile={encoded}\n"),
+        );
+        assert!(Instance::open(&root).unwrap().selected_profile.is_none());
+    }
+}
+
 #[test]
 fn resolves_parent_directory_components() {
     let (_dir, root) = fixture();

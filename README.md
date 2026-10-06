@@ -101,7 +101,7 @@ Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** t
 cargo run -p converter --bin converter -- repair-failed "<Skyrim Data>" "<output directory>" --mo2-instance "<MO2 instance>" --mo2-profile "<profile>"
 ```
 
-This reads the original manifest and stages failed inputs, assets from failed archives, and necessary texture and skeleton dependencies in a unique `<output>/.repair-<pid>-<timestamp>` directory. Loose MO2 files are read in place. Repair copies the pack for validation, re-finalizes `skyrim_world.db` to update mesh bounds, and re-runs integration; it does not rebuild the world from plugins. Allow disk space for the staged pack copy. Omit the MO2 options for physical Data.
+This reads the original manifest and stages failed inputs, assets from failed archives, and necessary texture and skeleton dependencies in a unique `<output>/.repair-<pid>-<timestamp>` directory. Loose MO2 files are read in place. Repair stages the pack for validation, linking unchanged assets where supported, re-finalizes `skyrim_world.db` to update mesh bounds, and re-runs integration; it does not rebuild the world from plugins. Allow disk space for repaired assets, rewritten metadata, and copies where hard links are unavailable. Omit the MO2 options for physical Data.
 
 The default is a preview: inspect `repair-report.json` and the staged `assets/` folder; the published pack is unchanged except when recovering an earlier interrupted publication. Repeat with `--apply` to validate existing artifact hashes and publish the repairs. Conversion and repair share exclusive output locking and cannot run while the engine holds its runtime read lock. Publication writes a rollback journal before replacing files and updates the manifest last; the next conversion or repair recovers an interrupted repair. Publication is recoverable, not atomic for readers that do not acquire the lock.
 
@@ -111,7 +111,7 @@ The configuration must match the original conversion, and unresolved failures or
 
 Compatibility changes also apply to physical Data-folder conversion: BodySlide/Outfit Studio resources under `CalienteTools` are excluded as authoring data, the manifest records `excluded_inputs`, and unsupported NIF versions are rejected explicitly. Particle-size parsing and dynamic-shape recovery restore geometry that was previously omitted.
 
-The [PR #154 review](https://github.com/Mudcrab-Team/mudcrab/pull/154#issuecomment-5987129687) reports that, across 4,274 vanilla NIFs, 1,941 head, hair and eye meshes changed from empty output to real geometry, increasing total GLB size from 209 MB to 451 MB. These are reviewer-provided measurements, not a benchmark reproduced here. The Mudcrab header rename was already in `main`; the original script snapshot delta described by that review came from instruction dispatch chunking, not the rename.
+Dynamic head, hair, and eye meshes now produce geometry, increasing output size.
 
 ### GPU texture encoding
 

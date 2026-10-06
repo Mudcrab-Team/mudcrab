@@ -133,9 +133,10 @@ impl Instance {
             profiles_dir.display()
         );
         let selected_profile = value("selected_profile").and_then(|selected| {
+            let selected = decode_selected_profile(selected)?;
             profiles
                 .iter()
-                .find(|name| name.eq_ignore_ascii_case(selected))
+                .find(|name| name.eq_ignore_ascii_case(&selected))
                 .cloned()
         });
         Ok(Self {
@@ -289,6 +290,49 @@ impl Instance {
         }
         Ok(Resolved { files, plugins })
     }
+}
+
+/// Decodes MO2's UTF-8 profile name stored as a Qt INI byte array.
+/// Plain names remain supported; malformed byte arrays do not select a profile.
+fn decode_selected_profile(value: &str) -> Option<String> {
+    let Some(encoded) = value.strip_prefix("@ByteArray(") else {
+        return Some(value.to_owned());
+    };
+    let mut bytes = encoded.strip_suffix(')')?.bytes().peekable();
+    let mut decoded = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            decoded.push(byte);
+            continue;
+        }
+        decoded.push(match bytes.next()? {
+            b'a' => 7,
+            b'b' => 8,
+            b'f' => 12,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 11,
+            b'0' => 0,
+            byte @ (b'\\' | b'"' | b'\'' | b'?') => byte,
+            b'x' => {
+                let mut value = 0u8;
+                let mut digits = 0;
+                // Qt hex escapes consume all consecutive hexadecimal digits.
+                while let Some(digit) = bytes.peek().and_then(|b| char::from(*b).to_digit(16)) {
+                    value = value.checked_mul(16)?.checked_add(digit as u8)?;
+                    bytes.next();
+                    digits += 1;
+                }
+                if digits == 0 {
+                    return None;
+                }
+                value
+            }
+            _ => return None,
+        });
+    }
+    String::from_utf8(decoded).ok()
 }
 
 /// Iterates trimmed configuration lines, ignoring an initial BOM, blank lines, and comments.
@@ -501,4 +545,19 @@ fn overlay(
     }
     files.extend(layer);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_selected_profile;
+
+    #[test]
+    fn decodes_qt_backslash_escapes_without_changing_plain_names() {
+        assert_eq!(
+            decode_selected_profile(r#"@ByteArray(a\\b\"c\t\n)"#).as_deref(),
+            Some("a\\b\"c\t\n")
+        );
+        assert_eq!(decode_selected_profile(r"a\b").as_deref(), Some(r"a\b"));
+        assert!(decode_selected_profile(r"@ByteArray(trailing\)").is_none());
+    }
 }

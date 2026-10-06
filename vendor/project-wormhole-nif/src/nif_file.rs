@@ -732,30 +732,30 @@ fn push_modern_static_shape(
                     .iter()
                     .filter_map(|vertex| vertex.position)
                     .collect();
+                mesh.normals = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.normal)
+                    .collect();
+                mesh.uvs = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.uv)
+                    .collect();
+                mesh.colors = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.vertex_colors)
+                    .map(|color| {
+                        BSVec4(glam::Vec4::new(
+                            f32::from(color.x) / 255.0,
+                            f32::from(color.y) / 255.0,
+                            f32::from(color.z) / 255.0,
+                            f32::from(color.w) / 255.0,
+                        ))
+                    })
+                    .collect();
             }
-            mesh.normals = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.normal)
-                .collect();
-            mesh.uvs = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.uv)
-                .collect();
-            mesh.colors = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.vertex_colors)
-                .map(|color| {
-                    BSVec4(glam::Vec4::new(
-                        f32::from(color.x) / 255.0,
-                        f32::from(color.y) / 255.0,
-                        f32::from(color.z) / 255.0,
-                        f32::from(color.w) / 255.0,
-                    ))
-                })
-                .collect();
             mesh.triangles = partition.triangles.clone();
         }
     }

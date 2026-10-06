@@ -528,8 +528,8 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         entry.output_size = fs::metadata(staged.join(&entry.output))?.len();
         entry.output_hash = hash_file(&staged.join(&entry.output))?;
     }
-    // Integration needs the complete pack, not just repaired assets. Copy (never
-    // hard-link) the database because finalization updates mesh bounds in place.
+    // Integration needs the complete pack, not just repaired assets. Copy files
+    // rewritten in place so preview finalization cannot change the published pack.
     for entry in WalkDir::new(&published).follow_links(false) {
         let entry = entry?;
         if entry.file_type().is_file() {
@@ -537,7 +537,16 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             let destination = checked_destination(&staged, &relative.to_string_lossy())?;
             if !destination.exists() {
                 fs::create_dir_all(destination.parent().unwrap())?;
-                fs::copy(entry.path(), destination)?;
+                if matches!(
+                    relative.to_str(),
+                    Some(
+                        "skyrim_world.db" | "integration-report.json" | "conversion-manifest.json"
+                    )
+                ) {
+                    fs::copy(entry.path(), &destination)?;
+                } else {
+                    link_or_copy(entry.path(), &destination)?;
+                }
             }
         }
     }
