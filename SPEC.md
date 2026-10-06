@@ -247,7 +247,8 @@ V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/
 
 V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
 
-V118: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
+V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
+
 V119: Dynamic ingestion: Resolution, interpretation and winner merging cannot mutate source bytes or remove source occurrences/tombstones.
 V120: Dynamic ingestion: Compressed subrecord spans identify decoded address space; encoded stream and all original length/header encodings remain preserved.
 V121: Dynamic ingestion: Structural bounds/zlib failures and resource limits have distinct bounded outcomes; per-record and aggregate decoded-byte/work budgets enforced; no partial output receives complete status.
@@ -288,6 +289,8 @@ V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descripto
 V157: P0 repository/Data-relative evidence path keys ! POSIX separators on every host; issue/source joins & decision-runner identity use same canonical path spelling. Windows-path & nested-issue regressions guard serialization.
 
 V161: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
+
+V162: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
 
 ## §T TASKS
 
@@ -335,16 +338,18 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 
-T58|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V161,V118,V128,V134,V138,V141,V142,V143,V146
-T42|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V161,V119,V120,V121,V136,V142
-T43|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V118,V121,V131,V142
+T58|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V161,V162,V128,V134,V138,V141,V142,V143,V146
+T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
+
+T59|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V161,V119,V120,V121,V136,V142
+T43|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V162,V121,V131,V142
 T44|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V122,V123,V126,V138,V141
 T45|.|Dynamic ingestion P2 prove newest capability/encoding/variant/union/repetition cases and deterministic offline generated accessors|V120,V122,V126,V133,V142
 T46|.|Dynamic ingestion P3 define canonical SE outcomes/references and separate occurrences/owners/winners; persist and query pilot data|V119,V123,V124,V125,V136,V139
 T47|.|Dynamic ingestion P3 migrate current Skyrim SQL/cache/runtime consumers with identity/reference/native-geometry parity|V124,V125,V129,V137
 T48|.|Dynamic ingestion P4 qualify whole-corpus xEdit/Mutagen differential checks and reviewed miners; independently resolve omitted/disputed observations|V127,V128,V134,V138,V140
 T49|.|Dynamic ingestion P5 integrate complete SE canonical persistence/query, source/layout invalidation, atomic recovery and legacy product compatibility|V129,V130,V131,V139
-T50|.|Dynamic ingestion P6 accept 100% newest-SE interpretation, current-game compatibility, no-op/bundle preservation and performance/resource campaign|V118,V121,V132,V133,V134,V135,V140,V141,V142
+T50|.|Dynamic ingestion P6 accept 100% newest-SE interpretation, current-game compatibility, no-op/bundle preservation and performance/resource campaign|V162,V121,V132,V133,V134,V135,V140,V141,V142
 T51|.|Dynamic ingestion P4 close every newest-SE signature/variant/field/flag/reference gap through registry/codec work and controlled native research|V122,V123,V125,V127,V128,V139,V140,V141
 T52|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evidence, automated verdict, accepted limits and dependency handoff|V134,V135,V138
 T53|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V122,V128,V133,V134,V135,V140
@@ -436,8 +441,8 @@ B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; u
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
 
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
-B80|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V143; explicit completion blockers + matched-runtime base-only regression
-B81|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V143; shared source provenance + custom missing-descriptor regression
+B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
+B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets
 B82|2026-10-04|P0 hand-authored CELL fixtures omitted interior block/subblock & type-6 children groups; skipped references could mask invalid qualification inputs|V145; legal sourced hierarchy + exact expected typed record/reference checks
 B83|2026-10-04|P0 localization fixture used unsupported `STAT/FULL`; absence could masquerade as a string-resolution observation|V144,V145; translated `ARMO/FULL` fixture + exact ID & explicit missing-table outcome
 B84|2026-10-04|P0 inspect redirected library stdout but discarded captured diagnostics|V144; retain library output in observation/error evidence
@@ -465,3 +470,6 @@ B117|2026-10-05|parent final pipe drain unbounded; Windows reader-thread close c
 B128|2026-10-06|P0 leaf stat/O_NOFOLLOW checks did not bind ancestor directories; concurrent parent symlink swap could attribute external bytes to recorded Data path|V143; document ancestry limit in reader/report/docs; opened-byte hash ≠ unchanged-path proof; no new invariant, immutable source retention stays P1
 B130|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V146; stdlib iterative dependency traversal + chain/cycle fixtures
 B131|2026-10-06|main CI-cache entries reused schema V117/T41/B79; integration conflicted at distinct semantic bindings|preserve main V117/T41/B79; schema V161/T58/B130; update references; unique-ID/source-row preservation checks; no new behavior invariant
+B133|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V143; explicit completion blockers + matched-runtime base-only regression
+B134|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V143; shared source provenance + custom missing-descriptor regression
+B135|2026-10-06|new main quaternion/performance entries reused schema V118/T42/B80/B81 before publication|preserve main V118/T42/B80/B81; schema V162/T59/B133/B134; three-way row/reference checks; no new behavior invariant
