@@ -110,7 +110,7 @@ fn resolves_base_relative_and_external_configured_directories() {
     write(
         &root,
         "ModOrganizer.ini",
-        "[General]\nbase_directory=Storage\n[Settings]\nmod_directory=%BASE_DIR%/mods\nprofiles_directory=%BASE_DIR%\\profiles\noverwrite_directory=%BASE_DIR%/overwrite\n",
+        "[General]\ngameName=Skyrim\nbase_directory=Storage\n[Settings]\nmod_directory=%BASE_DIR%/mods\nprofiles_directory=%BASE_DIR%\\profiles\noverwrite_directory=%BASE_DIR%/overwrite\n",
     );
     let instance = Instance::open(&root).unwrap();
     assert_eq!(instance.profiles, ["Zed"]);
@@ -124,7 +124,7 @@ fn resolves_base_relative_and_external_configured_directories() {
         &root,
         "ModOrganizer.ini",
         &format!(
-            "[Settings]\nmod_directory=\"{}\"\nprofiles_directory=profiles\noverwrite_directory=overwrite\n",
+            "[Settings]\ngameName=Skyrim\nmod_directory=\"{}\"\nprofiles_directory=profiles\noverwrite_directory=overwrite\n",
             external.display()
         ),
     );
@@ -158,6 +158,13 @@ fn validates_game_name_and_selected_profile() {
                 .contains("unsupported MO2 gameName")
         );
     }
+    for ini in [
+        "[General]\nselected_profile=Default\n",
+        "[Settings]\nmod_directory=mods\n",
+    ] {
+        write(&root, "ModOrganizer.ini", ini);
+        assert!(format!("{:#}", Instance::open(&root).unwrap_err()).contains("missing gameName"));
+    }
     for settings in [
         "selected_profile=missing\n",
         "selected_profile=../Default\n",
@@ -166,7 +173,7 @@ fn validates_game_name_and_selected_profile() {
         write(
             &root,
             "ModOrganizer.ini",
-            &format!("[Settings]\n{settings}"),
+            &format!("[Settings]\ngameName=Skyrim\n{settings}"),
         );
         assert!(Instance::open(&root).unwrap().selected_profile.is_none());
     }
@@ -178,12 +185,63 @@ fn resolves_parent_directory_components() {
     write(
         &root,
         "ModOrganizer.ini",
-        "[Settings]\nmod_directory=profiles/../mods\n",
+        "[Settings]\ngameName=Skyrim\nmod_directory=profiles/../mods\n",
     );
     assert_eq!(
         Instance::open(&root).unwrap().mods_dir,
         fs::canonicalize(root.join("mods")).unwrap()
     );
+}
+
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link.to_string_lossy().replace('/', "\\"))
+        .arg(target.to_string_lossy().replace('/', "\\"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn rejects_enabled_mod_profile_and_asset_junctions() {
+    let (dir, root) = fixture();
+    let target = dir.path().join("external");
+    fs::create_dir(&target).unwrap();
+    write(&target, "escape.dds", "outside source roots");
+    let instance = Instance::open(&root).unwrap();
+    // A valid enabled mod must not silently traverse (or skip) its junction target.
+    let link = root.join("mods/Escape");
+    junction(&link, &target);
+    write(&root, "profiles/Default/modlist.txt", "+Escape\n");
+    let result = instance.resolve(&root.join("Data"), "Default");
+    fs::remove_dir(&link).unwrap();
+    assert!(format!("{:#}", result.unwrap_err()).contains("reparse points"));
+    write(&root, "profiles/Default/modlist.txt", "+High\n+Low\n");
+
+    for parent in ["mods/High", "overwrite", "Data"] {
+        let link = root.join(parent).join("textures");
+        junction(&link, &target);
+        let result = instance.resolve(&root.join("Data"), "Default");
+        fs::remove_dir(&link).unwrap();
+        assert!(
+            format!("{:#}", result.unwrap_err()).contains("reparse points"),
+            "{parent}"
+        );
+    }
+    // Replace a previously discovered profile so selection cannot follow a junction.
+    let profile = root.join("profiles/Default");
+    fs::remove_dir_all(&profile).unwrap();
+    junction(&profile, &target);
+    let result = instance.profile_dir("Default");
+    fs::remove_dir(&profile).unwrap();
+    assert!(format!("{:#}", result.unwrap_err()).contains("reparse points"));
 }
 
 #[cfg(windows)]
@@ -194,21 +252,11 @@ fn resolves_parent_of_junction_target_not_lexical_parent() {
     fs::create_dir_all(&target).unwrap();
     fs::create_dir_all(dir.path().join("external/mods")).unwrap();
     let junction = root.join("junction");
-    let output = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(junction.to_string_lossy().replace('/', "\\"))
-        .arg(target.to_string_lossy().replace('/', "\\"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    self::junction(&junction, &target);
     write(
         &root,
         "ModOrganizer.ini",
-        "[Settings]\nmod_directory=junction/../mods\n",
+        "[Settings]\ngameName=Skyrim\nmod_directory=junction/../mods\n",
     );
     let result = Instance::open(&root);
     fs::remove_dir(&junction).unwrap();
@@ -227,7 +275,7 @@ fn validates_instance_and_configured_directories() {
     write(
         &root,
         "ModOrganizer.ini",
-        "[Settings]\nmod_directory=missing\n",
+        "[Settings]\ngameName=Skyrim\nmod_directory=missing\n",
     );
     assert!(Instance::open(&root).is_err());
 }

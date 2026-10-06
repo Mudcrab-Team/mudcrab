@@ -374,7 +374,7 @@ mod tests {
         assert!(settings.selection.is_none() && !settings.error.is_empty());
         std::fs::write(
             root.join("ModOrganizer.ini"),
-            "[General]\nselected_profile=missing\n",
+            "[General]\ngameName=Skyrim\nselected_profile=missing\n",
         )
         .unwrap();
         settings.set_instance(root);

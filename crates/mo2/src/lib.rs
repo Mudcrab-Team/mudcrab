@@ -89,14 +89,14 @@ impl Instance {
                 .get(&("settings".into(), key.into()))
                 .or_else(|| settings.get(&("general".into(), key.into())))
         };
-        if let Some(game) = value("gamename") {
-            ensure!(
-                ["Skyrim", "Skyrim Special Edition", "Skyrim VR"]
-                    .iter()
-                    .any(|supported| game.eq_ignore_ascii_case(supported)),
-                "unsupported MO2 gameName: {game}"
-            );
-        }
+        let game = value("gamename")
+            .ok_or_else(|| color_eyre::eyre::eyre!("MO2 configuration is missing gameName"))?;
+        ensure!(
+            ["Skyrim", "Skyrim Special Edition", "Skyrim VR"]
+                .iter()
+                .any(|supported| game.eq_ignore_ascii_case(supported)),
+            "unsupported MO2 gameName: {game}"
+        );
         let base = match value("base_directory").filter(|v| !v.is_empty()) {
             Some(v) => configured_dir(&instance_path, &instance_path, v)?,
             None => instance_path.clone(),
@@ -344,7 +344,26 @@ fn plugin_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Finds an optional child by case-insensitive name, rejecting unsafe names, collisions, and symlinks.
+/// Rejects source links, including Windows junctions and other reparse points.
+fn reject_source_link(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    let is_link = {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT also covers junctions, not just symbolic links.
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let is_link = metadata.file_type().is_symlink();
+    ensure!(
+        !is_link,
+        "MO2 source symlinks and reparse points are unsupported: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+/// Finds an optional child by case-insensitive name, rejecting unsafe names, collisions, and links.
 fn optional_child(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     find_child(root, name, false)
 }
@@ -365,18 +384,16 @@ fn find_child(root: &Path, name: &str, allow_links: bool) -> Result<Option<PathB
                 "case-insensitive path collision in {}: {name}",
                 root.display()
             );
-            ensure!(
-                allow_links || !entry.file_type()?.is_symlink(),
-                "MO2 source symlinks are unsupported: {}",
-                entry.path().display()
-            );
+            if !allow_links {
+                reject_source_link(&entry.path())?;
+            }
             found = Some(entry.path());
         }
     }
     Ok(found)
 }
 
-/// Finds a required child by case-insensitive name, failing if it is missing, ambiguous, or a symlink.
+/// Finds a required child by case-insensitive name, failing if it is missing, ambiguous, or a link.
 fn child(root: &Path, name: &str) -> Result<PathBuf> {
     optional_child(root, name)?
         .ok_or_else(|| color_eyre::eyre::eyre!("MO2 path not found: {}", root.join(name).display()))
@@ -434,7 +451,7 @@ fn configured_dir(instance: &Path, base: &Path, value: &str) -> Result<PathBuf> 
 
 /// Overlays a directory onto winning file paths, skipping `.mohidden` entries and checking cancellation.
 ///
-/// Rejects symlinks, unsafe path components, and case-insensitive collisions within the layer.
+/// Rejects symlinks/reparse points, unsafe components, and case-insensitive collisions within the layer.
 fn overlay(
     root: &Path,
     files: &mut BTreeMap<String, PathBuf>,
@@ -445,6 +462,7 @@ fn overlay(
         "MO2 Data source is not a directory: {}",
         root.display()
     );
+    reject_source_link(root)?;
     let mut layer = BTreeMap::new();
     for entry in WalkDir::new(root)
         .follow_links(false)
@@ -459,11 +477,7 @@ fn overlay(
     {
         ensure!(!cancelled(), "MO2 resolution cancelled");
         let entry = entry.wrap_err_with(|| format!("reading MO2 source {}", root.display()))?;
-        ensure!(
-            !entry.file_type().is_symlink(),
-            "MO2 source symlinks are unsupported: {}",
-            entry.path().display()
-        );
+        reject_source_link(entry.path())?;
         if !entry.file_type().is_file() {
             continue;
         }

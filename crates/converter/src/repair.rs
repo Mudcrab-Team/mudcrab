@@ -7,7 +7,7 @@ use crate::{
         link_or_copy,
     },
     check::{CheckMode, CheckProblem, check_output},
-    config::PipelineConfig,
+    config::{PipelineConfig, TextureEncoder},
     integration::finalize_world_database_with_sources,
     mesh::MeshConverter,
     pipeline::{
@@ -16,7 +16,8 @@ use crate::{
         validate_artifact,
     },
     script::ScriptConverter,
-    texture::{TextureConverter, TextureEncoding},
+    texture::{TextureConverter, TextureEncoding, publish_ktx2_file},
+    texture_gpu::{self, GpuJob, GpuUastc, PreparedTexture},
 };
 use color_eyre::{
     Result,
@@ -109,13 +110,15 @@ impl OutputOwnership {
     }
 }
 
-/// Without `apply`, only a sibling repair directory is written. Keep it for inspection.
+/// Without `apply`, only a repair directory inside the output is written. Keep it for inspection.
 pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairReport> {
     config.validate()?;
     ensure!(
         config.resume_staging.is_none() && !config.invalidate_cache,
         "repair cannot resume staging or invalidate the pack"
     );
+    let _asset_lock = shared::asset_lock::AssetLock::acquire_exclusive(&config.output_dir)
+        .wrap_err("cannot repair an asset directory in use")?;
     let ownership = OutputOwnership::acquire(&config.output_dir)?;
     let output = ownership.output().to_path_buf();
     let mut pinned_config = config.clone();
@@ -145,9 +148,8 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         },
     )?;
 
-    let directory = output.with_file_name(format!(
-        "{}.repair-{}-{}",
-        output.file_name().unwrap_or_default().to_string_lossy(),
+    let directory = output.join(format!(
+        ".repair-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -161,6 +163,24 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     })?;
     let staged = directory.join("assets");
     fs::create_dir(&staged)?;
+    // Discover semantics from a pack-only snapshot, never earlier repair previews.
+    let published = directory.join("published");
+    fs::create_dir(&published)?;
+    for entry in WalkDir::new(&output)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !entry.file_name().to_string_lossy().starts_with(".repair-")
+        })
+    {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            let relative = entry.path().strip_prefix(&output)?;
+            let destination = checked_destination(&published, &relative.to_string_lossy())?;
+            fs::create_dir_all(destination.parent().unwrap())?;
+            link_or_copy(entry.path(), &destination)?;
+        }
+    }
     let mut report = RepairReport {
         directory: directory.clone(),
         converted: 0,
@@ -329,13 +349,26 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             .inputs_by_kind
             .insert(extension.into(), count as u64);
     }
+    let gpu = match config.texture_encoder {
+        TextureEncoder::Gpu { quality, batch_mb } => match GpuUastc::new(quality, batch_mb) {
+            Ok(mut gpu) => {
+                gpu.zstd_level = config.texture_zstd_level;
+                Some(gpu)
+            }
+            Err(error) => {
+                eprintln!("GPU texture encoder unavailable ({error:#}); using CPU encoder");
+                None
+            }
+        },
+        TextureEncoder::Cpu => None,
+    };
     let mut verified_archives = BTreeSet::new();
     let mut changed = BTreeSet::<String>::new();
     eprintln!(
         "Resolved {} runtime sources; inspecting published texture semantics",
         sources.len()
     );
-    let mut semantics = collect_texture_semantics(&config.output_dir)?;
+    let mut semantics = collect_texture_semantics(&published)?;
     for key in targets
         .clone()
         .into_iter()
@@ -352,6 +385,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         }
         attempt(
             config,
+            gpu.as_ref(),
             &staged,
             &key,
             &sources,
@@ -412,6 +446,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     for key in targets.into_iter().filter(|key| key.ends_with(".dds")) {
         attempt(
             config,
+            gpu.as_ref(),
             &staged,
             &key,
             &sources,
@@ -495,10 +530,10 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     }
     // Integration needs the complete pack, not just repaired assets. Copy (never
     // hard-link) the database because finalization updates mesh bounds in place.
-    for entry in WalkDir::new(&config.output_dir).follow_links(false) {
+    for entry in WalkDir::new(&published).follow_links(false) {
         let entry = entry?;
         if entry.file_type().is_file() {
-            let relative = entry.path().strip_prefix(&config.output_dir)?;
+            let relative = entry.path().strip_prefix(&published)?;
             let destination = checked_destination(&staged, &relative.to_string_lossy())?;
             if !destination.exists() {
                 fs::create_dir_all(destination.parent().unwrap())?;
@@ -587,6 +622,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
 #[allow(clippy::too_many_arguments)]
 fn attempt(
     config: &PipelineConfig,
+    gpu: Option<&GpuUastc>,
     staged: &Path,
     key: &str,
     sources: &BTreeMap<String, Source>,
@@ -638,14 +674,9 @@ fn attempt(
                 &semantics.get(&output).cloned().unwrap_or_default(),
             )?;
             source_hash.push_str(&format!(":texture-encoding:{encoding:?}"));
-            TextureConverter::convert_dds_to_ktx2_with_options(
-                &source.path,
-                &target,
-                encoding,
-                config.texture_fallback_quality,
-                config.texture_uastc_level,
-                config.texture_zstd_level,
-            )?;
+            if let Some(label) = convert_texture(config, gpu, &source.path, &target, encoding)? {
+                source_hash.push_str(&label);
+            }
         }
         record_output(manifest, key.into(), output.clone(), source_hash, staged)?;
         changed.insert(output);
@@ -657,6 +688,64 @@ fn attempt(
         eprintln!("Repair failed: {key}: {error:#}");
         manifest.failures.insert(key.into(), format!("{error:#}"));
     }
+}
+
+/// Uses the normal GPU worker and labels only successfully published GPU output.
+fn convert_texture(
+    config: &PipelineConfig,
+    gpu: Option<&GpuUastc>,
+    source: &Path,
+    target: &Path,
+    encoding: TextureEncoding,
+) -> Result<Option<String>> {
+    if let Some(gpu) = gpu
+        && let Ok(bytes) = fs::read(source)
+        && let Ok(texture) = PreparedTexture::from_dds(bytes, encoding)
+    {
+        let (sender, receiver) = texture_gpu::job_channel(gpu);
+        let queued = sender
+            .send(GpuJob {
+                texture,
+                encoding,
+                tag: (),
+            })
+            .is_ok();
+        drop(sender);
+        if queued {
+            let result = std::sync::Mutex::new(None);
+            texture_gpu::run_batcher(
+                gpu,
+                receiver,
+                config.cpu_jobs,
+                || false,
+                |(), encoded| {
+                    *result.lock().unwrap() =
+                        Some(encoded.and_then(|encoded| publish_ktx2_file(target, &encoded.bytes)));
+                },
+            );
+            match result.into_inner().unwrap() {
+                Some(Ok(())) => return Ok(Some(texture_gpu::cache_label(gpu.quality))),
+                failure => {
+                    eprintln!(
+                        "GPU texture conversion failed for {} ({failure:?}); using CPU encoder",
+                        source.display()
+                    );
+                    if target.exists() {
+                        fs::remove_file(target)?;
+                    }
+                }
+            }
+        }
+    }
+    TextureConverter::convert_dds_to_ktx2_with_options(
+        source,
+        target,
+        encoding,
+        config.texture_fallback_quality,
+        config.texture_uastc_level,
+        config.texture_zstd_level,
+    )?;
+    Ok(None)
 }
 
 /// Verifies both repaired inputs and their winning archive-backed dependencies.
@@ -866,6 +955,95 @@ fn publish(output: &Path, staged: &Path, backup: &Path, changed: &BTreeSet<Strin
 mod tests {
     use super::*;
 
+    fn texture_source(root: &Path, format: ddsfile::D3DFormat) -> PathBuf {
+        let mut dds = ddsfile::Dds::new_d3d(ddsfile::NewD3dParams {
+            height: 4,
+            width: 4,
+            depth: None,
+            format,
+            mipmap_levels: Some(1),
+            caps2: None,
+        })
+        .unwrap();
+        dds.data.fill(127);
+        let source = root.join(format!("{format:?}.dds"));
+        dds.write(&mut fs::File::create(&source).unwrap()).unwrap();
+        source
+    }
+
+    #[test]
+    fn unavailable_gpu_repair_uses_cpu_options_without_gpu_label() {
+        let root = tempfile::tempdir().unwrap();
+        let source = texture_source(root.path(), ddsfile::D3DFormat::A8R8G8B8);
+        let mut config = PipelineConfig::new(root.path(), root.path());
+        config.texture_encoder = TextureEncoder::Gpu {
+            quality: 3,
+            batch_mb: 1,
+        };
+        config.texture_uastc_level = 0;
+        config.texture_zstd_level = 0;
+        let repaired = root.path().join("repaired.ktx2");
+        let normal = root.path().join("normal.ktx2");
+        assert_eq!(
+            convert_texture(
+                &config,
+                None,
+                &source,
+                &repaired,
+                TextureEncoding::ColorSrgb
+            )
+            .unwrap(),
+            None
+        );
+        TextureConverter::convert_dds_to_ktx2_with_options(
+            &source,
+            &normal,
+            TextureEncoding::ColorSrgb,
+            config.texture_fallback_quality,
+            config.texture_uastc_level,
+            config.texture_zstd_level,
+        )
+        .unwrap();
+        assert_eq!(fs::read(repaired).unwrap(), fs::read(normal).unwrap());
+    }
+
+    #[test]
+    fn hardware_repair_labels_gpu_output_but_not_native_blocks() {
+        let root = tempfile::tempdir().unwrap();
+        let mut gpu = match GpuUastc::new(3, 1) {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                eprintln!("SKIP hardware repair encoding: {error:#}");
+                return;
+            }
+        };
+        gpu.zstd_level = 6;
+        let config = PipelineConfig::new(root.path(), root.path());
+        for (format, expected) in [
+            (
+                ddsfile::D3DFormat::A8R8G8B8,
+                Some(texture_gpu::cache_label(3)),
+            ),
+            (ddsfile::D3DFormat::DXT1, None),
+        ] {
+            let source = texture_source(root.path(), format);
+            let target = source.with_extension("ktx2");
+            assert_eq!(
+                convert_texture(
+                    &config,
+                    Some(&gpu),
+                    &source,
+                    &target,
+                    TextureEncoding::ColorSrgb
+                )
+                .unwrap(),
+                expected
+            );
+            crate::texture::inspect_ktx2(&fs::read(target).unwrap(), TextureEncoding::ColorSrgb)
+                .unwrap();
+        }
+    }
+
     /// Verifies failed publication restores original files and repair paths cannot traverse outside the pack.
     #[test]
     fn publication_rolls_back_and_rejects_escaping_paths() {
@@ -1029,6 +1207,7 @@ mod tests {
             };
             attempt(
                 &config,
+                None,
                 &staged,
                 key,
                 &sources,

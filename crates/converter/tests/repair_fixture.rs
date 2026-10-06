@@ -38,6 +38,17 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
         .find(|(_, entry)| entry.output == "meshes/generated.glb")
         .map(|(key, _)| key.clone())
         .unwrap();
+    let texture_key = manifest
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.output.ends_with(".ktx2") && !entry.output.contains(".__srgb"))
+        .map(|(key, _)| key.clone())
+        .unwrap();
+    let texture = manifest.entries.remove(&texture_key).unwrap();
+    fs::remove_file(output.join(&texture.output)).unwrap();
+    manifest
+        .failures
+        .insert(texture_key.clone(), "fixture texture failure".into());
     manifest.entries.remove(&mesh_key);
     manifest
         .failures
@@ -58,6 +69,17 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
 
     let preview = repair_failed(&config, false).unwrap();
     assert!(!preview.published);
+    assert_eq!(
+        preview.directory.parent(),
+        Some(fs::canonicalize(&output).unwrap().as_path())
+    );
+    assert!(
+        !preview
+            .directory
+            .join("assets")
+            .join(preview.directory.file_name().unwrap())
+            .exists()
+    );
     assert!(preview.failures.is_empty());
     assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
     assert_eq!(fs::read(&database).unwrap(), before_database);
@@ -73,13 +95,31 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
         .unwrap();
     assert!(bounded > 0);
     drop(connection);
+    // Old previews are neither pack inputs nor semantic-discovery inputs.
+    fs::write(staged.join("meshes/invalid-preview.glb"), "not a GLB").unwrap();
 
     let applied = repair_failed(&config, true).unwrap();
     assert!(applied.published);
+    assert!(
+        !applied
+            .directory
+            .join("assets")
+            .join(preview.directory.file_name().unwrap())
+            .exists()
+    );
     assert!(applied.failures.is_empty());
     let manifest: ConversionManifest =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     assert!(manifest.complete);
+    assert_eq!(
+        manifest.entries[&texture_key].source_hash,
+        texture.source_hash
+    );
+    assert!(
+        !manifest.entries[&texture_key]
+            .source_hash
+            .contains(":gpu-uastc-")
+    );
     assert!(output.join("meshes/generated.glb").is_file());
     let integration: converter::integration::IntegrationReport =
         serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap()).unwrap();
@@ -113,6 +153,34 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
     assert!(converted.complete);
     assert!(converted.cache_hits > 0);
     assert!(!journal.exists());
+}
+
+#[test]
+fn repair_refuses_readers_before_journal_recovery() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    let output = root.path().join("modern");
+    fs::create_dir(&data).unwrap();
+    fs::create_dir(&output).unwrap();
+    let manifest = output.join("conversion-manifest.json");
+    fs::write(&manifest, "untouched").unwrap();
+    let journal = output.with_file_name("modern.repair-journal.json");
+    fs::write(&journal, "invalid journal must not be read").unwrap();
+    let reader = shared::asset_lock::AssetLock::acquire_shared(&output).unwrap();
+    for apply in [false, true] {
+        let error = repair_failed(&PipelineConfig::new(&data, &output), apply).unwrap_err();
+        assert!(
+            error.to_string().contains("asset directory in use"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&manifest).unwrap(), "untouched");
+        assert_eq!(
+            fs::read_to_string(&journal).unwrap(),
+            "invalid journal must not be read"
+        );
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
+    }
+    drop(reader);
 }
 
 #[tokio::test]

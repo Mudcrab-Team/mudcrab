@@ -93,7 +93,7 @@ Mudcrab is being built systematically across 5 core phases. Explore the full roa
    cargo run -p launcher
    ```
 
-Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** to overlay a Mod Organizer 2 profile. Open **MO2 settings**, drop the instance folder containing `ModOrganizer.ini`, and select a detected profile from the dropdown (MO2's active profile is selected by default, falling back to the first detected profile). The Skyrim Data folder is still required as the base. Close settings before dropping the output folder. Source settings apply to Start and Resume and are selected per launcher session. MO2 sources are read in place; native SKSE plugins are not supported.
+Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** to overlay a Mod Organizer 2 profile. Open **MO2 settings**, drop the instance folder containing `ModOrganizer.ini`, and select a detected profile from the dropdown (MO2's active profile is selected by default, falling back to the first detected profile). The Skyrim Data folder is still required as the base. Close settings before dropping the output folder. Source settings apply to Start and Resume and are selected per launcher session. MO2 sources are read in place; native SKSE plugins are not supported. Instances must declare a supported Skyrim `gameName`. Configured directories may resolve through junctions, but profile, enabled-mod, and asset reparse points are rejected.
 
 ### Repair a failed conversion without rebuilding the world
 
@@ -101,11 +101,17 @@ Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** t
 cargo run -p converter --bin converter -- repair-failed "<Skyrim Data>" "<output directory>" --mo2-instance "<MO2 instance>" --mo2-profile "<profile>"
 ```
 
-This reads the original manifest and stages failed inputs, assets from failed archives, and necessary texture and skeleton dependencies in a unique `<output>.repair-<pid>-<timestamp>` directory. Loose MO2 files are read in place. Repair copies the pack for validation, re-finalizes `skyrim_world.db` to update mesh bounds, and re-runs integration; it does not rebuild the world from plugins. Allow disk space for the staged pack copy. Omit the MO2 options for physical Data.
+This reads the original manifest and stages failed inputs, assets from failed archives, and necessary texture and skeleton dependencies in a unique `<output>/.repair-<pid>-<timestamp>` directory. Loose MO2 files are read in place. Repair copies the pack for validation, re-finalizes `skyrim_world.db` to update mesh bounds, and re-runs integration; it does not rebuild the world from plugins. Allow disk space for the staged pack copy. Omit the MO2 options for physical Data.
 
-The default is a preview: inspect `repair-report.json` and the staged `assets/` folder; the published pack is unchanged except when recovering an earlier interrupted publication. Repeat with `--apply` to validate existing artifact hashes and publish the repairs. Conversion and repair share an output lock. Publication writes a rollback journal before replacing files and updates the manifest last; the next conversion or repair recovers an interrupted repair. Publication is recoverable, not atomic for readers that do not acquire the lock.
+The default is a preview: inspect `repair-report.json` and the staged `assets/` folder; the published pack is unchanged except when recovering an earlier interrupted publication. Repeat with `--apply` to validate existing artifact hashes and publish the repairs. Conversion and repair share exclusive output locking and cannot run while the engine holds its runtime read lock. Publication writes a rollback journal before replacing files and updates the manifest last; the next conversion or repair recovers an interrupted repair. Publication is recoverable, not atomic for readers that do not acquire the lock.
 
-The configuration must match the original conversion, and unresolved failures or failed integration prevent publication. Supply the original encoding settings when needed: `--texture-encoder`, `--texture-fallback-quality`, `--texture-uastc-level`, and `--texture-zstd-level` (and the corresponding GPU options). Changes to MO2 window settings or disabled mod entries do not invalidate the whole conversion cache; winning asset and plugin changes are tracked separately.
+The configuration must match the original conversion, and unresolved failures or failed integration prevent publication. Supply the original encoding settings when needed: `--texture-encoder`, `--texture-fallback-quality`, `--texture-uastc-level`, and `--texture-zstd-level` (and the corresponding GPU options). GPU repair uses the same GPU encoding worker as conversion, including configured quality and CPU fallback. Changes to MO2 window settings or disabled mod entries do not invalidate the whole conversion cache; winning asset and plugin changes are tracked separately.
+
+### Asset compatibility changes
+
+Compatibility changes also apply to physical Data-folder conversion: BodySlide/Outfit Studio resources under `CalienteTools` are excluded as authoring data, the manifest records `excluded_inputs`, and unsupported NIF versions are rejected explicitly. Particle-size parsing and dynamic-shape recovery restore geometry that was previously omitted.
+
+The [PR #154 review](https://github.com/Mudcrab-Team/mudcrab/pull/154#issuecomment-5987129687) reports that, across 4,274 vanilla NIFs, 1,941 head, hair and eye meshes changed from empty output to real geometry, increasing total GLB size from 209 MB to 451 MB. These are reviewer-provided measurements, not a benchmark reproduced here. The Mudcrab header rename was already in `main`; the original script snapshot delta described by that review came from instruction dispatch chunking, not the rename.
 
 ### GPU texture encoding
 
