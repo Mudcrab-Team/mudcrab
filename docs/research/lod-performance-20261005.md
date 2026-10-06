@@ -9,7 +9,7 @@ The corrected Fiji cold/warm pair passed: cold generated 4,673 chunks with zero
 chunk hits; warm reused **all 4,673 chunks**. Both runs completed, passed integration,
 converted/skipped zero ordinary inputs and preserved all 76,213 ordinary entry
 proofs. An independent pass verified every final ordinary output size/hash and
-every LOD payload hash. T42 is complete; runtime captures remain deferred under T40.
+every LOD payload hash. T43 is complete; runtime captures remain deferred under T40.
 
 The change removes a second, disposable atlas mip encoding; shares one validated
 cell snapshot and decoded terrain textures across worlds; publishes bounded chunk

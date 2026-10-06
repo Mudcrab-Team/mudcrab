@@ -417,7 +417,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
 }
 
 #[tokio::test]
-async fn v119_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads() {
+async fn v120_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads() {
     use dummy_content::esm;
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");

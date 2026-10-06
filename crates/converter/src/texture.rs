@@ -1831,7 +1831,7 @@ mod tests {
     use std::io::{Read, Write};
 
     #[test]
-    fn v118_block_reuse_preserves_upstream_payloads_and_dfd() {
+    fn v119_block_reuse_preserves_upstream_payloads_and_dfd() {
         for encoding in [TextureEncoding::ColorSrgb, TextureEncoding::DataLinear] {
             for alpha in [0, 127, 255] {
                 let mut cache = HashMap::new();
@@ -1878,7 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn v118_mixed_atlas_block_reuse_preserves_upstream_payloads_and_dfd() {
+    fn v119_mixed_atlas_block_reuse_preserves_upstream_payloads_and_dfd() {
         let side = 64u32;
         // One half repeats blocks; the other has distinct colors and alpha.
         // This exercises cache hits and misses together in a larger atlas mip.
@@ -1983,7 +1983,7 @@ mod tests {
     }
 
     #[test]
-    fn v118_rgba_mips_are_encoded_once_and_preserved() {
+    fn v119_rgba_mips_are_encoded_once_and_preserved() {
         let rgba: Vec<_> = [16, 8, 4]
             .into_iter()
             .map(|side| gradient(side, side))

@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn v119_cell_fingerprint_covers_consumed_fields() {
+    fn v120_cell_fingerprint_covers_consumed_fields() {
         let mut cell = flat_cell(0, 0, 1.0);
         let original = cell.fingerprint();
         cell.heights[500] += 1.0;
@@ -1283,7 +1283,7 @@ mod tests {
     }
 
     #[test]
-    fn v119_reuse_bounds_match_compiled_samples_in_all_tiers() {
+    fn v120_reuse_bounds_match_compiled_samples_in_all_tiers() {
         let mut cells = vec![flat_cell(-5, 11, 1.0), flat_cell(-4, 11, 2.0)];
         cells[0].heights[0] = -19.0;
         cells[1].heights[16 * 33 + 32] = 99.0;
@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn v121_cell_cache_snapshot_serves_worlds_without_rereading() {
+    fn v122_cell_cache_snapshot_serves_worlds_without_rereading() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cells.rkyv");
         let cache = shared::CellCache {

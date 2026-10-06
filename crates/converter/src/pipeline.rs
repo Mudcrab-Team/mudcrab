@@ -4000,7 +4000,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v120_late_batch_failure_rolls_back_entire_world() {
+    async fn v121_late_batch_failure_rolls_back_entire_world() {
         use dummy_content::{esm, layout};
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");

@@ -187,7 +187,7 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Run unit & integration tests
-        run: cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
+        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
 
@@ -233,7 +233,7 @@ jobs:
           toolchain: "1.98.1"
 
       - name: Run release performance budgets
-        run: cargo test --release -p dummy-content -- --ignored performance --test-threads=1
+        run: cargo test --locked --release -p dummy-content --test performance -- --ignored --nocapture --test-threads=1
 
   tests_pass:
     needs:

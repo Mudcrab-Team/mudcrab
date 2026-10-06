@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn v121_selected_dds_mip_is_decoded_once_for_all_tiers() {
+    fn v122_selected_dds_mip_is_decoded_once_for_all_tiers() {
         let dds = Dds::read(Cursor::new(test_dds())).unwrap();
         let mut calls = Vec::new();
         let images = LinearImage::decode_tiers_with(&dds, |mip| {
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn v121_diffuse_images_shared_across_formids_and_worlds_keep_source_proof() {
+    fn v122_diffuse_images_shared_across_formids_and_worlds_keep_source_proof() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE landscape_textures(id INTEGER, texture_set_id INTEGER); CREATE TABLE texture_sets(id INTEGER, diffuse_path TEXT); INSERT INTO texture_sets VALUES(1,'textures/shared.dds'); INSERT INTO landscape_textures VALUES(1,1),(2,1);").unwrap();
         let directory = tempfile::tempdir().unwrap();
