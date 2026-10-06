@@ -21,6 +21,8 @@ pub struct Selection {
 #[derive(Debug, Clone)]
 pub struct Instance {
     pub profiles: Vec<String>,
+    /// The INI's active profile, matched to its discovered name; absent or stale values are `None`.
+    pub selected_profile: Option<String>,
     pub instance_path: PathBuf,
     pub mods_dir: PathBuf,
     pub profiles_dir: PathBuf,
@@ -87,6 +89,14 @@ impl Instance {
                 .get(&("settings".into(), key.into()))
                 .or_else(|| settings.get(&("general".into(), key.into())))
         };
+        if let Some(game) = value("gamename") {
+            ensure!(
+                ["Skyrim", "Skyrim Special Edition", "Skyrim VR"]
+                    .iter()
+                    .any(|supported| game.eq_ignore_ascii_case(supported)),
+                "unsupported MO2 gameName: {game}"
+            );
+        }
         let base = match value("base_directory").filter(|v| !v.is_empty()) {
             Some(v) => configured_dir(&instance_path, &instance_path, v)?,
             None => instance_path.clone(),
@@ -122,8 +132,15 @@ impl Instance {
             "MO2 instance has no profiles: {}",
             profiles_dir.display()
         );
+        let selected_profile = value("selected_profile").and_then(|selected| {
+            profiles
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(selected))
+                .cloned()
+        });
         Ok(Self {
             profiles,
+            selected_profile,
             instance_path,
             mods_dir,
             profiles_dir,
@@ -329,6 +346,11 @@ fn plugin_name(name: &str) -> Result<()> {
 
 /// Finds an optional child by case-insensitive name, rejecting unsafe names, collisions, and symlinks.
 fn optional_child(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    find_child(root, name, false)
+}
+
+// Configured directory paths may traverse junctions; profile and asset children may not.
+fn find_child(root: &Path, name: &str, allow_links: bool) -> Result<Option<PathBuf>> {
     safe_name(name)?;
     let mut found = None;
     for entry in fs::read_dir(root)? {
@@ -344,7 +366,7 @@ fn optional_child(root: &Path, name: &str) -> Result<Option<PathBuf>> {
                 root.display()
             );
             ensure!(
-                !entry.file_type()?.is_symlink(),
+                allow_links || !entry.file_type()?.is_symlink(),
                 "MO2 source symlinks are unsupported: {}",
                 entry.path().display()
             );
@@ -372,22 +394,31 @@ fn configured_dir(instance: &Path, base: &Path, value: &str) -> Result<PathBuf> 
         "unsupported MO2 path variable: {value}"
     );
     let path = PathBuf::from(expanded);
-    let path = if path.is_absolute() {
-        path
+    // Joining onto a Windows verbatim path normalizes `..` before junctions can be resolved.
+    let prefix = if path.is_absolute() {
+        None
     } else {
-        instance.join(path)
+        Some(instance)
     };
     // Resolve each existing component case-insensitively even on case-sensitive hosts.
     let mut resolved = PathBuf::new();
-    for component in path.components() {
+    for component in prefix
+        .into_iter()
+        .flat_map(Path::components)
+        .chain(path.components())
+    {
         match component {
             Component::Normal(name) => {
                 let name = name
                     .to_str()
                     .ok_or_else(|| color_eyre::eyre::eyre!("MO2 directory is not UTF-8"))?;
-                resolved = child(&resolved, name)?;
+                resolved = find_child(&resolved, name, true)?.ok_or_else(|| {
+                    color_eyre::eyre::eyre!("MO2 path not found: {}", resolved.join(name).display())
+                })?;
             }
             Component::ParentDir => {
+                // Resolve junctions before taking their parent, rather than the lexical parent.
+                resolved = fs::canonicalize(&resolved)?;
                 resolved.pop();
             }
             other => resolved.push(other.as_os_str()),

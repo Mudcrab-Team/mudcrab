@@ -23,7 +23,8 @@ pub struct SourceSettings {
 impl SourceSettings {
     /// Loads an MO2 instance and its profiles, retaining the selected profile when still valid.
     ///
-    /// Selects the first profile otherwise; an invalid instance clears the selection and records an error.
+    /// Otherwise prefers the INI's active profile, then the first sorted profile.
+    /// An invalid instance clears the selection and records an error.
     pub fn set_instance(&mut self, path: &Path) {
         match mo2::Instance::open(path) {
             Ok(instance) => {
@@ -33,6 +34,7 @@ impl SourceSettings {
                     .filter(|old| old.instance_path == instance.instance_path)
                     .map(|old| old.profile.clone())
                     .filter(|name| instance.profiles.contains(name))
+                    .or_else(|| instance.selected_profile.clone())
                     .unwrap_or_else(|| instance.profiles[0].clone());
                 self.selection = Some(mo2::Selection {
                     instance_path: instance.instance_path,
@@ -341,7 +343,8 @@ mod tests {
     /// Verifies profile defaults, config application, source switching, and invalid-instance handling.
     #[test]
     fn validates_defaults_and_switches_conversion_source() {
-        let root = std::env::temp_dir().join(format!("mudcrab-source-{}", std::process::id()));
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
         std::fs::create_dir_all(root.join("mods")).unwrap();
         std::fs::create_dir_all(root.join("overwrite")).unwrap();
         for name in ["Zed", "Alpha"] {
@@ -349,7 +352,7 @@ mod tests {
         }
         std::fs::write(
             root.join("ModOrganizer.ini"),
-            "[General]\ngameName=Skyrim\n",
+            "[General]\ngameName=Skyrim\nselected_profile=zed\n",
         )
         .unwrap();
         let mut settings = SourceSettings::default();
@@ -357,6 +360,9 @@ mod tests {
         settings.use_mo2 = true;
         assert!(settings.apply(&mut config).is_err());
         settings.set_instance(&root);
+        assert_eq!(settings.selection.as_ref().unwrap().profile, "Zed");
+        settings.selection.as_mut().unwrap().profile = "Alpha".into();
+        settings.set_instance(root);
         assert_eq!(settings.selection.as_ref().unwrap().profile, "Alpha");
         settings.selection.as_mut().unwrap().profile = "Zed".into();
         settings.apply(&mut config).unwrap();
@@ -366,6 +372,12 @@ mod tests {
         assert!(config.mo2.is_none());
         settings.set_instance(&root.join("missing"));
         assert!(settings.selection.is_none() && !settings.error.is_empty());
-        std::fs::remove_dir_all(root).unwrap();
+        std::fs::write(
+            root.join("ModOrganizer.ini"),
+            "[General]\nselected_profile=missing\n",
+        )
+        .unwrap();
+        settings.set_instance(root);
+        assert_eq!(settings.selection.as_ref().unwrap().profile, "Alpha");
     }
 }

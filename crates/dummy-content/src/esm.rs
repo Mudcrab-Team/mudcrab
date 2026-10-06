@@ -11,10 +11,9 @@
 //! a local game installation. Only the record types consumed by the converter's
 //! ESM parser, exporter and cell cache are produced.
 //!
-//! The `DOOR` bases carry a `MODL` the way retail data does, but the converter's
-//! exporter fills its `statics` table from `STAT`, `MSTT` and `FURN` only, so a
-//! reference that places one of them exports with no model at all until that
-//! changes; see [`Door::model_path`].
+//! The `DOOR` bases carry a `MODL` the way retail data does. The converter's
+//! exporter already includes them in `statics`, so their placement references
+//! resolve to the model paths; see [`Door::model_path`].
 
 use crate::path::split_asset_name;
 use color_eyre::{
@@ -119,15 +118,10 @@ pub struct Door<'a> {
     pub editor_id: &'a str,
     /// `MODL` model path of the `DOOR` base record.
     ///
-    /// The path is written to the base record, but the converter's exporter
-    /// fills its `statics` table from `STAT`, `MSTT` and `FURN` records only,
-    /// so a `REFR` that places this door exports as a reference without a model:
-    /// `world-inspect` counts it under `references_without_model`, its entry in
-    /// an `assets` listing never appears, and its mesh never reaches the GLB
-    /// pipeline. That is a converter gap, not a fixture one - the fixture writes
-    /// the `MODL` a retail plugin carries - and it stays until the exporter
-    /// learns `DOOR`. `crates/converter/tests/fixture_interior_pipeline.rs`
-    /// asserts the resulting count so the gap cannot go quiet.
+    /// The existing exporter writes the base record's path to `statics`,
+    /// so a `REFR` that places this door resolves to its model path.
+    /// `crates/converter/tests/fixture_interior_pipeline.rs` verifies that both
+    /// door references have exported models.
     pub model_path: &'a str,
     /// `FNAM` flags of the `DOOR` base record; [`AUTO_LOAD_FLAG`] marks an
     /// auto-load door.
@@ -207,6 +201,14 @@ pub struct Light<'a> {
     /// an override.
     /// A single little-endian `f32`, which may be negative.
     pub radius_override: f32,
+    /// Header flag word of the reference. Zero for an always-on placement;
+    /// `0x800` marks it initially disabled, the state whose extraction the
+    /// LOD eligibility fixtures cover.
+    pub reference_flags: u32,
+    /// `XESP` enable parent: the parent reference's FormID plus the XESP flag
+    /// word (bit 0 inverts the parent's state). `None` writes no `XESP`, the
+    /// shape of an unconditionally enabled placement.
+    pub enable_parent: Option<(u32, u32)>,
 }
 
 /// Description of a generated plugin.
@@ -629,14 +631,11 @@ fn reference_record(form_id: u32, cell: &Cell) -> Result<Vec<u8>> {
 /// FormID, the arrival position and rotation, and a four-byte flag word -
 /// [`XTEL_SIZE`] bytes, no flag bits set.
 ///
-/// `destination_ref_id` is written as the fixture's own local id, and the
-/// converter's load-order remap leaves it that way: remapping rewrites only the
-/// subrecords `is_form_id_subrecord` recognises as 4-byte FormIDs, and `XTEL`
-/// is not one of them, so the id reaches a database unchanged. That is correct
-/// only while this plugin owns load-order index 0, the single-plugin case
-/// `dummy-content gen` writes - a second plugin needs the remap extended to
-/// `XTEL`. Nothing consumes `XTEL` yet either, so the link is only as good as
-/// the fixture's own reader (`crates/converter/tests/fixture_doors.rs`).
+/// `destination_ref_id` is written as the fixture's own local id. The
+/// converter's load-order remap rewrites it into load-order numbering like the
+/// reference's own FormID, so the link survives any load-order slot. Nothing
+/// consumes `XTEL` yet, so the link is only as good as the fixture's own reader
+/// (`crates/converter/tests/fixture_doors.rs`).
 fn door_reference_record(
     form_id: u32,
     base_form_id: u32,
@@ -675,15 +674,21 @@ fn light_reference_record(form_id: u32, light: &Light<'_>) -> Result<Vec<u8>> {
     for value in light.position.iter().chain(light.rotation.iter()) {
         data.extend_from_slice(&value.to_le_bytes());
     }
-    record(
-        *b"REFR",
-        form_id,
-        &[
-            (*b"NAME", LIGHT_FORM_ID.to_le_bytes().to_vec()),
-            (*b"DATA", data),
-            (*b"XRDS", light.radius_override.to_le_bytes().to_vec()),
-        ],
-    )
+    let mut subrecords = vec![
+        (*b"NAME", LIGHT_FORM_ID.to_le_bytes().to_vec()),
+        (*b"DATA", data),
+        (*b"XRDS", light.radius_override.to_le_bytes().to_vec()),
+    ];
+    // `XESP`: parent FormID then the flag word (bit 0 inverts). Written only
+    // when the spec names a parent, so the default reference stays an
+    // unconditionally enabled placement.
+    if let Some((parent, flags)) = light.enable_parent {
+        let mut xesp = Vec::with_capacity(8);
+        xesp.extend_from_slice(&parent.to_le_bytes());
+        xesp.extend_from_slice(&flags.to_le_bytes());
+        subrecords.push((*b"XESP", xesp));
+    }
+    record_with_flags(*b"REFR", form_id, light.reference_flags, &subrecords)
 }
 
 /// The interior cell group: `GRUP` type 2 (interior block) around type 3
@@ -728,6 +733,19 @@ fn cell_form_id(index: usize) -> Result<u32> {
 }
 
 fn record(tag: [u8; 4], form_id: u32, subrecords: &[([u8; 4], Vec<u8>)]) -> Result<Vec<u8>> {
+    record_with_flags(tag, form_id, 0, subrecords)
+}
+
+/// A record with an explicit header flag word. The stock [`record`] writes
+/// zero flags, which is what every existing fixture needs; references that
+/// exercise enable state (initially-disabled, XESP followers) need their
+/// real flags on the wire.
+fn record_with_flags(
+    tag: [u8; 4],
+    form_id: u32,
+    flags: u32,
+    subrecords: &[([u8; 4], Vec<u8>)],
+) -> Result<Vec<u8>> {
     let mut payload = Vec::new();
     for (sub_tag, data) in subrecords {
         let length = u16::try_from(data.len())
@@ -743,7 +761,7 @@ fn record(tag: [u8; 4], form_id: u32, subrecords: &[([u8; 4], Vec<u8>)]) -> Resu
             .map_err(|_| eyre!("ESM record payload overflow"))?
             .to_le_bytes(),
     );
-    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&flags.to_le_bytes());
     bytes.extend_from_slice(&form_id.to_le_bytes());
     bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes.extend_from_slice(&RECORD_VERSION.to_le_bytes());
@@ -798,10 +816,8 @@ pub const PRESET_EXTERIOR_CELL: Cell = Cell {
 /// the only model the crate's default data tree writes); to exercise a marker
 /// model's own path a caller has to describe its own [`Interior`].
 ///
-/// Both doors do carry a `MODL`, but the mesh never reaches the converted
-/// world: the exporter fills `statics` from `STAT`, `MSTT` and `FURN` only, so
-/// the two door references export without a model until that changes - see
-/// [`Door::model_path`].
+/// The existing exporter writes both doors' `MODL` paths to `statics`, so their
+/// placement references resolve to the generated model path; see [`Door::model_path`].
 pub const PRESET_INTERIOR: Interior<'static> = Interior {
     editor_id: "GeneratedInterior",
     full_name: "Generated Interior",
@@ -850,6 +866,8 @@ pub const PRESET_LIGHT: Light<'static> = Light {
     position: [1024.0, 2048.0, 128.0],
     rotation: [0.0, 0.0, 0.0],
     radius_override: 1024.0,
+    reference_flags: 0,
+    enable_parent: None,
 };
 
 #[cfg(test)]

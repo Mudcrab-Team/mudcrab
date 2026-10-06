@@ -134,6 +134,90 @@ fn resolves_base_relative_and_external_configured_directories() {
     );
 }
 
+#[test]
+fn validates_game_name_and_selected_profile() {
+    let (_dir, root) = fixture();
+    for game in ["Skyrim", "Skyrim Special Edition", "Skyrim VR", "skyrim"] {
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[General]\ngameName={game}\nselected_profile=default\n"),
+        );
+        let instance = Instance::open(&root).unwrap();
+        assert_eq!(instance.profiles[0], "alpha");
+        assert_eq!(instance.selected_profile.as_deref(), Some("Default"));
+    }
+    for game in ["Fallout 4", "Oblivion", "Not Skyrim", ""] {
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[General]\ngameName={game}\n"),
+        );
+        assert!(
+            format!("{:#}", Instance::open(&root).unwrap_err())
+                .contains("unsupported MO2 gameName")
+        );
+    }
+    for settings in [
+        "selected_profile=missing\n",
+        "selected_profile=../Default\n",
+        "base_directory=.\n",
+    ] {
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[Settings]\n{settings}"),
+        );
+        assert!(Instance::open(&root).unwrap().selected_profile.is_none());
+    }
+}
+
+#[test]
+fn resolves_parent_directory_components() {
+    let (_dir, root) = fixture();
+    write(
+        &root,
+        "ModOrganizer.ini",
+        "[Settings]\nmod_directory=profiles/../mods\n",
+    );
+    assert_eq!(
+        Instance::open(&root).unwrap().mods_dir,
+        fs::canonicalize(root.join("mods")).unwrap()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn resolves_parent_of_junction_target_not_lexical_parent() {
+    let (dir, root) = fixture();
+    let target = dir.path().join("external/target");
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(dir.path().join("external/mods")).unwrap();
+    let junction = root.join("junction");
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(junction.to_string_lossy().replace('/', "\\"))
+        .arg(target.to_string_lossy().replace('/', "\\"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    write(
+        &root,
+        "ModOrganizer.ini",
+        "[Settings]\nmod_directory=junction/../mods\n",
+    );
+    let result = Instance::open(&root);
+    fs::remove_dir(&junction).unwrap();
+    assert_eq!(
+        result.unwrap().mods_dir,
+        fs::canonicalize(dir.path().join("external/mods")).unwrap()
+    );
+}
+
 /// Verifies opening an instance fails when its configuration or a configured directory is missing.
 #[test]
 fn validates_instance_and_configured_directories() {

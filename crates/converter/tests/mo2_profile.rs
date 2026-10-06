@@ -183,6 +183,93 @@ async fn consumes_merged_profile_plugin_order_overwrite_and_reuses_conversion() 
     assert!(!instance.join("mods/High/patch.esp.mohidden").exists());
 }
 
+/// Irrelevant profile edits retain per-source cache proofs, while profile identity remains distinct.
+#[tokio::test]
+async fn irrelevant_profile_changes_reuse_assets() {
+    let (_dir, config, instance) = fixture();
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete);
+    let hash = configuration_hash(&config).unwrap();
+    write(
+        &instance,
+        "ModOrganizer.ini",
+        "[General]\ngameName=Skyrim Special Edition\n[Settings]\nwindowWidth=1200\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/modlist.txt",
+        "# cosmetic comment\n+High\n-Disabled\n+Low\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "# cosmetic comment\n*Patch.esp\n*Middle.esp\nInactive.esm\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        "# cosmetic comment\nSkyrim.esm\nMiddle.esp\nPatch.esp\nInactive.esm\n",
+    );
+    assert_eq!(hash, configuration_hash(&config).unwrap());
+    let second = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(second.complete);
+    assert_eq!(second.converted, 0);
+    assert_eq!(second.cache_hits, first.converted);
+    fs::create_dir_all(instance.join("profiles/Other")).unwrap();
+    let mut other = config;
+    other.mo2.as_mut().unwrap().profile = "Other".into();
+    assert_ne!(hash, configuration_hash(&other).unwrap());
+}
+
+/// Skeleton winners participate in mesh cache proofs even when the mesh itself is unchanged.
+#[tokio::test]
+async fn winning_skeleton_changes_invalidate_dependent_mesh() {
+    let (_dir, config, instance) = fixture();
+    let mesh = fs::read(config.data_dir.join("meshes/generated.nif")).unwrap();
+    let body = "meshes/actors/character/armor/body.nif";
+    let skeleton = "meshes/actors/character/character assets/skeleton.nif";
+    write(&instance, &format!("mods/Low/{body}"), &mesh);
+    write(&instance, &format!("mods/Low/{skeleton}"), &mesh);
+    let first = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(first.complete);
+    let manifest = converter::cache::ConversionManifest::load(
+        &config.output_dir.join("conversion-manifest.json"),
+    )
+    .unwrap();
+    let original = manifest.entries[body].source_hash.clone();
+    assert_eq!(
+        original,
+        format!(
+            "{}:{}",
+            converter::cache::hash_bytes(&mesh),
+            converter::cache::hash_bytes(&mesh)
+        )
+    );
+    let mut replacement = mesh.clone();
+    let name = replacement
+        .windows(13)
+        .position(|bytes| bytes == b"GeneratedQuad")
+        .unwrap();
+    replacement[name..name + 13].copy_from_slice(b"GeneratedBody");
+    write(&instance, &format!("overwrite/{skeleton}"), &replacement);
+    let second = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(second.complete);
+    let manifest = converter::cache::ConversionManifest::load(
+        &config.output_dir.join("conversion-manifest.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.entries[body].source_hash,
+        format!(
+            "{}:{}",
+            converter::cache::hash_bytes(&mesh),
+            converter::cache::hash_bytes(&replacement)
+        )
+    );
+    assert_ne!(manifest.entries[body].source_hash, original);
+    assert!(second.converted >= 2);
+}
+
 /// Verifies conversion reads winning MO2 sources directly without copying them into staging.
 #[tokio::test]
 async fn reads_sources_without_materializing_mo2_inputs() {
@@ -247,7 +334,7 @@ async fn resume_rebuilds_input_and_vfs_after_profile_change() {
     write(&staging, "scripts/stale.luau", "stale converted script");
     write(&staging, "textures/stale.ktx2", "stale converted texture");
     write(&instance, "profiles/Default/modlist.txt", "-High\n+Low\n");
-    assert_ne!(original_hash, configuration_hash(&config).unwrap());
+    assert_eq!(original_hash, configuration_hash(&config).unwrap());
     config.resume_staging = Some(staging.clone());
     let report = run(config.clone(), Cancellation::new()).await.unwrap();
     assert!(report.complete && report.skipped == 0, "{report:?}");

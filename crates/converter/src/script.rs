@@ -1123,7 +1123,17 @@ mod tests {
         };
         instructions[1024] = Instruction {
             opcode: 21,
-            args: vec![Value::Bool(true), Value::Integer(1023)],
+            args: vec![Value::Bool(true), Value::Integer(-896)],
+            varargs: vec![],
+        };
+        instructions[128] = Instruction {
+            opcode: 20,
+            args: vec![Value::Integer(-1)],
+            varargs: vec![],
+        };
+        instructions[127] = Instruction {
+            opcode: 20,
+            args: vec![Value::Integer(1920)],
             varargs: vec![],
         };
         instructions[2047] = Instruction {

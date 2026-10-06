@@ -12,5 +12,9 @@ serde_json.workspace = true
 crossbeam-channel = "0.5.16"
 tokio.workspace = true
 
+[dev-dependencies]
+tempfile = "3.20"
+rusqlite.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

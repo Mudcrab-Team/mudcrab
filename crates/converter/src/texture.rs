@@ -128,6 +128,55 @@ unsafe extern "C" {
 pub struct TextureConverter;
 
 impl TextureConverter {
+    pub(crate) fn encode_rgba_mips(
+        width: u32,
+        height: u32,
+        mip_rgba: &[Vec<u8>],
+        encoding: TextureEncoding,
+    ) -> Result<Vec<u8>> {
+        ensure!(
+            width > 0 && height > 0,
+            "texture dimensions must be non-zero"
+        );
+        ensure!(!mip_rgba.is_empty(), "RGBA mip chain is empty");
+        let max_levels = u32::BITS - width.max(height).leading_zeros();
+        ensure!(
+            mip_rgba.len() <= max_levels as usize,
+            "RGBA mip chain has more than {max_levels} levels"
+        );
+
+        let mut encoded_levels = Vec::with_capacity(mip_rgba.len());
+        for (mip, rgba) in mip_rgba.iter().enumerate() {
+            let mip_width = (width >> mip).max(1);
+            let mip_height = (height >> mip).max(1);
+            ensure!(
+                rgba.len() == mip_width as usize * mip_height as usize * 4,
+                "RGBA mip {mip} has an invalid byte length"
+            );
+            encoded_levels.push(encode_basis_ktx2(
+                mip_width,
+                mip_height,
+                rgba,
+                encoding,
+                false,
+                ETC1S_QUALITY_DEFAULT,
+                UASTC_LEVEL_DEFAULT,
+            )?);
+        }
+        let template = encode_basis_ktx2(
+            width,
+            height,
+            &mip_rgba[0],
+            encoding,
+            true,
+            ETC1S_QUALITY_DEFAULT,
+            UASTC_LEVEL_DEFAULT,
+        )?;
+        let bytes = combine_ktx2_mip_levels(&template, &encoded_levels)?;
+        validate_ktx2(&bytes, encoding)?;
+        Ok(bytes)
+    }
+
     pub fn convert_dds_to_ktx2(
         input: &Path,
         output: &Path,
@@ -202,8 +251,12 @@ impl TextureConverter {
                 .header10
                 .as_ref()
                 .is_some_and(|header| header.misc_flag.contains(MiscFlag::TEXTURECUBE));
-        // DX10 array_size counts cubes, whereas legacy DDS reports faces.
-        let layer_count = if is_cubemap && dds.header10.is_some() {
+        // DX10 array_size counts cubes only when TEXTURECUBE is set.
+        let layer_count = if dds
+            .header10
+            .as_ref()
+            .is_some_and(|header| header.misc_flag.contains(MiscFlag::TEXTURECUBE))
+        {
             dds.get_num_array_layers()
                 .checked_mul(6)
                 .ok_or_else(|| color_eyre::eyre::eyre!("DDS cube array size overflow"))?
@@ -1857,6 +1910,24 @@ mod tests {
     }
 
     #[test]
+    fn encodes_an_explicit_partial_srgb_mip_chain() {
+        let levels = vec![
+            [96, 48, 24, 255].repeat(64),
+            [96, 48, 24, 255].repeat(16),
+            [96, 48, 24, 255].repeat(4),
+        ];
+        let bytes =
+            TextureConverter::encode_rgba_mips(8, 8, &levels, TextureEncoding::ColorSrgb).unwrap();
+        let reader = ktx2::Reader::new(&bytes).unwrap();
+        assert_eq!(reader.header().level_count, 3);
+        assert_eq!(reader.levels().count(), 3);
+        assert_eq!(
+            reader.transfer_function(),
+            Some(ktx2::TransferFunction::SRGB)
+        );
+    }
+
+    #[test]
     fn inspects_published_runtime_ktx2_without_source_semantics() {
         let pixels = [30, 80, 160, 255].repeat(16);
         let color =
@@ -2222,6 +2293,29 @@ mod tests {
         let metadata = inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
         assert_eq!(metadata.faces, 6);
         assert_eq!(metadata.levels, 2);
+        // Some DX10 files flag the cube only in caps2 and count faces directly.
+        dds.header.caps2 |= Caps2::CUBEMAP | Caps2::CUBEMAP_ALLFACES;
+        let header10 = dds.header10.as_mut().unwrap();
+        header10.misc_flag.remove(MiscFlag::TEXTURECUBE);
+        header10.array_size = 6;
+        bytes.clear();
+        dds.write(&mut bytes).unwrap();
+        let caps2_ktx = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap();
+        assert_eq!(
+            inspect_ktx2(&caps2_ktx, TextureEncoding::ColorSrgb)
+                .unwrap()
+                .faces,
+            6
+        );
+        for (mip, expected) in levels.iter().enumerate() {
+            assert_eq!(&decode_zstd_level(&caps2_ktx, mip), expected);
+        }
+
+        dds.header10
+            .as_mut()
+            .unwrap()
+            .misc_flag
+            .insert(MiscFlag::TEXTURECUBE);
         dds.header10.as_mut().unwrap().array_size = 2;
         bytes.clear();
         dds.write(&mut bytes).unwrap();

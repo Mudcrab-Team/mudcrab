@@ -233,6 +233,8 @@ async fn pipeline_report_matches_snapshot() {
     assert_json_snapshot!(report, {
         // Wall-clock time.
         ".elapsed_ms" => "[elapsed_ms]",
+        ".lod_elapsed_ms" => "[lod_elapsed_ms]",
+        ".publication_elapsed_ms" => "[publication_elapsed_ms]",
         // Artifacts are appended in the order the parallel conversions finish,
         // which is not stable between runs; sorting keeps the same set of
         // published files readable.

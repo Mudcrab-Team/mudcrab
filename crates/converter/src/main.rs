@@ -24,14 +24,48 @@ struct Cli {
     output: PathBuf,
     mo2: Option<mo2::Selection>,
     resume_staging: Option<PathBuf>,
+    reuse_assets: Option<PathBuf>,
     report_json: Option<PathBuf>,
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
     texture_encoder: TextureEncoder,
+    texture_fallback_quality: Option<u8>,
+    texture_uastc_level: Option<u8>,
+    texture_zstd_level: Option<i32>,
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
+    no_lod: bool,
     verbose: bool,
+}
+
+impl Cli {
+    fn pipeline_config(&self) -> PipelineConfig {
+        let mut config = PipelineConfig::new(self.data.clone(), self.output.clone());
+        config.resume_staging = self.resume_staging.clone();
+        config.mo2 = self.mo2.clone();
+        config.fail_fast = self.fail_fast;
+        config.invalidate_cache = self.invalidate_cache;
+        config.verify_cache = self.verify_cache;
+        config.no_lod = self.no_lod;
+        config.texture_encoder = self.texture_encoder;
+        if let Some(value) = self.texture_fallback_quality {
+            config.texture_fallback_quality = value;
+        }
+        if let Some(value) = self.texture_uastc_level {
+            config.texture_uastc_level = value;
+        }
+        if let Some(value) = self.texture_zstd_level {
+            config.texture_zstd_level = value;
+        }
+        if let Some(value) = self.cpu_jobs {
+            config.cpu_jobs = value;
+        }
+        if let Some(value) = self.io_jobs {
+            config.io_jobs = value;
+        }
+        config
+    }
 }
 
 #[derive(Debug)]
@@ -153,8 +187,7 @@ async fn main() -> Result<()> {
         Command::Convert(cli) => cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
         Command::Repair(cli, apply) => {
-            let mut config = PipelineConfig::new(cli.data, cli.output);
-            config.mo2 = cli.mo2;
+            let config = cli.pipeline_config();
             let report = converter::repair::repair_failed(&config, apply)?;
             println!(
                 "Repair {}: {} converted, {} classified/excluded, {} failures. Files/report: {}",
@@ -174,19 +207,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
     };
-    let mut config = PipelineConfig::new(cli.data.clone(), cli.output.clone());
-    config.resume_staging = cli.resume_staging.clone();
-    config.mo2 = cli.mo2.clone();
-    config.fail_fast = cli.fail_fast;
-    config.invalidate_cache = cli.invalidate_cache;
-    config.verify_cache = cli.verify_cache;
-    config.texture_encoder = cli.texture_encoder;
-    if let Some(cpu_jobs) = cli.cpu_jobs {
-        config.cpu_jobs = cpu_jobs;
-    }
-    if let Some(io_jobs) = cli.io_jobs {
-        config.io_jobs = io_jobs;
-    }
+    validate_metadata_report_path(&cli)?;
+    let config = cli.pipeline_config();
     let started = Instant::now();
     let last_progress = Arc::new(Mutex::new(None::<ProgressEvent>));
     let printer_progress = Arc::clone(&last_progress);
@@ -225,16 +247,20 @@ async fn main() -> Result<()> {
         }
         watch
     });
-
     // Ctrl+C stops the run at the next safe point and keeps the staging folder; a second one ends
     // the process where it stands.
     let cancellation = Cancellation::new();
     let interrupt = cancellation.clone();
+    let metadata_rebuild = cli.reuse_assets.is_some();
     tokio::spawn(async move {
         let mut received = 0;
         while tokio::signal::ctrl_c().await.is_ok() {
             received += 1;
-            if received == 1 {
+            if received == 1 && metadata_rebuild {
+                eprintln!(
+                    "\nMetadata rebuild continues: it cannot cooperatively stop or resume. Press Ctrl+C again to force exit; its staging directory will require manual cleanup."
+                );
+            } else if received == 1 {
                 eprintln!(
                     "\nInterrupted: finishing the work in flight, then stopping. The staging folder is kept, so the run can be resumed."
                 );
@@ -246,8 +272,17 @@ async fn main() -> Result<()> {
         }
     });
 
-    let pipeline_result =
-        AssetPipeline::run_async_with_cancel(config, tx, cancellation.clone()).await;
+    let pipeline_result = if let Some(source) = &cli.reuse_assets {
+        eprintln!(
+            "Reusing manifest-verified package assets from {}. Retained models, textures and scripts are not refreshed from Data; use normal conversion after source asset changes.",
+            source.display()
+        );
+        AssetPipeline::rebuild_metadata_async(config, source, tx)
+            .await
+            .map_err(converter::PipelineFailure::from)
+    } else {
+        AssetPipeline::run_async_with_cancel(config, tx, cancellation.clone()).await
+    };
     let watch = printer.await?;
     let report = match pipeline_result {
         Ok(report) => report,
@@ -452,12 +487,24 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
             selection.profile
         ));
     }
+    if let Some(value) = cli.texture_fallback_quality {
+        command.push_str(&format!(" --texture-fallback-quality {value}"));
+    }
+    if let Some(value) = cli.texture_uastc_level {
+        command.push_str(&format!(" --texture-uastc-level {value}"));
+    }
+    if let Some(value) = cli.texture_zstd_level {
+        command.push_str(&format!(" --texture-zstd-level {value}"));
+    }
     // A resumed run must keep the texture encoder: GPU-encoded textures are cached under their
     // own label, so resuming on the CPU would convert them again.
     if let TextureEncoder::Gpu { quality, batch_mb } = cli.texture_encoder {
         command.push_str(&format!(
             " --texture-encoder gpu --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
         ));
+    }
+    if cli.no_lod {
+        command.push_str(" --no-lod");
     }
     command
 }
@@ -521,6 +568,22 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     }
     if backup.exists() {
         fs::remove_file(backup)?;
+    }
+    Ok(())
+}
+
+fn validate_metadata_report_path(cli: &Cli) -> Result<()> {
+    let (Some(source), Some(report)) = (&cli.reuse_assets, &cli.report_json) else {
+        return Ok(());
+    };
+    let report = shared::asset_lock::resolve_asset_path(report)
+        .wrap_err_with(|| format!("failed to resolve metadata report {}", report.display()))?;
+    for root in [source, &cli.data, &cli.output] {
+        let root = shared::asset_lock::resolve_asset_path(root)?;
+        color_eyre::eyre::ensure!(
+            !report.starts_with(root),
+            "metadata report must be outside source, Data, and output directories"
+        );
     }
     Ok(())
 }
@@ -628,6 +691,7 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
                 .collect(),
         )?;
         if cli.resume_staging.is_some()
+            || cli.reuse_assets.is_some()
             || cli.invalidate_cache
             || cli.fail_fast
             || cli.report_json.is_some()
@@ -635,9 +699,10 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
             || cli.io_jobs.is_some()
             || !cli.verify_cache
             || cli.verbose
-            || !matches!(cli.texture_encoder, TextureEncoder::Cpu)
         {
-            bail!("repair-failed accepts Data/output, MO2 selection and --apply only");
+            bail!(
+                "repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only"
+            );
         }
         return Ok(Command::Repair(cli, apply));
     }
@@ -671,14 +736,19 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut mo2_profile = None;
     let mut report_json = None;
     let mut resume_staging = None;
+    let mut reuse_assets = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
+    let mut texture_fallback_quality = None;
+    let mut texture_uastc_level = None;
+    let mut texture_zstd_level = None;
     let mut fail_fast = false;
     let mut invalidate_cache = false;
     let mut verify_cache = true;
+    let mut no_lod = false;
     let mut verbose = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
@@ -698,6 +768,9 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             }
             Some("--resume-staging") => {
                 resume_staging = Some(PathBuf::from(next_value(&mut args, "--resume-staging")?))
+            }
+            Some("--reuse-assets") => {
+                reuse_assets = Some(PathBuf::from(next_value(&mut args, "--reuse-assets")?))
             }
             Some("--cpu-jobs") => {
                 cpu_jobs = Some(parse_jobs(
@@ -731,9 +804,26 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     "--gpu-batch-mb",
                 )?);
             }
+            Some(option @ ("--texture-fallback-quality" | "--texture-etc1s-quality")) => {
+                texture_fallback_quality =
+                    Some(
+                        parse_encoding_value(next_value(&mut args, option)?, option, 1, 255)? as u8,
+                    );
+            }
+            Some(option @ "--texture-uastc-level") => {
+                texture_uastc_level =
+                    Some(parse_encoding_value(next_value(&mut args, option)?, option, 0, 4)? as u8);
+            }
+            Some(option @ "--texture-zstd-level") => {
+                texture_zstd_level =
+                    Some(
+                        parse_encoding_value(next_value(&mut args, option)?, option, 0, 22)? as i32,
+                    );
+            }
             Some("--fail-fast") => fail_fast = true,
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
+            Some("--no-lod") => no_lod = true,
             Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
@@ -757,7 +847,12 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mo2 = match mo2_instance {
         Some(instance_path) => {
             let instance = mo2::Instance::open(&instance_path)?;
-            let profile = mo2_profile.unwrap_or_else(|| instance.profiles[0].clone());
+            let profile = mo2_profile.unwrap_or_else(|| {
+                instance
+                    .selected_profile
+                    .clone()
+                    .unwrap_or_else(|| instance.profiles[0].clone())
+            });
             instance.profile_dir(&profile)?;
             Some(mo2::Selection {
                 instance_path: instance.instance_path,
@@ -778,15 +873,28 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             .pop()
             .unwrap_or_else(|| PathBuf::from("modern_assets")),
         resume_staging,
+        reuse_assets,
         report_json,
         cpu_jobs,
         io_jobs,
         texture_encoder,
+        texture_fallback_quality,
+        texture_uastc_level,
+        texture_zstd_level,
         fail_fast,
         invalidate_cache,
         verify_cache,
+        no_lod,
         verbose,
     })
+}
+
+fn parse_encoding_value(value: OsString, option: &str, min: u32, max: u32) -> Result<u32> {
+    let value = parse_u32(value, option)?;
+    if !(min..=max).contains(&value) {
+        bail!("{option} must be between {min} and {max}");
+    }
+    Ok(value)
 }
 
 fn next_value(args: &mut impl Iterator<Item = OsString>, option: &str) -> Result<OsString> {
@@ -824,21 +932,32 @@ fn parse_u64(value: OsString, option: &str) -> Result<u64> {
 fn usage() -> &'static str {
     "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
+                 [--texture-fallback-quality 1..255] [--texture-uastc-level 0..4]
+                 [--texture-zstd-level 0..22]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
-                 [--report-json FILE] [--verbose]
+                 [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
                  [--mo2-instance DIR] [--mo2-profile NAME]
        converter check <output directory> [--full]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
-                 [--mo2-profile NAME] [--apply]
+                 [--mo2-profile NAME] [--no-lod] [--apply]
+                 [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
+                 [--texture-fallback-quality 1..255] [--texture-uastc-level 0..4]
+                 [--texture-zstd-level 0..22]
 
 repair-failed stages only manifest failures and missing dependencies in a sibling repair directory.
 It never rebuilds the database or cell cache. --apply validates the pack's existing hashes,
 publishes validated repairs with backups, and updates the manifest last.
+Use the original conversion's encoding settings. --texture-etc1s-quality is an alias for
+--texture-fallback-quality; it does not select ETC1S encoding.
 
 Converts a Skyrim Data directory into runtime assets.
 --mo2-instance overlays enabled MO2 mods and overwrite over physical Data, using the profile's
-active plugins and loadorder.txt. --mo2-profile defaults to the first sorted profile.
+active plugins and loadorder.txt. --mo2-profile defaults to ModOrganizer.ini's selected_profile,
+or the first sorted profile if that selection is absent or stale.
 MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are not supported.
+
+--no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
+terrain and ordinary assets remain available. Omit it on a later run to build LOD.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -852,7 +971,12 @@ resumes where it stopped is printed when the run stops. A second Ctrl+C exits im
 
 converter check compares a converted output with its conversion-manifest.json without converting:
 the existence and size of every file, and with --full their hashes too. Exit code 0: all good,
-1: problems found, 2: no readable manifest."
+1: problems found, 2: no readable manifest.
+
+--reuse-assets rebuilds metadata while preserving manifest-verified assets from an existing
+package. Data supplies matching plugins, LOD settings and terrain diffuse inputs; retained
+models, textures and scripts are not refreshed from Data. Use normal conversion after
+changing those source assets. This route cannot resume or cooperatively cancel."
 }
 
 #[cfg(test)]
@@ -874,6 +998,34 @@ mod tests {
         let instance = dir.path().to_str().unwrap();
         let cli = parse_cli(args(&["Data", "out", "--mo2-instance", instance])).unwrap();
         assert_eq!(cli.mo2.as_ref().unwrap().profile, "Alpha");
+        fs::write(
+            dir.path().join("ModOrganizer.ini"),
+            "[General]\ngameName=Skyrim\n[Settings]\nselected_profile=zed\n",
+        )
+        .unwrap();
+        let cli = parse_cli(args(&["Data", "out", "--mo2-instance", instance])).unwrap();
+        assert_eq!(cli.mo2.as_ref().unwrap().profile, "Zed");
+        let Command::Repair(repair, _) = parse_command(args(&[
+            "repair-failed",
+            "Data",
+            "out",
+            "--mo2-instance",
+            instance,
+        ]))
+        .unwrap() else {
+            panic!("expected repair");
+        };
+        assert_eq!(repair.pipeline_config().mo2.unwrap().profile, "Zed");
+        let explicit = parse_cli(args(&[
+            "Data",
+            "out",
+            "--mo2-instance",
+            instance,
+            "--mo2-profile",
+            "Alpha",
+        ]))
+        .unwrap();
+        assert_eq!(explicit.mo2.unwrap().profile, "Alpha");
         let cli = parse_cli(args(&[
             "Data",
             "out",
@@ -899,6 +1051,98 @@ mod tests {
         );
         assert!(parse_cli(args(&["Data", "--mo2-instance"])).is_err());
         assert!(parse_cli(args(&["Data", "--mo2-profile"])).is_err());
+        fs::write(
+            dir.path().join("ModOrganizer.ini"),
+            "[General]\ngameName=Skyrim\n[Settings]\nselected_profile=Missing\n",
+        )
+        .unwrap();
+        let cli = parse_cli(args(&["Data", "--mo2-instance", instance])).unwrap();
+        assert_eq!(cli.mo2.unwrap().profile, "Alpha");
+    }
+
+    #[test]
+    fn repair_rejects_metadata_rebuild_options() {
+        for options in [vec!["--reuse-assets", "original"]] {
+            let mut arguments = args(&["repair-failed", "Data", "out"]);
+            arguments.extend(args(&options));
+            let error = parse_command(arguments).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only")
+            );
+        }
+        assert!(matches!(
+            parse_command(args(&["repair-failed", "Data", "out", "--apply"])).unwrap(),
+            Command::Repair(_, true)
+        ));
+    }
+
+    #[test]
+    fn parses_metadata_rebuild_source() {
+        let cli = parse_cli(
+            ["Data", "derived", "--reuse-assets", "original"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(cli.reuse_assets, Some(PathBuf::from("original")));
+    }
+
+    #[test]
+    fn metadata_reports_cannot_overwrite_source_data_or_generated_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        let output = directory.path().join("derived");
+        for path in [&data, &source, &output] {
+            fs::create_dir(path).unwrap();
+        }
+        for root in [&source, &data, &output] {
+            let cli = parse_cli(vec![
+                data.clone().into_os_string(),
+                output.clone().into_os_string(),
+                OsString::from("--reuse-assets"),
+                source.clone().into_os_string(),
+                OsString::from("--report-json"),
+                root.join("new/nested/metadata.json").into_os_string(),
+            ])
+            .unwrap();
+            assert!(validate_metadata_report_path(&cli).is_err());
+        }
+    }
+
+    #[test]
+    fn metadata_reports_accept_missing_disjoint_parent_without_creating_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        fs::create_dir(&data).unwrap();
+        fs::create_dir(&source).unwrap();
+        let reports = directory.path().join("new/nested");
+        let cli = parse_cli(vec![
+            data.into_os_string(),
+            directory.path().join("derived").into_os_string(),
+            OsString::from("--reuse-assets"),
+            source.into_os_string(),
+            OsString::from("--report-json"),
+            reports.join("metadata.json").into_os_string(),
+        ])
+        .unwrap();
+        validate_metadata_report_path(&cli).unwrap();
+        assert!(!reports.exists());
+    }
+
+    #[test]
+    fn formats_elapsed_time_for_log_lines() {
+        assert_eq!(format_elapsed(0.0), "0:00:00.0");
+        assert_eq!(format_elapsed(62.25), "0:01:02.3");
+        assert_eq!(
+            format_elapsed(5.0 * 3600.0 + 7.0 * 60.0 + 9.94),
+            "5:07:09.9"
+        );
+        assert_eq!(format_elapsed(59.96), "0:01:00.0");
     }
 
     #[test]
@@ -960,6 +1204,123 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn repair_preserves_conversion_encoding_config_and_resume_flags() {
+        for encoder in ["cpu", "gpu"] {
+            let mut options = vec![
+                "Data",
+                "output",
+                "--no-lod",
+                "--texture-fallback-quality",
+                "123",
+                "--texture-uastc-level",
+                "4",
+                "--texture-zstd-level",
+                "0",
+                "--texture-encoder",
+                encoder,
+            ];
+            if encoder == "gpu" {
+                options.extend(["--gpu-quality", "7", "--gpu-batch-mb", "64"]);
+            }
+            let conversion = parse_cli(args(&options)).unwrap();
+            let mut repair_args = vec!["repair-failed"];
+            repair_args.extend(options);
+            repair_args.push("--apply");
+            let Command::Repair(repair, apply) = parse_command(args(&repair_args)).unwrap() else {
+                panic!("repair was not parsed as a subcommand");
+            };
+            assert!(apply);
+            let config = repair.pipeline_config();
+            assert!(config.no_lod);
+            assert!(conversion.pipeline_config().no_lod);
+            assert!(config.lod_origins.is_empty());
+            assert_eq!(config.texture_fallback_quality, 123);
+            assert_eq!(config.texture_uastc_level, 4);
+            assert_eq!(config.texture_zstd_level, 0);
+            assert_eq!(
+                config.texture_encoder,
+                if encoder == "gpu" {
+                    TextureEncoder::Gpu {
+                        quality: 7,
+                        batch_mb: 64,
+                    }
+                } else {
+                    TextureEncoder::Cpu
+                }
+            );
+            assert_eq!(
+                converter::cache::configuration_hash(&config).unwrap(),
+                converter::cache::configuration_hash(&conversion.pipeline_config()).unwrap(),
+            );
+            let resume = resume_command("converter", &conversion, Path::new("staging"));
+            assert!(resume.contains("--texture-fallback-quality 123"));
+            assert!(resume.contains("--texture-uastc-level 4"));
+            assert!(resume.contains("--texture-zstd-level 0"));
+            assert!(resume.contains("--no-lod"));
+            let mut lod_config = config.clone();
+            lod_config.no_lod = false;
+            lod_config
+                .lod_origins
+                .insert("CustomWorld".into(), [-4, 12]);
+            assert_eq!(
+                converter::cache::configuration_hash(&config).unwrap(),
+                converter::cache::configuration_hash(&lod_config).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn encoding_defaults_alias_and_validation_apply_to_repair() {
+        let cli = parse_cli(args(&["Data"])).unwrap();
+        let expected = PipelineConfig::new("Data", "modern_assets");
+        let config = cli.pipeline_config();
+        assert_eq!(
+            config.texture_fallback_quality,
+            expected.texture_fallback_quality
+        );
+        assert_eq!(config.texture_uastc_level, expected.texture_uastc_level);
+        assert_eq!(config.texture_zstd_level, expected.texture_zstd_level);
+        let Command::Repair(cli, apply) = parse_command(args(&[
+            "repair-failed",
+            "Data",
+            "out",
+            "--texture-etc1s-quality",
+            "255",
+            "--texture-uastc-level",
+            "0",
+            "--texture-zstd-level",
+            "22",
+        ]))
+        .unwrap() else {
+            panic!("expected repair");
+        };
+        assert!(!apply);
+        assert_eq!(cli.pipeline_config().texture_fallback_quality, 255);
+        for (flag, value) in [
+            ("--texture-fallback-quality", "0"),
+            ("--texture-fallback-quality", "256"),
+            ("--texture-uastc-level", "5"),
+            ("--texture-zstd-level", "23"),
+            ("--texture-zstd-level", "-1"),
+            ("--texture-uastc-level", "bad"),
+            ("--gpu-quality", "2"),
+            ("--resume-staging", "staging"),
+            ("--cpu-jobs", "2"),
+        ] {
+            assert!(parse_command(args(&["repair-failed", "Data", "out", flag, value])).is_err());
+        }
+        for flag in [
+            "--texture-fallback-quality",
+            "--texture-uastc-level",
+            "--texture-zstd-level",
+            "--fail-fast",
+            "--invalidate-cache",
+        ] {
+            assert!(parse_command(args(&["repair-failed", "Data", "out", flag])).is_err());
+        }
     }
 
     #[test]
@@ -1049,13 +1410,18 @@ mod tests {
             data: PathBuf::from("C:/Games/Skyrim/Data"),
             output: PathBuf::from("C:/Modding/SkyrimConverted"),
             resume_staging: None,
+            reuse_assets: None,
             report_json: None,
             cpu_jobs: None,
             io_jobs: None,
             texture_encoder: TextureEncoder::Cpu,
+            texture_fallback_quality: None,
+            texture_uastc_level: None,
+            texture_zstd_level: None,
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
+            no_lod: false,
             verbose: false,
         };
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
@@ -1070,6 +1436,9 @@ mod tests {
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
+        let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
+        assert!(no_lod.no_lod);
+        assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {

@@ -1,4 +1,4 @@
-//! Targeted repair of a published pack. Never runs plugin/database conversion.
+//! Targeted repair of a published pack, including asset-aware database finalization.
 use crate::{
     archive::{ArchiveExtractor, safe_relative_path},
     asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
@@ -8,6 +8,7 @@ use crate::{
     },
     check::{CheckMode, CheckProblem, check_output},
     config::PipelineConfig,
+    integration::finalize_world_database_with_sources,
     mesh::MeshConverter,
     pipeline::{
         collect_texture_semantics, mo2_archive_is_active, plugin_paths,
@@ -21,7 +22,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -60,6 +61,54 @@ fn kind(path: &str) -> Option<(AssetKind, &'static str, &'static str)> {
     }
 }
 
+/// Shared conversion/repair ownership. Keep this guard alive through publication.
+/// The lock lives beside the output, so renaming the output cannot change its identity.
+pub struct OutputOwnership {
+    output: PathBuf,
+    _lock: fs::File,
+}
+
+impl OutputOwnership {
+    /// Acquires exclusive ownership and recovers any interrupted repair before
+    /// callers inspect the previous manifest. Also supports first-time outputs.
+    pub fn acquire(output: &Path) -> Result<Self> {
+        let name = output
+            .file_name()
+            .ok_or_else(|| color_eyre::eyre::eyre!("output must name a directory"))?;
+        let parent = output
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        // Never canonicalize the leaf: it may be temporarily absent during a
+        // conversion's directory swap, while its sibling lock remains held.
+        let output = fs::canonicalize(parent)?.join(name);
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(sibling_path(&output, "repair.lock"))?;
+        lock.try_lock()
+            .wrap_err("another conversion or repair is using this output")?;
+        if let Ok(metadata) = fs::symlink_metadata(&output) {
+            ensure!(
+                !metadata.file_type().is_symlink(),
+                "output directory cannot be a symlink"
+            );
+        }
+        recover_publication(&output)?;
+        Ok(Self {
+            output,
+            _lock: lock,
+        })
+    }
+
+    pub fn output(&self) -> &Path {
+        &self.output
+    }
+}
+
 /// Without `apply`, only a sibling repair directory is written. Keep it for inspection.
 pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairReport> {
     config.validate()?;
@@ -67,6 +116,11 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         config.resume_staging.is_none() && !config.invalidate_cache,
         "repair cannot resume staging or invalidate the pack"
     );
+    let ownership = OutputOwnership::acquire(&config.output_dir)?;
+    let output = ownership.output().to_path_buf();
+    let mut pinned_config = config.clone();
+    pinned_config.output_dir = output.clone();
+    let config = &pinned_config;
     let manifest_path = config.output_dir.join("conversion-manifest.json");
     let original_bytes = fs::read(&manifest_path)?;
     let mut manifest: ConversionManifest = serde_json::from_slice(&original_bytes)?;
@@ -91,14 +145,13 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         },
     )?;
 
-    let directory = config.output_dir.with_file_name(format!(
-        "{}.repair-{}",
-        config
-            .output_dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy(),
-        std::process::id()
+    let directory = output.with_file_name(format!(
+        "{}.repair-{}-{}",
+        output.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
     ));
     fs::create_dir(&directory).wrap_err_with(|| {
         format!(
@@ -256,6 +309,12 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
     }
+    // Resolver values carry logical identity so shared content-addressed blobs
+    // cannot select the wrong archive provenance when verifying a dependency.
+    let mesh_sources = sources
+        .keys()
+        .map(|key| (PathBuf::from(key), PathBuf::from(key)))
+        .collect();
     for extension in ["nif", "dds", "pex"] {
         let count = sources
             .keys()
@@ -296,6 +355,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &staged,
             &key,
             &sources,
+            &mesh_sources,
             &mut verified_archives,
             &semantics,
             &mut manifest,
@@ -355,6 +415,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &staged,
             &key,
             &sources,
+            &mesh_sources,
             &mut verified_archives,
             &semantics,
             &mut manifest,
@@ -432,6 +493,40 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         entry.output_size = fs::metadata(staged.join(&entry.output))?.len();
         entry.output_hash = hash_file(&staged.join(&entry.output))?;
     }
+    // Integration needs the complete pack, not just repaired assets. Copy (never
+    // hard-link) the database because finalization updates mesh bounds in place.
+    for entry in WalkDir::new(&config.output_dir).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            let relative = entry.path().strip_prefix(&config.output_dir)?;
+            let destination = checked_destination(&staged, &relative.to_string_lossy())?;
+            if !destination.exists() {
+                fs::create_dir_all(destination.parent().unwrap())?;
+                fs::copy(entry.path(), destination)?;
+            }
+        }
+    }
+    let integration_sources = sources
+        .iter()
+        .map(|(key, source)| (key.clone(), source.path.clone()))
+        .collect();
+    if let Some(integration) = finalize_world_database_with_sources(&staged, &integration_sources)?
+    {
+        ensure!(
+            !apply || integration.passed,
+            "repaired pack failed asset integration"
+        );
+        changed.insert("skyrim_world.db".into());
+        changed.insert("integration-report.json".into());
+        for entry in manifest
+            .entries
+            .values_mut()
+            .filter(|entry| changed.contains(&entry.output))
+        {
+            entry.output_size = fs::metadata(staged.join(&entry.output))?.len();
+            entry.output_hash = hash_file(&staged.join(&entry.output))?;
+        }
+    }
     report.failures = manifest.failures.clone();
     manifest.complete = false;
     manifest.save(&staged.join("conversion-manifest.json"))?;
@@ -472,12 +567,13 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         manifest.complete = true;
         manifest.save(&staged.join("conversion-manifest.json"))?;
         changed.insert("conversion-manifest.json".into());
-        publish(
-            &config.output_dir,
-            &staged,
-            &directory.join("backup"),
-            &changed,
-        )?;
+        let check = check_output(&staged, CheckMode::Full, |_, _| {})?;
+        ensure!(
+            check.problems.is_empty(),
+            "repaired pack failed full validation: {:?}",
+            check.problems
+        );
+        publish(&output, &staged, &directory.join("backup"), &changed)?;
         report.published = true;
         fs::write(
             directory.join("repair-report.json"),
@@ -494,6 +590,7 @@ fn attempt(
     staged: &Path,
     key: &str,
     sources: &BTreeMap<String, Source>,
+    mesh_sources: &BTreeMap<PathBuf, PathBuf>,
     verified: &mut BTreeSet<PathBuf>,
     semantics: &BTreeMap<String, BTreeSet<crate::texture::TextureSemantic>>,
     manifest: &mut ConversionManifest,
@@ -505,32 +602,28 @@ fn attempt(
         let source = sources
             .get(key)
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
-        if let Some((archive, expected)) = &source.archive
-            && !verified.contains(archive)
-        {
-            ensure!(
-                hash_file(archive)? == *expected,
-                "archive changed since conversion: {}",
-                archive.display()
-            );
-            verified.insert(archive.clone());
-        }
-        let mut source_hash = hash_file(&source.path)?;
-        if let Some(expected) = &source.expected_hash {
-            ensure!(
-                source_hash == *expected,
-                "ingestion blob hash mismatch for {key}"
-            );
-        }
+        let mut source_hash = verified_source_hash(source, key, verified)?;
         let (asset_kind, ext, target_ext) = kind(key).unwrap();
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
         if ext == "nif" {
-            for dependency in MeshConverter::dependency_paths(&source.path) {
+            let skeleton_key = crate::mesh::resolve_skeleton(Path::new(key), mesh_sources);
+            let skeleton = if let Some(dependency) = &skeleton_key {
+                let dependency_key = dependency
+                    .to_str()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("invalid skeleton key"))?;
+                let dependency_source = &sources[dependency_key];
                 source_hash.push(':');
-                source_hash.push_str(&hash_file(&dependency)?);
-            }
-            MeshConverter::convert_nif_to_glb(&source.path, &target)?;
+                source_hash.push_str(&verified_source_hash(
+                    dependency_source,
+                    dependency_key,
+                    verified,
+                )?);
+                Some(dependency_source.path.as_path())
+            } else {
+                None
+            };
+            MeshConverter::convert_nif_to_glb_with_skeleton(&source.path, &target, skeleton)?;
             MeshConverter::glb_texture_dependencies(&target)?;
             if MeshConverter::is_geometry_template(&source.path)? {
                 manifest.excluded_inputs.insert(key.into(), "Geometryless overlay template; standalone mesh is empty, runtime overlays are not implemented".into());
@@ -564,6 +657,29 @@ fn attempt(
         eprintln!("Repair failed: {key}: {error:#}");
         manifest.failures.insert(key.into(), format!("{error:#}"));
     }
+}
+
+/// Verifies both repaired inputs and their winning archive-backed dependencies.
+fn verified_source_hash(
+    source: &Source,
+    key: &str,
+    verified: &mut BTreeSet<PathBuf>,
+) -> Result<String> {
+    if let Some((archive, expected)) = &source.archive
+        && !verified.contains(archive)
+    {
+        ensure!(
+            hash_file(archive)? == *expected,
+            "archive changed since conversion: {}",
+            archive.display()
+        );
+        verified.insert(archive.clone());
+    }
+    let hash = hash_file(&source.path)?;
+    if let Some(expected) = &source.expected_hash {
+        ensure!(hash == *expected, "ingestion blob hash mismatch for {key}");
+    }
+    Ok(hash)
 }
 
 /// Records a staged output with its source hash, output hash, and size in the manifest.
@@ -621,45 +737,129 @@ fn checked_destination(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Publishes staged repairs with the manifest last, backing up replaced files.
-///
-/// Attempts to restore applied paths if publication fails; filesystem errors can also prevent rollback.
+fn sync_file(path: &Path) -> Result<()> {
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()?;
+    Ok(())
+}
+
+fn sibling_path(output: &Path, suffix: &str) -> PathBuf {
+    output.with_file_name(format!(
+        "{}.{}",
+        output.file_name().unwrap().to_string_lossy(),
+        suffix
+    ))
+}
+
+#[derive(Serialize, Deserialize)]
+struct PublicationJournal {
+    backup: PathBuf,
+    paths: Vec<(String, bool)>,
+}
+
+/// Restore every path, retaining backups and the journal until all restores succeed.
+/// Copying backups makes recovery repeatable even if recovery itself is interrupted.
+fn recover_publication(output: &Path) -> Result<()> {
+    let path = sibling_path(output, "repair-journal.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let journal: PublicationJournal = serde_json::from_slice(&fs::read(&path)?)?;
+    let mut errors = Vec::new();
+    for (relative, existed) in journal.paths.iter().rev() {
+        let result = (|| -> Result<()> {
+            let destination = checked_destination(output, relative)?;
+            if *existed {
+                let old = checked_destination(&journal.backup, relative)?;
+                fs::copy(old, &destination)?;
+                sync_file(&destination)?;
+            } else if destination.exists() {
+                fs::remove_file(destination)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            errors.push(format!("{relative}: {error:#}"));
+        }
+    }
+    ensure!(
+        errors.is_empty(),
+        "repair rollback failed (journal retained): {}",
+        errors.join("; ")
+    );
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_PUBLICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Write and sync all backups and rollback intents before changing any published path.
+/// The caller holds the output lock; an interrupted transaction is recovered on next repair.
 fn publish(output: &Path, staged: &Path, backup: &Path, changed: &BTreeSet<String>) -> Result<()> {
     fs::create_dir(backup)?;
-    // Manifest is the commit marker and must be published last.
     let mut paths: Vec<_> = changed
         .iter()
         .filter(|path| path.as_str() != "conversion-manifest.json")
         .cloned()
         .collect();
     paths.push("conversion-manifest.json".into());
-    let mut applied = Vec::new();
-    let result = (|| -> Result<()> {
-        for relative in paths {
-            let destination = checked_destination(output, &relative)?;
+    let mut journal = PublicationJournal {
+        backup: fs::canonicalize(backup)?,
+        paths: Vec::new(),
+    };
+    for relative in paths {
+        let destination = checked_destination(output, &relative)?;
+        let source = checked_destination(staged, &relative)?;
+        ensure!(source.is_file(), "missing staged repair: {relative}");
+        sync_file(&source)?;
+        let existed = destination.exists();
+        if existed {
             let old = checked_destination(backup, &relative)?;
-            let existed = destination.exists();
-            fs::create_dir_all(destination.parent().unwrap())?;
-            if existed {
-                fs::create_dir_all(old.parent().unwrap())?;
-                fs::rename(&destination, &old)?;
-            }
-            applied.push((destination.clone(), old, existed));
-            fs::rename(checked_destination(staged, &relative)?, destination)?;
+            fs::create_dir_all(old.parent().unwrap())?;
+            fs::copy(&destination, &old)?;
+            sync_file(&old)?;
         }
-        Ok(())
-    })();
-    if result.is_err() {
-        for (destination, old, existed) in applied.into_iter().rev() {
+        journal.paths.push((relative, existed));
+    }
+    let journal_path = sibling_path(output, "repair-journal.json");
+    ensure!(!journal_path.exists(), "unrecovered repair journal exists");
+    let temporary = sibling_path(output, "repair-journal.tmp");
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary)?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec(&journal)?)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, &journal_path)?;
+    let result = (|| -> Result<()> {
+        for (relative, _) in &journal.paths {
+            let destination = checked_destination(output, relative)?;
+            fs::create_dir_all(destination.parent().unwrap())?;
             if destination.exists() {
                 fs::remove_file(&destination)?;
             }
-            if existed {
-                fs::rename(old, destination)?;
-            }
+            fs::rename(checked_destination(staged, relative)?, destination)?;
+            #[cfg(test)]
+            ensure!(
+                !FAIL_PUBLICATION.with(std::cell::Cell::get),
+                "injected publication failure"
+            );
         }
+        fs::remove_file(&journal_path)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        return match recover_publication(output) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(error.wrap_err(format!("also failed to roll back: {rollback:#}"))),
+        };
     }
-    result
+    Ok(())
 }
 
 #[cfg(test)]
@@ -688,6 +888,217 @@ mod tests {
             "original manifest"
         );
         assert!(checked_destination(&output, "../outside").is_err());
+    }
+
+    #[test]
+    fn failed_publication_preserves_error_and_restores_pack() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("output");
+        let staged = root.path().join("staged");
+        fs::create_dir(&output).unwrap();
+        fs::create_dir(&staged).unwrap();
+        for relative in ["a.luau", "conversion-manifest.json"] {
+            fs::write(output.join(relative), "original").unwrap();
+            fs::write(staged.join(relative), "repaired").unwrap();
+        }
+        FAIL_PUBLICATION.with(|flag| flag.set(true));
+        let error = publish(
+            &output,
+            &staged,
+            &root.path().join("backup"),
+            &BTreeSet::from(["a.luau".into()]),
+        )
+        .unwrap_err();
+        FAIL_PUBLICATION.with(|flag| flag.set(false));
+        assert!(format!("{error:#}").contains("injected publication failure"));
+        assert_eq!(
+            fs::read_to_string(output.join("a.luau")).unwrap(),
+            "original"
+        );
+        assert!(!sibling_path(&output, "repair-journal.json").exists());
+    }
+
+    #[test]
+    fn recovery_attempts_every_restore_and_is_repeatable() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("output");
+        let backup = root.path().join("backup");
+        fs::create_dir(&output).unwrap();
+        fs::create_dir(&backup).unwrap();
+        fs::write(backup.join("a"), "original").unwrap();
+        fs::write(output.join("a"), "repaired").unwrap();
+        fs::write(output.join("new"), "new").unwrap();
+        let journal = PublicationJournal {
+            backup: backup.clone(),
+            paths: vec![
+                ("a".into(), true),
+                ("new".into(), false),
+                ("missing-backup".into(), true),
+            ],
+        };
+        let path = sibling_path(&output, "repair-journal.json");
+        fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(recover_publication(&output).is_err());
+        assert_eq!(fs::read_to_string(output.join("a")).unwrap(), "original");
+        assert!(!output.join("new").exists());
+        assert!(path.exists());
+        fs::write(backup.join("missing-backup"), "restored").unwrap();
+        recover_publication(&output).unwrap();
+        recover_publication(&output).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn ownership_identity_survives_missing_and_renamed_output() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("new-parent/output");
+        let owner = OutputOwnership::acquire(&output).unwrap();
+        assert!(!output.exists());
+        assert!(OutputOwnership::acquire(&output).is_err());
+        fs::create_dir(&output).unwrap();
+        fs::rename(&output, output.with_file_name("backup")).unwrap();
+        let alternate = output.parent().unwrap().join(".").join("output");
+        assert!(OutputOwnership::acquire(&alternate).is_err());
+        drop(owner);
+        OutputOwnership::acquire(&alternate).unwrap();
+    }
+
+    #[test]
+    fn repair_hashes_and_verifies_winning_archive_or_loose_skeleton() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::all(),
+        )
+        .unwrap();
+        let mesh = data.join("meshes/generated.nif");
+        // Cache blobs have no useful physical neighbors; resolution must use
+        // logical archive paths rather than their content-addressed filenames.
+        let blob = root.path().join("opaque-blob");
+        fs::copy(&mesh, &blob).unwrap();
+        let archive = root.path().join("source.bsa");
+        fs::write(&archive, "archive provenance fixture").unwrap();
+        let key = "meshes/actors/character/armor/body.nif";
+        let skeleton_key = "meshes/actors/character/character assets/skeleton.nif";
+        let skeleton = Source {
+            path: blob.clone(),
+            archive: Some((archive.clone(), hash_file(&archive).unwrap())),
+            expected_hash: Some(hash_file(&blob).unwrap()),
+        };
+        let mut sources = BTreeMap::from([
+            (
+                key.into(),
+                Source {
+                    path: mesh.clone(),
+                    archive: None,
+                    expected_hash: None,
+                },
+            ),
+            (skeleton_key.into(), skeleton),
+        ]);
+        let config = PipelineConfig::new(&data, root.path().join("output"));
+        for loose in [false, true] {
+            if loose {
+                sources.insert(
+                    skeleton_key.into(),
+                    Source {
+                        path: mesh.clone(),
+                        archive: None,
+                        expected_hash: None,
+                    },
+                );
+                // A losing archive must not be inspected after the loose overlay wins.
+                fs::remove_file(&archive).unwrap();
+            }
+            let staged = root.path().join(if loose { "loose" } else { "archived" });
+            fs::create_dir(&staged).unwrap();
+            let mesh_sources = sources
+                .keys()
+                .map(|key| (PathBuf::from(key), PathBuf::from(key)))
+                .collect();
+            let mut manifest = ConversionManifest::default();
+            let mut report = RepairReport {
+                directory: staged.clone(),
+                converted: 0,
+                excluded: 0,
+                published: false,
+                failures: BTreeMap::new(),
+            };
+            attempt(
+                &config,
+                &staged,
+                key,
+                &sources,
+                &mesh_sources,
+                &mut BTreeSet::new(),
+                &BTreeMap::new(),
+                &mut manifest,
+                &mut BTreeSet::new(),
+                &mut report,
+            );
+            assert!(manifest.failures.is_empty(), "{:?}", manifest.failures);
+            assert_eq!(
+                manifest.entries[key].source_hash,
+                format!(
+                    "{}:{}",
+                    hash_file(&mesh).unwrap(),
+                    hash_file(&sources[skeleton_key].path).unwrap()
+                )
+            );
+            assert_eq!(report.converted, 1);
+        }
+    }
+
+    #[test]
+    fn archive_dependency_hash_rejects_modified_blob_and_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("source.bsa");
+        let blob = root.path().join("blob");
+        fs::write(&archive, "archive").unwrap();
+        fs::write(&blob, "skeleton").unwrap();
+        let source = Source {
+            path: blob.clone(),
+            archive: Some((archive.clone(), hash_file(&archive).unwrap())),
+            expected_hash: Some(hash_file(&blob).unwrap()),
+        };
+        fs::write(&blob, "modified skeleton").unwrap();
+        assert!(
+            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
+                .unwrap_err()
+                .to_string()
+                .contains("blob hash mismatch")
+        );
+        fs::write(&archive, "modified archive").unwrap();
+        assert!(
+            verified_source_hash(&source, "skeleton", &mut BTreeSet::new())
+                .unwrap_err()
+                .to_string()
+                .contains("archive changed")
+        );
+    }
+
+    #[test]
+    fn output_lock_excludes_another_handle_and_releases_on_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("repair.lock");
+        let open = || {
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        let first = open();
+        first.try_lock().unwrap();
+        let second = open();
+        assert!(second.try_lock().is_err());
+        drop(first);
+        second.try_lock().unwrap();
     }
 
     /// Repairs an installed failed pack into a sibling directory and verifies its manifest stays unchanged.

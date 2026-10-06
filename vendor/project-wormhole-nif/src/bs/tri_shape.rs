@@ -691,3 +691,56 @@ impl BSTriShape {
         joints
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn particle_size_counts_u16_values_and_preserves_following_data() {
+        for particle_size in [0u32, 3] {
+            // Counted NiAVObject with an identity transform and no extra data.
+            let mut fixture = Vec::new();
+            for value in [0u32, 0, u32::MAX, 0] {
+                fixture.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [
+                0.0f32, 0.0, 0.0, // translation
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // rotation
+                1.0, // scale
+            ] {
+                fixture.extend_from_slice(&value.to_le_bytes());
+            }
+            fixture.extend_from_slice(&u32::MAX.to_le_bytes()); // collision object
+            fixture.extend_from_slice(&[0; 16]); // bounding sphere
+
+            for _ in 0..3 {
+                fixture.extend_from_slice(&u32::MAX.to_le_bytes());
+            }
+            fixture.extend_from_slice(&0u64.to_le_bytes()); // vertex descriptor
+            fixture.extend_from_slice(&0u16.to_le_bytes()); // triangles
+            fixture.extend_from_slice(&0u16.to_le_bytes()); // vertices
+            fixture.extend_from_slice(&0u32.to_le_bytes()); // geometry size
+            fixture.extend_from_slice(&particle_size.to_le_bytes());
+            let particle_start = fixture.len();
+            fixture.extend_from_slice(
+                &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66][..particle_size as usize * 2],
+            );
+            let particle_end = fixture.len();
+            fixture.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+
+            let (rest, shape) = BSTriShape::parse(&fixture).unwrap();
+            assert_eq!(rest, &[0xaa, 0xbb, 0xcc, 0xdd]);
+            assert_eq!(shape.data_size, 0);
+            assert!(shape.vertex_data.is_empty());
+            assert!(shape.triangles.is_empty());
+            assert!(BSTriShape::parse(&fixture[..particle_end])
+                .unwrap()
+                .0
+                .is_empty());
+            for end in particle_start..particle_end {
+                assert!(BSTriShape::parse(&fixture[..end]).is_err());
+            }
+        }
+    }
+}

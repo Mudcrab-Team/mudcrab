@@ -26,6 +26,15 @@ use walkdir::WalkDir;
 
 pub struct MeshConverter;
 
+pub(crate) fn nif_source_hash(path: &Path) -> Result<String> {
+    let mut hash = crate::cache::hash_file(path)?;
+    for dependency in MeshConverter::dependency_paths(path) {
+        hash.push(':');
+        hash.push_str(&crate::cache::hash_file(&dependency)?);
+    }
+    Ok(hash)
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct NifParseDiagnostics {
     pub block_count: usize,
@@ -50,10 +59,24 @@ impl MeshConverter {
     /// Converts a NIF into a GLB with collision and material metadata, using static geometry as a fallback.
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
+        let skeleton = find_skeleton(nif_path);
+        Self::convert_nif_to_glb_with_skeleton(
+            nif_path,
+            glb_output_path.as_ref(),
+            skeleton.as_deref(),
+        )
+    }
+
+    /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
+    pub fn convert_nif_to_glb_with_skeleton(
+        nif_path: &Path,
+        glb_output_path: &Path,
+        skeleton_path: Option<&Path>,
+    ) -> Result<()> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let skeleton = if nif.has_skeleton() {
-            let skeleton_path = find_skeleton(nif_path).ok_or_else(|| {
+            let skeleton_path = skeleton_path.ok_or_else(|| {
                 color_eyre::eyre::eyre!(
                     "skinned NIF requires a skeleton, but none was found near {}",
                     nif_path.display()
@@ -99,7 +122,7 @@ impl MeshConverter {
                         .any(|block_type| is_declared_geometry_block(block_type)),
                 "NIF declares mesh geometry, but no supported geometry was converted"
             );
-            let output = glb_output_path.as_ref();
+            let output = glb_output_path;
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -110,7 +133,7 @@ impl MeshConverter {
                 &embed_collision(empty_scene_glb(&name), &collision)?,
             );
         }
-        let output = glb_output_path.as_ref();
+        let output = glb_output_path;
         let mut glb = catch_unwind(AssertUnwindSafe(|| model.to_glb(name.clone())))
             .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?;
         if glb_bounds_from_bytes(&glb).is_err() && !used_static_fallback {
@@ -322,7 +345,38 @@ fn prune_dangling_uris_in_glb(
 ) -> Result<Option<PrunedGlb>> {
     let bytes =
         fs::read(glb_path).wrap_err_with(|| format!("failed to read {}", glb_path.display()))?;
-    let mut document = glb_json_from_bytes(&bytes)
+    let Some((pruned, removed_uris)) =
+        prune_glb_texture_bytes_with_sources(root, glb_path, &bytes, source_textures)?
+    else {
+        return Ok(None);
+    };
+    write_glb_atomic(glb_path, &pruned)?;
+    let relative = glb_path
+        .strip_prefix(root)
+        .unwrap_or(glb_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    Ok(Some(PrunedGlb {
+        glb: relative,
+        removed_uris,
+    }))
+}
+
+pub(crate) fn prune_glb_texture_bytes(
+    root: &Path,
+    glb_path: &Path,
+    bytes: &[u8],
+) -> Result<Option<(Vec<u8>, Vec<String>)>> {
+    prune_glb_texture_bytes_with_sources(root, glb_path, bytes, &BTreeSet::new())
+}
+
+fn prune_glb_texture_bytes_with_sources(
+    root: &Path,
+    glb_path: &Path,
+    bytes: &[u8],
+    source_textures: &BTreeSet<String>,
+) -> Result<Option<(Vec<u8>, Vec<String>)>> {
+    let mut document = glb_json_from_bytes(bytes)
         .wrap_err_with(|| format!("failed to inspect textures in {}", glb_path.display()))?;
     let missing: Vec<(usize, String)> = document
         .get("images")
@@ -346,18 +400,12 @@ fn prune_dangling_uris_in_glb(
     }
     let removed: HashSet<usize> = missing.iter().map(|(index, _)| *index).collect();
     prune_document_images(&mut document, &removed);
-    let pruned = rebuild_glb_with_document(&bytes, &document)
+    let pruned = rebuild_glb_with_document(bytes, &document)
         .wrap_err_with(|| format!("failed to rebuild {}", glb_path.display()))?;
-    write_glb_atomic(glb_path, &pruned)?;
-    let relative = glb_path
-        .strip_prefix(root)
-        .unwrap_or(glb_path)
-        .to_string_lossy()
-        .replace('\\', "/");
-    Ok(Some(PrunedGlb {
-        glb: relative,
-        removed_uris: missing.into_iter().map(|(_, uri)| uri).collect(),
-    }))
+    Ok(Some((
+        pruned,
+        missing.into_iter().map(|(_, uri)| uri).collect(),
+    )))
 }
 
 fn texture_uri_resolves(root: &Path, glb_path: &Path, uri: &str) -> bool {
@@ -943,6 +991,7 @@ fn open_nif_resilient(
                 block,
                 NifBlock::NiNode(_)
                     | NifBlock::BSFadeNode(_)
+                    | NifBlock::BSMultiBoundNode(_)
                     | NifBlock::BSTriShape(_)
                     | NifBlock::BSDynamicTriShape(_)
                     | NifBlock::BSSubIndexTriShape(_)
@@ -1023,6 +1072,7 @@ fn nif_scene_depth(blocks: &[NifBlock]) -> usize {
         }
         let children = match blocks.get(index) {
             Some(NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) => &node.children,
+            Some(NifBlock::BSMultiBoundNode(block)) => &block.node.children,
             _ => return usize::from(index < blocks.len()),
         };
         visiting.push(index);
@@ -1670,8 +1720,38 @@ fn texture_uri(document: &serde_json::Value, texture_index: usize) -> Option<&st
         .as_str()
 }
 
-fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
-    let parent = nif_path.parent()?;
+/// Resolves skeletons in a canonical, relative-path winning asset index.
+/// Repair callers must include archive assets and overlay winning loose files before resolving.
+pub fn resolve_skeleton(
+    relative: &Path,
+    sources: &std::collections::BTreeMap<PathBuf, PathBuf>,
+) -> Option<PathBuf> {
+    let relative = PathBuf::from(
+        relative
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase(),
+    );
+    for candidate in skeleton_candidates(&relative) {
+        if let Some(source) = sources.get(&candidate) {
+            return Some(source.clone());
+        }
+    }
+    let (root, actor) = actor_root(&relative)?;
+    let actor_dir = root.join(actor);
+    sources.iter().find_map(|(path, source)| {
+        let suffix = path.strip_prefix(&actor_dir).ok()?;
+        (suffix.components().count() <= 4
+            && path.file_name()?.to_string_lossy().starts_with("skeleton")
+            && path.extension()?.eq_ignore_ascii_case("nif"))
+        .then(|| source.clone())
+    })
+}
+
+fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
+    let Some(parent) = nif_path.parent() else {
+        return Vec::new();
+    };
     let mut candidates = vec![
         parent.join("skeleton.nif"),
         parent.join("skeleton_female.nif"),
@@ -1691,6 +1771,14 @@ fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
                 .join("character assets female")
                 .join("skeleton_female.nif"),
         ]);
+    }
+    candidates
+}
+
+fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
+    let mut candidates = skeleton_candidates(nif_path);
+    if let Some((actors_root, actor_name)) = actor_root(nif_path) {
+        let actor_dir = actors_root.join(actor_name);
         if let Some(found) = WalkDir::new(&actor_dir)
             .max_depth(4)
             .follow_links(false)
@@ -1930,6 +2018,21 @@ mod tests {
         let output = directory.path().join("static-fallback.glb");
         MeshConverter::convert_nif_to_glb(&path, &output).unwrap();
         MeshConverter::glb_bounds(&output).unwrap();
+    }
+
+    #[test]
+    fn merged_skeleton_uses_winner_not_physical_neighbor() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("low/skeleton.nif");
+        let winner = dir.path().join("overwrite/skeleton.nif");
+        let relative = Path::new("meshes/actors/character/armor/body.nif");
+        let key = PathBuf::from("meshes/actors/character/character assets/skeleton.nif");
+        let mut sources = std::collections::BTreeMap::from([(key.clone(), lower.clone())]);
+        assert_eq!(resolve_skeleton(relative, &sources), Some(lower));
+        sources.insert(key.clone(), winner.clone());
+        assert_eq!(resolve_skeleton(relative, &sources), Some(winner));
+        sources.remove(&key);
+        assert_eq!(resolve_skeleton(relative, &sources), None);
     }
 
     #[test]
