@@ -9,6 +9,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/schema -p 'tes
 The offline tests use only repository fixtures and Python's standard library;
 CI runs them on Linux/Python 3.11 and Windows/Python 3.13.
 
+The corpus manifest records stat-checked file reads, not an immutable source
+snapshot. Discovery skips symlink directories it observes, and the file reader
+rejects a symlink at the final path component. It does not pin ancestor
+directories: replacing a parent directory with a symlink after discovery can
+redirect a read outside Data while the manifest retains the original
+Data-relative path. Each hash identifies the bytes read from the opened file;
+the recorded path does not prove unchanged ancestry. This residual limit is
+reported under `unresolved`; it does not mean a swap was detected in that run.
+Use a stable source tree for P0 observations. Immutable source retention remains
+P1 work.
+
 The separate synthetic Mutagen qualification is an author-run evidence tool.
 It requires .NET SDK 9.0.318 and a separately supplied, hash-pinned
 `oracles/records` source that is not included in this public repository. Its
