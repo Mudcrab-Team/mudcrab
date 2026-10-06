@@ -13,6 +13,45 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+struct RestorePermissions<'a> {
+    path: &'a Path,
+    permissions: fs::Permissions,
+}
+
+impl Drop for RestorePermissions<'_> {
+    fn drop(&mut self) {
+        // Best effort during unwinding; never mask the original test failure.
+        let _ = fs::set_permissions(self.path, self.permissions.clone());
+    }
+}
+
+#[test]
+fn restricted_directory_permissions_are_restored_during_unwinding() {
+    let directory = tempfile::tempdir().unwrap();
+    let unreadable = directory.path().join("blocked");
+    fs::create_dir(&unreadable).unwrap();
+    fs::write(unreadable.join("retained"), b"fixture").unwrap();
+    let permissions = fs::metadata(&unreadable).unwrap().permissions();
+    let original_mode = permissions.mode();
+
+    let result = std::panic::catch_unwind(|| {
+        let _restore_permissions = RestorePermissions {
+            path: &unreadable,
+            permissions,
+        };
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o111)).unwrap();
+        panic!("simulate a pipeline panic");
+    });
+
+    assert!(result.is_err());
+    assert_eq!(
+        fs::metadata(&unreadable).unwrap().permissions().mode(),
+        original_mode
+    );
+    // Explicit close reports cleanup errors that TempDir::drop would discard.
+    directory.close().unwrap();
+}
+
 async fn collect(mut rx: mpsc::Receiver<ProgressEvent>) -> Vec<ProgressEvent> {
     let mut events = Vec::new();
     while let Some(event) = rx.recv().await {
@@ -73,14 +112,16 @@ async fn unreadable_data_subtree_stops_conversion_and_preserves_published_output
     fs::create_dir_all(&unreadable).unwrap();
     fs::write(unreadable.join("hidden.pex"), b"hidden input").unwrap();
     let permissions = fs::metadata(&unreadable).unwrap().permissions();
+    let _restore_permissions = RestorePermissions {
+        path: &unreadable,
+        permissions,
+    };
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o111)).unwrap();
     if fs::read_dir(&unreadable).is_ok() {
         // Privileged runners can bypass Unix permissions.
-        fs::set_permissions(&unreadable, permissions).unwrap();
         return;
     }
     let (result, events) = run(config).await;
-    fs::set_permissions(&unreadable, permissions).unwrap();
 
     assert_discovery_failure(result, &events, &data, &unreadable);
     assert_eq!(
@@ -124,9 +165,12 @@ async fn unreadable_staged_vfs_subtree_stops_conversion_before_publication() {
     let unreadable = vfs.join("textures");
     assert!(unreadable.join("hidden.dds").is_file());
     let permissions = fs::metadata(&unreadable).unwrap().permissions();
+    let _restore_permissions = RestorePermissions {
+        path: &unreadable,
+        permissions,
+    };
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o111)).unwrap();
     if fs::read_dir(&unreadable).is_ok() {
-        fs::set_permissions(&unreadable, permissions).unwrap();
         return;
     }
     let progress = tokio::spawn(collect(rx));
@@ -134,7 +178,6 @@ async fn unreadable_staged_vfs_subtree_stops_conversion_before_publication() {
     // Drop the completed future's sender before waiting for the channel to close.
     drop(pipeline);
     let events = progress.await.unwrap();
-    fs::set_permissions(&unreadable, permissions).unwrap();
     assert_discovery_failure(result, &events, &vfs, &unreadable);
     assert!(staging.join("skyrim_world.db").is_file());
     assert_eq!(
