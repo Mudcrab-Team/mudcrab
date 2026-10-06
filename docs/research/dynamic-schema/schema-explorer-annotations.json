@@ -180,12 +180,12 @@
     },
     "plugins": {
       "label": "Input plugins",
-      "purpose": "Caller-supplied plugin order, filenames and SHA-256 digests.",
+      "purpose": "Conversion input order, filenames and SHA-256 digests. The plugins.txt path normalizes master priority before conversion.",
       "group": "Metadata"
     },
     "records": {
       "label": "Winning record projections",
-      "purpose": "Resolved-ID winner rows with serialized parsed subrecord tags/payloads. Original framing and prior occurrences are absent.",
+      "purpose": "Resolved-ID winner rows with serialized normalized subrecord tags/payloads. Selected FormIDs change and malformed optional subrecords are removed; original framing and prior occurrences are absent.",
       "group": "Records"
     },
     "formid_map": {
@@ -305,18 +305,18 @@
     }
   },
   "column_notes": {
-    "records.data": "Serialized parsed tags and payloads for the winner; original headers, GRUP/compression/XXXX framing and override/deletion history are not retained.",
-    "records.load_order": "Winning record priority in caller-supplied order; owner identity is separate.",
+    "records.data": "Serialized parsed tags/payloads for the winner after selected FormID remaps, invalid optional IDs cleared to 0 and malformed optional subrecords removed. Original headers, GRUP/compression/XXXX framing and override/deletion history are absent.",
+    "records.load_order": "Winning record priority in the conversion input order; plugins.txt is normalized before conversion. Owner identity is separate.",
     "records.form_id": "Resolved FormID, not a physical source-occurrence identity.",
     "formid_map.plugin_name": "Owning plugin; may differ from the plugin that supplies the winner.",
     "formid_map.internal_id": "Plugin-local ID after owner resolution.",
     "cells.flags": "Record-header flags. CELL/DATA flags are separate and remain untyped here.",
     "cells.interior_name": "EDID in the current helper; not an established localized display name.",
-    "cells.data": "Parsed subrecord tag/payload projection; includes untyped DATA/XCLC tail/XCLL/LTMP.",
+    "cells.data": "Parsed subrecord tag/payload projection; includes untyped DATA/XCLC tail/XCLL and remapped LTMP. Malformed optional link subrecords are removed.",
     "cells.worldspace_id": "Code-level worldspace link; SQLite declares no FK.",
     "references.header_flags": "Raw record-header u32; bit meanings depend on record type.",
     "references.enable_parent_flags": "Current u32 from XESP bytes 4-7: one declared flag byte plus three unresolved bytes. Not established padding.",
-    "references.enable_parent_id": "Remapped XESP parent FormID; code link, no SQLite FK.",
+    "references.enable_parent_id": "Remapped XESP parent FormID, or 0 for an invalid optional link; malformed XESP subrecords are removed. Code link, no SQLite FK.",
     "references.base_form_id": "Selected NAME link; current helper uses 0 if absent. No SQLite FK.",
     "references.scale": "XSCL projection defaults to 1.0 in code and SQL.",
     "references.radius_override": "Selected XRDS little-endian f32; native consumer remains open in this pilot.",
@@ -572,9 +572,9 @@
       "tag": "XESP",
       "label": "Enable parent and unresolved tail",
       "declaration": "Parent FormID (bytes 0-3), flag byte (byte 4), three bytes xEdit labels unused (bytes 5-7). Declared bits 0/1 mean opposite-of-parent and Pop In.",
-      "projection": "Current columns store parent ID plus bytes 4-7 as one little-endian u32 enable_parent_flags. The remapper changes only the first four bytes.",
+      "projection": "XESP is accepted only at exactly 8 bytes across the 11 placed kinds. The parent ID is remapped, or cleared to 0 if invalid; malformed XESP subrecords are removed. Bytes 4-7 stay unchanged and become the little-endian u32 enable_parent_flags in the typed reference path.",
       "native": "RVA 0x15b040 passes the parent ID to RVA 0x165660, removes an entry for zero, creates/updates it for nonzero and writes the following single flag byte. Local shard-0011.c:20925-20943,27595-27640.",
-      "unknown": "The u32 column includes three unresolved bytes. F0010 reports those bytes often nonzero; its historical corpus lacks an input-manifest hash. Native parent-chain effects remain unobserved. F0011 is a historical FormID link-remap diagnostic, not flag-width evidence.",
+      "unknown": "The u32 column includes three unresolved bytes. F0010 reports those bytes often nonzero; its historical corpus lacks an input-manifest hash. Native parent-chain effects remain unobserved. F0011 is a historical FormID link-remap diagnostic, not evidence of current remap failure or flag width.",
       "ledger_line": 30,
       "columns": [
         "references.enable_parent_id",
@@ -599,7 +599,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 424
+          "line": 366
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 498
         }
       ],
       "mcp_ids": [
@@ -672,7 +677,7 @@
       "tag": "XEMI",
       "label": "Emittance source link",
       "declaration": "Emittance FormID in the source models.",
-      "projection": "No typed emittance column; tag/payload remains serialized.",
+      "projection": "The 4-byte XEMI link is remapped across the 11 placed kinds, or cleared to 0 if invalid; malformed lengths are removed. The normalized tag/payload is serialized with no typed emittance column.",
       "native": "The reader stores ExtraEmittanceSource through a setter; zero removes the entry. Local shard-0011.c:20423-20432; shard-0012.c:69-103.",
       "unknown": "Link storage does not establish its final render effect.",
       "ledger_line": 31,
@@ -690,6 +695,16 @@
           "source": "mutagen",
           "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
           "line": 30
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 373
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 498
         }
       ],
       "mcp_ids": []
@@ -838,9 +853,9 @@
       "tag": "LTMP",
       "label": "Lighting template link",
       "declaration": "xEdit permits LGTM or NULL; Mutagen marks the link non-nullable.",
-      "projection": "No typed template column; parsed payload only.",
+      "projection": "The 4-byte LTMP link is remapped on CELL and WRLD, or cleared to 0 if invalid; malformed lengths are removed. The normalized payload remains serialized with no typed template column.",
       "native": "RVA 0x2b82b0 consumes LTMP and clears eight bytes in an adjacent member. Local shard-0018.c:10869-10879.",
-      "unknown": "The load path does not show resolution. Nullability and later initialization remain open. F0011 is a historical FormID link-remap diagnostic, not nullability evidence.",
+      "unknown": "The inspected native load path does not show resolution. Native nullability and later initialization remain open. F0011 is a historical FormID link-remap diagnostic, not evidence of current remap failure or nullability.",
       "ledger_line": 34,
       "columns": [
         "cells.data",
@@ -856,6 +871,16 @@
           "source": "mutagen",
           "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Cell.xml",
           "line": 29
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 381
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 498
         }
       ],
       "mcp_ids": [
@@ -1169,10 +1194,10 @@
   "dataflow": {
     "current": [
       {
-        "label": "Plugin bytes + supplied order",
-        "text": "Metadata and slots follow the caller-supplied order. An accepted installed-game load order remains unavailable.",
+        "label": "Plugin bytes + conversion order",
+        "text": "read_plugins_txt normalizes master priority through order_explicit_plugins; regular dependencies stay ahead of their masters. Direct convert_plugins consumes caller order. LoadOrder::read rejects dependency inversions and assigns full/light slots. An accepted installed-game load order remains unavailable.",
         "path": "crates/converter/src/esm/load_order.rs",
-        "line": 101
+        "line": 23
       },
       {
         "label": "Parsed RawRecord",
@@ -1182,13 +1207,13 @@
       },
       {
         "label": "Remap and winner merge",
-        "text": "Selected links are remapped; later overrides replace earlier records and deleted winners remove forms. GMST uses a case-insensitive EDID identity rule.",
+        "text": "Selected links are remapped; invalid IDs in optional FormID layouts become 0 and malformed optional subrecords are removed. Later overrides replace earlier records and deleted winners remove forms. GMST uses a case-insensitive EDID identity rule.",
         "path": "crates/converter/src/esm/mod.rs",
         "line": 61
       },
       {
         "label": "Current SQL + terrain cache",
-        "text": "Effective winner rows, selected typed values and parsed payload blobs. SQL/cache use the same merged view; no byte-exact source archive.",
+        "text": "Effective winner rows, selected typed values and normalized parsed payload blobs. SQL/cache use the same merged view; no byte-exact source archive.",
         "path": "crates/converter/src/esm/mod.rs",
         "line": 33
       }
