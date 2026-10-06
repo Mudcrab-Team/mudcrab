@@ -210,6 +210,10 @@ jobs:
 
       - name: Setup kache compiler cache
         uses: kunobi-ninja/kache-action@v1
+        with:
+          # Clippy and tests produce different artifacts. GitHub cache keys are
+          # immutable, so the test build must not compete with Clippy's save.
+          cache-key-prefix: kache-test
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest

@@ -2,7 +2,7 @@
 
 This slice hashes installed archive bytes, adds strict candidate-evidence inputs,
 probes a pinned xEdit console binary, and refreshes selected converter/native
-field evidence. It does not accept P0. SPEC T41/T56 remain in progress, and no
+field evidence. It does not accept P0. SPEC T58/T56 remain in progress, and no
 P1/P2 ingestion implementation is introduced.
 
 ## Inputs and observations

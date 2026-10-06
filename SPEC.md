@@ -247,7 +247,8 @@ V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publi
 V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed generated outputs rebuilt; source package unchanged.
 V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
 
-V117: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
+V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
+
 V118: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
 V119: Dynamic ingestion: Resolution, interpretation and winner merging cannot mutate source bytes or remove source occurrences/tombstones.
 V120: Dynamic ingestion: Compressed subrecord spans identify decoded address space; encoded stream and all original length/header encodings remain preserved.
@@ -297,6 +298,8 @@ V159: Schema explorer ! pinned code-derived catalog/SQL facts, source citations 
 
 V160: Explorer UTF-8 text identities ! explicit CRLF→LF normalization; LF/CRLF checkouts → identical facts/HTML; semantic source drift → managed failure. Hash labels state normalization; retail/archive byte identities retain existing raw-byte contracts.
 
+V161: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -341,8 +344,10 @@ T38|.|Launcher LOD B after T37: `Build LOD` action for selected converted source
 T39|x|Historical PR105 review batch: destination-bound recovery seals/locking, schema16 mesh reuse, tier residency, query classification, world-content failure policy, capture/launcher fixes, shared tiling & contract docs; 830 workspace tests, strict clippy/fmt, 37 Python tests, 4 release perf tests; frozen-source software captures|V93,V96,V97,V98,V99,V100,V101,V102,V103,V104,V105
 T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/recovery/launcher captures & wider native performance; no pre-merge native campaign required. PR95 merged & historical converter-17/world-5 range tests passed. Prior candidate approval ≠ final-head native evidence; native limits retained|V93,V98,V99,V100,V102,V103,V104
 
-T41|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V117,V118,V128,V134,V138,V141,V142,V143,V146,V150
-T42|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V117,V119,V120,V121,V136,V142
+T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
+
+T58|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V161,V118,V128,V134,V138,V141,V142,V143,V146,V150
+T42|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V161,V119,V120,V121,V136,V142
 T43|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V118,V121,V131,V142
 T44|.|Dynamic ingestion P2 implement newest-SE selection, registry/linter and independent pilot layouts/codecs|V122,V123,V126,V138,V141
 T45|.|Dynamic ingestion P2 prove newest capability/encoding/variant/union/repetition cases and deterministic offline generated accessors|V120,V122,V126,V133,V142
@@ -355,7 +360,7 @@ T51|.|Dynamic ingestion P4 close every newest-SE signature/variant/field/flag/re
 T52|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evidence, automated verdict, accepted limits and dependency handoff|V134,V135,V138
 T53|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V122,V128,V133,V134,V135,V140
 T54|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V122,V128,V133,V134,V135,V137
-T55|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V117,V128,V134,V135,V136,V137,V138
+T55|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V161,V128,V134,V135,V136,V137,V138
 T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V128,V134,V143,V144,V145,V147,V148,V151,R26
 
 T57|x|P0 human schema explorer: compact offline HTML, searchable candidate catalog/current SQL, selected field/variant labels from project + read-only mudcrab-re MCP; verify source data, navigation, citations & unknowns|V134,V138,V140,V141,V159,V160
@@ -443,7 +448,7 @@ B76|2026-10-04|PipelineReport.lod_chunks required by Deserialize after optional 
 B77|2026-10-04|normal/metadata conversion always compiled LOD with no opt-out; uncalibrated overall bar frozen during LOD|V115,V116; --no-lod both routes, byte-preserving toggle/resume tests, labeled stage bar
 B78|2026-10-04|report-projection fixture and serialized snapshot retained old report shape after timing fields added; compile/snapshot checks failed|V114; explicit fixture timing defaults & snapshot timing redactions; mechanical fixture updates, no new invariant
 
-B79|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V146; stdlib iterative dependency traversal + chain/cycle fixtures
+B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
 B80|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V143; explicit completion blockers + matched-runtime base-only regression
 B81|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V143; shared source provenance + custom missing-descriptor regression
 B82|2026-10-04|P0 hand-authored CELL fixtures omitted interior block/subblock & type-6 children groups; skipped references could mask invalid qualification inputs|V145; legal sourced hierarchy + exact expected typed record/reference checks
@@ -494,3 +499,6 @@ B126|2026-10-05|explorer hashed checkout text bytes; CRLF-only conversion falsel
 B127|2026-10-05|explorer skip link changed hash to `#detail`; route parser reset selected table/evidence to REFR|V159; prevent route mutation, focus/scroll existing detail; real browser route/focus check
 B128|2026-10-06|P0 leaf stat/O_NOFOLLOW checks did not bind ancestor directories; concurrent parent symlink swap could attribute external bytes to recorded Data path|V143; document ancestry limit in reader/report/docs; opened-byte hash ≠ unchanged-path proof; no new invariant, immutable source retention stays P1
 B129|2026-10-06|stacked CI included newer main converter bytes while local explorer checks used older branch; source-drift guard rejected stale pins|V134,V159,V160; normal main/parent integration + reviewed source-pin/anchor/projection refresh; retain historical MCP snapshot & fail-closed drift guard; no new invariant
+B130|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V146; stdlib iterative dependency traversal + chain/cycle fixtures
+B131|2026-10-06|main CI-cache entries reused schema V117/T41/B79; integration conflicted at distinct semantic bindings|preserve main V117/T41/B79; schema V161/T58/B130; update references; unique-ID/source-row preservation checks; no new behavior invariant
+B132|2026-10-06|merge verifier demanded exact parent invariant text although child already strengthened artifact guards before integration|retain prior child rows modulo ID rebindings; preserve parent-only/main rows; V147 unchanged from child; no new behavior invariant
