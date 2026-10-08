@@ -89,6 +89,51 @@ fn item(value: &Value, index: usize) -> &Value {
     &items[index]
 }
 
+/// A catalogued STAT is an invalid WRLD discriminator; source coordinates keep their role.
+fn navi_with_wrong_worldspace(id: u32, nav: u32, door: u32) -> Vec<u8> {
+    let mut payload = subrecord(b"NVER", &12u32.to_le_bytes());
+    payload.extend(subrecord(
+        b"NVMI",
+        &world::info(nav, false, 0x2600, 0x0011_FFFD, door),
+    ));
+    record(b"NAVI", id, 0, &payload)
+}
+
+/// Nulling WRLD cannot reinterpret the original signed coordinates as a CELL link.
+fn assert_cleared_worldspace_keeps_coordinates(record: &DecodedRecord, signature: &[u8; 4]) {
+    let value = field(record, signature);
+    let parent = member(value, "pathing_cell");
+    assert_eq!(member(parent, "worldspace"), &Value::FormId(0));
+    assert_eq!(
+        member(member(parent, "coordinates"), "grid_y"),
+        &Value::Signed(-3)
+    );
+    assert_eq!(
+        member(member(parent, "coordinates"), "grid_x"),
+        &Value::Signed(17)
+    );
+    let Value::Struct(members) = parent else {
+        panic!("expected source parent structure")
+    };
+    assert!(!members.iter().any(|(name, _)| name == "parent_cell"));
+    let canonical = &record
+        .fields
+        .iter()
+        .find(|field| &field.signature == signature)
+        .unwrap()
+        .canonical_bytes;
+    let world_offset = if signature == b"NVNM" {
+        8
+    } else {
+        canonical.len() - 8
+    };
+    assert_eq!(&canonical[world_offset..world_offset + 4], &[0; 4]);
+    assert_eq!(
+        &canonical[world_offset + 4..world_offset + 8],
+        &[0xFD, 0xFF, 0x11, 0x00]
+    );
+}
+
 /// Counted geometry, conditional islands, ordered groups and signed bytes retain exact values.
 #[test]
 fn world_families_decode_complete_asymmetric_values() {
@@ -215,19 +260,20 @@ fn navigation_links_use_full_and_light_slots_and_clear_wrong_target_kinds() {
         "Navigation.esl",
         true,
         &[
-            world::navmesh(0x0100_0842, 1, 0x0011_FFFD, 0x0100_0842, 0x2601),
-            world::navi(0x0100_0843, 0x0100_0842, 0x2600),
+            world::navmesh(0x0100_0842, 0x2600, 0x0011_FFFD, 0x0100_0842, 0x2601),
+            navi_with_wrong_worldspace(0x0100_0843, 0x0100_0842, 0x2600),
         ]
         .concat(),
     );
     fixture.patch(
         "FullNavigation.esp",
         false,
-        &world::navmesh(0x0100_2743, 1, 0x0011_FFFD, 0x0100_2743, 0x11),
+        &world::navmesh(0x0100_2743, 0x2600, 0x0011_FFFD, 0x0100_2743, 0x11),
     );
     let result = fixture.read();
     let nav = &result.records[&0xFE00_1842];
     assert_eq!(nav.load_order, 3);
+    assert_cleared_worldspace_keeps_coordinates(nav, b"NVNM");
     let geometry = field(nav, b"NVNM");
     assert_eq!(
         member(item(member(geometry, "edge_links"), 0), "navmesh"),
@@ -237,6 +283,7 @@ fn navigation_links_use_full_and_light_slots_and_clear_wrong_target_kinds() {
         member(item(member(geometry, "door_triangles"), 0), "door"),
         &Value::FormId(0)
     );
+    assert_cleared_worldspace_keeps_coordinates(&result.records[&0xFE00_1843], b"NVMI");
     let info = field(&result.records[&0xFE00_1843], b"NVMI");
     assert_eq!(
         member(item(member(info, "door_links"), 0), "door"),
@@ -246,6 +293,7 @@ fn navigation_links_use_full_and_light_slots_and_clear_wrong_target_kinds() {
         member(info, "preferred_merges"),
         &Value::Bytes(vec![0xA7, 0x53, 0xC1, 0x39])
     );
+    assert_cleared_worldspace_keeps_coordinates(&result.records[&0x0200_2743], b"NVNM");
     let full = field(&result.records[&0x0200_2743], b"NVNM");
     assert_eq!(
         member(item(member(full, "edge_links"), 0), "navmesh"),
@@ -393,12 +441,16 @@ async fn broken_world_mod_publishes_prior_winners_neighbors_and_link_recovery() 
     ));
     patch.extend(world::navmesh(
         0x0100_2900,
-        1,
+        0x2600,
         0x0011_FFFD,
         world::FIRST_ID,
         0x2601,
     ));
-    patch.extend(world::navi(0x0100_2901, world::FIRST_ID, 0x2600));
+    patch.extend(navi_with_wrong_worldspace(
+        0x0100_2901,
+        world::FIRST_ID,
+        0x2600,
+    ));
     let patch_path = data.join("DamagedWorld.esp");
     fs::write(&patch_path, patch).unwrap();
     let paths = [base_path, patch_path];
@@ -408,6 +460,8 @@ async fn broken_world_mod_publishes_prior_winners_neighbors_and_link_recovery() 
     for id in &neighbors {
         assert!(result.records.contains_key(id));
     }
+    assert_cleared_worldspace_keeps_coordinates(&result.records[&0x0100_2900], b"NVNM");
+    assert_cleared_worldspace_keeps_coordinates(&result.records[&0x0100_2901], b"NVMI");
     let recovered_info = field(&result.records[&0x0100_2901], b"NVMI");
     assert_eq!(
         member(item(member(recovered_info, "door_links"), 0), "door"),
@@ -446,6 +500,16 @@ async fn broken_world_mod_publishes_prior_winners_neighbors_and_link_recovery() 
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+    for id in [0x0100_2900, 0x0100_2901] {
+        let payload: Vec<u8> = db
+            .query_row(
+                "SELECT payload FROM inhouse_source_records WHERE form_id=?",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(payload, result.records[&id].raw_payload);
     }
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
