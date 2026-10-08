@@ -224,7 +224,20 @@ fn generate(data: &Path) {
     fs::write(
         data.join("Names.bsa"),
         bsa::v105(
-            &[Entry::new("Strings/Names_English.STRINGS", &strings)],
+            &[
+                Entry::new("Strings/Names_English.STRINGS", &strings),
+                Entry::new("Strings/Names_English.DLSTRINGS", &{
+                    let description = text("Description from DLSTRINGS");
+                    let mut table = Vec::new();
+                    table.extend(1u32.to_le_bytes());
+                    table.extend((4 + description.len() as u32).to_le_bytes());
+                    table.extend(0x999u32.to_le_bytes());
+                    table.extend(0u32.to_le_bytes());
+                    table.extend((description.len() as u32).to_le_bytes());
+                    table.extend(description);
+                    table
+                }),
+            ],
             bsa::Compression::None,
         )
         .unwrap(),
@@ -388,7 +401,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             .find(|field| field.tag == *b"DESC")
             .unwrap()
             .data,
-        0x999u32.to_le_bytes()
+        text("Description from DLSTRINGS")
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(

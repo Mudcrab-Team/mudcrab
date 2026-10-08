@@ -1831,7 +1831,8 @@
         {
           "signature": "DESC",
           "name": "description",
-          "kind": "lstring"
+          "kind": "lstring",
+          "string_table": "dlstrings"
         },
         {
           "signature": "MODL",
