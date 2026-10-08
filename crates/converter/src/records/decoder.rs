@@ -521,12 +521,9 @@ fn value(
         return alternate_textures(bytes, context, diagnostics);
     }
     if field.decider.as_deref() == Some("vmad") {
-        let mut canonical = bytes.to_vec();
-        crate::esm::records::record_type::vmad::remap_primary_form_ids(&mut canonical, |id| {
-            remap(id, context, true, diagnostics).map_err(color_eyre::eyre::Report::msg)
-        })
-        .map_err(|error| format!("invalid VMAD primary scripts: {error}"))?;
-        return Ok((Value::Bytes(canonical.clone()), canonical));
+        return super::vmad::decode(bytes, &selection.record_type, |id| {
+            remap(id, context, true, diagnostics)
+        });
     }
     if let Some(width) = width(field)
         && matches!(
@@ -997,10 +994,9 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
                 .resolve(field_schema)
                 .expect("validated common field");
             if resolved.decider.as_deref() == Some("vmad") {
-                // Canonical VMAD links are already global; this pass checks winners.
-                let validation = crate::esm::records::record_type::vmad::remap_primary_form_ids(
-                    &mut field.canonical_bytes,
-                    |id| {
+                // Canonical VMAD links are already global; check all primary and alias objects.
+                let validation =
+                    super::vmad::decode(&field.canonical_bytes, &record.record_type, |id| {
                         if id == 0 || id < 0x800 || kinds.contains_key(&id) {
                             return Ok(id);
                         }
@@ -1011,10 +1007,10 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
                             )
                         });
                         Ok(0)
-                    },
-                );
-                if validation.is_ok() {
-                    field.value = Value::Bytes(field.canonical_bytes.clone());
+                    });
+                if let Ok((value, canonical)) = validation {
+                    field.value = value;
+                    field.canonical_bytes = canonical;
                 }
                 continue;
             }

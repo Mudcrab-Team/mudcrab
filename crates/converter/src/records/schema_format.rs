@@ -85,6 +85,8 @@ impl Schema {
                 "magic" => {
                     "SPEL MGEF ENCH SHOU WOOP LVLI LVLN LVSP FLST KYWD GLOB GMST EXPL PROJ HAZD ARTO EFSH DUAL"
                 }
+                "ai" => "PACK IDLE IDLM AACT",
+                "perks" => "PERK",
                 _ => return Err(format!("unknown schema family {family}")),
             };
             let module: serde_json::Value =

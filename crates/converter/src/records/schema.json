@@ -75,7 +75,7 @@
       "name": "scripts",
       "kind": "bytes",
       "decider": "vmad",
-      "source": "mudcrab-legacy:esm/records/record_type/vmad.rs remap_primary_form_ids; primary script object links only; record-specific fragment tail opaque"
+      "source": "xedit-4.1.5f:TES5 VMAD4682-4956 and UTF8 wbInterface23752; independently authored records/vmad.rs primary scripts, owner fragments and quest aliases; only typed object FormIDs remapped"
     },
     "bounds": {
       "name": "bounds",

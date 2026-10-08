@@ -3,6 +3,7 @@ pub mod deciders;
 mod decoder;
 mod scanner;
 pub mod schema_format;
+pub mod vmad;
 
 use crate::esm::{load_order::LoadOrder, records::RawRecord};
 use color_eyre::Result;
