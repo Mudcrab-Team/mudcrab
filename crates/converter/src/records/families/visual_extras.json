@@ -2747,6 +2747,344 @@
               "size": 64
             },
             {
+              "name": "specular_prefix",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "ambient_color",
+                  "kind": "struct",
+                  "offset": 0,
+                  "members": [
+                    {
+                      "name": "red",
+                      "kind": "u8",
+                      "offset": 0
+                    },
+                    {
+                      "name": "green",
+                      "kind": "u8",
+                      "offset": 1
+                    },
+                    {
+                      "name": "blue",
+                      "kind": "u8",
+                      "offset": 2
+                    },
+                    {
+                      "name": "unused",
+                      "kind": "u8",
+                      "offset": 3
+                    }
+                  ],
+                  "size": 4
+                },
+                {
+                  "name": "directional_color",
+                  "kind": "struct",
+                  "offset": 4,
+                  "members": [
+                    {
+                      "name": "red",
+                      "kind": "u8",
+                      "offset": 0
+                    },
+                    {
+                      "name": "green",
+                      "kind": "u8",
+                      "offset": 1
+                    },
+                    {
+                      "name": "blue",
+                      "kind": "u8",
+                      "offset": 2
+                    },
+                    {
+                      "name": "unused",
+                      "kind": "u8",
+                      "offset": 3
+                    }
+                  ],
+                  "size": 4
+                },
+                {
+                  "name": "fog_near_color",
+                  "kind": "struct",
+                  "offset": 8,
+                  "members": [
+                    {
+                      "name": "red",
+                      "kind": "u8",
+                      "offset": 0
+                    },
+                    {
+                      "name": "green",
+                      "kind": "u8",
+                      "offset": 1
+                    },
+                    {
+                      "name": "blue",
+                      "kind": "u8",
+                      "offset": 2
+                    },
+                    {
+                      "name": "unused",
+                      "kind": "u8",
+                      "offset": 3
+                    }
+                  ],
+                  "size": 4
+                },
+                {
+                  "name": "fog_near",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "fog_far",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "directional_xy",
+                  "kind": "i32",
+                  "offset": 20
+                },
+                {
+                  "name": "directional_z",
+                  "kind": "i32",
+                  "offset": 24
+                },
+                {
+                  "name": "directional_fade",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "fog_clip",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "fog_power",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "directional_ambient",
+                  "kind": "struct",
+                  "offset": 40,
+                  "members": [
+                    {
+                      "name": "positive_x",
+                      "kind": "struct",
+                      "offset": 0,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4
+                    },
+                    {
+                      "name": "negative_x",
+                      "kind": "struct",
+                      "offset": 4,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4
+                    },
+                    {
+                      "name": "positive_y",
+                      "kind": "struct",
+                      "offset": 8,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4
+                    },
+                    {
+                      "name": "negative_y",
+                      "kind": "struct",
+                      "offset": 12,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4
+                    },
+                    {
+                      "name": "positive_z",
+                      "kind": "struct",
+                      "offset": 16,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4
+                    },
+                    {
+                      "name": "negative_z",
+                      "kind": "struct",
+                      "offset": 20,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4
+                    },
+                    {
+                      "name": "specular",
+                      "kind": "struct",
+                      "offset": 24,
+                      "members": [
+                        {
+                          "name": "red",
+                          "kind": "u8",
+                          "offset": 0
+                        },
+                        {
+                          "name": "green",
+                          "kind": "u8",
+                          "offset": 1
+                        },
+                        {
+                          "name": "blue",
+                          "kind": "u8",
+                          "offset": 2
+                        },
+                        {
+                          "name": "unused",
+                          "kind": "u8",
+                          "offset": 3
+                        }
+                      ],
+                      "size": 4,
+                      "optional": true
+                    },
+                    {
+                      "name": "scale",
+                      "kind": "f32",
+                      "offset": 28,
+                      "optional": true
+                    }
+                  ],
+                  "sizes": [],
+                  "size": 28
+                }
+              ],
+              "size": 68
+            },
+            {
               "name": "full_ambient",
               "kind": "struct",
               "members": [

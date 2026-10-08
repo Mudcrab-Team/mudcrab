@@ -200,6 +200,47 @@ fn legacy_material_prefix_can_override_a_full_sse_material() {
     assert!(!members.iter().any(|(name, _)| name == "normal_dampener"));
 }
 
+/// The68-byte lighting prefix ends after ambient specular and before scale.
+#[test]
+fn lighting_prefix_keeps_specular_without_inventing_ambient_scale() {
+    let mut light = vec![0x73; 68];
+    light[12..20].copy_from_slice(&[17.125f32.to_le_bytes(), 31.875f32.to_le_bytes()].concat());
+    light[20..24].copy_from_slice(&(-37i32).to_le_bytes());
+    light[24..28].copy_from_slice(&83i32.to_le_bytes());
+    light[28..40].copy_from_slice(
+        &[
+            0.3125f32.to_le_bytes(),
+            47.125f32.to_le_bytes(),
+            1.875f32.to_le_bytes(),
+        ]
+        .concat(),
+    );
+    light[64..68].copy_from_slice(&[17, 31, 67, 0xE9]);
+    let fixture = Fixture::new(&visual::record(
+        b"LGTM",
+        0x29A2,
+        0,
+        &visual::subrecord(b"DATA", &light),
+    ));
+    let result = fixture.read();
+    let record = &result.records[&0x29A2];
+    assert!(record.rejected_fields.is_empty());
+    let ambient = member(named(record, "lighting"), "directional_ambient");
+    assert_eq!(
+        member(member(ambient, "specular"), "red"),
+        &Value::Unsigned(17)
+    );
+    assert_eq!(
+        member(member(ambient, "specular"), "unused"),
+        &Value::Unsigned(0xE9)
+    );
+    let Value::Struct(members) = ambient else {
+        panic!("ambient block lost")
+    };
+    assert_eq!(members.len(), 7);
+    assert!(!members.iter().any(|(name, _)| name == "scale"));
+}
+
 /// Actual publication retains all prior winners and both neighbors around15 bad streams.
 #[tokio::test]
 async fn broken_visual_mod_publishes_neighbors_prior_winners_and_safe_fields() {
@@ -273,6 +314,35 @@ async fn broken_visual_mod_publishes_neighbors_prior_winners_and_safe_fields() {
     drain.await.unwrap();
     assert!(report.complete, "{:?}", report.warnings);
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let malformed_blob: Vec<u8> = db
+        .query_row(
+            "SELECT data FROM records WHERE form_id=0x01002C00",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let canonical = rkyv::from_bytes::<
+        converter::esm::types::ArchivedRecordData,
+        rkyv::rancor::Error,
+    >(&malformed_blob)
+    .unwrap();
+    assert!(
+        !canonical
+            .subrecords
+            .iter()
+            .any(|field| field.tag.as_slice() == b"BNAM")
+    );
+    let vision = canonical
+        .subrecords
+        .iter()
+        .find(|field| field.tag.as_slice() == b"VNAM")
+        .unwrap();
+    let expected = recovered.records[&0x0100_2C00]
+        .fields
+        .iter()
+        .find(|field| field.signature == *b"VNAM")
+        .unwrap();
+    assert_eq!(vision.data, expected.canonical_bytes);
     for id in neighbors.into_iter().chain([0x0100_2C00]) {
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM records WHERE form_id=?", [id], |r| {
