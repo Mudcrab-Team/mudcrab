@@ -391,3 +391,29 @@ fn parse_text_table(bytes: &[u8], length_prefixed: bool) -> Result<HashMap<u32, 
     }
     Ok(strings)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A broken length-prefixed entry cannot consume its valid table neighbor.
+    #[test]
+    fn dlstrings_and_ilstrings_bound_each_entry() {
+        let mut table = Vec::new();
+        table.extend(2u32.to_le_bytes());
+        table.extend(12u32.to_le_bytes());
+        table.extend(41u32.to_le_bytes());
+        table.extend(0u32.to_le_bytes());
+        table.extend(42u32.to_le_bytes());
+        table.extend(4u32.to_le_bytes());
+        table.extend(u32::MAX.to_le_bytes());
+        table.extend(4u32.to_le_bytes());
+        table.extend(b"yes\0");
+        let decoded = parse_text_table(&table, true).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[&42], "yes");
+        assert!(!decoded.contains_key(&41));
+        table[4..8].copy_from_slice(&13u32.to_le_bytes());
+        assert!(parse_text_table(&table, true).is_err());
+    }
+}
