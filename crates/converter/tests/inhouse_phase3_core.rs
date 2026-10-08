@@ -77,6 +77,9 @@ fn terminated_repeats_require_an_explicit_empty_marker() {
                   {"signature":"ANAM","name":"action_end","kind":"bytes","size":0}]
     }]}]});
     assert!(Schema::parse(&serde_json::to_vec(&valid).unwrap()).is_ok());
+    let mut repeated_start = valid.clone();
+    repeated_start["records"][0]["fields"][0]["fields"][0]["repeat"] = serde_json::json!(true);
+    assert!(Schema::parse(&serde_json::to_vec(&repeated_start).unwrap()).is_err());
     let mut unordered = valid.clone();
     unordered["records"][0]["allow_unordered"] = serde_json::json!(true);
     assert!(Schema::parse(&serde_json::to_vec(&unordered).unwrap()).is_err());

@@ -336,8 +336,9 @@ impl Schema {
                 })
             });
             let valid_start = field.fields.first().is_some_and(|start| {
-                self.resolve(start)
-                    .is_ok_and(|start| start.signature.is_some() && start.kind != "group")
+                self.resolve(start).is_ok_and(|start| {
+                    start.signature.is_some() && start.kind != "group" && !start.repeat
+                })
             });
             if field.kind != "group"
                 || !field.repeat

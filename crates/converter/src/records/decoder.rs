@@ -108,11 +108,17 @@ fn match_field(
     last: Option<usize>,
 ) -> Option<usize> {
     let matches = |index: usize| {
-        record.entries[index]
+        let entry = &record.entries[index];
+        entry
             .field
             .signature
             .as_deref()
             .is_some_and(|tag| tag.as_bytes() == signature)
+            && entry.repeat_ranges.iter().all(|range| {
+                !range.terminated
+                    || index == range.start
+                    || (cursor > range.start && cursor < range.end)
+            })
     };
     if let Some(last) = last {
         for range in &record.entries[last].repeat_ranges {

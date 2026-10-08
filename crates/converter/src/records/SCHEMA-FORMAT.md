@@ -318,13 +318,16 @@ start-phase indices and timer durations. Group matching still exports flat
 ordered leaves, rather than a persistent nested group tree.
 
 A repeated group with an explicit final empty marker may declare
-`repeat_terminated: true`. Once that marker is consumed, only its initial
-signature starts another occurrence; other tags advance beyond the group.
-SCEN actions use this boundary so a scene's PNAM quest and INAM final action
-index retain their root roles after ANAM action-end, even when the optional
-NEXT separator is absent. Unmarked repeats retain their existing matching.
+`repeat_terminated: true`. Its initial signature is required to enter the
+group. Once its final marker is consumed, only that initial signature starts
+another occurrence; other tags advance beyond the group. SCEN phases and
+actions use this boundary so root quest/index and legacy script fields retain
+their roles after HNAM phase-end or ANAM action-end, including scenes with
+zero actors/actions and an absent optional NEXT separator. Unmarked repeats
+retain their existing matching. The authored phase/action boundary attributes
+change the generated schema fingerprint, invalidating previous reader caches.
 Terminated groups require ordered matching; schema validation rejects their
-use in a record with `allow_unordered: true`.
+use in a record with `allow_unordered: true` and a repeated initial leaf.
 
 Localized quest log CNAM uses DLSTRINGS; INFO NAM1 uses ILSTRINGS. Other declared
 quest/objective, topic, prompt and button text uses STRINGS. Native INFO ENAM

@@ -269,6 +269,52 @@ pub fn scene_with_root(
     named(b"SCEN", id, &fields)
 }
 
+/// Build a native scene with a phase and optional actors/scripts, but no action.
+#[must_use]
+pub fn scene_without_actions(
+    id: u32,
+    quest: u32,
+    actors: &[u32],
+    last_action_index: u32,
+    legacy_scripts: bool,
+) -> Vec<u8> {
+    let mut fields = vec![
+        subrecord(b"FNAM", &0x11u32.to_le_bytes()),
+        subrecord(b"HNAM", &[]),
+        subrecord(b"NAM0", &text("Phase without actions")),
+        subrecord(b"NEXT", &[]),
+        subrecord(b"NEXT", &[]),
+        subrecord(b"WNAM", &191u32.to_le_bytes()),
+        subrecord(b"HNAM", &[]),
+    ];
+    for actor in actors {
+        fields.extend([
+            subrecord(b"ALID", &actor.to_le_bytes()),
+            subrecord(b"LNAM", &3u32.to_le_bytes()),
+            subrecord(b"DNAM", &26u32.to_le_bytes()),
+        ]);
+    }
+    if legacy_scripts {
+        fields.extend([
+            subrecord(b"SCHR", &[0x13, 0x57, 0x91, 0xa5]),
+            subrecord(b"QNAM", &[0x42, 0x17]),
+            subrecord(b"NEXT", &[]),
+            subrecord(b"SCHR", &[0x29, 0x61, 0xb7, 0xc3]),
+            subrecord(b"QNAM", &[0x73, 0x8b, 0x19]),
+        ]);
+    }
+    let behavior = [2u32, 1, 3, 0]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect::<Vec<_>>();
+    fields.extend([
+        subrecord(b"PNAM", &quest.to_le_bytes()),
+        subrecord(b"INAM", &last_action_index.to_le_bytes()),
+        subrecord(b"VNAM", &behavior),
+    ]);
+    named(b"SCEN", id, &fields)
+}
+
 /// Build two story-manager quest groups without collapsing their repeated fields.
 #[must_use]
 pub fn story_quests(id: u32, quest: u32) -> Vec<u8> {

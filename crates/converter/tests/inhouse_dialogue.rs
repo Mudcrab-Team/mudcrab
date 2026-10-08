@@ -492,6 +492,164 @@ fn quest_aliases_and_info_order_links_remap_divergent_full_light_masters() {
     assert_eq!(result.diagnostics["patch.esp"].invalid_links, 0);
 }
 
+/// Unstarted actions cannot consume root fields or legacy scene script groups.
+#[tokio::test]
+async fn scene_without_actions_keeps_root_and_legacy_roles_through_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    generate(&data);
+    let plugin_path = data.join("Skyrim.esm");
+    let mut bytes = fs::read(&plugin_path).unwrap();
+    bytes.extend(native::quest(0x3c00));
+    let cases: [(u32, &[u32], u32, bool); 4] = [
+        (0x3c01, &[], 101, false),
+        (0x3c02, &[7, 29], 103, false),
+        (0x3c03, &[], 107, true),
+        (0x3c04, &[11, 37], 109, true),
+    ];
+    for (id, actors, root_index, legacy) in cases {
+        let before = id + 0x10;
+        let after = id + 0x20;
+        bytes.extend(native::named(
+            b"MESG",
+            before,
+            &[native::subrecord(b"DNAM", &1u32.to_le_bytes())],
+        ));
+        bytes.extend(native::scene_without_actions(
+            id, 0x3c00, actors, root_index, legacy,
+        ));
+        bytes.extend(native::named(
+            b"MESG",
+            after,
+            &[native::subrecord(b"DNAM", &3u32.to_le_bytes())],
+        ));
+    }
+    fs::write(&plugin_path, bytes).unwrap();
+    let paths = vec![plugin_path];
+    let result = read_plugins(&paths, &LoadOrder::read(&paths).unwrap()).unwrap();
+    for (id, actors, root_index, legacy) in cases {
+        let scene = &result.records[&id];
+        assert!(
+            !scene.fields.iter().any(|field| field.signature == *b"ANAM"),
+            "zero-action fixture must not contain an action start or end"
+        );
+        let root_quest = scene
+            .fields
+            .iter()
+            .find(|field| field.signature == *b"PNAM")
+            .unwrap();
+        assert_eq!(
+            root_quest.name, "quest",
+            "zero-action scene{id:08X} must keep root PNAM in its quest role"
+        );
+        assert_eq!(root_quest.value, Value::FormId(0x3c00));
+        assert_eq!(root_quest.canonical_bytes, 0x3c00u32.to_le_bytes());
+        let index = scene
+            .fields
+            .iter()
+            .find(|field| field.signature == *b"INAM")
+            .unwrap();
+        assert_eq!(index.name, "last_action_index");
+        assert_eq!(index.value, Value::Unsigned(root_index as u64));
+        let actor_values: Vec<_> = actors
+            .iter()
+            .map(|actor| Value::Unsigned(u64::from(*actor)))
+            .collect();
+        assert_eq!(
+            values(scene, "actor_alias"),
+            actor_values.iter().collect::<Vec<_>>()
+        );
+        for role in [
+            "action_type",
+            "action_package",
+            "action_index",
+            "action_end",
+        ] {
+            assert!(
+                values(scene, role).is_empty(),
+                "unexpected{role} in{id:08X}"
+            );
+        }
+        if legacy {
+            for (role, payload) in [
+                ("legacy_scene_begin_schr", vec![0x13, 0x57, 0x91, 0xa5]),
+                ("legacy_scene_begin_qnam", vec![0x42, 0x17]),
+                ("legacy_scene_end_schr", vec![0x29, 0x61, 0xb7, 0xc3]),
+                ("legacy_scene_end_qnam", vec![0x73, 0x8b, 0x19]),
+            ] {
+                assert_eq!(named(scene, role).value, Value::Bytes(payload));
+            }
+            assert_eq!(values(scene, "scene_script_separator").len(), 1);
+        }
+        assert!(
+            scene.rejected_fields.is_empty(),
+            "{:?}",
+            scene.rejected_fields
+        );
+        assert!(result.records.contains_key(&(id + 0x10)));
+        assert!(result.records.contains_key(&(id + 0x20)));
+    }
+    assert_eq!(result.diagnostics["skyrim.esm"].invalid_links, 0);
+
+    let plugins = temp.path().join("plugins.txt");
+    fs::write(&plugins, "*Skyrim.esm\n").unwrap();
+    let output = temp.path().join("pack");
+    let report = convert(&data, &output, plugins).await;
+    assert!(report.complete, "{:?}", report.warnings);
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    for (id, _, root_index, legacy) in cases {
+        let published_scene = published(&database, id);
+        assert!(
+            !published_scene
+                .subrecords
+                .iter()
+                .any(|field| field.tag == *b"ANAM")
+        );
+        for (tag, value) in [(b"PNAM", 0x3c00), (b"INAM", root_index)] {
+            let fields: Vec<_> = published_scene
+                .subrecords
+                .iter()
+                .filter(|field| &field.tag == tag)
+                .collect();
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].data, value.to_le_bytes());
+        }
+        let scripts: Vec<_> = published_scene
+            .subrecords
+            .iter()
+            .filter(|field| matches!(&field.tag, b"SCHR" | b"QNAM"))
+            .map(|field| field.data.clone())
+            .collect();
+        if legacy {
+            assert_eq!(
+                scripts,
+                [
+                    vec![0x13, 0x57, 0x91, 0xa5],
+                    vec![0x42, 0x17],
+                    vec![0x29, 0x61, 0xb7, 0xc3],
+                    vec![0x73, 0x8b, 0x19],
+                ]
+            );
+        } else {
+            assert!(scripts.is_empty());
+        }
+        for neighbor in [id + 0x10, id + 0x20] {
+            let count: i64 = database
+                .query_row(
+                    "SELECT COUNT(*) FROM records WHERE form_id=?",
+                    [neighbor],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "valid zero-action scene neighbor{neighbor:08X}");
+        }
+    }
+    let diagnostics: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
+            .unwrap();
+    assert_eq!(diagnostics["decoder"]["skyrim.esm"]["invalid_links"], 0);
+}
+
 /// Generate a complete ordinary dummy asset set for real pipeline publication.
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
