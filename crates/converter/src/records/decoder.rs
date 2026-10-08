@@ -282,6 +282,7 @@ pub(crate) fn decode(
     for (position, &(signature, bytes)) in framed.fields.iter().enumerate() {
         let selection = super::deciders::Context {
             record_type: scanned.record_type,
+            form_version: scanned.form_version,
             editor_id: &editor_id,
             preceding_subrecords: &framed.fields[..position],
             parent_payload: None,
@@ -502,6 +503,17 @@ fn value(
             field.size,
             field.sizes
         ));
+    }
+    if let Some(layout) = super::deciders::layout(field, bytes)? {
+        return value(
+            &layout,
+            bytes,
+            schema,
+            context,
+            diagnostics,
+            selection,
+            depth + 1,
+        );
     }
     if field.kind == "union" {
         let Some(alternative) = decide(field, bytes, selection)? else {
@@ -1027,6 +1039,7 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
                 &mut diagnostics,
                 &super::deciders::Context {
                     record_type: record.record_type,
+                    form_version: record.form_version,
                     editor_id: &editor_id,
                     preceding_subrecords: &preceding[..position],
                     parent_payload: None,
@@ -1062,6 +1075,18 @@ fn validate_value(
     let Ok(field) = schema.resolve(field) else {
         return;
     };
+    if let Ok(Some(layout)) = super::deciders::layout(&field, bytes) {
+        validate_value(
+            decoded,
+            bytes,
+            &layout,
+            schema,
+            kinds,
+            diagnostics,
+            selection,
+        );
+        return;
+    }
     if field.kind == "union" {
         if let Ok(Some(alternative)) = decide(&field, bytes, selection) {
             validate_value(
@@ -1342,6 +1367,7 @@ mod tests {
         };
         let selection = super::super::deciders::Context {
             record_type: *b"TEST",
+            form_version: 44,
             editor_id: "",
             preceding_subrecords: &[],
             parent_payload: None,

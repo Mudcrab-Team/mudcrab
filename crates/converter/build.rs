@@ -9,7 +9,14 @@ mod schema_format;
 fn main() {
     let schema = std::fs::read("src/records/schema.json").expect("read record schema");
     let mut families = Vec::new();
-    for family in ["items", "actors", "magic"] {
+    for family in [
+        "items",
+        "actors",
+        "magic",
+        "world_extras",
+        "visual_extras",
+        "audio_extras",
+    ] {
         let path = format!("src/records/families/{family}.json");
         families.push((family, std::fs::read(&path).expect("read family schema")));
         println!("cargo:rerun-if-changed={path}");
