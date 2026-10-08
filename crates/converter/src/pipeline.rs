@@ -3754,8 +3754,10 @@ mod tests {
         assert!(output.join("skyrim_world.db").is_file());
     }
 
+    /// Explicitly compatible producer-24 meshes reuse original proof; changed
+    /// NIF source bytes still regenerate instead of being hidden by migration.
     #[tokio::test]
-    async fn current24_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn compatible_meshes_reuse_but_changed_mesh_source_reconverts() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -3770,7 +3772,10 @@ mod tests {
         config.cpu_jobs = 2;
         run_without_progress(config.clone()).await;
         let path = output.join("conversion-manifest.json");
-        let old: ConversionManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old.schema_version = 24;
+        old.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -3785,10 +3790,20 @@ mod tests {
             .collect();
         assert!(!meshes.is_empty());
         let reused = run_without_progress(config.clone()).await;
-        assert_eq!(reused.converted, 0);
+        let textures = old
+            .entries
+            .values()
+            .filter(|entry| entry.output.ends_with(".ktx2"))
+            .count();
+        assert_eq!(reused.converted, textures as u64);
         for (relative, bytes) in &meshes {
             assert_eq!(fs::read(output.join(relative)).unwrap(), *bytes);
         }
+        let mut compatible: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        compatible.schema_version = 24;
+        compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+        compatible.save(&path).unwrap();
         fs::write(
             data.join("meshes/generated.nif"),
             dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {

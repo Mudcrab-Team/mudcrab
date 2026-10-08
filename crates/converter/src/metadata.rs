@@ -74,18 +74,19 @@ impl AssetPipeline {
         let output_lock = AssetLock::acquire_exclusive(&config.output_dir)?;
         let source_manifest = fs::read(source.join("conversion-manifest.json"))?;
         // Read the original version; normal cache loading deliberately invalidates
-        // GLBs during schema migration, which this explicit route verifies instead.
+        // incompatible assets during migration, which this explicit route verifies instead.
         let mut manifest: ConversionManifest = serde_json::from_slice(&source_manifest)?;
         let source_reader = source_reader_identity(&source)?;
         let retained_reader = retained_reader_identity(&source, &source_reader)?;
         let source_settings = settings_for_source_reader(&config, &source_reader)?;
         let retained_settings = settings_for_source_reader(&config, &retained_reader)?;
         ensure!(
-            (matches!(manifest.schema_version, 15 | 16 | 19 | 20 | 21 | 22 | 23)
+            (matches!(manifest.schema_version, 15 | 16 | 19..=24)
                 || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && manifest.complete
                 && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15, 16, 19, 20, 21, 22, 23 or 24 assets"
+            "metadata rebuild requires complete converter schema 15, 16, 19 through 24 or {} assets",
+            CONVERTER_SCHEMA_VERSION
         );
         ensure!(
             manifest.retained_mesh_schema_version.is_some()
@@ -96,8 +97,7 @@ impl AssetPipeline {
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
         ensure!(
-            (matches!(mesh_schema, 15 | 16 | 19 | 20 | 21 | 22 | 23)
-                || mesh_schema == CONVERTER_SCHEMA_VERSION)
+            (matches!(mesh_schema, 15 | 16 | 19..=24) || mesh_schema == CONVERTER_SCHEMA_VERSION)
                 && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );

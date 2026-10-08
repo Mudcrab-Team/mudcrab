@@ -9,6 +9,9 @@ use std::{fs::File, path::Path};
 pub(crate) struct ScannedRecord {
     pub record_type: [u8; 4],
     pub flags: u32,
+    pub version_control: u32,
+    pub form_version: u16,
+    pub header_unknown: u16,
     pub source_form_id: u32,
     pub cell_form_id: Option<u32>,
     pub worldspace_form_id: Option<u32>,
@@ -129,6 +132,13 @@ fn scan_bytes(
             ScannedRecord {
                 record_type: signature,
                 flags,
+                version_control: u32_at(header, 16),
+                form_version: u16::from_le_bytes(
+                    header[20..22].try_into().expect("checked header"),
+                ),
+                header_unknown: u16::from_le_bytes(
+                    header[22..24].try_into().expect("checked header"),
+                ),
                 source_form_id,
                 cell_form_id: cell,
                 worldspace_form_id: world,

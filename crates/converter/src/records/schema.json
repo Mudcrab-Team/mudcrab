@@ -363,6 +363,282 @@
           "offset": 6
         }
       ]
+    },
+    "model_path": {
+      "name": "model",
+      "kind": "zstring",
+      "offset": 0,
+      "source": "xedit-tes5:188-215 shared model path"
+    },
+    "model_information": {
+      "name": "model_information",
+      "kind": "bytes",
+      "offset": 0,
+      "source": "xedit-common:2304-2390 default opaque model information; optional texture hash interpretation remains undocumented reader support"
+    },
+    "alternate_textures": {
+      "name": "alternate_textures",
+      "kind": "array",
+      "offset": 0,
+      "decider": "alternate_textures",
+      "source": "xedit-tes5:MODS counted names plus texture set and shape index"
+    },
+    "model": {
+      "kind": "group",
+      "name": "model",
+      "fields": [
+        {
+          "signature": "MODL",
+          "definition": "model_path"
+        },
+        {
+          "signature": "MODT",
+          "definition": "model_information"
+        },
+        {
+          "signature": "MODS",
+          "definition": "alternate_textures"
+        }
+      ]
+    },
+    "inventory_extra": {
+      "kind": "struct",
+      "name": "inventory_extra",
+      "size": 12,
+      "source": "xedit-tes5:4104-4113 COED owner NPC/global, faction/rank, unresolved unused",
+      "members": [
+        {
+          "name": "owner",
+          "kind": "form_id",
+          "offset": 0,
+          "targets": [
+            "NPC_",
+            "FACT"
+          ]
+        },
+        {
+          "name": "global_or_rank",
+          "kind": "union",
+          "offset": 4,
+          "decider": "inventory_owner_condition",
+          "size": 4,
+          "fields": [
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "global",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "GLOB"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "i32",
+              "offset": 0
+            }
+          ]
+        },
+        {
+          "name": "condition",
+          "kind": "f32",
+          "offset": 8
+        }
+      ]
+    },
+    "inventory_items": {
+      "kind": "group",
+      "name": "inventory_items",
+      "repeat": true,
+      "source": "xedit-tes5:4115-4137 CNTO/COED inventory item groups",
+      "fields": [
+        {
+          "signature": "CNTO",
+          "name": "inventory_item",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "item",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ARMO",
+                "AMMO",
+                "APPA",
+                "MISC",
+                "WEAP",
+                "BOOK",
+                "LVLI",
+                "KEYM",
+                "ALCH",
+                "INGR",
+                "LIGH",
+                "SLGM",
+                "SCRL"
+              ]
+            },
+            {
+              "name": "count",
+              "kind": "i32",
+              "offset": 4
+            }
+          ]
+        },
+        {
+          "signature": "COED",
+          "definition": "inventory_extra"
+        }
+      ]
+    },
+    "destructible": {
+      "kind": "group",
+      "name": "destructible",
+      "source": "xedit-tes5:5089-5154 destructible header/stage/model/end facts",
+      "fields": [
+        {
+          "signature": "DEST",
+          "name": "destruction_header",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "health",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "stage_count",
+              "kind": "u8",
+              "offset": 4
+            },
+            {
+              "name": "vats_targetable",
+              "kind": "u8",
+              "offset": 5
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 6,
+              "size": 2
+            }
+          ]
+        },
+        {
+          "kind": "group",
+          "name": "destruction_stages",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "DSTD",
+              "name": "destruction_stage",
+              "kind": "struct",
+              "size": 20,
+              "members": [
+                {
+                  "name": "health_percent",
+                  "kind": "u8",
+                  "offset": 0
+                },
+                {
+                  "name": "index",
+                  "kind": "u8",
+                  "offset": 1
+                },
+                {
+                  "name": "model_damage_stage",
+                  "kind": "u8",
+                  "offset": 2
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 3
+                },
+                {
+                  "name": "self_damage_per_second",
+                  "kind": "i32",
+                  "offset": 4
+                },
+                {
+                  "name": "explosion",
+                  "kind": "form_id",
+                  "offset": 8,
+                  "targets": [
+                    "EXPL"
+                  ]
+                },
+                {
+                  "name": "debris",
+                  "kind": "form_id",
+                  "offset": 12,
+                  "targets": [
+                    "DEBR"
+                  ]
+                },
+                {
+                  "name": "debris_count",
+                  "kind": "i32",
+                  "offset": 16
+                }
+              ]
+            },
+            {
+              "signature": "DMDL",
+              "name": "destruction_model",
+              "definition": "model_path"
+            },
+            {
+              "signature": "DMDT",
+              "name": "destruction_model_information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "DMDS",
+              "name": "destruction_alternate_textures",
+              "definition": "alternate_textures"
+            },
+            {
+              "signature": "DSTF",
+              "name": "destruction_end",
+              "kind": "bytes",
+              "size": 0
+            }
+          ]
+        }
+      ]
+    },
+    "pending_conditions": {
+      "kind": "group",
+      "name": "pending_conditions",
+      "repeat": true,
+      "source": "phase-2 pending Agent D: condition bytes retained without parameter-type interpretation",
+      "fields": [
+        {
+          "signature": "CTDA",
+          "name": "pending_condition",
+          "kind": "bytes",
+          "repeat": true
+        },
+        {
+          "signature": "CIS1",
+          "name": "pending_condition_string1",
+          "kind": "bytes",
+          "repeat": true
+        },
+        {
+          "signature": "CIS2",
+          "name": "pending_condition_string2",
+          "kind": "bytes",
+          "repeat": true
+        }
+      ]
     }
   },
   "records": [

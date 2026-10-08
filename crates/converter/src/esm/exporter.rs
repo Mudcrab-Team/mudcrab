@@ -382,14 +382,13 @@ fn export_records(
             }
             "REFR" | "ACHR" | "ACRE" | "PGRE" | "PMIS" => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
-                insert_reference_with_reader(
+                insert_reference(
                     &tx,
                     form_id,
                     cell_id,
                     cells.get(&cell_id).copied(),
                     record.flags,
                     &record.subrecords,
-                    inhouse,
                 )?;
             }
             "LAND" => {
@@ -504,10 +503,10 @@ fn export_records(
                         view.get_string(b"EDID"),
                         view.get_string(b"TX00"),
                         view.get_string(b"TX01"),
-                        view.get_string(if inhouse { b"TX03" } else { b"TX02" }),
-                        view.get_string(if inhouse { b"TX04" } else { b"TX03" }),
-                        view.get_string(if inhouse { b"TX05" } else { b"TX04" }),
-                        view.get_string(if inhouse { b"TX02" } else { b"TX05" }),
+                        view.get_string(b"TX03"),
+                        view.get_string(b"TX04"),
+                        view.get_string(b"TX05"),
+                        view.get_string(b"TX02"),
                         view.get_string(if inhouse { b"TX07" } else { b"TX06" }),
                         view.get_string(if inhouse { b"TX06" } else { b"TX07" }),
                     ],
@@ -689,7 +688,7 @@ fn insert_light(tx: &Transaction<'_>, form_id: u32, view: &SubrecordView<'_>) ->
     Ok(())
 }
 
-/// Write a legacy reference and its exterior spatial projection.
+/// Write a reference and its exterior spatial projection.
 pub fn insert_reference(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -697,20 +696,6 @@ pub fn insert_reference(
     cell: Option<CellMetadata>,
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
-) -> Result<()> {
-    insert_reference_with_reader(tx, form_id, cell_id, cell, header_flags, subs, false)
-}
-
-/// Write a reference using the selected frontend's enable-parent interpretation.
-#[allow(clippy::too_many_arguments)]
-fn insert_reference_with_reader(
-    tx: &Transaction<'_>,
-    form_id: u32,
-    cell_id: u32,
-    cell: Option<CellMetadata>,
-    header_flags: u32,
-    subs: &[(Vec<u8>, Vec<u8>)],
-    inhouse: bool,
 ) -> Result<()> {
     let view = SubrecordView::new(subs);
     let transform = view.get_f32_slice(b"DATA").unwrap_or_default();
@@ -755,11 +740,9 @@ fn insert_reference_with_reader(
         .map(|bytes| {
             (
                 u32::from_le_bytes(bytes[..4].try_into().expect("four-byte XESP parent")),
-                if inhouse {
-                    u32::from(bytes[4])
-                } else {
-                    u32::from_le_bytes(bytes[4..8].try_into().expect("four-byte XESP flags"))
-                },
+                // XESP has one flags byte followed by three unused bytes.
+                // Preserve padding in the serialized subrecords, excluding it here.
+                u32::from(bytes[4]),
             )
         })
         .unzip();

@@ -12,6 +12,7 @@ pub(crate) struct Context<'a> {
     pub order: &'a LoadOrder,
     pub plugin_index: usize,
     pub localized: bool,
+    pub winning_types: Option<&'a HashMap<u32, [u8; 4]>>,
 }
 
 /// One flattened subrecord occurrence, including its enclosing repeat groups.
@@ -75,6 +76,19 @@ fn prepared() -> &'static HashMap<[u8; 4], PreparedRecord> {
     })
 }
 
+pub(crate) fn string_table(record_type: &[u8; 4], field_name: &str) -> &'static str {
+    prepared()
+        .get(record_type)
+        .and_then(|record| {
+            record
+                .entries
+                .iter()
+                .find(|entry| entry.field.name == field_name)
+        })
+        .and_then(|entry| entry.field.string_table.as_deref())
+        .unwrap_or("strings")
+}
+
 /// Match a file-order occurrence without moving the cursor on an unknown tag.
 fn match_field(
     record: &PreparedRecord,
@@ -89,17 +103,20 @@ fn match_field(
             .as_deref()
             .is_some_and(|tag| tag.as_bytes() == signature)
     };
-    if let Some(index) = (cursor..record.entries.len()).find(|&index| matches(index)) {
-        return Some(index);
-    }
     if let Some(last) = last {
         for &(start, end) in &record.entries[last].repeat_ranges {
-            if cursor <= end
-                && let Some(index) = (start..end).find(|&index| matches(index))
-            {
-                return Some(index);
+            if cursor <= end {
+                if let Some(index) = (cursor..end).find(|&index| matches(index)) {
+                    return Some(index);
+                }
+                if let Some(index) = (start..end).find(|&index| matches(index)) {
+                    return Some(index);
+                }
             }
         }
+    }
+    if let Some(index) = (cursor..record.entries.len()).find(|&index| matches(index)) {
+        return Some(index);
     }
     if record.unordered {
         return (0..record.entries.len()).find(|&index| matches(index));
@@ -258,7 +275,20 @@ pub(crate) fn decode(
     let mut rejected_fields = Vec::new();
     let mut editor_id = String::new();
     let framed = subrecords(&scanned.payload, diagnostics, scanned.source_form_id);
-    for (signature, bytes) in framed.fields {
+    let link_kind = |source_id| {
+        let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
+        context.winning_types?.get(&id).copied()
+    };
+    for (position, &(signature, bytes)) in framed.fields.iter().enumerate() {
+        let selection = super::deciders::Context {
+            record_type: scanned.record_type,
+            editor_id: &editor_id,
+            preceding_subrecords: &framed.fields[..position],
+            parent_payload: None,
+            link_record_type: context
+                .winning_types
+                .map(|_| &link_kind as &dyn Fn(u32) -> Option<[u8; 4]>),
+        };
         let Some(record_schema) = record_schema else {
             if let Some(common) = schema.common_fields.iter().find(|field| {
                 field
@@ -267,7 +297,7 @@ pub(crate) fn decode(
                     .is_some_and(|tag| tag.as_bytes() == signature)
             }) {
                 let common = schema.resolve(common)?;
-                match value(&common, bytes, schema, context, diagnostics, &editor_id, 0) {
+                match value(&common, bytes, schema, context, diagnostics, &selection, 0) {
                     Ok((value, canonical_bytes)) => fields.push(DecodedField {
                         signature,
                         name: common.name,
@@ -326,7 +356,7 @@ pub(crate) fn decode(
             schema,
             context,
             diagnostics,
-            &editor_id,
+            &selection,
             0,
         ) {
             Ok((value, canonical_bytes)) => {
@@ -343,6 +373,13 @@ pub(crate) fn decode(
                 });
             }
             Err(error) => {
+                if field_schema.reject_record_on_error && scanned.flags & 0x20 == 0 {
+                    return Err(format!(
+                        "{} {id:08X} mandatory {}: {error}",
+                        String::from_utf8_lossy(&scanned.record_type),
+                        field_schema.name
+                    ));
+                }
                 if !rejected_fields.contains(&signature) {
                     rejected_fields.push(signature);
                 }
@@ -361,6 +398,9 @@ pub(crate) fn decode(
         source_form_id: scanned.source_form_id,
         record_type: scanned.record_type,
         flags: scanned.flags,
+        version_control: scanned.version_control,
+        form_version: scanned.form_version,
+        header_unknown: scanned.header_unknown,
         load_order: context.plugin_index as u32,
         cell_form_id: cell,
         worldspace_form_id: world,
@@ -387,11 +427,11 @@ fn width(field: &FieldSchema) -> Option<usize> {
 fn decide<'a>(
     field: &'a FieldSchema,
     bytes: &[u8],
-    editor_id: &str,
-) -> Result<&'a FieldSchema, String> {
+    selection: &super::deciders::Context<'_>,
+) -> Result<Option<&'a FieldSchema>, String> {
     let decider = field.decider.as_deref().ok_or("union has no decider")?;
     let target = match decider {
-        "gmst_value" => match editor_id.as_bytes().first() {
+        "gmst_value" => match selection.editor_id.as_bytes().first() {
             Some(b'f' | b'F') => Some("f32"),
             Some(b'i' | b'I') => Some("i32"),
             Some(b'b' | b'B') => Some("u32"),
@@ -402,7 +442,16 @@ fn decide<'a>(
         "legacy_linked_reference" | "cell_grid" | "movement_speeds" | "water_visual" | "size" => {
             None
         }
-        _ => return Err(format!("unsupported union decider {decider}")),
+        _ => {
+            return match super::deciders::select(decider, field, bytes, selection)? {
+                super::deciders::Selection::Alternative(index) => field
+                    .fields
+                    .get(index)
+                    .map(Some)
+                    .ok_or_else(|| format!("{decider} selected absent alternative {index}")),
+                super::deciders::Selection::Deferred => Ok(None),
+            };
+        }
     };
     field
         .fields
@@ -416,6 +465,7 @@ fn decide<'a>(
                 |kind| alternative.kind == kind,
             )
         })
+        .map(Some)
         .ok_or_else(|| format!("no {decider} alternative accepts {} bytes", bytes.len()))
 }
 
@@ -426,7 +476,7 @@ fn value(
     schema: &Schema,
     context: &Context<'_>,
     diagnostics: &mut PluginDiagnostics,
-    editor_id: &str,
+    selection: &super::deciders::Context<'_>,
     depth: usize,
 ) -> Result<(Value, Vec<u8>), String> {
     if depth >= 32 {
@@ -439,7 +489,7 @@ fn value(
             schema,
             context,
             diagnostics,
-            editor_id,
+            selection,
             depth + 1,
         );
     }
@@ -454,13 +504,16 @@ fn value(
         ));
     }
     if field.kind == "union" {
+        let Some(alternative) = decide(field, bytes, selection)? else {
+            return Ok((Value::Deferred(bytes.to_vec()), bytes.to_vec()));
+        };
         return value(
-            decide(field, bytes, editor_id)?,
+            alternative,
             bytes,
             schema,
             context,
             diagnostics,
-            editor_id,
+            selection,
             depth + 1,
         );
     }
@@ -544,6 +597,9 @@ fn value(
             let mut canonical = bytes.to_vec();
             for member in &field.members {
                 let member = schema.resolve(member)?;
+                if member.optional && member.offset >= bytes.len() {
+                    continue;
+                }
                 let size = width(&member)
                     .or_else(|| bytes.len().checked_sub(member.offset))
                     .ok_or("member offset out of bounds")?;
@@ -560,7 +616,10 @@ fn value(
                     schema,
                     context,
                     diagnostics,
-                    editor_id,
+                    &super::deciders::Context {
+                        parent_payload: Some(bytes),
+                        ..*selection
+                    },
                     depth + 1,
                 )?;
                 canonical[member.offset..end].copy_from_slice(&encoded);
@@ -575,7 +634,7 @@ fn value(
                 schema,
                 context,
                 diagnostics,
-                editor_id,
+                selection,
                 depth + 1,
             );
         }
@@ -613,7 +672,7 @@ fn array(
     schema: &Schema,
     context: &Context<'_>,
     diagnostics: &mut PluginDiagnostics,
-    editor_id: &str,
+    selection: &super::deciders::Context<'_>,
     depth: usize,
 ) -> Result<(Value, Vec<u8>), String> {
     if field.decider.as_deref() == Some("alternate_textures") {
@@ -682,7 +741,7 @@ fn array(
             schema,
             context,
             diagnostics,
-            editor_id,
+            selection,
             depth,
         )?;
         canonical[start..start + stride].copy_from_slice(&encoded);
@@ -746,6 +805,60 @@ fn alternate_textures(
 }
 
 /// Validate declared target kinds after all winners exist; dangling optional links are nulled.
+pub(crate) fn resolve_deferred(result: &mut ReadResult, schema: &Schema, order: &LoadOrder) {
+    fn deferred(value: &Value) -> bool {
+        match value {
+            Value::Deferred(_) => true,
+            Value::Struct(values) => values.iter().any(|(_, value)| deferred(value)),
+            Value::Array(values) => values.iter().any(deferred),
+            _ => false,
+        }
+    }
+    let kinds: HashMap<_, _> = result
+        .records
+        .iter()
+        .map(|(&id, record)| (id, record.record_type))
+        .collect();
+    for record in result
+        .records
+        .values_mut()
+        .filter(|record| record.fields.iter().any(|field| deferred(&field.value)))
+    {
+        let priority = record.load_order as usize;
+        let context = Context {
+            order,
+            plugin_index: priority,
+            localized: order.metadata[priority].flags & 0x80 != 0,
+            winning_types: Some(&kinds),
+        };
+        let scanned = ScannedRecord {
+            record_type: record.record_type,
+            flags: record.flags,
+            source_form_id: record.source_form_id,
+            version_control: record.version_control,
+            form_version: record.form_version,
+            header_unknown: record.header_unknown,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            payload: record.raw_payload.clone(),
+        };
+        let diagnostics = result
+            .diagnostics
+            .entry(order.names[priority].clone())
+            .or_default();
+        match decode(scanned, schema, &context, diagnostics) {
+            Ok(resolved) => {
+                record.fields = resolved.fields;
+                record.rejected_fields = resolved.rejected_fields;
+            }
+            Err(error) => diagnostics.note("record", || {
+                format!("deferred winner {:08X}: {error}", record.form_id)
+            }),
+        }
+    }
+}
+
+/// Validate declared target kinds after all winners exist; dangling optional links are nulled.
 pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: &LoadOrder) {
     let kinds: HashMap<u32, [u8; 4]> = result
         .records
@@ -756,18 +869,44 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
         let record_schema = prepared().get(&record.record_type);
         let plugin = order.names.get(record.load_order as usize).cloned();
         let mut diagnostics = PluginDiagnostics::default();
-        for field in &mut record.fields {
+        let preceding: Vec<_> = record
+            .fields
+            .iter()
+            .map(|field| (field.signature, field.canonical_bytes.clone()))
+            .collect();
+        let preceding: Vec<_> = preceding
+            .iter()
+            .map(|(tag, bytes)| (*tag, bytes.as_slice()))
+            .collect();
+        let editor_id = record
+            .fields
+            .iter()
+            .find_map(|field| {
+                if field.signature == *b"EDID" {
+                    if let Value::String(name) = &field.value {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let link_kind = |id| kinds.get(&id).copied();
+        for (position, field) in record.fields.iter_mut().enumerate() {
             let field_schema = record_schema
                 .and_then(|prepared| {
                     prepared
                         .entries
                         .iter()
                         .find(|entry| {
-                            entry
-                                .field
-                                .signature
-                                .as_deref()
-                                .is_some_and(|tag| tag.as_bytes() == field.signature)
+                            entry.field.name == field.name
+                                && entry
+                                    .field
+                                    .signature
+                                    .as_deref()
+                                    .is_some_and(|tag| tag.as_bytes() == field.signature)
                         })
                         .map(|entry| &entry.field)
                 })
@@ -814,6 +953,13 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
                 schema,
                 &kinds,
                 &mut diagnostics,
+                &super::deciders::Context {
+                    record_type: record.record_type,
+                    editor_id: &editor_id,
+                    preceding_subrecords: &preceding[..position],
+                    parent_payload: None,
+                    link_record_type: Some(&link_kind),
+                },
             );
         }
         if diagnostics.invalid_links != 0
@@ -839,15 +985,22 @@ fn validate_value(
     schema: &Schema,
     kinds: &HashMap<u32, [u8; 4]>,
     diagnostics: &mut PluginDiagnostics,
+    selection: &super::deciders::Context<'_>,
 ) {
     let Ok(field) = schema.resolve(field) else {
         return;
     };
     if field.kind == "union" {
-        if let Some(alternative) = field.fields.iter().find(|alternative| {
-            alternative.size == Some(bytes.len()) || alternative.sizes.contains(&bytes.len())
-        }) {
-            validate_value(decoded, bytes, alternative, schema, kinds, diagnostics);
+        if let Ok(Some(alternative)) = decide(&field, bytes, selection) {
+            validate_value(
+                decoded,
+                bytes,
+                alternative,
+                schema,
+                kinds,
+                diagnostics,
+                selection,
+            );
         }
         return;
     }
@@ -858,7 +1011,7 @@ fn validate_value(
                 field
                     .targets
                     .iter()
-                    .any(|target| target == "ANY_" || target.as_bytes() == kind)
+                    .any(|target| target == "*" || target == "ANY_" || target.as_bytes() == kind)
             });
             if !allowed {
                 diagnostics.note("link", || {
@@ -874,13 +1027,25 @@ fn validate_value(
             }
         }
         Value::Struct(values) => {
+            let parent = bytes.to_vec();
             for (name, value) in values {
                 if let Some(member) = field.members.iter().find(|member| member.name == *name) {
                     let size = width(member).unwrap_or(bytes.len().saturating_sub(member.offset));
                     if let Some(slice) =
                         bytes.get_mut(member.offset..member.offset.saturating_add(size))
                     {
-                        validate_value(value, slice, member, schema, kinds, diagnostics);
+                        validate_value(
+                            value,
+                            slice,
+                            member,
+                            schema,
+                            kinds,
+                            diagnostics,
+                            &super::deciders::Context {
+                                parent_payload: Some(&parent),
+                                ..*selection
+                            },
+                        );
                     }
                 }
             }
@@ -906,7 +1071,15 @@ fn validate_value(
                         members.iter_mut().find(|(name, _)| name == "texture_set")
                     && let Some(link_bytes) = bytes.get_mut(position..position.saturating_add(4))
                 {
-                    validate_value(link, link_bytes, &target_schema, schema, kinds, diagnostics);
+                    validate_value(
+                        link,
+                        link_bytes,
+                        &target_schema,
+                        schema,
+                        kinds,
+                        diagnostics,
+                        selection,
+                    );
                 }
                 position = position.saturating_add(8);
             }
@@ -941,7 +1114,15 @@ fn validate_value(
                 for (index, value) in values.iter_mut().enumerate() {
                     let start = offset + index * stride;
                     if let Some(slice) = bytes.get_mut(start..start + stride) {
-                        validate_value(value, slice, &element, schema, kinds, diagnostics);
+                        validate_value(
+                            value,
+                            slice,
+                            &element,
+                            schema,
+                            kinds,
+                            diagnostics,
+                            selection,
+                        );
                     }
                 }
             }

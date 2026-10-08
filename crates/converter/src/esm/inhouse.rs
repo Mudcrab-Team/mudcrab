@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -35,6 +36,16 @@ pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
 /// Export a fresh diagnostic record bundle without converting meshes, textures or scripts.
 /// Inputs stay read-only; retained STRINGS extraction is evidence workspace data.
 pub fn export_record_bundle(data: &Path, plugins_file: &Path, output: &Path) -> Result<usize> {
+    export_record_bundle_typed(data, plugins_file, output, &[])
+}
+
+/// Include ordered typed family fields and their localized lookup evidence in JSONL.
+pub fn export_record_bundle_typed(
+    data: &Path,
+    plugins_file: &Path,
+    output: &Path,
+    signatures: &[[u8; 4]],
+) -> Result<usize> {
     let config = crate::config::PipelineConfig::new(data, output);
     config.validate()?;
     color_eyre::eyre::ensure!(!output.exists(), "record bundle output must be new");
@@ -64,10 +75,16 @@ pub fn export_record_bundle(data: &Path, plugins_file: &Path, output: &Path) -> 
             );
         }
     }
-    let records = convert_plugins(&plugins, &output.join("skyrim_world.db"), &strings_root)?;
+    let records = convert_plugins_with_dump(
+        &plugins,
+        &output.join("skyrim_world.db"),
+        &strings_root,
+        (!signatures.is_empty()).then_some((output, signatures)),
+    )?;
     let count =
         crate::esm::cell_cache::write_cell_cache(&records, &output.join("cell_cache.rkyv"))?;
     write_reader_identity(output, RecordReader::Inhouse)?;
+    fs::write(output.join("records-schema.json"), records::SCHEMA_BYTES)?;
     Ok(count)
 }
 
@@ -86,11 +103,13 @@ pub(crate) fn localized_string_paths(plugins: &[PathBuf]) -> BTreeSet<PathBuf> {
     plugins
         .iter()
         .filter_map(|path| path.file_stem())
-        .map(|stem| {
-            PathBuf::from(format!(
-                "strings/{}_english.strings",
-                stem.to_string_lossy().to_ascii_lowercase()
-            ))
+        .flat_map(|stem| {
+            ["strings", "dlstrings", "ilstrings"].map(|bank| {
+                PathBuf::from(format!(
+                    "strings/{}_english.{bank}",
+                    stem.to_string_lossy().to_ascii_lowercase()
+                ))
+            })
         })
         .collect()
 }
@@ -122,33 +141,50 @@ pub(crate) fn convert_plugins(
     db_path: &Path,
     strings_root: &Path,
 ) -> Result<HashMap<u32, RawRecord>> {
+    convert_plugins_with_dump(plugin_paths, db_path, strings_root, None)
+}
+
+/// Diagnostic export shares the exact decoder, winner and text lookup paths with publication.
+fn convert_plugins_with_dump(
+    plugin_paths: &[PathBuf],
+    db_path: &Path,
+    strings_root: &Path,
+    dump: Option<(&Path, &[[u8; 4]])>,
+) -> Result<HashMap<u32, RawRecord>> {
     let order = LoadOrder::read(plugin_paths)?;
     let decoded = records::read_plugins_with_validation(plugin_paths, &order, validate_candidate)?;
     let mut warnings = Warnings::default();
-    let mut tables: HashMap<usize, HashMap<u32, String>> = HashMap::new();
+    let mut tables: HashMap<(usize, String), HashMap<u32, String>> = HashMap::new();
+    let mut typed_output = dump
+        .map(|(output, _)| fs::File::create(output.join("typed-records.jsonl")).map(BufWriter::new))
+        .transpose()?;
     let mut master = HashMap::with_capacity(decoded.records.len());
     for record in decoded.records.values() {
         let priority = record.load_order as usize;
         let plugin = &order.names[priority];
         let mut raw = record.to_raw_record();
         let mut omitted = BTreeSet::new();
+        let mut localization = BTreeMap::new();
         for (index, field) in record.fields.iter().enumerate() {
             if let Value::String(text) = &field.value {
                 // Typed CP1252/UTF-8 decoding owns the text; exporters consume UTF-8.
                 raw.subrecords[index].1 = runtime_string(text);
             }
-            if let Value::LocalizedString(id) = &field.value
-                && (field.signature == *b"FULL"
-                    || (record.record_type == *b"GMST" && field.signature == *b"DATA"))
-            {
-                let table = tables.entry(priority).or_insert_with(|| {
-                    read_plugin_strings(&plugin_paths[priority], strings_root).unwrap_or_else(
-                        |error| {
-                            warnings.skipped(plugin, format!("localized table: {error}"));
-                            HashMap::new()
-                        },
-                    )
-                });
+            if let Value::LocalizedString(id) = &field.value {
+                let bank = records::string_table(&record.record_type, &field.name);
+                let table = tables
+                    .entry((priority, bank.to_owned()))
+                    .or_insert_with(|| {
+                        read_plugin_strings(&plugin_paths[priority], strings_root, bank)
+                            .unwrap_or_else(|error| {
+                                warnings.skipped(plugin, format!("localized table: {error}"));
+                                HashMap::new()
+                            })
+                    });
+                localization.insert(
+                    index,
+                    serde_json::json!({"bank": bank, "id": id, "text": table.get(id)}),
+                );
                 // A missing ID means NULL, never the decimal key or its four raw bytes.
                 if let Some(text) = table.get(id) {
                     raw.subrecords[index].1 = runtime_string(text);
@@ -165,6 +201,15 @@ pub(crate) fn convert_plugins(
                     }
                 }
             }
+        }
+        if let Some(writer) = &mut typed_output
+            && dump.is_some_and(|(_, signatures)| signatures.contains(&record.record_type))
+        {
+            serde_json::to_writer(
+                &mut *writer,
+                &serde_json::json!({"form_id":record.form_id,"source_form_id":record.source_form_id,"record_type":record.record_type,"flags":record.flags,"load_order":record.load_order,"version_control":record.version_control,"form_version":record.form_version,"header_unknown":record.header_unknown,"cell_form_id":record.cell_form_id,"worldspace_form_id":record.worldspace_form_id,"fields":record.fields,"rejected_fields":record.rejected_fields,"payload_complete":record.payload_complete,"supported":record.supported,"localization":localization,"source_payload_sha256":crate::cache::hash_bytes(&record.raw_payload)}),
+            )?;
+            writer.write_all(b"\n")?;
         }
         if !omitted.is_empty() {
             raw.subrecords = raw
@@ -195,6 +240,9 @@ pub(crate) fn convert_plugins(
             continue;
         }
         master.insert(raw.form_id, raw);
+    }
+    if let Some(writer) = &mut typed_output {
+        writer.flush()?;
     }
     let conn = Connection::open(db_path)?;
     create_tables(&conn)?;
@@ -264,16 +312,20 @@ fn runtime_string(text: &str) -> Vec<u8> {
 }
 
 /// Find a plugin's loose STRINGS override first, then the effective staged archive VFS.
-fn read_plugin_strings(plugin: &Path, strings_root: &Path) -> Result<HashMap<u32, String>> {
+fn read_plugin_strings(
+    plugin: &Path,
+    strings_root: &Path,
+    bank: &str,
+) -> Result<HashMap<u32, String>> {
     let file_name = format!(
-        "{}_english.strings",
+        "{}_english.{bank}",
         plugin.file_stem().unwrap_or_default().to_string_lossy()
     );
     for root in [plugin.parent().unwrap_or(Path::new(".")), strings_root] {
         if let Some(folder) = child_case_insensitive(root, "strings")
             && let Some(path) = child_case_insensitive(&folder, &file_name)
         {
-            return parse_strings(&fs::read(path)?);
+            return parse_text_table(&fs::read(path)?, bank != "strings");
         }
     }
     Ok(HashMap::new())
@@ -298,7 +350,8 @@ fn child_case_insensitive(parent: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Read STRINGS offsets within their declared data region; one bad entry is skipped.
-fn parse_strings(bytes: &[u8]) -> Result<HashMap<u32, String>> {
+/// DLSTRINGS/ILSTRINGS directory offsets point to a checked length prefix followed by text.
+fn parse_text_table(bytes: &[u8], length_prefixed: bool) -> Result<HashMap<u32, String>> {
     let word = |offset: usize| {
         bytes
             .get(offset..offset + 4)
@@ -321,7 +374,16 @@ fn parse_strings(bytes: &[u8]) -> Result<HashMap<u32, String>> {
     for index in 0..count {
         let id = word(8 + index * 8).expect("bounded directory");
         let offset = word(12 + index * 8).expect("bounded directory") as usize;
-        if let Some(tail) = data.get(offset..)
+        let tail = data.get(offset..);
+        let tail = if length_prefixed {
+            tail.and_then(|tail| {
+                let size = u32::from_le_bytes(tail.get(..4)?.try_into().ok()?) as usize;
+                tail.get(4..4usize.checked_add(size)?)
+            })
+        } else {
+            tail
+        };
+        if let Some(tail) = tail
             && let Some(end) = tail.iter().position(|byte| *byte == 0)
         {
             strings.insert(id, records::decode_text(&tail[..end]));

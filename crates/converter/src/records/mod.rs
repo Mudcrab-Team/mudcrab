@@ -1,4 +1,5 @@
 //! Authored schema-driven Skyrim records, independent of the legacy field decoder.
+pub mod deciders;
 mod decoder;
 mod scanner;
 pub mod schema_format;
@@ -14,7 +15,7 @@ use std::{
 };
 
 /// The checked data schema; changing it changes the in-house producer identity.
-pub const SCHEMA_BYTES: &[u8] = include_bytes!("schema.json");
+pub const SCHEMA_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/records-schema.json"));
 
 /// Numeric values keep their binary widths in the schema; floats retain raw f32 precision.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -26,6 +27,8 @@ pub enum Value {
     LocalizedString(u32),
     FormId(u32),
     Bytes(Vec<u8>),
+    /// Internal first-pass bytes resolved after accepted winner kinds are known.
+    Deferred(Vec<u8>),
     Struct(Vec<(String, Value)>),
     Array(Vec<Value>),
 }
@@ -46,6 +49,9 @@ pub struct DecodedRecord {
     pub source_form_id: u32,
     pub record_type: [u8; 4],
     pub flags: u32,
+    pub version_control: u32,
+    pub form_version: u16,
+    pub header_unknown: u16,
     pub load_order: u32,
     pub cell_form_id: Option<u32>,
     pub worldspace_form_id: Option<u32>,
@@ -135,6 +141,11 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
     decoder::decode_string(bytes)
 }
 
+/// Lookup uses the matched role name so repeated gender/rank signatures retain their text bank.
+pub(crate) fn string_table(record_type: &[u8; 4], field_name: &str) -> &'static str {
+    decoder::string_table(record_type, field_name)
+}
+
 /// Scan in load order using the converter's single slot/master authority.
 pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadResult> {
     read_plugins_with_validation(plugin_paths, order, |_| Ok(()))
@@ -164,6 +175,7 @@ pub(crate) fn read_plugins_with_validation(
                 order,
                 plugin_index: index,
                 localized: order.metadata[index].flags & 0x80 != 0,
+                winning_types: None,
             };
             let mut record = match decoder::decode(scanned, schema, &context, diagnostics) {
                 Ok(record) => record,
@@ -276,6 +288,7 @@ pub(crate) fn read_plugins_with_validation(
         })?;
         result.diagnostics.insert(name.clone(), diagnostics);
     }
+    decoder::resolve_deferred(&mut result, schema, order);
     decoder::validate_targets(&mut result, schema, order);
     for (name, diagnostics) in &result.diagnostics {
         if let Some(example) = ["record", "field", "link", "unexpected"]

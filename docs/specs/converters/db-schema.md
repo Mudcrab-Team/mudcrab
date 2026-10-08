@@ -3,7 +3,7 @@
 This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](../../../crates/converter/src/esm/exporter.rs).
 
 The optional in-house frontend keeps the runtime column contract while
-correcting TXST slot interpretation: diffuse TX00, normal TX01, mask TX02, glow
+using TXST slot interpretation: diffuse TX00, normal TX01, mask TX02, glow
 TX03, height TX04, environment TX05, detail TX06, and specular TX07. The existing
 `detail_path` column carries TX06 multilayer data; TX03 is the source's
 glow/detail-map slot and TX07 its backlight-mask/specular slot. These role names
@@ -17,15 +17,29 @@ fallback; legacy retains its existing MOD3 fallback.
 
 `skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, ESM-flagged plugins and `.esm`/`.esl` files take priority, keeping the listed order within each category except that regular dependencies are moved ahead of the master files that need them. The resulting order is validated before assigning full/light slots, ordering archive (BSA/BA2) priority, and merging database records and terrain caches. Unrelated regular plugins retain the user's order. This is not a general dependency sort: any inversions remaining after normalization, including a master file listed before another master it depends on, are rejected. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
 
-The database stamps its version in `schema_info`; the current version is **7**
+The database stamps its version in `schema_info`; the current version is **9**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`). Schema 4 added lights and
 `references.radius_override`. Schema 5 adds grass data in #152;
 the combined producer exports grass and LOD tables. Schema 6 adds LOD origins, chunk metadata,
-its spatial index, and a build identity. The engine, `world-inspect` and
-launcher accept world schemas **3 through 7**, using
+its spatial index, and a build identity. Schema 9 combines the corrected texture-set slot
+projection: `mask_path` comes from TX02, `glow_path` from TX03, `height_path`
+from TX04 and `environment_path` from TX05. TX00, TX01, TX06 and TX07 retain
+their existing diffuse, normal, specular and detail column projections in legacy mode.
+The in-house terminal-slot interpretation is documented above. Schema 9 also
+projects only XESP byte 4 into `enable_parent_flags`. Separate candidate fixes
+used producer 25/world 8 for different contracts; combined output uses 26/9.
+The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 24**. Legacy worlds render full detail without
+support schemas **15 through 26**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
+
+Converter producer 26 also corrects the texture encodings chosen from those
+columns. Normal conversion rebuilds every older KTX2, the database, cell cache
+and derived LOD outputs. Verified producer-24 GLBs, unchanged scripts and
+archive ingestion remain reusable with matching source/dependency,
+configuration and output-byte proof; producers 12-23 still rebuild GLBs.
+Metadata-only rebuilds preserve the original retained producer/configuration
+and texture bytes. Run normal conversion to repair those retained encodings.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -148,7 +162,7 @@ CREATE TABLE IF NOT EXISTS references (
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
-    enable_parent_flags INTEGER,        -- XESP flags; NULL when absent
+    enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
     data BLOB                           -- Subrecords payload
 );
 
@@ -157,13 +171,15 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header; `enable_parent_id` and
-`enable_parent_flags` use the legacy interpretation as two little-endian words
-of the eight-byte XESP subrecord, with the parent FormID resolved through plugin
-load order. In-house mode correctly reads flags from byte 4 only; bytes 5–7 are
-unused padding, retained in the payload. The raw
-subrecord payload remains in `data`. An invalid parent link is published as
+metadata for later object LOD (#106) and enable-state support (#165). Current
+terrain LOD does not consume them; runtime parent enable-state behavior remains
+future work. `header_flags` comes from the record header. `enable_parent_id` is
+XESP's little-endian parent FormID (bytes 0-3), resolved through plugin load order;
+`enable_parent_flags` is byte 4 alone in both readers. Bit 0 inverts the parent's
+state and bit 1 enables pop-in. The three unused bytes (5-7) remain unchanged
+in the canonical subrecords serialized in `data`. Older legacy projections could
+include padding in the normalized flags value; reconversion corrects that
+projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
 

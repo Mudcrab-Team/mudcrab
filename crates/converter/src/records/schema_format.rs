@@ -55,6 +55,14 @@ pub struct FieldSchema {
     pub group: Option<String>,
     pub definition: Option<String>,
     pub decider: Option<String>,
+    /// A whole trailing struct member may be absent at a declared valid size.
+    #[serde(default)]
+    pub optional: bool,
+    /// A present but malformed mandatory field invalidates only its candidate record.
+    #[serde(default)]
+    pub reject_record_on_error: bool,
+    /// Localized text bank; absent means the ordinary STRINGS bank.
+    pub string_table: Option<String>,
     pub count: Option<serde_json::Value>,
     #[serde(default)]
     pub flags: serde_json::Value,
@@ -63,6 +71,75 @@ pub struct FieldSchema {
 }
 
 impl Schema {
+    /// Assemble independently owned family overlays and validate their combined definitions.
+    pub fn assemble(base: &[u8], modules: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
+        let mut combined: serde_json::Value =
+            serde_json::from_slice(base).map_err(|error| error.to_string())?;
+        let mut owned = BTreeSet::new();
+        for &(family, bytes) in modules {
+            let scope = match family {
+                "items" => {
+                    "WEAP ARMO ARMA AMMO BOOK MISC KEYM INGR ALCH SLGM SCRL APPA CONT COBJ EQUP"
+                }
+                "actors" => "NPC_ RACE CLAS FACT OTFT HDPT EYES VTYP CSTY BPTD RELA ASTP LCRT MOVT",
+                "magic" => {
+                    "SPEL MGEF ENCH SHOU WOOP LVLI LVLN LVSP FLST KYWD GLOB GMST EXPL PROJ HAZD ARTO EFSH DUAL"
+                }
+                _ => return Err(format!("unknown schema family {family}")),
+            };
+            let module: serde_json::Value =
+                serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+            let parsed: Self =
+                serde_json::from_value(module.clone()).map_err(|error| error.to_string())?;
+            if parsed.version != 1 || !parsed.common_fields.is_empty() {
+                return Err(format!(
+                    "{family}: unsupported version or shared-field ownership"
+                ));
+            }
+            for key in ["definitions", "sources"] {
+                if let Some(additions) = module.get(key).and_then(|value| value.as_object()) {
+                    let destination = combined
+                        .get_mut(key)
+                        .and_then(|value| value.as_object_mut())
+                        .ok_or_else(|| format!("base {key} must be an object"))?;
+                    for (name, value) in additions {
+                        if let Some(existing) = destination.get(name) {
+                            if existing != value {
+                                return Err(format!("{family}: conflicting shared {key} {name}"));
+                            }
+                        } else {
+                            destination.insert(name.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+            for record in module["records"].as_array().ok_or("family lacks records")? {
+                let signature = record["signature"]
+                    .as_str()
+                    .ok_or("record lacks signature")?;
+                if !scope.split_whitespace().any(|allowed| allowed == signature)
+                    || !owned.insert(signature.to_owned())
+                {
+                    return Err(format!("{family}: duplicate or unowned record {signature}"));
+                }
+                let records = combined["records"]
+                    .as_array_mut()
+                    .ok_or("base lacks records")?;
+                if let Some(existing) = records
+                    .iter_mut()
+                    .find(|entry| entry["signature"] == signature)
+                {
+                    *existing = record.clone();
+                } else {
+                    records.push(record.clone());
+                }
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&combined).map_err(|error| error.to_string())?;
+        Self::parse(&bytes)?;
+        Ok(bytes)
+    }
+
     /// Parse and validate the data before it can drive any binary reads.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         let schema: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
@@ -109,6 +186,11 @@ impl Schema {
             .ok_or_else(|| format!("unknown schema definition {name}"))?;
         result.signature.clone_from(&field.signature);
         result.repeat |= field.repeat;
+        result.optional |= field.optional;
+        result.reject_record_on_error |= field.reject_record_on_error;
+        if field.string_table.is_some() {
+            result.string_table.clone_from(&field.string_table);
+        }
         result.offset = field.offset;
         if !field.name.is_empty() {
             result.name.clone_from(&field.name);
@@ -128,7 +210,22 @@ impl Schema {
             check_signature(signature)?;
         }
         for target in &field.targets {
-            check_signature(target)?;
+            if target != "*" {
+                check_signature(target)?;
+            }
+        }
+        if field.targets.iter().any(|target| target == "*") && field.targets.len() != 1 {
+            return Err(format!(
+                "wildcard target must stand alone for {}",
+                field.name
+            ));
+        }
+        if field
+            .string_table
+            .as_deref()
+            .is_some_and(|bank| !matches!(bank, "strings" | "dlstrings" | "ilstrings"))
+        {
+            return Err(format!("unknown string bank for {}", field.name));
         }
         if field.definition.is_some() {
             return self.validate_field(&self.resolve(field)?, depth + 1);
@@ -170,10 +267,14 @@ impl Schema {
                     | "size"
                     | "vmad"
             )
+            && !super::deciders::known(decider)
         {
             return Err(format!("unknown decider {decider}"));
         }
-        if (field.size == Some(0) || field.sizes.contains(&0)) && field.kind != "bytes" {
+        if (field.size == Some(0) || field.sizes.contains(&0))
+            && field.kind != "bytes"
+            && !(field.kind == "struct" && field.members.iter().all(|member| member.optional))
+        {
             return Err(format!("zero field size for {}", field.name));
         }
         if field.kind == "form_id" && field.targets.is_empty() {
