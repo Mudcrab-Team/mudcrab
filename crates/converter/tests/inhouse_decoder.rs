@@ -809,7 +809,7 @@ fn movement_and_cell_size_deciders_keep_old_and_extended_layouts() {
     assert_eq!(
         member(
             &field(&result.records[&0x0100_1801], b"SPED").value,
-            "rotate_moving_run"
+            "rotate_while_moving_run"
         ),
         &Value::Float(46.25)
     );
