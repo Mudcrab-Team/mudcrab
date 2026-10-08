@@ -111,7 +111,7 @@ The configuration must match the original conversion, and unresolved failures or
 
 Compatibility changes also apply to physical Data-folder conversion: BodySlide/Outfit Studio resources under `CalienteTools` are excluded as authoring data, the manifest records `excluded_inputs`, and unsupported NIF versions are rejected explicitly. Particle-size parsing and dynamic-shape recovery restore geometry that was previously omitted.
 
-Dynamic head, hair, and eye meshes now produce geometry, increasing output size.
+Dynamic head, hair, and eye meshes now produce geometry. The [PR #154 review](https://github.com/Mudcrab-Team/mudcrab/pull/154#issuecomment-5987129687) reports total GLB size increasing from 209 MB to 451 MB; these are reviewer-provided measurements, not a benchmark reproduced here. The script snapshot delta came from instruction dispatch chunking, not the Mudcrab header rename, which was already in `main`.
 
 ### GPU texture encoding
 

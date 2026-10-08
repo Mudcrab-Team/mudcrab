@@ -183,7 +183,17 @@ async fn main() -> Result<()> {
         println!("{}", usage());
         return Ok(());
     }
-    let cli = match parse_command(args)? {
+    let command = parse_command(args)?;
+    if let Command::Convert(cli) | Command::Repair(cli, _) = &command {
+        if let Some(selection) = &cli.mo2 {
+            eprintln!(
+                "MO2 profile: {:?} (instance: {})",
+                selection.profile,
+                selection.instance_path.display()
+            );
+        }
+    }
+    let cli = match command {
         Command::Convert(cli) => cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
         Command::Repair(cli, apply) => {
