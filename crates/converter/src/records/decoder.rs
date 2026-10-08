@@ -1202,4 +1202,119 @@ mod tests {
         assert!(!fields.complete);
         assert_eq!(diagnostics.skipped_fields, 1);
     }
+
+    /// Matching a repeated male child must not jump to a later female role with the same tag.
+    #[test]
+    fn active_repeat_precedes_later_duplicate_signature() {
+        let tag = |signature: &str| FieldSchema {
+            signature: Some(signature.into()),
+            kind: "bytes".into(),
+            ..Default::default()
+        };
+        let fields = vec![
+            FieldSchema {
+                kind: "group".into(),
+                repeat: true,
+                fields: vec![tag("INDX"), tag("MODL")],
+                ..Default::default()
+            },
+            tag("FNAM"),
+            FieldSchema {
+                kind: "group".into(),
+                repeat: true,
+                fields: vec![tag("INDX"), tag("MODL")],
+                ..Default::default()
+            },
+        ];
+        let schema = Schema::parse(br#"{"version":1,"records":[]}"#).unwrap();
+        let mut entries = Vec::new();
+        flatten(&fields, &schema, &mut entries);
+        let prepared = PreparedRecord {
+            entries,
+            unordered: false,
+        };
+        assert_eq!(match_field(&prepared, b"INDX", 2, Some(1)), Some(0));
+        assert_eq!(match_field(&prepared, b"FNAM", 2, Some(1)), Some(2));
+        assert_eq!(match_field(&prepared, b"INDX", 3, Some(2)), Some(3));
+    }
+
+    /// Accepted optional tails omit whole members and reject a partial trailing float.
+    #[test]
+    fn optional_members_are_whole_checked_tails() {
+        let schema = Schema::parse(br#"{"version":1,"records":[]}"#).unwrap();
+        let field = FieldSchema {
+            kind: "struct".into(),
+            sizes: vec![4, 6, 8],
+            members: vec![
+                FieldSchema {
+                    name: "flags".into(),
+                    kind: "u32".into(),
+                    ..Default::default()
+                },
+                FieldSchema {
+                    name: "tail".into(),
+                    kind: "f32".into(),
+                    offset: 4,
+                    optional: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let order = LoadOrder::read(&[]).unwrap();
+        let context = Context {
+            order: &order,
+            plugin_index: 0,
+            localized: false,
+            winning_types: None,
+        };
+        let selection = super::super::deciders::Context {
+            record_type: *b"TEST",
+            editor_id: "",
+            preceding_subrecords: &[],
+            parent_payload: None,
+            link_record_type: None,
+        };
+        let mut diagnostics = PluginDiagnostics::default();
+        let (decoded, _) = value(
+            &field,
+            &[3, 0, 0, 0],
+            &schema,
+            &context,
+            &mut diagnostics,
+            &selection,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            Value::Struct(vec![("flags".into(), Value::Unsigned(3))])
+        );
+        assert!(
+            value(
+                &field,
+                &[3, 0, 0, 0, 0, 0],
+                &schema,
+                &context,
+                &mut diagnostics,
+                &selection,
+                0
+            )
+            .is_err()
+        );
+        let mut extended = 3u32.to_le_bytes().to_vec();
+        extended.extend(1.25f32.to_le_bytes());
+        assert!(
+            value(
+                &field,
+                &extended,
+                &schema,
+                &context,
+                &mut diagnostics,
+                &selection,
+                0
+            )
+            .is_ok()
+        );
+    }
 }
