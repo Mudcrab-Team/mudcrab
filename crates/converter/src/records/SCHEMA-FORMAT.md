@@ -1,9 +1,9 @@
 # In-house record schema, version 1
 
-`schema.json` is authored data for MudCrab's generic Skyrim Special Edition
-record decoder. It describes the fields the existing converter consumes, plus
-selected typed links needed for correct remapping. A record entry does not claim
-complete gameplay support for its record type.
+`schema.json` and the independently owned family modules are authored data for
+MudCrab's generic Skyrim Special Edition record decoder. The base describes the
+existing converter's fields; family overlays add native record data and typed
+links. A record entry does not claim complete gameplay support for its type.
 
 The entries are independently written from format facts in the pinned xEdit
 `xedit-4.1.5f` definitions, UESP, and MudCrab's existing consumer contract. The
@@ -32,6 +32,16 @@ field, record or plugin diagnostic: it must not abort conversion of valid
 neighboring records. JSON parsing needs no additional dependency beyond the
 converter's existing serde_json.
 
+Build-time assembly loads the items, actors, magic, and dialogue overlays under
+explicit record ownership sets. Each family may replace its own partial base
+entry or add an assigned entry, but cannot edit common fields or replace another
+family's record. Shared definitions must agree exactly. The definitions-only
+conditions module owns `condition` and `conditions`; it cannot add records or
+unrelated definitions. After assembling every overlay, assembly activates
+documented pending CTDA/CIS1/CIS2 fields and `pending_conditions` references
+through that component. This avoids editing separately owned family files and
+does not alter unrelated opaque fields.
+
 ## Fields and values
 
 | Property | Meaning |
@@ -44,6 +54,7 @@ converter's existing serde_json.
 | `members` | Struct or array element fields, with explicit offsets. |
 | `fields` | Ordered group children or union alternatives. |
 | `repeat` | Allow repeated subrecords or restart an entire repeated group. |
+| `repeat_terminated` | Default false. A repeating group with an initial signature and final empty marker can restart only at its initial signature after that marker. |
 | `targets` | Allowed record signatures for a FormID link. `ANY_` explicitly permits an unchecked target type for legacy ACRE. |
 | `definition` | Reuse a named field, with occurrence-specific signature/name overrides. |
 | `count` | Array count rule: `{ "kind": "fixed", "value": N, "stride": S }`, `{ "kind": "remaining", "stride": S }`, or `{ "kind": "prefix_u32", "stride": S }`. |
@@ -256,7 +267,7 @@ entry includes all base targets documented by the pinned Skyrim definition.
 
 ## Initial coverage and limits
 
-There are 42 entries: TES4, WRLD, CELL, LAND, REFR, ACHR, eight projectile/hazard
+The initial base has 42 entries: TES4, WRLD, CELL, LAND, REFR, ACHR, eight projectile/hazard
 placed types, legacy ACRE, STAT, sixteen other ordinary world-model types,
 ARMO, LIGH, WATR, TXST, LTEX, GRAS, NPC_, RACE, MOVT, and GMST.
 
@@ -296,3 +307,58 @@ Optional REFR room/patrol groups reuse INAM with different target types. The
 flattened matcher needs group context to distinguish every such nonconsumer
 case; their presence in the initial schema does not establish complete
 context-sensitive link semantics.
+
+## Quest/dialogue overlay and shared conditions
+
+The dialogue overlay describes QUST, DIAL, INFO, DLBR, DLVW, SCEN, SMBN, SMQN,
+SMEN, MESG, and LCTN. Repeated groups retain quest stages/logs, objectives,
+reference and location aliases, dialogue responses, and scene phases/actions in
+physical order. Same-signature fields have distinct role names, including scene
+start-phase indices and timer durations. Group matching still exports flat
+ordered leaves, rather than a persistent nested group tree.
+
+A repeated group with an explicit final empty marker may declare
+`repeat_terminated: true`. Once that marker is consumed, only its initial
+signature starts another occurrence; other tags advance beyond the group.
+SCEN actions use this boundary so a scene's PNAM quest and INAM final action
+index retain their root roles after ANAM action-end, even when the optional
+NEXT separator is absent. Unmarked repeats retain their existing matching.
+Terminated groups require ordered matching; schema validation rejects their
+use in a record with `allow_unordered: true`.
+
+Localized quest log CNAM uses DLSTRINGS; INFO NAM1 uses ILSTRINGS. Other declared
+quest/objective, topic, prompt and button text uses STRINGS. Native INFO ENAM
+keeps the exact encoded reset-hours integer. Display and reference-tool
+conversions are comparison policies, not replacements for its native bytes.
+DIAL's child-group timestamp and unknown fields likewise belong to the GRUP7
+header and must not be confused with the DIAL record's version-control header.
+
+INFO records also retain their containing GRUP7 label independently of TPIC.
+The typed reader and JSON diagnostic export expose the resolved DIAL owner,
+the native file-relative label, and the source group/record byte offsets.
+An absent, deleted, null or wrong-kind owner is cleared with a bounded link
+diagnostic while the INFO record remains usable. Native labels and offsets
+remain available for source verification. This metadata does not change the
+RawRecord/rkyv or runtime database contract, and does not infer a merged
+dialogue execution order from physical source order or PNAM alone.
+
+The shared CTDA layout is 32 bytes. It retains padding and the combined
+flags/operator byte. Parent-payload selectors interpret the comparison as f32
+or a GLOB link, and select both parameter types using an explicitly authored
+function-index registry. Alias and package-data substitutions apply only to
+the native object-reference, actor, and package categories. GetEventData's
+first slot contains two u16 values; VATS parameter two depends on its own
+first-slot selector. Unknown function indices and unknown VATS selectors retain
+opaque parameter bytes without guessing references.
+
+Only run-on mode 2 interprets the offset-24 slot as a reference FormID. Other
+modes preserve that slot as an unused u32; the signed offset-28 parameter holds
+the run-on alias/package/event index. CIS1 and CIS2 are independent native
+zero-terminated strings. Safely framed malformed CTDA is omitted with a bounded
+field diagnostic while valid neighbors continue to publication. Invalid
+optional links are cleared through the existing remap/target-validation path.
+
+Complete VMAD fragment and alias interpretation remains the separate shared
+script component. Loading this section's schemas and conditions does not
+establish all other phase-3 owners, a complete mod-list audit, or runtime quest
+and dialogue execution.

@@ -1,6 +1,7 @@
 //! Small independently authored family policies, shared by build validation and decoding.
 use super::schema_format::FieldSchema;
 pub mod actors;
+pub mod conditions;
 pub mod items;
 pub mod magic;
 
@@ -27,6 +28,7 @@ pub fn known(name: &str) -> bool {
         || items::NAMES.contains(&name)
         || actors::NAMES.contains(&name)
         || magic::NAMES.contains(&name)
+        || conditions::NAMES.contains(&name)
 }
 
 /// Dispatch only to the family that explicitly owns a named selector.
@@ -65,6 +67,8 @@ pub fn select(
         actors::select(name, field, bytes, context)
     } else if magic::NAMES.contains(&name) {
         magic::select(name, field, bytes, context)
+    } else if conditions::NAMES.contains(&name) {
+        conditions::select(name, field, bytes, context)
     } else {
         Err(format!("unknown family decider {name}"))
     }

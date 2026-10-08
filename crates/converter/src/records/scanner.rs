@@ -15,6 +15,12 @@ pub(crate) struct ScannedRecord {
     pub source_form_id: u32,
     pub cell_form_id: Option<u32>,
     pub worldspace_form_id: Option<u32>,
+    /// Native label of the lexical GRUP7 enclosing an INFO record.
+    pub source_topic_form_id: Option<u32>,
+    /// Byte offset of that source GRUP7 header, preserving physical provenance.
+    pub topic_group_offset: Option<u64>,
+    /// Byte offset of this record header in its source plugin.
+    pub source_record_offset: u64,
     pub payload: Vec<u8>,
 }
 
@@ -54,15 +60,17 @@ fn scan_bytes(
     let mut end = bytes.len();
     let mut cell = None;
     let mut world = None;
+    let mut topic = None;
     let mut parents = Vec::new();
     loop {
         if position == end {
-            let Some((parent_end, parent_cell, parent_world)) = parents.pop() else {
+            let Some((parent_end, parent_cell, parent_world, parent_topic)) = parents.pop() else {
                 break;
             };
             end = parent_end;
             cell = parent_cell;
             world = parent_world;
+            topic = parent_topic;
             continue;
         }
         if end - position < 24 {
@@ -83,7 +91,7 @@ fn scan_bytes(
                 position = end;
                 continue;
             }
-            parents.push((end, cell, world));
+            parents.push((end, cell, world, topic));
             end = position + size;
             let label = u32_at(header, 8);
             let kind = u32_at(header, 12) as i32;
@@ -93,6 +101,9 @@ fn scan_bytes(
             }
             if matches!(kind, 6 | 8 | 9 | 10) {
                 cell = Some(label);
+            }
+            if kind == 7 {
+                topic = Some((label, position as u64));
             }
             position += 24;
             continue;
@@ -108,6 +119,7 @@ fn scan_bytes(
             position = end;
             continue;
         }
+        let source_record_offset = position as u64;
         let payload = &bytes[position + 24..position + 24 + size];
         position += 24 + size;
         let flags = u32_at(header, 8);
@@ -142,6 +154,15 @@ fn scan_bytes(
                 source_form_id,
                 cell_form_id: cell,
                 worldspace_form_id: world,
+                source_topic_form_id: (signature == *b"INFO")
+                    .then_some(topic)
+                    .flatten()
+                    .map(|(label, _)| label),
+                topic_group_offset: (signature == *b"INFO")
+                    .then_some(topic)
+                    .flatten()
+                    .map(|(_, offset)| offset),
+                source_record_offset,
                 payload: inflated,
             },
             diagnostics,

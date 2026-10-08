@@ -55,6 +55,14 @@ pub struct DecodedRecord {
     pub load_order: u32,
     pub cell_form_id: Option<u32>,
     pub worldspace_form_id: Option<u32>,
+    /// Resolved DIAL owner from an enclosing native GRUP7, independent of optional TPIC.
+    pub topic_form_id: Option<u32>,
+    /// Unmodified file-relative label of that source topic group, even if invalid.
+    pub source_topic_form_id: Option<u32>,
+    /// Source GRUP7 header offset; this does not infer merged INFO execution order.
+    pub topic_group_offset: Option<u64>,
+    /// Source record-header offset, including for records requiring deferred replay.
+    pub source_record_offset: u64,
     pub fields: Vec<DecodedField>,
     /// Known fields rejected during decoding or ordered matching, distinct from source absence.
     pub rejected_fields: Vec<[u8; 4]>,

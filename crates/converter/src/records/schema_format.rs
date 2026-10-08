@@ -44,6 +44,9 @@ pub struct FieldSchema {
     pub offset: usize,
     #[serde(default)]
     pub repeat: bool,
+    /// A repeating subrecord group ends at its final explicit empty marker.
+    #[serde(default)]
+    pub repeat_terminated: bool,
     #[serde(default)]
     pub targets: Vec<String>,
     #[serde(default)]
@@ -76,6 +79,7 @@ impl Schema {
         let mut combined: serde_json::Value =
             serde_json::from_slice(base).map_err(|error| error.to_string())?;
         let mut owned = BTreeSet::new();
+        let mut conditions_loaded = false;
         for &(family, bytes) in modules {
             let scope = match family {
                 "items" => {
@@ -85,6 +89,8 @@ impl Schema {
                 "magic" => {
                     "SPEL MGEF ENCH SHOU WOOP LVLI LVLN LVSP FLST KYWD GLOB GMST EXPL PROJ HAZD ARTO EFSH DUAL"
                 }
+                "dialogue" => "QUST DIAL INFO DLBR DLVW SCEN SMBN SMQN SMEN MESG LCTN",
+                "conditions" => "",
                 _ => return Err(format!("unknown schema family {family}")),
             };
             let module: serde_json::Value =
@@ -95,6 +101,21 @@ impl Schema {
                 return Err(format!(
                     "{family}: unsupported version or shared-field ownership"
                 ));
+            }
+            if family == "conditions" {
+                if conditions_loaded
+                    || parsed
+                        .definitions
+                        .keys()
+                        .any(|name| !matches!(name.as_str(), "condition" | "conditions"))
+                    || !parsed.definitions.contains_key("condition")
+                    || !parsed.definitions.contains_key("conditions")
+                {
+                    return Err(
+                        "conditions: missing, duplicate or unowned shared definitions".into(),
+                    );
+                }
+                conditions_loaded = true;
             }
             for key in ["definitions", "sources"] {
                 if let Some(additions) = module.get(key).and_then(|value| value.as_object()) {
@@ -135,6 +156,13 @@ impl Schema {
                 }
             }
         }
+        if conditions_loaded {
+            activate_conditions(&mut combined);
+            combined["definitions"]
+                .as_object_mut()
+                .expect("checked definitions")
+                .remove("pending_conditions");
+        }
         let bytes = serde_json::to_vec_pretty(&combined).map_err(|error| error.to_string())?;
         Self::parse(&bytes)?;
         Ok(bytes)
@@ -163,6 +191,12 @@ impl Schema {
             }
             for field in &record.fields {
                 self.validate_field(field, 0)?;
+                if record.allow_unordered && self.has_terminated_repeat(field) {
+                    return Err(format!(
+                        "{}: terminated repeats require ordered matching",
+                        record.signature
+                    ));
+                }
             }
         }
         for field in self.definitions.values() {
@@ -172,6 +206,17 @@ impl Schema {
             self.validate_field(field, 0)?;
         }
         Ok(())
+    }
+
+    /// Ordered boundaries cannot be bypassed by the unordered fallback matcher.
+    fn has_terminated_repeat(&self, field: &FieldSchema) -> bool {
+        let field = self.resolve(field).expect("validated definition");
+        field.repeat_terminated
+            || field
+                .fields
+                .iter()
+                .chain(&field.members)
+                .any(|child| self.has_terminated_repeat(child))
     }
 
     /// Expand one shared entry, preserving its occurrence's signature and repetition.
@@ -186,6 +231,7 @@ impl Schema {
             .ok_or_else(|| format!("unknown schema definition {name}"))?;
         result.signature.clone_from(&field.signature);
         result.repeat |= field.repeat;
+        result.repeat_terminated |= field.repeat_terminated;
         result.optional |= field.optional;
         result.reject_record_on_error |= field.reject_record_on_error;
         if field.string_table.is_some() {
@@ -280,10 +326,88 @@ impl Schema {
         if field.kind == "form_id" && field.targets.is_empty() {
             return Err(format!("link field {} has no declared targets", field.name));
         }
+        if field.repeat_terminated {
+            let valid_marker = field.fields.last().is_some_and(|marker| {
+                self.resolve(marker).is_ok_and(|marker| {
+                    marker.signature.is_some()
+                        && marker.kind == "bytes"
+                        && marker.size == Some(0)
+                        && !marker.repeat
+                })
+            });
+            let valid_start = field.fields.first().is_some_and(|start| {
+                self.resolve(start)
+                    .is_ok_and(|start| start.signature.is_some() && start.kind != "group")
+            });
+            if field.kind != "group"
+                || !field.repeat
+                || field.fields.len() < 2
+                || !valid_start
+                || !valid_marker
+            {
+                return Err(format!(
+                    "terminated repeat {} requires a repeating group, initial signature and final empty marker",
+                    field.name
+                ));
+            }
+        }
         for child in field.members.iter().chain(&field.fields) {
             self.validate_field(child, depth + 1)?;
         }
         Ok(())
+    }
+}
+
+/// Activate the shared owner's definitions without changing separately owned family files.
+fn activate_conditions(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.get("definition").and_then(|value| value.as_str())
+                == Some("pending_conditions")
+            {
+                object.insert("definition".into(), "conditions".into());
+            }
+            let pending = object.get("kind").and_then(|value| value.as_str()) == Some("bytes")
+                && (object.get("source").and_then(|value| value.as_str())
+                    == Some("pending-component:D")
+                    || object
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|name| name.starts_with("pending_condition")));
+            if pending {
+                let signature = object
+                    .get("signature")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                match signature.as_str() {
+                    "CTDA" => {
+                        object.remove("kind");
+                        object.insert("definition".into(), "condition".into());
+                        object.insert("name".into(), "condition".into());
+                        object.insert("source".into(), "conditions-native".into());
+                    }
+                    "CIS1" | "CIS2" => {
+                        object.insert("kind".into(), "zstring".into());
+                        object.insert(
+                            "name".into(),
+                            format!("condition_string_{}", &signature[3..]).into(),
+                        );
+                        object.insert("source".into(), "conditions-native".into());
+                    }
+                    _ => {}
+                }
+            }
+            for child in object.values_mut() {
+                activate_conditions(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                activate_conditions(child);
+            }
+        }
+        _ => {}
     }
 }
 

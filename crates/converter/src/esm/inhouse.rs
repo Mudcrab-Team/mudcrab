@@ -207,7 +207,7 @@ fn convert_plugins_with_dump(
         {
             serde_json::to_writer(
                 &mut *writer,
-                &serde_json::json!({"form_id":record.form_id,"source_form_id":record.source_form_id,"record_type":record.record_type,"flags":record.flags,"load_order":record.load_order,"version_control":record.version_control,"form_version":record.form_version,"header_unknown":record.header_unknown,"cell_form_id":record.cell_form_id,"worldspace_form_id":record.worldspace_form_id,"fields":record.fields,"rejected_fields":record.rejected_fields,"payload_complete":record.payload_complete,"supported":record.supported,"localization":localization,"source_payload_sha256":crate::cache::hash_bytes(&record.raw_payload)}),
+                &serde_json::json!({"form_id":record.form_id,"source_form_id":record.source_form_id,"record_type":record.record_type,"flags":record.flags,"load_order":record.load_order,"version_control":record.version_control,"form_version":record.form_version,"header_unknown":record.header_unknown,"cell_form_id":record.cell_form_id,"worldspace_form_id":record.worldspace_form_id,"topic_form_id":record.topic_form_id,"source_topic_form_id":record.source_topic_form_id,"topic_group_offset":record.topic_group_offset,"source_record_offset":record.source_record_offset,"fields":record.fields,"rejected_fields":record.rejected_fields,"payload_complete":record.payload_complete,"supported":record.supported,"localization":localization,"source_payload_sha256":crate::cache::hash_bytes(&record.raw_payload)}),
             )?;
             writer.write_all(b"\n")?;
         }

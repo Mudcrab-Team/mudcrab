@@ -18,7 +18,14 @@ pub(crate) struct Context<'a> {
 /// One flattened subrecord occurrence, including its enclosing repeat groups.
 struct Entry {
     field: FieldSchema,
-    repeat_ranges: Vec<(usize, usize)>,
+    repeat_ranges: Vec<RepeatRange>,
+}
+
+/// An authored repeated group; explicit end markers prevent interior rewinds.
+struct RepeatRange {
+    start: usize,
+    end: usize,
+    terminated: bool,
 }
 
 /// Prepared schemas avoid re-expanding reusable definitions for every record.
@@ -37,7 +44,11 @@ fn flatten(fields: &[FieldSchema], schema: &Schema, output: &mut Vec<Entry>) {
             let end = output.len();
             if field.repeat {
                 for entry in &mut output[start..end] {
-                    entry.repeat_ranges.push((start, end));
+                    entry.repeat_ranges.push(RepeatRange {
+                        start,
+                        end,
+                        terminated: field.repeat_terminated,
+                    });
                 }
             }
         } else if field.signature.is_some() {
@@ -104,8 +115,15 @@ fn match_field(
             .is_some_and(|tag| tag.as_bytes() == signature)
     };
     if let Some(last) = last {
-        for &(start, end) in &record.entries[last].repeat_ranges {
+        for range in &record.entries[last].repeat_ranges {
+            let (start, end) = (range.start, range.end);
             if cursor <= end {
+                if range.terminated && cursor == end {
+                    if matches(start) {
+                        return Some(start);
+                    }
+                    continue;
+                }
                 if let Some(index) = (cursor..end).find(|&index| matches(index)) {
                     return Some(index);
                 }
@@ -268,6 +286,11 @@ pub(crate) fn decode(
         .map(|id| remap(id, context, true, diagnostics))
         .transpose()?
         .filter(|&id| id != 0);
+    let topic = scanned
+        .source_topic_form_id
+        .map(|id| remap(id, context, true, diagnostics))
+        .transpose()?
+        .filter(|&id| id != 0);
     let record_schema = prepared().get(&scanned.record_type);
     let mut cursor = 0;
     let mut last = None;
@@ -404,6 +427,10 @@ pub(crate) fn decode(
         load_order: context.plugin_index as u32,
         cell_form_id: cell,
         worldspace_form_id: world,
+        topic_form_id: topic,
+        source_topic_form_id: scanned.source_topic_form_id,
+        topic_group_offset: scanned.topic_group_offset,
+        source_record_offset: scanned.source_record_offset,
         fields,
         rejected_fields,
         payload_complete: framed.complete,
@@ -895,6 +922,9 @@ pub(crate) fn resolve_deferred(result: &mut ReadResult, schema: &Schema, order: 
             header_unknown: record.header_unknown,
             cell_form_id: None,
             worldspace_form_id: None,
+            source_topic_form_id: record.source_topic_form_id,
+            topic_group_offset: record.topic_group_offset,
+            source_record_offset: record.source_record_offset,
             payload: record.raw_payload.clone(),
         };
         let diagnostics = result
@@ -941,6 +971,21 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
         let record_schema = prepared().get(&record.record_type);
         let plugin = order.names.get(record.load_order as usize).cloned();
         let mut diagnostics = PluginDiagnostics::default();
+        if let Some(topic) = record.topic_form_id {
+            if kinds.get(&topic) != Some(b"DIAL") {
+                diagnostics.note("link", || {
+                    format!(
+                        "INFO {:08X} GRUP7 owner {topic:08X} is absent or is not DIAL",
+                        record.form_id
+                    )
+                });
+                record.topic_form_id = None;
+            }
+        } else if record.source_topic_form_id == Some(0) {
+            diagnostics.note("link", || {
+                format!("INFO {:08X} GRUP7 has a null owner", record.form_id)
+            });
+        }
         let preceding: Vec<_> = record
             .fields
             .iter()

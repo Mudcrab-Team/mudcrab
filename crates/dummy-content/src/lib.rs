@@ -12,6 +12,8 @@ mod bytes;
 pub mod dds;
 pub mod esm;
 pub mod inhouse_actors;
+pub mod inhouse_conditions;
+pub mod inhouse_dialogue;
 pub mod inhouse_items;
 pub mod inhouse_magic;
 pub mod layout;

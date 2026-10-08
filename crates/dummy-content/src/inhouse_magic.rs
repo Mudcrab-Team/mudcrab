@@ -69,7 +69,13 @@ pub fn spell(id: u32, base_cost: u32) -> Vec<u8> {
         parameters.extend(area.to_le_bytes());
         parameters.extend(duration.to_le_bytes());
         payload.extend(subrecord(b"EFIT", &parameters));
-        payload.extend(subrecord(b"CTDA", &[0xA5; 32]));
+        // GetLevel has no parameter links; keep padding and unused-slot sentinels.
+        let mut condition = [0xA5; 32];
+        condition[0] = 0;
+        condition[4..8].copy_from_slice(&1.5f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&80u16.to_le_bytes());
+        condition[20..24].copy_from_slice(&0u32.to_le_bytes());
+        payload.extend(subrecord(b"CTDA", &condition));
         payload.extend(subrecord(b"CIS1", &text("ordered condition")));
     }
     record(b"SPEL", id, 0, &payload)
