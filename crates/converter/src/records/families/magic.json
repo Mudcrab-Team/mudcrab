@@ -1,1 +1,2893 @@
-{"version":1,"records":[]}
+{
+  "version": 1,
+  "sources": {
+    "magic-localization": {
+      "title": "xEdit localization table selection facts",
+      "revision": "xedit-4.1.5f f5c00f3",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbLocalization.pas",
+      "use": "Manually observed lines571-575: DESC DLSTRINGS except LSCR; otherwise these family tags STRINGS. No source conversion."
+    }
+  },
+  "definitions": {
+    "spell_data": {
+      "name": "spell_data",
+      "kind": "struct",
+      "size": 36,
+      "reject_record_on_error": true,
+      "source": "xedit-tes5:12603-12659 manually authored widths/order",
+      "members": [
+        {
+          "name": "base_cost",
+          "kind": "u32",
+          "offset": 0
+        },
+        {
+          "name": "spell_flags",
+          "kind": "u32",
+          "offset": 4,
+          "flags": {
+            "1": "manual_cost",
+            "131072": "player_start",
+            "524288": "ignore_area_line_of_sight",
+            "1048576": "ignore_resistance",
+            "2097152": "no_absorb_reflect",
+            "8388608": "no_dual_cast_modification"
+          }
+        },
+        {
+          "name": "spell_kind",
+          "kind": "u32",
+          "offset": 8
+        },
+        {
+          "name": "charge_time",
+          "kind": "f32",
+          "offset": 12
+        },
+        {
+          "name": "casting_kind",
+          "kind": "u32",
+          "offset": 16
+        },
+        {
+          "name": "delivery_kind",
+          "kind": "u32",
+          "offset": 20
+        },
+        {
+          "name": "casting_duration",
+          "kind": "f32",
+          "offset": 24
+        },
+        {
+          "name": "range",
+          "kind": "f32",
+          "offset": 28
+        },
+        {
+          "name": "half_cost_perk",
+          "kind": "form_id",
+          "offset": 32,
+          "targets": [
+            "PERK",
+            "NULL"
+          ]
+        }
+      ]
+    },
+    "effects": {
+      "name": "effects",
+      "kind": "group",
+      "repeat": true,
+      "source": "xedit-tes5:5904-5911;6114-6124 manually authored effect occurrences; conditions pending D",
+      "fields": [
+        {
+          "signature": "EFID",
+          "name": "effect",
+          "kind": "form_id",
+          "targets": [
+            "MGEF"
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "EFIT",
+          "name": "effect_parameters",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "magnitude",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "area",
+              "kind": "u32",
+              "offset": 4
+            },
+            {
+              "name": "duration",
+              "kind": "u32",
+              "offset": 8
+            }
+          ],
+          "reject_record_on_error": true,
+          "size": 12
+        },
+        {
+          "signature": "CTDA",
+          "name": "pending_condition",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        },
+        {
+          "signature": "CIS1",
+          "name": "pending_condition_string_a",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        },
+        {
+          "signature": "CIS2",
+          "name": "pending_condition_string_b",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        }
+      ]
+    }
+  },
+  "records": [
+    {
+      "signature": "SPEL",
+      "source": "xedit-tes5:12661-12672",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "MDOB",
+          "name": "menu_object",
+          "kind": "form_id",
+          "targets": [
+            "STAT"
+          ]
+        },
+        {
+          "signature": "ETYP",
+          "name": "equip_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "definition": "spell_data",
+          "signature": "SPIT"
+        },
+        {
+          "definition": "effects"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ENCH",
+      "source": "xedit-tes5:7272-7295",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "ENIT",
+          "name": "enchantment_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "cost",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "effect_flags",
+              "kind": "u32",
+              "offset": 4,
+              "flags": {
+                "1": "no_auto_calculation",
+                "4": "extend_duration_on_recast"
+              }
+            },
+            {
+              "name": "casting_kind",
+              "kind": "u32",
+              "offset": 8
+            },
+            {
+              "name": "amount",
+              "kind": "i32",
+              "offset": 12
+            },
+            {
+              "name": "delivery_kind",
+              "kind": "u32",
+              "offset": 16
+            },
+            {
+              "name": "enchantment_kind",
+              "kind": "u32",
+              "offset": 20
+            },
+            {
+              "name": "charge_time",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "base_enchantment",
+              "kind": "form_id",
+              "offset": 28,
+              "targets": [
+                "ENCH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "restrictions",
+              "kind": "form_id",
+              "offset": 32,
+              "targets": [
+                "FLST",
+                "NULL"
+              ],
+              "optional": true
+            }
+          ],
+          "sizes": [
+            32,
+            36
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "definition": "effects"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "SHOU",
+      "source": "xedit-tes5:9696-9712",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "MDOB",
+          "name": "menu_object",
+          "kind": "form_id",
+          "targets": [
+            "STAT"
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "SNAM",
+          "name": "word",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "word",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "WOOP",
+                "NULL"
+              ]
+            },
+            {
+              "name": "spell",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "SPEL",
+                "NULL"
+              ]
+            },
+            {
+              "name": "recovery_time",
+              "kind": "f32",
+              "offset": 8
+            }
+          ],
+          "repeat": true,
+          "reject_record_on_error": true,
+          "size": 12
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "WOOP",
+      "source": "xedit-tes5:9690-9694",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "TNAM",
+          "name": "translation",
+          "kind": "lstring",
+          "string_table": "strings"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "MGEF",
+      "source": "xedit-tes5:10788-10800;10695-10786",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "vmad",
+          "name": "scripts_pending_E",
+          "signature": "VMAD"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "MDOB",
+          "name": "menu_object",
+          "kind": "form_id",
+          "targets": [
+            "STAT"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "effect_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "effect_flags",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "base_cost",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "associated_form",
+              "kind": "union",
+              "offset": 8,
+              "size": 4,
+              "decider": "magic_associated_item",
+              "fields": [
+                {
+                  "name": "light",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "LIGH",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "bound_item",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "WEAP",
+                    "ARMO",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "summoned_actor",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "NPC_",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "hazard",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "HAZD",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "peak_keyword",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "KYWD",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "cloak_spell",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "SPEL",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "race",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "RACE",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "weapon_enchantment",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "ENCH",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "unused",
+                  "kind": "bytes",
+                  "offset": 0,
+                  "size": 4
+                }
+              ]
+            },
+            {
+              "name": "magic_skill",
+              "kind": "i32",
+              "offset": 12
+            },
+            {
+              "name": "resistance_stat",
+              "kind": "i32",
+              "offset": 16
+            },
+            {
+              "name": "counter_effect_count",
+              "kind": "u16",
+              "offset": 20
+            },
+            {
+              "name": "padding",
+              "kind": "bytes",
+              "offset": 22,
+              "size": 2
+            },
+            {
+              "name": "casting_light",
+              "kind": "form_id",
+              "offset": 24,
+              "targets": [
+                "LIGH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "taper_weight",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "hit_shader",
+              "kind": "form_id",
+              "offset": 32,
+              "targets": [
+                "EFSH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "enchant_shader",
+              "kind": "form_id",
+              "offset": 36,
+              "targets": [
+                "EFSH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "minimum_skill",
+              "kind": "u32",
+              "offset": 40
+            },
+            {
+              "name": "spellmaking_area",
+              "kind": "u32",
+              "offset": 44
+            },
+            {
+              "name": "spellmaking_duration",
+              "kind": "f32",
+              "offset": 48
+            },
+            {
+              "name": "taper_curve",
+              "kind": "f32",
+              "offset": 52
+            },
+            {
+              "name": "taper_duration",
+              "kind": "f32",
+              "offset": 56
+            },
+            {
+              "name": "secondary_stat_weight",
+              "kind": "f32",
+              "offset": 60
+            },
+            {
+              "name": "archetype",
+              "kind": "u32",
+              "offset": 64
+            },
+            {
+              "name": "primary_stat",
+              "kind": "i32",
+              "offset": 68
+            },
+            {
+              "name": "projectile",
+              "kind": "form_id",
+              "offset": 72,
+              "targets": [
+                "PROJ",
+                "NULL"
+              ]
+            },
+            {
+              "name": "explosion",
+              "kind": "form_id",
+              "offset": 76,
+              "targets": [
+                "EXPL",
+                "NULL"
+              ]
+            },
+            {
+              "name": "casting_kind",
+              "kind": "u32",
+              "offset": 80
+            },
+            {
+              "name": "delivery_kind",
+              "kind": "u32",
+              "offset": 84
+            },
+            {
+              "name": "secondary_stat",
+              "kind": "i32",
+              "offset": 88
+            },
+            {
+              "name": "casting_art",
+              "kind": "form_id",
+              "offset": 92,
+              "targets": [
+                "ARTO",
+                "NULL"
+              ]
+            },
+            {
+              "name": "hit_art",
+              "kind": "form_id",
+              "offset": 96,
+              "targets": [
+                "ARTO",
+                "NULL"
+              ]
+            },
+            {
+              "name": "impact_set",
+              "kind": "form_id",
+              "offset": 100,
+              "targets": [
+                "IPDS",
+                "NULL"
+              ]
+            },
+            {
+              "name": "skill_usage",
+              "kind": "f32",
+              "offset": 104
+            },
+            {
+              "name": "dual_cast_art",
+              "kind": "form_id",
+              "offset": 108,
+              "targets": [
+                "DUAL",
+                "NULL"
+              ]
+            },
+            {
+              "name": "dual_cast_scale",
+              "kind": "f32",
+              "offset": 112
+            },
+            {
+              "name": "enchant_art",
+              "kind": "form_id",
+              "offset": 116,
+              "targets": [
+                "ARTO",
+                "NULL"
+              ]
+            },
+            {
+              "name": "hit_visual",
+              "kind": "form_id",
+              "offset": 120,
+              "targets": [
+                "RFCT",
+                "NULL"
+              ]
+            },
+            {
+              "name": "enchant_visual",
+              "kind": "form_id",
+              "offset": 124,
+              "targets": [
+                "RFCT",
+                "NULL"
+              ]
+            },
+            {
+              "name": "equip_spell",
+              "kind": "form_id",
+              "offset": 128,
+              "targets": [
+                "SPEL",
+                "NULL"
+              ]
+            },
+            {
+              "name": "image_modifier",
+              "kind": "form_id",
+              "offset": 132,
+              "targets": [
+                "IMAD",
+                "NULL"
+              ]
+            },
+            {
+              "name": "applied_perk",
+              "kind": "form_id",
+              "offset": 136,
+              "targets": [
+                "PERK",
+                "NULL"
+              ]
+            },
+            {
+              "name": "casting_sound_level",
+              "kind": "u32",
+              "offset": 140
+            },
+            {
+              "name": "ai_score",
+              "kind": "f32",
+              "offset": 144
+            },
+            {
+              "name": "ai_delay",
+              "kind": "f32",
+              "offset": 148
+            }
+          ],
+          "reject_record_on_error": true,
+          "size": 152
+        },
+        {
+          "signature": "ESCE",
+          "name": "counter_effect",
+          "kind": "form_id",
+          "targets": [
+            "MGEF"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "SNDD",
+          "name": "sounds",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 8
+          },
+          "members": [
+            {
+              "name": "sound",
+              "kind": "struct",
+              "offset": 0,
+              "size": 8,
+              "members": [
+                {
+                  "name": "use",
+                  "kind": "u32",
+                  "offset": 0
+                },
+                {
+                  "name": "descriptor",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "SNDR",
+                    "NULL"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DNAM",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "CTDA",
+          "name": "pending_condition",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        },
+        {
+          "signature": "CIS1",
+          "name": "pending_condition_string_a",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        },
+        {
+          "signature": "CIS2",
+          "name": "pending_condition_string_b",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "LVLI",
+      "source": "xedit-tes5:10617-10630",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "LVLD",
+          "name": "chance_none",
+          "kind": "u8"
+        },
+        {
+          "signature": "LVLF",
+          "name": "list_flags",
+          "kind": "u8"
+        },
+        {
+          "signature": "LVLG",
+          "name": "chance_global",
+          "kind": "form_id",
+          "targets": [
+            "GLOB"
+          ]
+        },
+        {
+          "signature": "LLCT",
+          "name": "entry_count",
+          "kind": "u8"
+        },
+        {
+          "name": "entries",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "LVLO",
+              "name": "entry",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "level",
+                  "kind": "u16",
+                  "offset": 0
+                },
+                {
+                  "name": "padding_a",
+                  "kind": "bytes",
+                  "offset": 2,
+                  "size": 2
+                },
+                {
+                  "name": "item",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "ARMO",
+                    "AMMO",
+                    "APPA",
+                    "MISC",
+                    "WEAP",
+                    "BOOK",
+                    "LVLI",
+                    "KEYM",
+                    "ALCH",
+                    "LIGH",
+                    "INGR",
+                    "SLGM",
+                    "SCRL"
+                  ]
+                },
+                {
+                  "name": "count",
+                  "kind": "u16",
+                  "offset": 8
+                },
+                {
+                  "name": "padding_b",
+                  "kind": "bytes",
+                  "offset": 10,
+                  "size": 2
+                }
+              ],
+              "reject_record_on_error": true,
+              "size": 12
+            },
+            {
+              "definition": "inventory_extra",
+              "signature": "COED"
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "LVLN",
+      "source": "xedit-tes5:10603-10615",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "LVLD",
+          "name": "chance_none",
+          "kind": "u8"
+        },
+        {
+          "signature": "LVLF",
+          "name": "list_flags",
+          "kind": "u8"
+        },
+        {
+          "signature": "LVLG",
+          "name": "chance_global",
+          "kind": "form_id",
+          "targets": [
+            "GLOB"
+          ]
+        },
+        {
+          "signature": "LLCT",
+          "name": "entry_count",
+          "kind": "u8"
+        },
+        {
+          "name": "entries",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "LVLO",
+              "name": "entry",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "level",
+                  "kind": "i16",
+                  "offset": 0
+                },
+                {
+                  "name": "padding_a",
+                  "kind": "bytes",
+                  "offset": 2,
+                  "size": 2
+                },
+                {
+                  "name": "item",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "NPC_",
+                    "LVLN"
+                  ]
+                },
+                {
+                  "name": "count",
+                  "kind": "i16",
+                  "offset": 8
+                },
+                {
+                  "name": "padding_b",
+                  "kind": "bytes",
+                  "offset": 10,
+                  "size": 2
+                }
+              ],
+              "reject_record_on_error": true,
+              "size": 12
+            },
+            {
+              "definition": "inventory_extra",
+              "signature": "COED"
+            }
+          ]
+        },
+        {
+          "definition": "model"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "LVSP",
+      "source": "xedit-tes5:10632-10643",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "LVLD",
+          "name": "chance_none",
+          "kind": "u8"
+        },
+        {
+          "signature": "LVLF",
+          "name": "list_flags",
+          "kind": "u8"
+        },
+        {
+          "signature": "LLCT",
+          "name": "entry_count",
+          "kind": "u8"
+        },
+        {
+          "name": "entries",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "LVLO",
+              "name": "entry",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "level",
+                  "kind": "u16",
+                  "offset": 0
+                },
+                {
+                  "name": "padding_a",
+                  "kind": "bytes",
+                  "offset": 2,
+                  "size": 2
+                },
+                {
+                  "name": "item",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "SPEL",
+                    "LVSP"
+                  ]
+                },
+                {
+                  "name": "count",
+                  "kind": "u16",
+                  "offset": 8
+                },
+                {
+                  "name": "padding_b",
+                  "kind": "bytes",
+                  "offset": 10,
+                  "size": 2
+                }
+              ],
+              "reject_record_on_error": true,
+              "size": 12
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "FLST",
+      "source": "xedit-tes5:8469-8472",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "LNAM",
+          "name": "entry",
+          "kind": "form_id",
+          "targets": [
+            "*"
+          ],
+          "repeat": true
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "KYWD",
+      "source": "xedit-tes5:7514-7517",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "color",
+          "kind": "struct",
+          "offset": 0,
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "alpha",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "GLOB",
+      "source": "xedit-tes5:7490-7501; FLTV native float regardless displayed numeric kind",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "numeric_kind",
+          "kind": "u8",
+          "enum": {
+            "115": "short",
+            "108": "long",
+            "102": "float"
+          },
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "FLTV",
+          "name": "value",
+          "kind": "f32",
+          "reject_record_on_error": true
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "GMST",
+      "source": "xedit-tes5:7503-7513",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "value",
+          "kind": "union",
+          "decider": "gmst_value",
+          "reject_record_on_error": true,
+          "fields": [
+            {
+              "name": "string",
+              "kind": "lstring",
+              "offset": 0,
+              "string_table": "strings"
+            },
+            {
+              "name": "integer",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "float",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "boolean",
+              "kind": "u32",
+              "offset": 0
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "EXPL",
+      "source": "xedit-tes5:8239-8272",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "vmad",
+          "name": "scripts_pending_E",
+          "signature": "VMAD"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "signature": "EITM",
+          "name": "enchantment",
+          "kind": "form_id",
+          "targets": [
+            "ENCH",
+            "SPEL"
+          ]
+        },
+        {
+          "signature": "MNAM",
+          "name": "image_modifier",
+          "kind": "form_id",
+          "targets": [
+            "IMAD"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "explosion_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "light",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LIGH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "sound_a",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "SNDR",
+                "NULL"
+              ]
+            },
+            {
+              "name": "sound_b",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "SNDR",
+                "NULL"
+              ]
+            },
+            {
+              "name": "impact_set",
+              "kind": "form_id",
+              "offset": 12,
+              "targets": [
+                "IPDS",
+                "NULL"
+              ]
+            },
+            {
+              "name": "spawned_form",
+              "kind": "form_id",
+              "offset": 16,
+              "targets": [
+                "*"
+              ]
+            },
+            {
+              "name": "spawned_projectile",
+              "kind": "form_id",
+              "offset": 20,
+              "targets": [
+                "PROJ",
+                "NULL"
+              ]
+            },
+            {
+              "name": "force",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "damage",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "radius",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "image_radius",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "vertical_scale",
+              "kind": "f32",
+              "offset": 40,
+              "optional": true
+            },
+            {
+              "name": "explosion_flags",
+              "kind": "u32",
+              "offset": 44,
+              "optional": true
+            },
+            {
+              "name": "sound_level",
+              "kind": "u32",
+              "offset": 48,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            40,
+            44,
+            48,
+            52
+          ],
+          "reject_record_on_error": true
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "PROJ",
+      "source": "xedit-tes5:7647-7705",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "DATA",
+          "name": "projectile_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "projectile_flags",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "projectile_kind",
+              "kind": "u16",
+              "offset": 2
+            },
+            {
+              "name": "gravity",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "speed",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "range",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "light",
+              "kind": "form_id",
+              "offset": 16,
+              "targets": [
+                "LIGH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "muzzle_light",
+              "kind": "form_id",
+              "offset": 20,
+              "targets": [
+                "LIGH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "tracer_chance",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "trigger_distance",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "trigger_delay",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "explosion",
+              "kind": "form_id",
+              "offset": 36,
+              "targets": [
+                "EXPL",
+                "NULL"
+              ]
+            },
+            {
+              "name": "sound",
+              "kind": "form_id",
+              "offset": 40,
+              "targets": [
+                "SNDR",
+                "NULL"
+              ]
+            },
+            {
+              "name": "muzzle_duration",
+              "kind": "f32",
+              "offset": 44
+            },
+            {
+              "name": "fade_duration",
+              "kind": "f32",
+              "offset": 48
+            },
+            {
+              "name": "impact_force",
+              "kind": "f32",
+              "offset": 52
+            },
+            {
+              "name": "countdown_sound",
+              "kind": "form_id",
+              "offset": 56,
+              "targets": [
+                "SNDR",
+                "NULL"
+              ]
+            },
+            {
+              "name": "disable_sound",
+              "kind": "form_id",
+              "offset": 60,
+              "targets": [
+                "SNDR",
+                "NULL"
+              ]
+            },
+            {
+              "name": "source_weapon",
+              "kind": "form_id",
+              "offset": 64,
+              "targets": [
+                "WEAP",
+                "NULL"
+              ]
+            },
+            {
+              "name": "cone_spread",
+              "kind": "f32",
+              "offset": 68
+            },
+            {
+              "name": "collision_radius",
+              "kind": "f32",
+              "offset": 72
+            },
+            {
+              "name": "lifetime",
+              "kind": "f32",
+              "offset": 76
+            },
+            {
+              "name": "relaunch_interval",
+              "kind": "f32",
+              "offset": 80
+            },
+            {
+              "name": "decal",
+              "kind": "form_id",
+              "offset": 84,
+              "targets": [
+                "TXST",
+                "NULL"
+              ],
+              "optional": true
+            },
+            {
+              "name": "collision_layer",
+              "kind": "form_id",
+              "offset": 88,
+              "targets": [
+                "COLL",
+                "NULL"
+              ],
+              "optional": true
+            }
+          ],
+          "sizes": [
+            84,
+            88,
+            92
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "name": "muzzle_model",
+          "kind": "group",
+          "fields": [
+            {
+              "definition": "model_path",
+              "name": "muzzle_model_path",
+              "signature": "NAM1"
+            },
+            {
+              "definition": "model_information",
+              "name": "muzzle_model_information",
+              "signature": "NAM2"
+            }
+          ]
+        },
+        {
+          "signature": "VNAM",
+          "name": "sound_level",
+          "kind": "u32"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "HAZD",
+      "source": "xedit-tes5:7707-7731",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "signature": "MNAM",
+          "name": "image_modifier",
+          "kind": "form_id",
+          "targets": [
+            "IMAD",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "hazard_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "limit",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "radius",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "lifetime",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "image_radius",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "target_interval",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "hazard_flags",
+              "kind": "u32",
+              "offset": 20
+            },
+            {
+              "name": "spell",
+              "kind": "form_id",
+              "offset": 24,
+              "targets": [
+                "SPEL",
+                "ENCH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "light",
+              "kind": "form_id",
+              "offset": 28,
+              "targets": [
+                "LIGH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "impact_set",
+              "kind": "form_id",
+              "offset": 32,
+              "targets": [
+                "IPDS",
+                "NULL"
+              ]
+            },
+            {
+              "name": "sound",
+              "kind": "form_id",
+              "offset": 36,
+              "targets": [
+                "SNDR",
+                "NULL"
+              ]
+            }
+          ],
+          "reject_record_on_error": true,
+          "size": 40
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ARTO",
+      "source": "xedit-tes5:9969-9978",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "signature": "DNAM",
+          "name": "art_kind",
+          "kind": "u32"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "DUAL",
+      "source": "xedit-tes5:10077-10092",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "DATA",
+          "name": "dual_cast_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "projectile",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PROJ",
+                "NULL"
+              ]
+            },
+            {
+              "name": "explosion",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "EXPL",
+                "NULL"
+              ]
+            },
+            {
+              "name": "shader",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "EFSH",
+                "NULL"
+              ]
+            },
+            {
+              "name": "hit_art",
+              "kind": "form_id",
+              "offset": 12,
+              "targets": [
+                "ARTO",
+                "NULL"
+              ]
+            },
+            {
+              "name": "impact_set",
+              "kind": "form_id",
+              "offset": 16,
+              "targets": [
+                "IPDS",
+                "NULL"
+              ]
+            },
+            {
+              "name": "scale_flags",
+              "kind": "u32",
+              "offset": 20
+            }
+          ],
+          "reject_record_on_error": true,
+          "size": 24
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "EFSH",
+      "source": "xedit-tes5:7131-7270; all100 whole optional members; empty DATA requires shared API support",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ICON",
+          "name": "fill_texture",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ICO2",
+          "name": "particle_texture",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM7",
+          "name": "holes_texture",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM8",
+          "name": "membrane_palette",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM9",
+          "name": "particle_palette",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "shader_data",
+          "kind": "struct",
+          "members": [
+            {
+              "offset": 0,
+              "name": "legacy_unknown",
+              "kind": "bytes",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 4,
+              "name": "fill_source_blend",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 8,
+              "name": "fill_blend_operation",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 12,
+              "name": "fill_depth_test",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 16,
+              "name": "fill_color_1",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 20,
+              "name": "fill_fade_in",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 24,
+              "name": "fill_full_time",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 28,
+              "name": "fill_fade_out",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 32,
+              "name": "fill_persistent_alpha",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 36,
+              "name": "fill_alpha_pulse",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 40,
+              "name": "fill_alpha_frequency",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 44,
+              "name": "fill_scroll_u",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 48,
+              "name": "fill_scroll_v",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 52,
+              "name": "edge_falloff",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 56,
+              "name": "edge_color_1",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 60,
+              "name": "edge_fade_in",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 64,
+              "name": "edge_full_time",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 68,
+              "name": "edge_fade_out",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 72,
+              "name": "edge_persistent_alpha",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 76,
+              "name": "edge_alpha_pulse",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 80,
+              "name": "edge_alpha_frequency",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 84,
+              "name": "fill_full_alpha",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 88,
+              "name": "edge_full_alpha",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 92,
+              "name": "fill_destination_blend",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 96,
+              "name": "particle_source_blend",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 100,
+              "name": "particle_blend_operation",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 104,
+              "name": "particle_depth_test",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 108,
+              "name": "particle_destination_blend",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 112,
+              "name": "particle_birth_ramp_up",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 116,
+              "name": "particle_birth_full_time",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 120,
+              "name": "particle_birth_ramp_down",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 124,
+              "name": "particle_full_birth_ratio",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 128,
+              "name": "particle_persistent_count",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 132,
+              "name": "particle_lifetime",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 136,
+              "name": "particle_lifetime_variance",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 140,
+              "name": "normal_speed",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 144,
+              "name": "normal_acceleration",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 148,
+              "name": "velocity_x",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 152,
+              "name": "velocity_y",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 156,
+              "name": "velocity_z",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 160,
+              "name": "acceleration_x",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 164,
+              "name": "acceleration_y",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 168,
+              "name": "acceleration_z",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 172,
+              "name": "particle_scale_1",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 176,
+              "name": "particle_scale_2",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 180,
+              "name": "particle_scale_time_1",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 184,
+              "name": "particle_scale_time_2",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 188,
+              "name": "particle_color_1",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 192,
+              "name": "particle_color_2",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 196,
+              "name": "particle_color_3",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 200,
+              "name": "particle_alpha_1",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 204,
+              "name": "particle_alpha_2",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 208,
+              "name": "particle_alpha_3",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 212,
+              "name": "particle_color_time_1",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 216,
+              "name": "particle_color_time_2",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 220,
+              "name": "particle_color_time_3",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 224,
+              "name": "normal_speed_variance",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 228,
+              "name": "rotation_degrees",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 232,
+              "name": "rotation_variance_degrees",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 236,
+              "name": "rotation_speed_degrees",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 240,
+              "name": "rotation_speed_variance_degrees",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 244,
+              "name": "addon_models",
+              "kind": "form_id",
+              "size": 4,
+              "optional": true,
+              "targets": [
+                "DEBR",
+                "NULL"
+              ]
+            },
+            {
+              "offset": 248,
+              "name": "hole_start_time",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 252,
+              "name": "hole_end_time",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 256,
+              "name": "hole_start_value",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 260,
+              "name": "hole_end_value",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 264,
+              "name": "edge_width",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 268,
+              "name": "edge_color_2",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 272,
+              "name": "explosion_wind",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 276,
+              "name": "texture_count_u",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 280,
+              "name": "texture_count_v",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 284,
+              "name": "addon_fade_in",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 288,
+              "name": "addon_fade_out",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 292,
+              "name": "addon_scale_start",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 296,
+              "name": "addon_scale_end",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 300,
+              "name": "addon_scale_in",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 304,
+              "name": "addon_scale_out",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 308,
+              "name": "ambient_sound",
+              "kind": "form_id",
+              "size": 4,
+              "optional": true,
+              "targets": [
+                "SNDR",
+                "SOUN",
+                "NULL"
+              ]
+            },
+            {
+              "offset": 312,
+              "name": "fill_color_2",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 316,
+              "name": "fill_color_3",
+              "kind": "struct",
+              "size": 4,
+              "optional": true,
+              "members": [
+                {
+                  "offset": 0,
+                  "name": "red",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 1,
+                  "name": "green",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 2,
+                  "name": "blue",
+                  "kind": "u8"
+                },
+                {
+                  "offset": 3,
+                  "name": "pad",
+                  "kind": "u8"
+                }
+              ]
+            },
+            {
+              "offset": 320,
+              "name": "fill_color_scale_1",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 324,
+              "name": "fill_color_scale_2",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 328,
+              "name": "fill_color_scale_3",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 332,
+              "name": "fill_color_time_1",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 336,
+              "name": "fill_color_time_2",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 340,
+              "name": "fill_color_time_3",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 344,
+              "name": "color_scale",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 348,
+              "name": "birth_offset",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 352,
+              "name": "birth_offset_variance",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 356,
+              "name": "animation_start",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 360,
+              "name": "animation_start_variance",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 364,
+              "name": "animation_end",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 368,
+              "name": "animation_loop_start",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 372,
+              "name": "animation_loop_variance",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 376,
+              "name": "animation_frame_count",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 380,
+              "name": "animation_frame_variance",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 384,
+              "name": "shader_flags",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 388,
+              "name": "texture_scale_u",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 392,
+              "name": "texture_scale_v",
+              "kind": "f32",
+              "size": 4,
+              "optional": true
+            },
+            {
+              "offset": 396,
+              "name": "unused_emit_depth",
+              "kind": "u32",
+              "size": 4,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            0,
+            4,
+            8,
+            12,
+            16,
+            20,
+            24,
+            28,
+            32,
+            36,
+            40,
+            44,
+            48,
+            52,
+            56,
+            60,
+            64,
+            68,
+            72,
+            76,
+            80,
+            84,
+            88,
+            92,
+            96,
+            100,
+            104,
+            108,
+            112,
+            116,
+            120,
+            124,
+            128,
+            132,
+            136,
+            140,
+            144,
+            148,
+            152,
+            156,
+            160,
+            164,
+            168,
+            172,
+            176,
+            180,
+            184,
+            188,
+            192,
+            196,
+            200,
+            204,
+            208,
+            212,
+            216,
+            220,
+            224,
+            228,
+            232,
+            236,
+            240,
+            244,
+            248,
+            252,
+            256,
+            260,
+            264,
+            268,
+            272,
+            276,
+            280,
+            284,
+            288,
+            292,
+            296,
+            300,
+            304,
+            308,
+            312,
+            316,
+            320,
+            324,
+            328,
+            332,
+            336,
+            340,
+            344,
+            348,
+            352,
+            356,
+            360,
+            364,
+            368,
+            372,
+            376,
+            380,
+            384,
+            388,
+            392,
+            396,
+            400
+          ],
+          "reject_record_on_error": true
+        }
+      ],
+      "allow_unordered": false
+    }
+  ]
+}
