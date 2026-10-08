@@ -75,6 +75,8 @@ pub struct EngineConfig {
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
     pub headless: bool,
+    /// Keep a renderable window hidden for automated screenshot capture.
+    pub hidden_window: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -145,6 +147,7 @@ impl Default for EngineConfig {
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
             headless: false,
+            hidden_window: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -200,6 +203,7 @@ Assets and start position:
   --grid-y <cell>                       starting cell y (default: 0)
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
+  --hidden-window                       render screenshots without showing a window
   --lights                              place a point light for each streamed LIGH reference
 
 Streaming:
@@ -375,6 +379,7 @@ impl EngineConfig {
     /// existing movement and framing.
     pub fn interactive_world_physics(&self) -> bool {
         !self.headless
+            && !self.hidden_window
             && !self.benchmark_only
             && self.benchmark_frames.is_none()
             && self.benchmark_duration_secs.is_none()
@@ -498,6 +503,7 @@ impl EngineConfig {
                     config.unload_radius = value + 1;
                 }
                 "--headless" => config.headless = true,
+                "--hidden-window" => config.hidden_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -942,6 +948,20 @@ mod tests {
         assert_eq!(config.max_commit_micros_per_frame, 16_670);
         assert_eq!(config.max_cell_unloads_per_frame, 2);
         assert_eq!(config.max_model_spawns_per_frame, 4);
+    }
+
+    /// Hidden capture selects rendering without enabling interactive mouse ownership.
+    #[test]
+    fn parses_hidden_window_capture_mode() {
+        assert!(!EngineConfig::default().hidden_window);
+        let config = run_config(&["--hidden-window", "--acceptance-screenshot", "capture.png"]);
+        assert!(config.hidden_window);
+        assert!(!config.headless);
+        assert!(!config.interactive_world_physics());
+        assert_eq!(
+            config.acceptance_screenshot,
+            Some(PathBuf::from("capture.png"))
+        );
     }
 
     #[test]

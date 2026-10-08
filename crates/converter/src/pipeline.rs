@@ -628,12 +628,24 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
+            let merged = EsmParser::convert_plugins_with_reader(
+                &plugins,
+                &db_path,
+                config.record_reader,
+                &staging.join("vfs"),
+            )?;
             validate_database(&Connection::open(&db_path)?)?;
             write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                report
+                    .artifacts
+                    .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+            }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("record-reader.json"),
             ]);
         }
 
@@ -2099,6 +2111,8 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         "skyrim_world.db-wal",
         "skyrim_world.db-shm",
         "cell_cache.rkyv",
+        "record-reader.json",
+        "inhouse-reader-diagnostics.json",
         "integration-report.json",
         "lod-manifest.json",
         "metadata-rebuild.json",

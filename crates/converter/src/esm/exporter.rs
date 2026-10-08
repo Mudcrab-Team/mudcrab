@@ -232,8 +232,9 @@ type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 /// Export selected records without changing existing provenance. Grass records
 /// outside this subset are preserved; movement projections are rebuilt from it.
 /// Synthetic records without a source load order have no formid_map entry.
+/// Export a legacy subset without replacing complete-load-order metadata.
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
-    export_records(conn, master, None)
+    export_records(conn, master, None, false)
 }
 
 /// Export a complete effective load order, replacing both grass projections.
@@ -244,7 +245,41 @@ pub fn export_to_db_with_load_order(
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
 ) -> Result<()> {
-    export_records(conn, master, Some(order))
+    export_records(conn, master, Some(order), false)
+}
+
+/// Export canonical decoded fields with Skyrim's texture slots and byte-wide XESP flags.
+pub(crate) fn export_inhouse_to_db(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: &LoadOrder,
+) -> Result<()> {
+    export_records(conn, master, Some(order), true)
+}
+
+/// Reject unusable movement records before the tolerant frontend exports them.
+pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
+    let view = SubrecordView::new(&record.subrecords);
+    match &record.record_type {
+        b"MOVT" if record.form_id == 0x0003_580D => {
+            decode_npc_default_speeds(&view, record.form_id)?;
+        }
+        b"GMST"
+            if view.get_string(b"EDID").is_some_and(|name| {
+                ["fMoveCharWalkBase", "fJumpHeightMin"]
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(&name))
+            }) =>
+        {
+            decode_movement_setting(&view, record.form_id)?;
+        }
+        b"RACE" => {
+            optional_race_movement_link(&view, record.form_id, b"WKMV")?;
+            optional_race_movement_link(&view, record.form_id, b"RNMV")?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Writes every merged record; with a load order, also records each record's
@@ -253,6 +288,7 @@ fn export_records(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
+    inhouse: bool,
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
@@ -346,13 +382,14 @@ fn export_records(
             }
             "REFR" | "ACHR" | "ACRE" | "PGRE" | "PMIS" => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
-                insert_reference(
+                insert_reference_with_reader(
                     &tx,
                     form_id,
                     cell_id,
                     cells.get(&cell_id).copied(),
                     record.flags,
                     &record.subrecords,
+                    inhouse,
                 )?;
             }
             "LAND" => {
@@ -380,17 +417,19 @@ fn export_records(
             // Every base record type with a world model. The runtime spawns
             // anything that resolves a model path here, so trees, flora,
             // containers, doors, activators, and placed inventory all render;
-            // records without MODL (triggers, markers) store NULL and are
+            // Records without MODL (triggers, markers) store NULL and are
             // skipped at spawn time. `LIGH` is handled above: the light goes
             // in `lights` and only a light with geometry lands in `statics`.
             "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "WEAP"
             | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL" | "ARMO" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
-                // gendered MOD2/MOD3 slots (male first, female fallback).
+                // gendered world-model slots (male first, female fallback).
+                // The in-house frontend uses MOD4 for the female world model;
+                // legacy keeps its earlier MOD3 fallback for compatibility.
                 let model = if type_str == "ARMO" {
                     view.get_string(b"MOD2")
-                        .or_else(|| view.get_string(b"MOD3"))
+                        .or_else(|| view.get_string(if inhouse { b"MOD4" } else { b"MOD3" }))
                 } else {
                     view.get_string(b"MODL")
                 };
@@ -465,12 +504,12 @@ fn export_records(
                         view.get_string(b"EDID"),
                         view.get_string(b"TX00"),
                         view.get_string(b"TX01"),
-                        view.get_string(b"TX02"),
-                        view.get_string(b"TX03"),
-                        view.get_string(b"TX04"),
-                        view.get_string(b"TX05"),
-                        view.get_string(b"TX06"),
-                        view.get_string(b"TX07"),
+                        view.get_string(if inhouse { b"TX03" } else { b"TX02" }),
+                        view.get_string(if inhouse { b"TX04" } else { b"TX03" }),
+                        view.get_string(if inhouse { b"TX05" } else { b"TX04" }),
+                        view.get_string(if inhouse { b"TX02" } else { b"TX05" }),
+                        view.get_string(if inhouse { b"TX07" } else { b"TX06" }),
+                        view.get_string(if inhouse { b"TX06" } else { b"TX07" }),
                     ],
                 )?;
             }
@@ -650,6 +689,7 @@ fn insert_light(tx: &Transaction<'_>, form_id: u32, view: &SubrecordView<'_>) ->
     Ok(())
 }
 
+/// Write a legacy reference and its exterior spatial projection.
 pub fn insert_reference(
     tx: &Transaction<'_>,
     form_id: u32,
@@ -657,6 +697,20 @@ pub fn insert_reference(
     cell: Option<CellMetadata>,
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
+) -> Result<()> {
+    insert_reference_with_reader(tx, form_id, cell_id, cell, header_flags, subs, false)
+}
+
+/// Write a reference using the selected frontend's enable-parent interpretation.
+#[allow(clippy::too_many_arguments)]
+fn insert_reference_with_reader(
+    tx: &Transaction<'_>,
+    form_id: u32,
+    cell_id: u32,
+    cell: Option<CellMetadata>,
+    header_flags: u32,
+    subs: &[(Vec<u8>, Vec<u8>)],
+    inhouse: bool,
 ) -> Result<()> {
     let view = SubrecordView::new(subs);
     let transform = view.get_f32_slice(b"DATA").unwrap_or_default();
@@ -701,7 +755,11 @@ pub fn insert_reference(
         .map(|bytes| {
             (
                 u32::from_le_bytes(bytes[..4].try_into().expect("four-byte XESP parent")),
-                u32::from_le_bytes(bytes[4..8].try_into().expect("four-byte XESP flags")),
+                if inhouse {
+                    u32::from(bytes[4])
+                } else {
+                    u32::from_le_bytes(bytes[4..8].try_into().expect("four-byte XESP flags"))
+                },
             )
         })
         .unzip();

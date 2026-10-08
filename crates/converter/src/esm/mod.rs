@@ -15,6 +15,7 @@ pub mod binary;
 pub mod cell_cache;
 pub mod exporter;
 pub mod extractors;
+pub mod inhouse;
 pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
@@ -24,6 +25,22 @@ pub mod types;
 pub struct EsmParser;
 
 impl EsmParser {
+    /// Export using the selected frontend, returning exactly the projection input.
+    pub(crate) fn convert_plugins_with_reader(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        reader: crate::config::RecordReader,
+        strings_root: &Path,
+    ) -> Result<HashMap<u32, RawRecord>> {
+        match reader {
+            crate::config::RecordReader::Legacy => {
+                Self::convert_plugins_with_records(plugin_paths, db_path)
+            }
+            crate::config::RecordReader::Inhouse => {
+                inhouse::convert_plugins(plugin_paths, db_path, strings_root)
+            }
+        }
+    }
     /// Parses .esm files and exports world data to skyrim_world.db
     pub fn convert_plugins(plugin_paths: &[PathBuf], db_path: &Path) -> Result<()> {
         Self::convert_plugins_with_records(plugin_paths, db_path).map(|_| ())

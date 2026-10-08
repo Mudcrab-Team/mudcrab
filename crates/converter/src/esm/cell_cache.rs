@@ -5,6 +5,44 @@ use rkyv::rancor::Error;
 use shared::{CELL_CACHE_VERSION, CachedLand, CellCache, LAND_SIDE, TerrainLayer, TerrainWeight};
 use std::{collections::HashMap, fs::File, io::Write, path::Path};
 
+/// Check one decoded terrain record before the tolerant reader publishes it.
+/// Errors stay local to this record; the adapter counts and omits it.
+/// Texture/color-only LAND may omit VHGT and uses the shared cache's default heights.
+pub(crate) fn validate_inhouse_land(record: &RawRecord) -> Result<()> {
+    let view = SubrecordView::new(&record.subrecords);
+    let authored_heightmap = view.find(b"VHGT");
+    let heightmap = authored_heightmap.unwrap_or_default();
+    let heights = decode_vhgt(heightmap);
+    let count = usize::from(LAND_SIDE).pow(2);
+    color_eyre::eyre::ensure!(
+        authored_heightmap.is_none()
+            || (!heightmap.is_empty()
+                && heights.len() == count
+                && heights.iter().all(|h| h.is_finite())),
+        "incomplete or non-finite authored VHGT"
+    );
+    let colors = view.find(b"VCLR").unwrap_or_default();
+    color_eyre::eyre::ensure!(
+        colors.is_empty() || colors.len() == count * 3,
+        "incomplete VCLR"
+    );
+    let (mut layers, _) = extract_texture_layers(&record.subrecords)?;
+    normalize_texture_layers(&mut layers);
+    for quadrant in 0..4 {
+        let entries: Vec<_> = layers
+            .iter()
+            .filter(|layer| layer.quadrant == quadrant)
+            .collect();
+        color_eyre::eyre::ensure!(
+            entries.is_empty()
+                || (entries.len() <= 6
+                    && entries.iter().filter(|layer| layer.is_base).count() == 1),
+            "invalid terrain layer count"
+        );
+    }
+    Ok(())
+}
+
 /// Validate and serialize merged LAND records, rejecting invalid terrain before replacing a cache.
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
     let water_by_cell = water_by_cell(records);

@@ -285,6 +285,11 @@ pub fn configuration_hash_for_schema(
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
+    // The in-house frontend corrects texture roles as well as record projections.
+    // Older legacy hashes stay byte-identical for existing pack compatibility.
+    if config.record_reader == crate::config::RecordReader::Inhouse {
+        relevant["record_reader"] = crate::esm::inhouse::reader_identity(config.record_reader);
+    }
     if schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
     }
@@ -405,7 +410,9 @@ fn same_path(from: &Path, to: &Path) -> bool {
     }
 }
 
-/// The native collision producer includes its fixed Zstd level in schema 16.
+/// Retained schema-15/16 producers also recorded their fixed Zstd level of 6.
+/// The protected schema-15 source manifest proves this exact configuration
+/// variant; quality and script ABI must still match its recorded hash.
 /// This compatibility route verifies retained bytes, not normal cache reuse.
 pub(crate) fn retained_configuration_matches(
     config: &crate::config::PipelineConfig,
@@ -415,7 +422,7 @@ pub(crate) fn retained_configuration_matches(
     if recorded == configuration_hash_for_schema(config, schema)? {
         return Ok(true);
     }
-    if schema != 16 {
+    if !matches!(schema, 15 | 16) {
         return Ok(false);
     }
     let native = serde_json::json!({
@@ -458,6 +465,27 @@ pub fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
+        let config = crate::config::PipelineConfig::new("Data", "output");
+        // Exact configuration hash in the protected original schema-15
+        // manifest and its metadata rebuild's retained producer provenance.
+        let recorded = "b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435";
+        assert!(retained_configuration_matches(&config, 15, recorded).unwrap());
+        assert_eq!(
+            configuration_hash_for_schema(&config, 15).unwrap(),
+            "9a58fda00b27d0f2a8e46afb9334ea869602556393a35bffd7fcb39582a08a4f"
+        );
+        assert!(!retained_configuration_matches(&config, 16, recorded).unwrap());
+        assert!(!retained_configuration_matches(&config, 15, "different-hash").unwrap());
+        let mut changed = config.clone();
+        changed.texture_fallback_quality = 191;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+        let mut changed = config;
+        changed.script_abi_version = 2;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+    }
 
     #[test]
     fn ambiguous_legacy_producers_cannot_reuse_staged_meshes_or_textures() {

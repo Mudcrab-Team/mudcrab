@@ -16,9 +16,15 @@ primary reference, revision and URL. Names are our own snake_case names.
 ## Envelope and validation
 
 The JSON envelope contains `version` (currently `1`), a `sources` object,
-`definitions` (named reusable fields), and an ordered `records` array. A record
+`definitions` (named reusable fields), `common_fields` (explicit hooks for
+otherwise opaque record types), and an ordered `records` array. A record
 has a four-character `signature`, `source`, ordered `fields`, and optional
-`allow_unordered` (default false). No current record opts into unordered matching.
+`allow_unordered` (default false). Verified format flags enable unordered matching
+for TES4, CELL, CONT, REFR, ACHR and the eight projectile/hazard placed types.
+These flags are format facts from the pinned definitions and the named parameter
+in `wbInterface.pas`; they are not inferred from the definition's display order.
+WRLD, LAND and the other verified initial native record types remain ordered.
+Legacy ACRE remains conservative because no permitted SSE definition exists.
 
 Rust includes the JSON and validates it before decoding plugin data. Invalid
 schema is a programming/configuration error. Malformed plugin data is a bounded
@@ -32,7 +38,7 @@ converter's existing serde_json.
 | --- | --- |
 | `signature` | Four-character subrecord signature. Absent on struct members and groups. |
 | `name` | Stable decoded value name. |
-| `kind` | `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `f32`, `zstring`, `lstring`, `form_id`, `bytes`, `struct`, `array`, `union`, or `group`. |
+| `kind` | `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `f32`, `zstring`, `lstring`, `form_id`, `bytes`, `struct`, `array`, `union`, or `group`. |
 | `size` / `sizes` | Exact byte width or explicitly accepted widths, when present. |
 | `offset` | Byte offset within a struct or array element; default zero. |
 | `members` | Struct or array element fields, with explicit offsets. |
@@ -49,9 +55,25 @@ converter's existing serde_json.
 All numeric bytes are little endian. `form_id` is exactly four bytes and retains
 its typed target information through file-relative to load-order remapping.
 Zero is an absent link. Zero-size `bytes` fields describe valid empty markers.
-A target signature is checked against the resolved
+A target signature in a winning runtime record is checked against the resolved
 record catalog; it is not inferred from the FormID's high byte. Unknown flag
 bits and enum values retain their numeric value.
+
+Record header identities follow the existing MudCrab owner policy: a source
+index at or beyond the number of masters names the current plugin. Indices
+beyond that count are retained for compatibility with shipped exceptions such
+as Skyrim.esm's GMST0123C00E. Optional field links use the stricter bounded
+master-index check and become zero when invalid. Duplicate or colliding
+normalized record IDs in one plugin preserve the first record and diagnose the
+later occurrence locally. This compatibility does not establish universal
+validation of modded record headers.
+
+TES4 headers are retained separately in `ReadResult.headers`, preserving decoded
+HEDR and master-list fields. Their ONAM overridden-form list is historical
+metadata: this phase remaps its file-relative links but exempts it from final
+winner-catalog target validation. An overridden or deleted form can legitimately
+be absent from that catalog. No runtime projection currently consumes these
+headers; the exemption does not extend to ordinary winning-record links.
 
 `zstring` consumes an inline zero-terminated byte string. A fixed-size zstring,
 such as a 260-byte STAT LOD slot, stops at its first zero but preserves the slot
@@ -68,11 +90,20 @@ arrays, such as LAND's 1,089 height deltas, apply their offset to the parent.
 
 ## Ordered matching and groups
 
-The input cursor visits subrecords in file order. The schema cursor advances
+For ordered record types, the input cursor visits subrecords in file order and
+the schema cursor advances
 through optional fields to the next matching signature. An unknown signature
 does not advance the schema cursor: report it and continue. A known field
 encountered after its ordered position is also a diagnostic; do not silently
 reinterpret it as a different field with the same signature.
+
+For the explicitly unordered types, recognized fields can occur before or after
+their position in the display-oriented definition. Unknown signatures still
+produce bounded diagnostics. Preserve input occurrence order and array/group
+semantics; enabling the record flag does not declare array element order or
+variable-layout context irrelevant. Official REFR records place XSCL after
+activate parents or XESP, and XRDS after light/map fields. Those are legitimate
+physical variants, as is the existing dummy light's NAME/DATA/XRDS/XESP order.
 
 A group spans several subrecords without adding bytes of its own. Its children
 are optional unless a decoder-specific constraint requires them. A repeated
@@ -82,30 +113,64 @@ their occurrence order. TES4 master groups associate each MAST with its DATA;
 LAND layer groups associate ATXT with its VTXT. Grouping prevents repeated
 shared signatures from being treated as a global last-value map.
 
-Typed decoding is separate from raw preservation. Keep the safe original
-payload, including unknown subrecords and padding, for the existing
-`records.data` contract; emit supported typed values and validated canonical
-bytes for consumers. Malformed fields can be omitted from those consumer bytes
-without inventing a value or damaging valid neighbors.
+Typed decoding is separate from source preservation. `records.data` retains its
+existing rkyv encoding and contains validated canonical subrecord bytes for
+consumers. The auxiliary `inhouse_source_records` table holds the original
+decompressed payload, including unknown subrecords and padding; its embedded
+FormIDs remain file-relative. Malformed fields are omitted from canonical
+consumer bytes while their source payload remains available as provenance.
+These omissions do not invent a value or damage valid neighbors.
+
+Decoded records report `payload_complete` and deduplicated `rejected_fields`.
+An incomplete subrecord boundary preserves the safely framed prefix and marks
+the payload incomplete; it cannot establish whether a required field was absent
+in the undecodable remainder. Known fields rejected during value decoding or
+ordered matching are distinct from fields that the source omitted; unknown
+signatures remain unexpected rather than rejected known fields. The public typed reader retains these facts for
+consumers rather than guessing missing values.
+
+The runtime adapter checks required terrain and movement semantics on each
+candidate before committing it as an override winner. An unusable candidate
+leaves its earlier usable predecessor and records a bounded diagnostic. TES4
+headers remain separate, and header-only deletions still apply. Genuine
+texture/color-only LAND without VHGT uses the shared cache's established zero
+heights; an incomplete LAND payload or rejected authored VHGT cannot take that
+fallback. The decoder's source metadata supports this decision without using
+the original payload as an alternative runtime projection.
 
 ## Decider hooks
 
 | Hook | Context and alternatives |
 | --- | --- |
-| `size` | Pick an exact size alternative, e.g. STAT DNAM 8/12 bytes. |
+| `size` | Pick an exact size alternative, e.g. STAT DNAM 8/12 bytes or XPWR reference-only/reference-and-flags 4/8 bytes. |
 | `gmst_value` | First character of EDID: `s` localized string, `i` signed integer, `f` float, `b` unsigned Boolean. No fallback type for an unknown prefix. |
 | `legacy_linked_reference` | XLKR 4 bytes contains only a reference; 8 bytes contains keyword/reference followed by reference. |
 | `cell_grid` | XCLC 8 bytes has two i32 coordinates; 12-byte SSE layout adds one byte of land flags and three padding bytes. |
 | `movement_speeds` | SPED 40 bytes has ten floats; 44 bytes adds rotate-while-moving-run. |
 | `water_visual` | DNAM 228 bytes has 57 four-byte slots; 232 bytes adds flowmap scale. |
 | `alternate_textures` | MODS/MO2S/MO4S has a u32 entry count, then entries of u32 name length, name bytes, TXST FormID and u32 shape index. Validate every variable boundary. |
+| `vmad` | Reuse MudCrab's existing bounded primary-script object-link remapper. Object formats 1/2 and scalar/array object properties retain their established consumer contract; record-specific fragment bytes remain opaque. |
 
 The alternate texture hook is attached to an otherwise opaque `bytes` field.
-It may additionally produce bounded typed entries and remap their TXST links;
+It produces bounded typed entries and remaps their TXST links;
 the hook must not treat a missing or malformed entry as a whole-run error. VMAD
-remains opaque in this schema and uses MudCrab's existing parser in the exporter.
+keeps byte representation but applies the bounded primary-script object-link
+remapper before using MudCrab's existing script parser in the exporter. The
+shared `vmad` definition applies to explicit VMAD occurrences and to the
+top-level `common_fields` occurrence on otherwise opaque record types. That
+fallback preserves the existing generic script consumer contract; it does not
+provide full semantic coverage for those record types. Malformed primary script
+bytes omit only that field. Record-specific fragment/alias links are not decoded
+or remapped by this hook, and fragment bytes remain unchanged.
 Future contextual layouts add Rust hooks explicitly rather than executable
 code or expressions embedded in schema data.
+
+REFR and the shared projectile/hazard placed definitions permit XPWR's older
+four-byte reference-only prefix: the pinned struct fact requires only its first
+member. The eight-byte form adds u32 reflection/refraction flags. Both forms
+retain exact widths, resolve the REFR link, and preserve unknown flag bits. The
+official inventory found 1,314 reference-only XPWR fields in Skyrim.esm; omitting
+the optional-tail fact incorrectly dropped usable fields in the first prototype.
 
 ## Examples
 
@@ -171,12 +236,13 @@ inside a larger subrecord.
 ]}
 ```
 
-REFR uses the shared XESP definition and the shared six-float transform. XSCL
-precedes the ownership/enable-parent portion in the full ordered definition;
-other subrecords between the fields below are omitted only from this example.
+REFR uses the shared XESP definition and the shared six-float transform. Its
+display definition places XSCL before the ownership/enable-parent portion, but
+the record's verified unordered flag permits other physical positions. Other
+subrecords between the fields below are omitted only from this example.
 
 ```json
-{"signature":"REFR","fields":[
+{"signature":"REFR","allow_unordered":true,"fields":[
   {"signature":"EDID","name":"editor_id","kind":"zstring"},
   {"signature":"NAME","name":"base","kind":"form_id","targets":["STAT","DOOR","ACTI","TREE","CONT"]},
   {"signature":"XSCL","name":"scale","kind":"f32"},
@@ -196,8 +262,13 @@ ARMO, LIGH, WATR, TXST, LTEX, GRAS, NPC_, RACE, MOVT, and GMST.
 
 Existing runtime tables determine the initial typed subset. Ordinary world-model
 types describe EDID, VMAD, OBND and the model group; their remaining gameplay
-fields are preserved as opaque data. NPC_ describes identity, race, class, name
+fields remain verbatim in the auxiliary source payload rather than canonical
+`records.data`. Explicit `bytes` fields remain opaque canonical fields.
+NPC_ describes identity, race, class, name
 and several common compound links; it does not claim full actor conversion.
+NPC_ SPLO actor effects admit SPEL, SHOU and LVSP targets, as specified by the
+pinned TES5 shared actor-effect definition at lines4092-4093 and its NPC use at
+line10942. A spell-only target list would clear valid shouts and leveled spells.
 RACE covers identity/name and WKMV/RNMV movement links. WATR's known visual
 slots have primitive types, while its unknown slots remain four-byte opaque
 values. LAND normal/color triplets retain exact-sized bytes rather than implying
@@ -205,7 +276,10 @@ decoded normal units. VTEX retains the existing converter's four-byte legacy
 link-array contract; the pinned Skyrim LAND definition uses BTXT/ATXT layers and
 does not establish VTEX as an SSE field. ACRE has no Skyrim SSE definition in the permitted source;
 its conservative entry follows the existing MudCrab parser only and leaves the
-base target type unchecked.
+base target type unchecked. Its XRDS radius is a legacy consumer field, not an
+assertion about an SSE record type. REFR and ACHR allow XRDS in multiple physical
+positions, including after DATA. The projectile/hazard placed definitions do not admit XRDS;
+the generic exporter's attempt to read it does not extend those source formats.
 
 The existing exporter already writes model-bearing bases and raw records; those
 are not new engine capabilities introduced by the schema. The in-house projection
@@ -215,6 +289,10 @@ means multilayer and TX07 means backlight mask/specular, rather than universally
 meaning a detail or specular image. Runtime column naming remains an adapter
 contract and does not redefine those source facts.
 
-No complete mod compatibility, full VMAD typed-link coverage, all 126 Skyrim
+No complete mod compatibility, full VMAD fragment/alias-link coverage, all 126 Skyrim
 record types, or visual parity is established by this document. Those claims
 require decoder tests and comparison reports for the final implementation.
+Optional REFR room/patrol groups reuse INAM with different target types. The
+flattened matcher needs group context to distinguish every such nonconsumer
+case; their presence in the initial schema does not establish complete
+context-sensitive link semantics.

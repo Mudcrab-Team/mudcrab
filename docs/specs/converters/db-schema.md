@@ -2,6 +2,15 @@
 
 This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](../../../crates/converter/src/esm/exporter.rs).
 
+The optional in-house frontend keeps the runtime column contract while
+correcting TXST slot interpretation: diffuse TX00, normal TX01, mask TX02, glow
+TX03, height TX04, environment TX05, detail TX06, and specular TX07. The existing
+`detail_path` column carries TX06 multilayer data; TX03 is the source's
+glow/detail-map slot and TX07 its backlight-mask/specular slot. These role names
+retain the runtime approximation and do not imply complete shader support.
+In-house ARMO model projection uses MOD2 with MOD4 as the female world-model
+fallback; legacy retains its existing MOD3 fallback.
+
 ---
 
 ## 1. Schema Overview
@@ -58,7 +67,18 @@ CREATE TABLE IF NOT EXISTS plugins (
 
 ### 2. Primary Record Database (`records`)
 
-Stores unparsed raw subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character record type codes.
+Stores subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character
+record type codes, encoded as rkyv `ArchivedRecordData`. Both frontends resolve
+known embedded links to load-order numbering. The in-house frontend projects
+validated decoded fields into this existing encoding. Its auxiliary experimental
+`inhouse_source_records(form_id, source_form_id, load_order, record_type, flags,
+payload)` table holds original
+decompressed source bytes, including file-relative IDs and unused framing. Those
+source bytes are provenance, not decoded runtime fields. `load_order` names the
+winning source plugin through `plugins.id`. Required movement and terrain
+semantics are validated before winner selection; rejected candidates leave an
+earlier usable winner intact and are counted in per-plugin diagnostics. The pack's
+`record-reader.json` identifies the frontend and schema.
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
@@ -139,8 +159,10 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 The reference flag and enable-parent columns preserve winning raw-record
 metadata for later object LOD (#106). Current terrain LOD does not consume
 them. `header_flags` comes from the record header; `enable_parent_id` and
-`enable_parent_flags` are the two little-endian words of the eight-byte XESP
-subrecord, with the parent FormID resolved through plugin load order. The raw
+`enable_parent_flags` use the legacy interpretation as two little-endian words
+of the eight-byte XESP subrecord, with the parent FormID resolved through plugin
+load order. In-house mode correctly reads flags from byte 4 only; bytes 5–7 are
+unused padding, retained in the payload. The raw
 subrecord payload remains in `data`. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.

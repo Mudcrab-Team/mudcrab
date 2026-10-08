@@ -23,6 +23,60 @@
     }
   },
   "definitions": {
+    "reflected_water": {
+      "name": "reflected_refracted",
+      "kind": "union",
+      "repeat": true,
+      "decider": "size",
+      "source": "xedit-tes5:12316-12325 REFR XPWR;6358-6366 shared placed XPWR; minimum one struct member permits 4-byte reference-only prefix",
+      "fields": [
+        {
+          "name": "legacy",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "extended",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 4,
+              "flags": {
+                "1": "reflection",
+                "2": "refraction"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "vmad": {
+      "name": "scripts",
+      "kind": "bytes",
+      "decider": "vmad",
+      "source": "mudcrab-legacy:esm/records/record_type/vmad.rs remap_primary_form_ids; primary script object links only; record-specific fragment tail opaque"
+    },
     "bounds": {
       "name": "bounds",
       "kind": "struct",
@@ -423,7 +477,8 @@
           "name": "interior_cell_count",
           "kind": "u32"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "TXST",
@@ -499,7 +554,8 @@
             "4": "model_space_normal_map"
           }
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "STAT",
@@ -622,7 +678,8 @@
           "name": "enam",
           "kind": "bytes"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "MSTT",
@@ -635,8 +692,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -665,7 +721,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "FURN",
@@ -678,8 +735,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -708,7 +764,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "TREE",
@@ -721,8 +778,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -751,7 +807,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "FLOR",
@@ -764,8 +821,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -794,7 +850,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "CONT",
@@ -807,8 +864,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -837,7 +893,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "DOOR",
@@ -850,8 +907,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -880,7 +936,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "ACTI",
@@ -893,8 +950,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -923,7 +979,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "WEAP",
@@ -936,8 +993,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -966,7 +1022,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "MISC",
@@ -979,8 +1036,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1009,7 +1065,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "BOOK",
@@ -1022,8 +1079,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1052,7 +1108,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "AMMO",
@@ -1065,8 +1122,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1095,7 +1151,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "ALCH",
@@ -1108,8 +1165,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1138,7 +1194,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "INGR",
@@ -1151,8 +1208,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1181,7 +1237,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "SLGM",
@@ -1194,8 +1251,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1224,7 +1280,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "KEYM",
@@ -1237,8 +1294,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1267,7 +1323,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "SCRL",
@@ -1280,8 +1337,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1310,7 +1366,8 @@
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "ARMO",
@@ -1323,8 +1380,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1529,7 +1585,8 @@
             "ARMO"
           ]
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "LIGH",
@@ -1542,8 +1599,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -1708,7 +1764,8 @@
             "LENS"
           ]
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "LTEX",
@@ -1775,7 +1832,8 @@
             "1": "snow"
           }
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "GRAS",
@@ -1904,7 +1962,8 @@
             }
           ]
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "WRLD",
@@ -2147,7 +2206,8 @@
           "name": "ofst",
           "kind": "bytes"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "CELL",
@@ -2400,7 +2460,8 @@
             "IMGS"
           ]
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "LAND",
@@ -2539,7 +2600,8 @@
           "kind": "bytes",
           "repeat": true
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "REFR",
@@ -2552,8 +2614,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -2713,29 +2774,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4,
-              "flags": {
-                "1": "reflection",
-                "2": "refraction"
-              }
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLTW",
@@ -3161,7 +3200,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "ACHR",
@@ -3174,8 +3214,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -3429,7 +3468,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PGRE",
@@ -3442,8 +3482,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -3477,25 +3516,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -3588,7 +3609,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PHZD",
@@ -3601,8 +3623,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -3636,25 +3657,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -3747,7 +3750,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PMIS",
@@ -3760,8 +3764,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -3795,25 +3798,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -3906,7 +3891,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PARW",
@@ -3919,8 +3905,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -3954,25 +3939,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -4065,7 +4032,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PBAR",
@@ -4078,8 +4046,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -4113,25 +4080,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -4224,7 +4173,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PBEA",
@@ -4237,8 +4187,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -4272,25 +4221,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -4383,7 +4314,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PCON",
@@ -4396,8 +4328,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -4431,25 +4362,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -4542,7 +4455,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "PFLA",
@@ -4555,8 +4469,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -4590,25 +4503,7 @@
         },
         {
           "signature": "XPWR",
-          "name": "reflected_refracted",
-          "kind": "struct",
-          "size": 8,
-          "members": [
-            {
-              "name": "reference",
-              "kind": "form_id",
-              "offset": 0,
-              "targets": [
-                "REFR"
-              ]
-            },
-            {
-              "name": "flags",
-              "kind": "u32",
-              "offset": 4
-            }
-          ],
-          "repeat": true
+          "definition": "reflected_water"
         },
         {
           "signature": "XLKR",
@@ -4701,7 +4596,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": true
     },
     {
       "signature": "ACRE",
@@ -4714,8 +4610,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "NAME",
@@ -4724,6 +4619,12 @@
           "targets": [
             "ANY_"
           ]
+        },
+        {
+          "signature": "XRDS",
+          "name": "radius",
+          "kind": "f32",
+          "source": "mudcrab-legacy:esm/exporter.rs insert_reference radius_override (legacy ACRE consumer contract only)"
         },
         {
           "signature": "XESP",
@@ -4738,7 +4639,8 @@
           "signature": "DATA",
           "definition": "transform"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "NPC_",
@@ -4751,8 +4653,7 @@
         },
         {
           "signature": "VMAD",
-          "name": "scripts",
-          "kind": "bytes"
+          "definition": "vmad"
         },
         {
           "signature": "OBND",
@@ -4836,9 +4737,12 @@
           "name": "spell",
           "kind": "form_id",
           "targets": [
-            "SPEL"
+            "SPEL",
+            "SHOU",
+            "LVSP"
           ],
-          "repeat": true
+          "repeat": true,
+          "source": "xedit-tes5:4092-4093 shared actor-effect targets;10942 NPC uses actor effects"
         },
         {
           "signature": "DEST",
@@ -5052,7 +4956,8 @@
           "name": "full_name",
           "kind": "lstring"
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "RACE",
@@ -5084,7 +4989,8 @@
             "MOVT"
           ]
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "MOVT",
@@ -5250,7 +5156,8 @@
             }
           ]
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "GMST",
@@ -5289,7 +5196,8 @@
             }
           ]
         }
-      ]
+      ],
+      "allow_unordered": false
     },
     {
       "signature": "WATR",
@@ -6032,7 +5940,14 @@
           "name": "flow_normals",
           "kind": "zstring"
         }
-      ]
+      ],
+      "allow_unordered": false
+    }
+  ],
+  "common_fields": [
+    {
+      "signature": "VMAD",
+      "definition": "vmad"
     }
   ]
 }

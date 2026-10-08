@@ -11,6 +11,8 @@ pub struct Schema {
     pub sources: serde_json::Value,
     #[serde(default)]
     pub definitions: BTreeMap<String, FieldSchema>,
+    #[serde(default)]
+    pub common_fields: Vec<FieldSchema>,
     pub records: Vec<RecordSchema>,
 }
 
@@ -89,6 +91,9 @@ impl Schema {
         for field in self.definitions.values() {
             self.validate_field(field, 0)?;
         }
+        for field in &self.common_fields {
+            self.validate_field(field, 0)?;
+        }
         Ok(())
     }
 
@@ -163,6 +168,7 @@ impl Schema {
                     | "water_visual"
                     | "alternate_textures"
                     | "size"
+                    | "vmad"
             )
         {
             return Err(format!("unknown decider {decider}"));

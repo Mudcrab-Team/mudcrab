@@ -16,6 +16,7 @@ expression: report
     "lod/00000001/4/cell_1_1.glb",
     "lod/00000001/8/cell_0_0.glb",
     "meshes/generated.glb",
+    "record-reader.json",
     "scripts/generated.luau",
     "scripts/papyrus_runtime.luau",
     "scripts/second.luau",
