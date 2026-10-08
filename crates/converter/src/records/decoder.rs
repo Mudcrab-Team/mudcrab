@@ -804,7 +804,62 @@ fn alternate_textures(
     Ok((Value::Array(values), canonical))
 }
 
-/// Validate declared target kinds after all winners exist; dangling optional links are nulled.
+/// Add only diagnostics newly discovered by a contextual replay, keeping existing examples.
+fn merge_new_diagnostics(
+    target: &mut PluginDiagnostics,
+    baseline: &PluginDiagnostics,
+    resolved: PluginDiagnostics,
+) {
+    let additions = [
+        (
+            "record",
+            resolved
+                .skipped_records
+                .saturating_sub(baseline.skipped_records),
+        ),
+        (
+            "field",
+            resolved
+                .skipped_fields
+                .saturating_sub(baseline.skipped_fields),
+        ),
+        (
+            "unexpected",
+            resolved
+                .unexpected_subrecords
+                .saturating_sub(baseline.unexpected_subrecords),
+        ),
+        (
+            "link",
+            resolved
+                .invalid_links
+                .saturating_sub(baseline.invalid_links),
+        ),
+    ];
+    for (category, count) in additions {
+        if count == 0 {
+            continue;
+        }
+        match category {
+            "record" => target.skipped_records += count,
+            "field" => target.skipped_fields += count,
+            "unexpected" => target.unexpected_subrecords += count,
+            _ => target.invalid_links += count,
+        }
+        if !target.first_by_category.contains_key(category)
+            && let Some(example) = resolved.first_by_category.get(category)
+        {
+            if target.first_example.is_none() {
+                target.first_example = Some(example.clone());
+            }
+            target
+                .first_by_category
+                .insert(category.to_owned(), example.clone());
+        }
+    }
+}
+
+/// Resolve catalogue-dependent unions without recounting already diagnosed source issues.
 pub(crate) fn resolve_deferred(result: &mut ReadResult, schema: &Schema, order: &LoadOrder) {
     fn deferred(value: &Value) -> bool {
         match value {
@@ -831,7 +886,7 @@ pub(crate) fn resolve_deferred(result: &mut ReadResult, schema: &Schema, order: 
             localized: order.metadata[priority].flags & 0x80 != 0,
             winning_types: Some(&kinds),
         };
-        let scanned = ScannedRecord {
+        let scanned = || ScannedRecord {
             record_type: record.record_type,
             flags: record.flags,
             source_form_id: record.source_form_id,
@@ -846,7 +901,24 @@ pub(crate) fn resolve_deferred(result: &mut ReadResult, schema: &Schema, order: 
             .diagnostics
             .entry(order.names[priority].clone())
             .or_default();
-        match decode(scanned, schema, &context, diagnostics) {
+        // Compare the same source under its initial and accepted-winner contexts.
+        // Replaying into scratch counters preserves genuine new COED link errors
+        // while avoiding duplicate malformed-field and unexpected-tag warnings.
+        let baseline_context = Context {
+            winning_types: None,
+            ..context
+        };
+        let mut baseline = PluginDiagnostics::default();
+        if let Err(error) = decode(scanned(), schema, &baseline_context, &mut baseline) {
+            diagnostics.note("record", || {
+                format!("deferred baseline {:08X}: {error}", record.form_id)
+            });
+            continue;
+        }
+        let mut replay = PluginDiagnostics::default();
+        let resolution = decode(scanned(), schema, &context, &mut replay);
+        merge_new_diagnostics(diagnostics, &baseline, replay);
+        match resolution {
             Ok(resolved) => {
                 record.fields = resolved.fields;
                 record.rejected_fields = resolved.rejected_fields;
