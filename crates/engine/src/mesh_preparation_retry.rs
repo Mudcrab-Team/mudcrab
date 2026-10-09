@@ -10,7 +10,8 @@ use bevy::{
     ecs::system::SystemParam,
     pbr::{
         MeshesToReextractNextFrame, PendingMeshMaterialQueues, PendingPrepassMeshMaterialQueues,
-        PendingShadowQueues, RenderMeshInstances,
+        PendingShadowQueues, RenderMeshInstances, collect_meshes_for_gpu_building,
+        set_mesh_motion_vector_flags,
     },
     prelude::*,
     render::{
@@ -34,21 +35,44 @@ const MAX_RESUME_SAMPLES: usize = 16;
 
 pub struct MeshPreparationRetryPlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+enum MeshPreparationRetrySystems {
+    Resume,
+    Observe,
+    ObserveLateShadows,
+}
+
 impl Plugin for MeshPreparationRetryPlugin {
     fn build(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<PendingPreparations>()
+                .configure_sets(
+                    Render,
+                    (
+                        // Bevy's prepass specializes inside PrepareMeshes, before CreateViews.
+                        // Resume retained records before its motion-vector ordering anchor.
+                        MeshPreparationRetrySystems::Resume
+                            .in_set(RenderSystems::PrepareMeshes)
+                            .after(collect_meshes_for_gpu_building)
+                            .before(set_mesh_motion_vector_flags),
+                        MeshPreparationRetrySystems::Observe
+                            .after(RenderSystems::CreateViews)
+                            .before(RenderSystems::Specialize),
+                        MeshPreparationRetrySystems::ObserveLateShadows
+                            .after(RenderSystems::Specialize)
+                            .before(RenderSystems::Queue),
+                    ),
+                )
                 .add_systems(
                     Render,
                     (
-                        retry_deferred_mesh_preparation
-                            .after(RenderSystems::PrepareMeshes)
-                            .after(RenderSystems::CreateViews)
-                            .before(RenderSystems::Specialize),
+                        resume_deferred_mesh_preparation
+                            .in_set(MeshPreparationRetrySystems::Resume),
+                        observe_deferred_mesh_preparation
+                            .in_set(MeshPreparationRetrySystems::Observe),
                         observe_late_shadow_preparation
-                            .after(RenderSystems::Specialize)
-                            .before(RenderSystems::Queue),
+                            .in_set(MeshPreparationRetrySystems::ObserveLateShadows),
                     ),
                 );
         }
@@ -201,13 +225,28 @@ fn prepared_mesh_is_resident(
     )
 }
 
-fn retry_deferred_mesh_preparation(
+fn resume_ready_meshes(
+    pending: &mut PendingPreparations,
+    current_mesh: impl FnMut(MainEntity) -> Option<AssetId<Mesh>>,
+    is_ready: impl FnMut(AssetId<Mesh>) -> bool,
+    dirty: &mut DirtySpecializations,
+    mut reextract: Option<&mut MeshesToReextractNextFrame>,
+) -> Drain {
+    let drain = pending.drain_ready(current_mesh, is_ready);
+    for &(entity, _) in &drain.resumed {
+        dirty.changed_renderables.insert(entity);
+        if let Some(reextract) = reextract.as_mut() {
+            reextract.insert(entity);
+        }
+    }
+    drain
+}
+
+fn resume_deferred_mesh_preparation(
     mut pending: ResMut<PendingPreparations>,
     mut dirty: Option<ResMut<DirtySpecializations>>,
     mut reextract: Option<ResMut<MeshesToReextractNextFrame>>,
     resources: PreparationResources,
-    views: Query<(&ExtractedView, &RenderVisibleEntities)>,
-    shadow_views: Query<&RenderShadowMapVisibleEntities>,
 ) {
     let (Some(instances), Some(meshes), Some(allocator), Some(dirty)) = (
         resources.instances.as_ref(),
@@ -218,6 +257,54 @@ fn retry_deferred_mesh_preparation(
         return;
     };
     pending.frame += 1;
+    let drain = resume_ready_meshes(
+        &mut pending,
+        |entity| instances.mesh_asset_id(entity),
+        |id| prepared_mesh_is_resident(id, meshes, allocator),
+        dirty,
+        reextract.as_deref_mut(),
+    );
+    for &(entity, asset_id) in &drain.resumed {
+        if pending.logged_samples < MAX_RESUME_SAMPLES {
+            pending.logged_samples += 1;
+            info!(
+                render_frame = pending.frame,
+                ?entity,
+                ?asset_id,
+                "late mesh preparation resumed"
+            );
+        }
+    }
+    if !drain.resumed.is_empty() || drain.canceled > 0 {
+        info!(
+            render_frame = pending.frame,
+            pending = pending.meshes.len(),
+            pending_peak = pending.peak,
+            resumed = drain.resumed.len(),
+            canceled = drain.canceled,
+            tracked_total = pending.tracked_total,
+            resumed_total = pending.resumed_total,
+            canceled_total = pending.canceled_total,
+            extraction_retry_available = reextract.is_some(),
+            "late mesh preparation retry drain"
+        );
+    }
+}
+
+fn observe_deferred_mesh_preparation(
+    mut pending: ResMut<PendingPreparations>,
+    dirty: Option<Res<DirtySpecializations>>,
+    resources: PreparationResources,
+    views: Query<(&ExtractedView, &RenderVisibleEntities)>,
+    shadow_views: Query<&RenderShadowMapVisibleEntities>,
+) {
+    let (Some(instances), Some(meshes), Some(dirty)) = (
+        resources.instances.as_ref(),
+        resources.meshes.as_ref(),
+        dirty.as_ref(),
+    ) else {
+        return;
+    };
     pending.observed_dirty_views.clear();
     let mut candidates: HashSet<_> = dirty.changed_renderables.iter().copied().collect();
     for (extracted_view, view) in &views {
@@ -261,40 +348,19 @@ fn retry_deferred_mesh_preparation(
         |entity| instances.mesh_asset_id(entity),
         |id| meshes.get(id).is_some(),
     );
-    let drain = pending.drain_ready(
-        |entity| instances.mesh_asset_id(entity),
-        |id| prepared_mesh_is_resident(id, meshes, allocator),
-    );
-    for &(entity, asset_id) in &drain.resumed {
-        dirty.changed_renderables.insert(entity);
-        if let Some(reextract) = reextract.as_mut() {
-            reextract.insert(entity);
-        }
-        if pending.logged_samples < MAX_RESUME_SAMPLES {
-            pending.logged_samples += 1;
-            info!(
-                render_frame = pending.frame,
-                ?entity,
-                ?asset_id,
-                "late mesh preparation resumed"
-            );
-        }
-    }
     let canceled = pending.canceled_total - canceled_before;
-    if newly_tracked > 0 || !drain.resumed.is_empty() || canceled > 0 {
+    if newly_tracked > 0 || canceled > 0 {
         info!(
             render_frame = pending.frame,
             candidates = candidate_count,
             newly_tracked,
             pending = pending.meshes.len(),
             pending_peak = pending.peak,
-            resumed = drain.resumed.len(),
             canceled,
             tracked_total = pending.tracked_total,
             resumed_total = pending.resumed_total,
             canceled_total = pending.canceled_total,
-            extraction_retry_available = reextract.is_some(),
-            "late mesh preparation retry drain"
+            "late mesh preparation observed for next frame"
         );
     }
 }
@@ -356,6 +422,328 @@ fn observe_late_shadow_preparation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::{
+        app::SubApp, ecs::system::RunSystemOnce, pbr::RenderMeshInstanceGpu,
+        render::view::RenderVisibleEntitiesClass,
+    };
+    use std::any::TypeId;
+
+    fn observer_world() -> World {
+        let mut world = World::new();
+        world.init_resource::<PendingPreparations>();
+        world.init_resource::<DirtySpecializations>();
+        world.init_resource::<RenderAssets<RenderMesh>>();
+        world.insert_resource(RenderMeshInstances::GpuBuilding(default()));
+        world
+    }
+
+    fn insert_instance(world: &mut World, entity: MainEntity, id: AssetId<Mesh>) {
+        let mut instances = world.resource_mut::<RenderMeshInstances>();
+        let RenderMeshInstances::GpuBuilding(instances) = &mut *instances else {
+            unreachable!();
+        };
+        let instance = RenderMeshInstanceGpu {
+            shared: default(),
+            gpu_specific: default(),
+            render_layers: None,
+        };
+        instance.shared.set_mesh_asset_id(id);
+        instances.insert(entity, instance);
+    }
+
+    fn visible_class(entity: MainEntity, newly_visible: bool) -> RenderVisibleEntitiesClass {
+        let pair = (Entity::PLACEHOLDER, entity);
+        RenderVisibleEntitiesClass {
+            entities_cpu_culling: vec![pair],
+            added_entities: if newly_visible { vec![pair] } else { vec![] },
+            ..default()
+        }
+    }
+
+    #[test]
+    fn changed_mesh_is_observed_after_its_original_change_event_expires() {
+        let [id] = mesh_ids();
+        let mut world = observer_world();
+        let entity = world.spawn_empty().id().into();
+        insert_instance(&mut world, entity, id);
+        world
+            .resource_mut::<DirtySpecializations>()
+            .changed_renderables
+            .insert(entity);
+        world
+            .run_system_once(observe_deferred_mesh_preparation)
+            .unwrap();
+        world
+            .resource_mut::<DirtySpecializations>()
+            .changed_renderables
+            .clear();
+        world
+            .run_system_once(observe_deferred_mesh_preparation)
+            .unwrap();
+        let pending = world.resource::<PendingPreparations>();
+        assert_eq!(pending.meshes.get(&entity), Some(&id));
+        assert_eq!(pending.tracked_total, 1);
+    }
+
+    #[test]
+    fn every_phase_pending_queue_can_observe_an_instance_that_appears_late() {
+        for phase in 0..3 {
+            let [id] = mesh_ids();
+            let mut world = observer_world();
+            let entity = world.spawn_empty().id().into();
+            let view = RetainedViewEntity::new(entity, None, 0);
+            let pair = (Entity::PLACEHOLDER, entity);
+            match phase {
+                0 => {
+                    world.init_resource::<PendingMeshMaterialQueues>();
+                    world
+                        .resource_mut::<PendingMeshMaterialQueues>()
+                        .prepare_for_new_frame(view)
+                        .current_frame
+                        .insert(pair);
+                }
+                1 => {
+                    world.init_resource::<PendingPrepassMeshMaterialQueues>();
+                    world
+                        .resource_mut::<PendingPrepassMeshMaterialQueues>()
+                        .prepare_for_new_frame(view)
+                        .current_frame
+                        .insert(pair);
+                }
+                _ => {
+                    world.init_resource::<PendingShadowQueues>();
+                    world
+                        .resource_mut::<PendingShadowQueues>()
+                        .prepare_for_new_frame(view)
+                        .current_frame
+                        .insert(pair);
+                }
+            }
+            world
+                .run_system_once(observe_deferred_mesh_preparation)
+                .unwrap();
+            assert!(world.resource::<PendingPreparations>().meshes.is_empty());
+            insert_instance(&mut world, entity, id);
+            world
+                .run_system_once(observe_deferred_mesh_preparation)
+                .unwrap();
+            assert_eq!(
+                world.resource::<PendingPreparations>().meshes.get(&entity),
+                Some(&id),
+                "phase {phase} must preserve the late instance candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn new_visibility_and_late_shadow_view_changes_preserve_missing_meshes() {
+        for newly_visible in [true, false] {
+            let [id] = mesh_ids();
+            let mut world = observer_world();
+            let entity = world.spawn_empty().id().into();
+            let view = RetainedViewEntity::new(entity, None, 0);
+            insert_instance(&mut world, entity, id);
+            let mut visible = RenderVisibleEntities::default();
+            visible
+                .classes
+                .insert(TypeId::of::<Mesh3d>(), visible_class(entity, newly_visible));
+            let mut shadows = RenderShadowMapVisibleEntities::default();
+            shadows.subviews.insert(view, visible);
+            world.spawn(shadows);
+            world
+                .run_system_once(observe_deferred_mesh_preparation)
+                .unwrap();
+            if !newly_visible {
+                assert!(world.resource::<PendingPreparations>().meshes.is_empty());
+                // Bevy creates this dirty shadow-view key inside Specialize, after observation.
+                world
+                    .resource_mut::<DirtySpecializations>()
+                    .views
+                    .insert(view);
+                world
+                    .run_system_once(observe_late_shadow_preparation)
+                    .unwrap();
+            }
+            world.resource_mut::<DirtySpecializations>().views.clear();
+            assert_eq!(
+                world.resource::<PendingPreparations>().meshes.get(&entity),
+                Some(&id)
+            );
+        }
+    }
+
+    #[derive(Resource)]
+    struct ScheduleFixture {
+        entity: MainEntity,
+        mesh: AssetId<Mesh>,
+        view: RetainedViewEntity,
+        class: RenderVisibleEntitiesClass,
+        frame: u64,
+        prepared_at: Option<u64>,
+        present: bool,
+        deliveries: Vec<(u64, &'static str, usize)>,
+    }
+
+    fn resume_fixture(
+        mut fixture: ResMut<ScheduleFixture>,
+        mut pending: ResMut<PendingPreparations>,
+        mut dirty: ResMut<DirtySpecializations>,
+        mut reextract: ResMut<MeshesToReextractNextFrame>,
+    ) {
+        fixture.frame += 1;
+        let entity = fixture.entity;
+        let mesh = fixture.mesh;
+        let present = fixture.present;
+        let prepared = fixture.prepared_at.is_some_and(|at| fixture.frame >= at);
+        resume_ready_meshes(
+            &mut pending,
+            |current| (present && current == entity).then_some(mesh),
+            |current| prepared && current == mesh,
+            &mut dirty,
+            Some(&mut reextract),
+        );
+    }
+
+    fn record_delivery(
+        fixture: &mut ScheduleFixture,
+        dirty: &DirtySpecializations,
+        phase: &'static str,
+    ) {
+        let count = dirty
+            .iter_to_specialize(fixture.view, &fixture.class, &default())
+            .count();
+        fixture.deliveries.push((fixture.frame, phase, count));
+    }
+
+    fn test_prepass(mut fixture: ResMut<ScheduleFixture>, dirty: Res<DirtySpecializations>) {
+        record_delivery(&mut fixture, &dirty, "prepass");
+    }
+
+    fn test_main(mut fixture: ResMut<ScheduleFixture>, dirty: Res<DirtySpecializations>) {
+        record_delivery(&mut fixture, &dirty, "main");
+    }
+
+    fn test_shadow(mut fixture: ResMut<ScheduleFixture>, dirty: Res<DirtySpecializations>) {
+        record_delivery(&mut fixture, &dirty, "shadow");
+    }
+
+    fn schedule_fixture(prepared_at: Option<u64>) -> App {
+        let mut app = App::new();
+        let mut render = SubApp::new();
+        render.add_schedule(Render::base_schedule());
+        render.world_mut().init_resource::<DirtySpecializations>();
+        render
+            .world_mut()
+            .init_resource::<MeshesToReextractNextFrame>();
+        app.insert_sub_app(RenderApp, render);
+        app.add_plugins(MeshPreparationRetryPlugin);
+        let render = app.sub_app_mut(RenderApp);
+        let [mesh] = mesh_ids();
+        let entity = render.world_mut().spawn_empty().id().into();
+        render
+            .world_mut()
+            .resource_mut::<PendingPreparations>()
+            .observe_candidate(entity, Some(mesh), |_| false);
+        render.insert_resource(ScheduleFixture {
+            entity,
+            mesh,
+            view: RetainedViewEntity::new(entity, None, 0),
+            class: visible_class(entity, false),
+            frame: 0,
+            prepared_at,
+            present: true,
+            deliveries: vec![],
+        });
+        render.add_systems(
+            Render,
+            (
+                // These are Bevy's actual ordering anchors. GPU work is disabled in this CPU test.
+                collect_meshes_for_gpu_building
+                    .in_set(RenderSystems::PrepareMeshes)
+                    .run_if(|| false),
+                set_mesh_motion_vector_flags
+                    .in_set(RenderSystems::PrepareMeshes)
+                    .run_if(|| false),
+                bevy::render::camera::clear_dirty_specializations
+                    .in_set(RenderSystems::ExtractCommands),
+                resume_fixture.in_set(MeshPreparationRetrySystems::Resume),
+                test_prepass
+                    .in_set(RenderSystems::PrepareMeshes)
+                    .after(set_mesh_motion_vector_flags),
+                test_main.in_set(RenderSystems::Specialize),
+                test_shadow.in_set(RenderSystems::Specialize),
+            ),
+        );
+        app
+    }
+
+    #[test]
+    fn delayed_preparation_reaches_prepass_main_and_shadow_after_change_events_expire() {
+        let mut app = schedule_fixture(Some(3));
+        let render = app.sub_app_mut(RenderApp);
+        for _ in 0..5 {
+            render.world_mut().run_schedule(Render);
+        }
+        let fixture = render.world().resource::<ScheduleFixture>();
+        assert_eq!(fixture.deliveries.len(), 15);
+        for &(frame, phase, count) in &fixture.deliveries {
+            assert_eq!(
+                count,
+                usize::from(frame == 3),
+                "frame {frame}, phase {phase}"
+            );
+        }
+        assert_eq!(
+            render
+                .world()
+                .resource::<PendingPreparations>()
+                .resumed_total,
+            1
+        );
+        assert!(
+            render
+                .world()
+                .resource::<MeshesToReextractNextFrame>()
+                .contains(&fixture.entity)
+        );
+    }
+
+    #[test]
+    fn permanently_absent_mesh_never_resumes_and_unloading_cancels_its_record() {
+        let mut app = schedule_fixture(None);
+        let render = app.sub_app_mut(RenderApp);
+        for _ in 0..20 {
+            render.world_mut().run_schedule(Render);
+        }
+        assert!(
+            render
+                .world()
+                .resource::<ScheduleFixture>()
+                .deliveries
+                .iter()
+                .all(|&(_, _, count)| count == 0)
+        );
+        assert_eq!(
+            render
+                .world()
+                .resource::<PendingPreparations>()
+                .meshes
+                .len(),
+            1
+        );
+        assert!(
+            render
+                .world()
+                .resource::<MeshesToReextractNextFrame>()
+                .is_empty()
+        );
+        render.world_mut().resource_mut::<ScheduleFixture>().present = false;
+        render.world_mut().run_schedule(Render);
+        let pending = render.world().resource::<PendingPreparations>();
+        assert!(pending.meshes.is_empty());
+        assert_eq!(pending.resumed_total, 0);
+        assert_eq!(pending.canceled_total, 1);
+    }
 
     fn mesh_ids<const N: usize>() -> [AssetId<Mesh>; N] {
         let mut meshes = Assets::<Mesh>::default();

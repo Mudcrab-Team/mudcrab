@@ -1,5 +1,10 @@
 # Metal performance fixes — 2026-10-08
 
+This is a historical investigation of a separate integrated development build. It does
+not establish performance or coverage acceptance for the diagnostics split or a later
+batching candidate. See the [split protocol](terrain-batching-matched-protocol-20261009.md)
+and [tool source manifest](../../scripts/profiling/source-manifest.json) for provenance.
+
 The [native profile](metal-function-profiling-20261008.md) led to changes in terrain submission, visibility and component updates. Shadows, reflections, depth prepasses, GPU culling, terrain detail and wgpu validation remain enabled.
 
 ## Terrain submission

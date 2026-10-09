@@ -1,5 +1,10 @@
 # Metal submission and measurement validity — 2026-10-08
 
+This is a historical investigation of a separate integrated development build. It does
+not establish performance or coverage acceptance for the diagnostics split or a later
+batching candidate. See the [split protocol](terrain-batching-matched-protocol-20261009.md)
+and [tool source manifest](../../scripts/profiling/source-manifest.json) for provenance.
+
 The current Metal profile attributes substantial CPU work to indexed indirect command encoding,
 driver render-state emission and wgpu indirect validation. The sampled totals attribute CPU
 intervals to stack endpoints; parked endpoints are reported separately from executing functions,

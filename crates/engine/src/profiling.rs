@@ -26,6 +26,7 @@ pub struct ProfilingPlugin;
 
 impl Plugin for ProfilingPlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(crate::scene_evidence::SceneEvidencePlugin);
         app.init_resource::<ProfilingState>()
             .add_systems(Update, (sample_profile_metadata, sample_scene_inventory));
         // Requested bundles also record whether each primary drawable was acquired. This keeps

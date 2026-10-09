@@ -1,5 +1,10 @@
 # Apple Metal: terrain workload, draw encoding and frame waits
 
+This is a historical investigation of a separate integrated development build. It does
+not establish performance or coverage acceptance for the diagnostics split or a later
+batching candidate. See the [split protocol](terrain-batching-matched-protocol-20261009.md)
+and [tool source manifest](../../scripts/profiling/source-manifest.json) for provenance.
+
 The 2026-10-08 Riverwood investigation found a concrete workload behind the CPU hotspots: tens of
 thousands of tiny, distinct terrain LOD meshes are scanned for visibility; queued mesh bins produce
 indirect records that Metal encodes individually. Drawable acquisition also delays the render schedule

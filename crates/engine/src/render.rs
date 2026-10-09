@@ -264,14 +264,12 @@ pub struct TerrainExtension {
     layer_4: Option<Handle<Image>>,
     #[texture(110)]
     layer_5: Option<Handle<Image>>,
-    // All diffuse and normal layers use the same repeating sampler. Sharing it keeps the full
-    // material below Metal's 16-sampler limit, including Bevy's standard material and view.
-    // The first present diffuse image supplies it even when the base layer has no texture.
-    // AsBindGroup requires the sampler's source image to have a texture binding on this field;
-    // the shader only uses its sampler, while bindings 100-110 supply the diffuse images.
+    // LAND images share one repeating sampler. Use the first available color layer so an
+    // untextured base does not select Bevy's clamping fallback sampler. AsBindGroup requires a
+    // texture on the sampler's field; binding 119 supplies it without another image allocation.
     #[texture(119)]
     #[sampler(101)]
-    layer_sampler: Option<Handle<Image>>,
+    sampler_source: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
     // Each layer's normal map, sampled through `layer_sampler`: every terrain layer image is
@@ -487,7 +485,7 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
-                layer_sampler: textures.iter().flatten().next().cloned(),
+                sampler_source: textures.iter().flatten().next().cloned(),
                 settings,
                 normal_0: normals[0].clone(),
                 normal_1: normals[1].clone(),
@@ -521,7 +519,7 @@ impl TerrainExtension {
             layer_3: Some(textures[3].clone()),
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
-            layer_sampler: Some(textures[0].clone()),
+            sampler_source: Some(textures[0].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
             normal_0: None,
             normal_1: None,
@@ -571,7 +569,7 @@ impl Default for TerrainExtension {
             layer_3: None,
             layer_4: None,
             layer_5: None,
-            layer_sampler: None,
+            sampler_source: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
             normal_0: None,
             normal_1: None,

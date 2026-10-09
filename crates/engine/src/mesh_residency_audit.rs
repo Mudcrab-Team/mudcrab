@@ -1,10 +1,10 @@
 //! Opt-in, bounded comparison of cached mesh inputs with current GPU allocations.
 //!
-//! This reads CPU submission metadata, not GPU execution or rendered pixels. The optional repair
-//! requests Bevy's existing extraction path for only resident instances whose cached inputs differ.
+//! This reads CPU submission metadata, not GPU execution or rendered pixels. It does not repair
+//! allocations or request re-extraction.
 
 use bevy::{
-    pbr::{MeshInputUniform, MeshUniform, MeshesToReextractNextFrame, RenderMeshInstances},
+    pbr::{MeshInputUniform, MeshUniform, RenderMeshInstances},
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
@@ -22,8 +22,7 @@ pub struct MeshResidencyAuditPlugin;
 
 impl Plugin for MeshResidencyAuditPlugin {
     fn build(&self, app: &mut App) {
-        let repair = std::env::var("MUDCRAB_REPAIR_MESH_RESIDENCY").as_deref() == Ok("1");
-        let enabled = repair || std::env::var("MUDCRAB_MESH_RESIDENCY_AUDIT").as_deref() == Ok("1");
+        let enabled = std::env::var("MUDCRAB_MESH_RESIDENCY_AUDIT").as_deref() == Ok("1");
         if !enabled {
             return;
         }
@@ -37,8 +36,6 @@ impl Plugin for MeshResidencyAuditPlugin {
                 .insert_resource(AuditState {
                     frame: 0,
                     target_frame,
-                    repair,
-                    followup_frame: None,
                     done: false,
                 })
                 .add_systems(
@@ -49,7 +46,7 @@ impl Plugin for MeshResidencyAuditPlugin {
                 );
             info!(
                 target_frame,
-                repair, "mesh residency audit enabled; timing observation is instrumented"
+                "mesh residency audit enabled; timing observation is instrumented"
             );
         } else {
             warn!("mesh residency audit unavailable: no render app");
@@ -61,8 +58,6 @@ impl Plugin for MeshResidencyAuditPlugin {
 struct AuditState {
     frame: u64,
     target_frame: u64,
-    repair: bool,
-    followup_frame: Option<u64>,
     done: bool,
 }
 
@@ -128,7 +123,6 @@ struct AuditCounts {
     index_offset_mismatch: usize,
     count_mismatch: usize,
     mismatched_instances: usize,
-    repair_queued: usize,
 }
 
 fn audit_mesh_residency(
@@ -137,15 +131,12 @@ fn audit_mesh_residency(
     buffers: Option<Res<BatchedInstanceBuffers<MeshUniform, MeshInputUniform>>>,
     meshes: Option<Res<RenderAssets<RenderMesh>>>,
     allocator: Option<Res<MeshAllocator>>,
-    mut retry: Option<ResMut<MeshesToReextractNextFrame>>,
 ) {
     if state.done {
         return;
     }
     state.frame += 1;
-    let followup = state.followup_frame.is_some();
-    let target = state.followup_frame.unwrap_or(state.target_frame);
-    if state.frame < target {
+    if state.frame < state.target_frame {
         return;
     }
     let (Some(instances), Some(buffers), Some(meshes), Some(allocator)) =
@@ -153,7 +144,7 @@ fn audit_mesh_residency(
     else {
         warn!(
             render_frame = state.frame,
-            followup, "mesh residency audit unavailable: missing render resources"
+            "mesh residency audit unavailable: missing render resources"
         );
         state.done = true;
         return;
@@ -235,18 +226,10 @@ fn audit_mesh_residency(
             continue;
         }
         counts.mismatched_instances += 1;
-        if state.repair
-            && !followup
-            && let Some(retry) = retry.as_mut()
-        {
-            retry.insert(entity);
-            counts.repair_queued += 1;
-        }
         if samples < MAX_SAMPLES {
             samples += 1;
             warn!(
                 render_frame = state.frame,
-                followup,
                 ?entity,
                 ?asset_id,
                 ?uniform_index,
@@ -262,8 +245,6 @@ fn audit_mesh_residency(
     }
     info!(
         render_frame = state.frame,
-        followup,
-        repair_enabled = state.repair,
         elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
         instances = counts.instances,
         descriptor_missing = counts.descriptor_missing,
@@ -276,15 +257,10 @@ fn audit_mesh_residency(
         index_offset_mismatch = counts.index_offset_mismatch,
         count_mismatch = counts.count_mismatch,
         mismatched_instances = counts.mismatched_instances,
-        repair_queued = counts.repair_queued,
         sample_limit = MAX_SAMPLES,
         "mesh residency audit complete"
     );
-    if !followup && counts.repair_queued > 0 {
-        state.followup_frame = Some(state.frame + 2);
-    } else {
-        state.done = true;
-    }
+    state.done = true;
 }
 
 #[cfg(test)]

@@ -1,0 +1,318 @@
+{
+  "width": 1600,
+  "height": 900,
+  "shots": [
+    {
+      "name": "cycle1-point00",
+      "worldspace_id": 60,
+      "position": [
+        22528,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point01",
+      "worldspace_id": 60,
+      "position": [
+        24575,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point02",
+      "worldspace_id": 60,
+      "position": [
+        24577,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point03",
+      "worldspace_id": 60,
+      "position": [
+        38912,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point04",
+      "worldspace_id": 60,
+      "position": [
+        24577,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point05",
+      "worldspace_id": 60,
+      "position": [
+        24575,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point06",
+      "worldspace_id": 60,
+      "position": [
+        6144,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle1-point07",
+      "worldspace_id": 60,
+      "position": [
+        22528,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point00",
+      "worldspace_id": 60,
+      "position": [
+        22528,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point01",
+      "worldspace_id": 60,
+      "position": [
+        24575,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point02",
+      "worldspace_id": 60,
+      "position": [
+        24577,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point03",
+      "worldspace_id": 60,
+      "position": [
+        38912,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point04",
+      "worldspace_id": 60,
+      "position": [
+        24577,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point05",
+      "worldspace_id": 60,
+      "position": [
+        24575,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point06",
+      "worldspace_id": 60,
+      "position": [
+        6144,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle2-point07",
+      "worldspace_id": 60,
+      "position": [
+        22528,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point00",
+      "worldspace_id": 60,
+      "position": [
+        22528,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point01",
+      "worldspace_id": 60,
+      "position": [
+        24575,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point02",
+      "worldspace_id": 60,
+      "position": [
+        24577,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point03",
+      "worldspace_id": 60,
+      "position": [
+        38912,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point04",
+      "worldspace_id": 60,
+      "position": [
+        24577,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point05",
+      "worldspace_id": 60,
+      "position": [
+        24575,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point06",
+      "worldspace_id": 60,
+      "position": [
+        6144,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    },
+    {
+      "name": "cycle3-point07",
+      "worldspace_id": 60,
+      "position": [
+        22528,
+        -47104,
+        6000
+      ],
+      "yaw": 90,
+      "pitch": 20,
+      "hfov": 90,
+      "note": "Repeated absolute pose; cell/tile crossing, reversal and return. Pose jumps, not timed continuous movement."
+    }
+  ]
+}

@@ -169,11 +169,14 @@ MUDCRAB_MESH_RESIDENCY_AUDIT=1 MUDCRAB_MESH_RESIDENCY_AUDIT_FRAME=600 \
 
 The log reports missing descriptors, missing or short allocations, absent input uniforms, and cached
 offset/count mismatches. Empty indexed batches are counted separately. This reads CPU submission
-metadata; it does not inspect GPU buffer contents or rendered pixels. The opt-in
-`MUDCRAB_REPAIR_MESH_RESIDENCY=1` experiment queues only resident metadata mismatches for extraction,
-then audits again two render frames later. It adds measurement overhead and is not an FPS comparison.
+metadata; it does not inspect GPU buffer contents or rendered pixels. This diagnostics split observes metadata only. It does not expose the historical
+`MUDCRAB_REPAIR_MESH_RESIDENCY=1` re-extraction experiment. The audit adds measurement overhead
+and runs separately from FPS comparisons.
 
 An audit can pass while terrain remains absent: material specialization and phase membership are
 separate from allocation and mesh input preparation. Inspect all three when an unchanged mesh fails
 to appear after loading. A component refresh that restores the surface is a diagnostic clue, not a
 reason to refresh every mesh on every frame.
+
+For repeated camera, queue and coverage requirements, see the
+[matched batching protocol](../research/terrain-batching-matched-protocol-20261009.md).

@@ -1,0 +1,92 @@
+{
+  "format": "mudcrab-z-fighting-evidence-summary-v1",
+  "recorded_at_utc": "2026-10-09T02:32:57.670661+00:00",
+  "code_baseline": "39fea880e791f9decd2bd5fd3bacd036c3612ab8",
+  "audit_script_sha256": "b83beab05dd8c65c508a6015284b4204a7e8997a519210b84c661f4939ffbfdd",
+  "input_conversion_manifest_sha256": "ff5743feff7b2db3dc77fa2cac8b5741191e7e7c3e2069daddbde5f362ee7d09",
+  "input_world_database_sha256": "27dd56c8869e140d31f53c96afc258561c4825ff74d0922309cd4d170b3d6f02",
+  "input_hashes_unchanged_at_finish": true,
+  "native_target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "native_instruction_checks": 2705,
+  "native_binary_executed": false,
+  "material_requirements": {
+    "total": 65638,
+    "annotated": 63981,
+    "depth_write_disabled_all_alpha_modes": 8699,
+    "risk_materials": 4195,
+    "authored_decal": 3964,
+    "authored_dynamic_decal": 3882,
+    "opaque_or_mask_depth_write_disabled": 3622,
+    "unannotated": 1657,
+    "depth_test_disabled": 14
+  },
+  "models_with_material_requirements": 2765,
+  "geometry_coverage": {
+    "files_read": 25388,
+    "geometry_complete_files": 22632,
+    "triangles_checked": 16917992,
+    "degenerate_triangles": 2638,
+    "overlapping_triangle_pairs": 618071,
+    "geometry_incomplete_files": 2756,
+    "discovered_files": 25388,
+    "selected_files": 25388
+  },
+  "models_with_overlap_candidates": 3126,
+  "geometry_gap_reasons": {
+    "comparison budget exceeded (200000); no clean result": 2753,
+    "triangle budget exceeded (100000)": 3
+  },
+  "placements": {
+    "coverage": {
+      "model_references": 861730,
+      "deleted_or_initially_disabled": 9399,
+      "conditional_enable_state_unknown": 29325
+    },
+    "duplicate_groups": 1196,
+    "extra_placements": 1217
+  },
+  "coverage_gaps": [
+    "materials lack Skyrim shader flags",
+    "one or more geometry scans incomplete",
+    "conditional placement enable states not evaluated"
+  ],
+  "static_scope_passed": false,
+  "rendered_z_fighting_verified": false,
+  "python_script_tests": {
+    "passed": 65,
+    "new_audit_tests": 25
+  },
+  "private_reports": {
+    "material-inventory.json": {
+      "path": "target/z-fighting/material-inventory.json",
+      "sha256": "fbe9914a9da5106aaf503ec744b35d335919292b490ed4e9492711e8ecf0114d"
+    },
+    "geometry-pilot.json": {
+      "path": "target/z-fighting/geometry-pilot.json",
+      "sha256": "3b42b4a998ae549c6b09e136778a3bf370579946b960c2dffa3eeb9a9d751faf"
+    },
+    "full-static-audit.json": {
+      "path": "target/z-fighting/full-static-audit.json",
+      "sha256": "0006d0579cae36b4976f15c6f4743851fbd5077d2f0546266848dc95031aa8af"
+    },
+    "native-crosscheck.json": {
+      "path": "target/z-fighting/native-crosscheck.json",
+      "sha256": "6d717b255722113754d3569b5a495def4ebf66dc30ee83f1cc73e7d38d11deaa"
+    }
+  },
+  "full_scan_options": {
+    "jobs": 4,
+    "max_comparisons_per_file": 200000,
+    "max_triangles_per_file": 100000,
+    "max_examples_per_file": 5,
+    "plane_tolerance_scene_units": 0.0001,
+    "minimum_overlap_area_scene_units_squared": 1e-08
+  },
+  "full_scan_elapsed_seconds": 550.014,
+  "limitations": [
+    "Counts are static candidates, not confirmed visible defects.",
+    "Overlap counts include observations from incomplete geometry searches.",
+    "Runtime depth and decal handling are not changed by this investigation.",
+    "GPU confirmation and retail comparisons remain unrun."
+  ]
+}
