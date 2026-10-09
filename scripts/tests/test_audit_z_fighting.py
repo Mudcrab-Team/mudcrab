@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SPEC = importlib.util.spec_from_file_location("audit_z_fighting", Path(__file__).parents[1] / "audit-z-fighting.py")
@@ -51,6 +52,12 @@ def create_database(path):
             enable_parent_id INTEGER, base_form_id INTEGER);
             CREATE TABLE statics (id INTEGER, model_path TEXT);
             INSERT INTO statics VALUES (1, 'meshes/test.nif');''')
+
+
+def insert_reference(connection, ident, flags=0, parent=None,
+                     transform=(0, 0, 0, 0, 0, 0, 1)):
+    connection.execute('INSERT INTO "references" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (ident, 10, 60, 1, *transform, flags, parent, 1))
 
 
 class OverlapTests(unittest.TestCase):
@@ -284,6 +291,145 @@ class InputTests(unittest.TestCase):
             self.assertEqual(result["duplicate_groups"], 1)
             self.assertEqual(result["examples"][0]["reference_ids"], [1,2])
             self.assertEqual(result["coverage"]["conditional_enable_state_unknown"], 1)
+
+
+class PlacementTests(unittest.TestCase):
+    null_fields = ("header_flags", "pos_x", "pos_y", "pos_z",
+                   "rot_x", "rot_y", "rot_z", "scale")
+
+    def prepare_assets(self, root):
+        (root / "meshes").mkdir()
+        document, binary = fixture([(0,0,0), (1,0,0), (0,1,0)])
+        write_glb(root / "meshes/test.glb", document, binary)
+        create_database(root / "skyrim_world.db")
+
+    def run_cli(self, root):
+        report = root / "report.json"
+        process = subprocess.run([sys.executable, str(SPEC.origin), str(root),
+            "--out", str(report)], capture_output=True, text=True)
+        self.assertNotIn("Traceback", process.stderr)
+        return process.returncode, json.loads(report.read_text())
+
+    def test_each_null_field_is_counted_and_excluded_from_duplicates(self):
+        for field in self.null_fields:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "world.db"
+                create_database(path)
+                with sqlite3.connect(path) as db:
+                    for ident in (1, 2, 3, 4):
+                        insert_reference(db, ident)
+                    db.execute(f'UPDATE "references" SET {field}=NULL WHERE id IN (3,4)')
+                result = AUDIT.duplicate_placements(path, 10)
+                self.assertEqual(result["coverage"]["model_references"], 4)
+                self.assertEqual(result["coverage"]["null_placement_fields"], 2)
+                self.assertEqual(result["duplicate_groups"], 1)
+                self.assertEqual(result["extra_placements"], 1)
+                self.assertEqual(result["examples"][0]["reference_ids"], [1, 2])
+
+    def test_multiple_null_fields_count_one_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "world.db"
+            create_database(path)
+            with sqlite3.connect(path) as db:
+                insert_reference(db, 1, transform=(None,) * 7)
+                insert_reference(db, 2, flags=None, transform=(None,) * 7)
+            result = AUDIT.duplicate_placements(path, 10)
+            self.assertEqual(result["coverage"]["null_placement_fields"], 2)
+            self.assertEqual(result["duplicate_groups"], 0)
+
+    def test_exclusions_precede_null_transform_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "world.db"
+            create_database(path)
+            with sqlite3.connect(path) as db:
+                for ident, flags, parent in ((1, 0x20, None), (2, 0x800, None),
+                        (3, 0x20, 42), (4, 0x800, 42), (5, 0, 42), (6, None, 42)):
+                    insert_reference(db, ident, flags, parent, (None,) * 7)
+                insert_reference(db, 7)
+                insert_reference(db, 8)
+            result = AUDIT.duplicate_placements(path, 10)
+            self.assertEqual(result["coverage"]["model_references"], 8)
+            self.assertEqual(result["coverage"]["deleted_or_initially_disabled"], 4)
+            self.assertEqual(result["coverage"]["conditional_enable_state_unknown"], 1)
+            self.assertEqual(result["coverage"]["null_placement_fields"], 1)
+            self.assertEqual(result["examples"][0]["reference_ids"], [7, 8])
+
+    def test_cli_null_fields_report_gap_and_exit_two_even_with_risks(self):
+        for field in self.null_fields:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.prepare_assets(root)
+                database = root / "skyrim_world.db"
+                with sqlite3.connect(database) as db:
+                    for ident in (1, 2, 3):
+                        insert_reference(db, ident)
+                    db.execute(f'UPDATE "references" SET {field}=NULL WHERE id=3')
+                original_database = database.read_bytes()
+                status, result = self.run_cli(root)
+                self.assertEqual(status, 2)
+                self.assertEqual(database.read_bytes(), original_database)
+                self.assertEqual(result["placements"]["coverage"]["null_placement_fields"], 1)
+                self.assertEqual(result["placements"]["duplicate_groups"], 1)
+                self.assertEqual(result["errors"], [])
+                self.assertIn("NULL placement flags or transforms", result["coverage_gaps"])
+                self.assertTrue(result["risks_found"])
+                self.assertFalse(result["static_scope_passed"])
+
+    def test_cli_excluded_null_transforms_preserve_existing_gate_priority(self):
+        for conditional in (False, True):
+            with self.subTest(conditional=conditional), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.prepare_assets(root)
+                with sqlite3.connect(root / "skyrim_world.db") as db:
+                    insert_reference(db, 1, 0x20, transform=(None,) * 7)
+                    insert_reference(db, 2, 0x800, transform=(None,) * 7)
+                    if conditional:
+                        insert_reference(db, 3, parent=42, transform=(None,) * 7)
+                status, result = self.run_cli(root)
+                self.assertEqual(status, 2 if conditional else 0)
+                self.assertEqual(result["placements"]["coverage"].get("null_placement_fields", 0), 0)
+                self.assertNotIn("NULL placement flags or transforms", result["coverage_gaps"])
+                self.assertEqual(result["coverage_gaps"],
+                    ["conditional placement enable states not evaluated"] if conditional else [])
+                self.assertEqual(result["static_scope_passed"], not conditional)
+
+    def test_cli_invalid_transform_type_reports_placement_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.prepare_assets(root)
+            with sqlite3.connect(root / "skyrim_world.db") as db:
+                insert_reference(db, 1, transform=("invalid", 0, 0, 0, 0, 0, 1))
+            status, result = self.run_cli(root)
+            self.assertEqual(status, 2)
+            self.assertIsNone(result["placements"])
+            self.assertEqual(result["errors"][0]["path"], "skyrim_world.db")
+            self.assertIn("placement audit failed", result["coverage_gaps"])
+            self.assertFalse(result["static_scope_passed"])
+
+    def test_unexpected_audit_failures_report_gap_and_exit_two(self):
+        for error in (TypeError("invalid placement"), RuntimeError("worker failed"),
+                      sqlite3.OperationalError("database unavailable")):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                report = root / "report.json"
+                with mock.patch.object(AUDIT, "audit", side_effect=error):
+                    self.assertEqual(AUDIT.main([str(root), "--out", str(report)]), 2)
+                result = json.loads(report.read_text())
+                self.assertEqual(result["coverage_gaps"],
+                    [f"audit failed ({type(error).__name__}): {error}"])
+                self.assertFalse(result["static_scope_passed"])
+                self.assertFalse(result["rendered_z_fighting_verified"])
+
+    def test_interrupt_and_system_exit_are_not_converted_to_audit_results(self):
+        for error in (KeyboardInterrupt(), SystemExit(23)):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                report = root / "report.json"
+                with mock.patch.object(AUDIT, "audit", side_effect=error):
+                    with self.assertRaises(type(error)) as caught:
+                        AUDIT.main([str(root), "--out", str(report)])
+                self.assertIs(caught.exception, error)
+                self.assertFalse(report.exists())
 
 
 if __name__ == "__main__":
