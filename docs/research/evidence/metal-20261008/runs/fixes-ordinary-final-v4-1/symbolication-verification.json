@@ -1,0 +1,58 @@
+{
+  "status": "verified offline physical-symbol export",
+  "native_inputs_unchanged": true,
+  "input_sha256": {
+    "cpu-profile.json.gz": "a9329af2afc24faf830570eadf1f36abb3b15dac3de98f61bb804b8889b992f1",
+    "cpu-profile.json.syms.json": "8bb45844e51438ea034ecc3d843daeed5967d0c4ccb101c02fef6f23fb35da6a"
+  },
+  "output_sha256": "98b43ee8921f786dff67f78b38921e7c99a99846d03ea437f3f4dc660f01aadb",
+  "output_bytes": 7412069,
+  "production_binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+  "mach_o_uuid": "F167A24C851B30FC923D313BDBEFB44E",
+  "engine_profile_libraries": [
+    {
+      "name": "engine-production-v4",
+      "path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+      "debugName": "engine-production-v4",
+      "debugPath": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+      "breakpadId": "F167A24C851B30FC923D313BDBEFB44E0",
+      "codeId": "F167A24C851B30FC923D313BDBEFB44E",
+      "arch": "arm64"
+    }
+  ],
+  "engine_sidecar_identities": [
+    {
+      "debug_name": "engine-production-v4",
+      "debug_id": "f167a24c-851b-30fc-923d-313bdbefb44e"
+    }
+  ],
+  "counts": {
+    "resolved_native_frames": 49079,
+    "unresolved_native_frames": 17810,
+    "embedded_physical_symbol_rows": 15322,
+    "thread_count": 61,
+    "non_native_or_unmapped_frames": 16
+  },
+  "frame_rows_total": 66905,
+  "engine_library_coverage": {
+    "engine-production-v4:F167A24C851B30FC923D313BDBEFB44E": {
+      "resolved_frames": 39562,
+      "unresolved_frames": 125
+    }
+  },
+  "independently_preserved": [
+    "samples including CPU deltas and weights",
+    "stackTable",
+    "markers",
+    "frame instruction addresses",
+    "libraries",
+    "PID/TID identities"
+  ],
+  "limits": [
+    "Physical symbols only; unresolved framework addresses remain explicit.",
+    "No source-line or inline expansion.",
+    "No browser import or image coverage proof performed.",
+    "Firefox default call-tree sample weights describe residence, not CPU-delta attribution.",
+    "No upload or symbol-server access."
+  ]
+}

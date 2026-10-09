@@ -64,7 +64,15 @@ retains the complete bundles as CI artifacts.
 
 ## Interpretation
 
+For native function names, library/driver stacks and thread waits, see the
+[native profiling guide](../contributing/native-profiling.md). It covers Samply, Firefox Profiler,
+Metal HUD captures and the limits of CPU/GPU timing interpretation.
+
 Compare identical scenario, resolution, release profile and hardware. Start with frame P95/P99,
 then inspect the top CPU spans, GPU passes and streaming timeline in the same run. A missing GPU
 counter means unsupported instrumentation, not a zero value. Real-asset and target-hardware sign-off
 remains an execution result, not something the repository can pre-certify.
+
+The [2026-10-08 Metal fixes](../research/metal-performance-fixes-20261008.md) document native-profile-driven
+changes and their validation. See [measurement validity](../research/profiling-measurement-validity-20261008.md)
+for observed resolution, diagnostic timestamps and optional completed-frame draw counts.

@@ -1,0 +1,309 @@
+{
+  "label": "fixes-drawcounts-v4-1",
+  "started_utc": "2026-10-09T02:19:28.041856+00:00",
+  "command": [
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+    "--assets",
+    "/Users/taylor/Projects/mudcrab/modern_assets",
+    "--worldspace",
+    "0x3c",
+    "--grid-x",
+    "5",
+    "--grid-y",
+    "-12",
+    "--stream-radius",
+    "2",
+    "--benchmark-duration",
+    "10",
+    "--benchmark-warmup-frames",
+    "1200",
+    "--benchmark-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/report.json",
+    "--benchmark-frame-times",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/frames.csv",
+    "--profile-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/profile",
+    "--profile-scenario",
+    "riverwood-mac-profiling",
+    "--profile-run-id",
+    "fixes-drawcounts-v4-1",
+    "--profile-dirty-worktree",
+    "--profile-commit",
+    "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "--accept-min-fps",
+    "0",
+    "--accept-p95-ms",
+    "1000",
+    "--accept-max-memory-growth-gib",
+    "4",
+    "--acceptance-screenshot",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/frame.png",
+    "--screenshot-camera-offset",
+    "0,6000,8000"
+  ],
+  "launcher_command": [
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+    "--assets",
+    "/Users/taylor/Projects/mudcrab/modern_assets",
+    "--worldspace",
+    "0x3c",
+    "--grid-x",
+    "5",
+    "--grid-y",
+    "-12",
+    "--stream-radius",
+    "2",
+    "--benchmark-duration",
+    "10",
+    "--benchmark-warmup-frames",
+    "1200",
+    "--benchmark-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/report.json",
+    "--benchmark-frame-times",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/frames.csv",
+    "--profile-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/profile",
+    "--profile-scenario",
+    "riverwood-mac-profiling",
+    "--profile-run-id",
+    "fixes-drawcounts-v4-1",
+    "--profile-dirty-worktree",
+    "--profile-commit",
+    "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "--accept-min-fps",
+    "0",
+    "--accept-p95-ms",
+    "1000",
+    "--accept-max-memory-growth-gib",
+    "4",
+    "--acceptance-screenshot",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-drawcounts-v4-1/frame.png",
+    "--screenshot-camera-offset",
+    "0,6000,8000"
+  ],
+  "cwd": "/Users/taylor/Projects/mudcrab",
+  "environment_overrides": {
+    "MUDCRAB_PROFILE_DRAW_COUNTS": "1",
+    "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+  },
+  "effective_profiling_environment": {
+    "MUDCRAB_PROFILE_DRAW_COUNTS": "1",
+    "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+  },
+  "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+  "profiling_overhead_requested": {
+    "metal_hud": false,
+    "cpu_sample": false
+  },
+  "sample_requested_duration_seconds": 3,
+  "sample_requested_interval_ms": 5,
+  "samply_sampling_hz": null,
+  "build_profile": "external binary: see hash and command",
+  "scope": "identical static Riverwood camera and 25 full-detail cells",
+  "pid": 45960,
+  "rss_samples": [
+    {
+      "utc": "2026-10-09T02:19:28.104391+00:00",
+      "elapsed_seconds": 7.750000000000812e-06,
+      "rss_kib": 1312
+    },
+    {
+      "utc": "2026-10-09T02:19:29.135886+00:00",
+      "elapsed_seconds": 1.029524167,
+      "rss_kib": 1159936
+    },
+    {
+      "utc": "2026-10-09T02:19:30.162169+00:00",
+      "elapsed_seconds": 2.055007292,
+      "rss_kib": 1732080
+    },
+    {
+      "utc": "2026-10-09T02:19:31.210208+00:00",
+      "elapsed_seconds": 3.104539459,
+      "rss_kib": 2011776
+    },
+    {
+      "utc": "2026-10-09T02:19:32.247857+00:00",
+      "elapsed_seconds": 4.141157334,
+      "rss_kib": 2314240
+    },
+    {
+      "utc": "2026-10-09T02:19:33.279535+00:00",
+      "elapsed_seconds": 5.1734095,
+      "rss_kib": 2494512
+    },
+    {
+      "utc": "2026-10-09T02:19:34.322934+00:00",
+      "elapsed_seconds": 6.2162057090000005,
+      "rss_kib": 2541872
+    },
+    {
+      "utc": "2026-10-09T02:19:35.369638+00:00",
+      "elapsed_seconds": 7.262259417,
+      "rss_kib": 2677136
+    },
+    {
+      "utc": "2026-10-09T02:19:36.411626+00:00",
+      "elapsed_seconds": 8.304094625,
+      "rss_kib": 2856176
+    },
+    {
+      "utc": "2026-10-09T02:19:37.446704+00:00",
+      "elapsed_seconds": 9.340350292,
+      "rss_kib": 2857664
+    },
+    {
+      "utc": "2026-10-09T02:19:38.468064+00:00",
+      "elapsed_seconds": 10.361585541999998,
+      "rss_kib": 2860944
+    },
+    {
+      "utc": "2026-10-09T02:19:39.508385+00:00",
+      "elapsed_seconds": 11.401865625,
+      "rss_kib": 2861712
+    },
+    {
+      "utc": "2026-10-09T02:19:40.535148+00:00",
+      "elapsed_seconds": 12.427622,
+      "rss_kib": 2861968
+    },
+    {
+      "utc": "2026-10-09T02:19:41.585024+00:00",
+      "elapsed_seconds": 13.478152042,
+      "rss_kib": 2862000
+    },
+    {
+      "utc": "2026-10-09T02:19:42.622155+00:00",
+      "elapsed_seconds": 14.515112499999999,
+      "rss_kib": 2860624
+    },
+    {
+      "utc": "2026-10-09T02:19:43.642896+00:00",
+      "elapsed_seconds": 15.536412875,
+      "rss_kib": 2862176
+    },
+    {
+      "utc": "2026-10-09T02:19:44.692208+00:00",
+      "elapsed_seconds": 16.58556375,
+      "rss_kib": 2862256
+    },
+    {
+      "utc": "2026-10-09T02:19:45.726909+00:00",
+      "elapsed_seconds": 17.619802209,
+      "rss_kib": 2860864
+    },
+    {
+      "utc": "2026-10-09T02:19:46.763394+00:00",
+      "elapsed_seconds": 18.656403167,
+      "rss_kib": 2860960
+    },
+    {
+      "utc": "2026-10-09T02:19:47.793734+00:00",
+      "elapsed_seconds": 19.686891875,
+      "rss_kib": 2862480
+    },
+    {
+      "utc": "2026-10-09T02:19:48.831021+00:00",
+      "elapsed_seconds": 20.72400475,
+      "rss_kib": 2861136
+    },
+    {
+      "utc": "2026-10-09T02:19:49.860235+00:00",
+      "elapsed_seconds": 21.753516084,
+      "rss_kib": 2862832
+    },
+    {
+      "utc": "2026-10-09T02:19:50.902181+00:00",
+      "elapsed_seconds": 22.793478167,
+      "rss_kib": 2861568
+    },
+    {
+      "utc": "2026-10-09T02:19:51.965285+00:00",
+      "elapsed_seconds": 23.843536709,
+      "rss_kib": 2862800
+    },
+    {
+      "utc": "2026-10-09T02:19:53.002747+00:00",
+      "elapsed_seconds": 24.895771459,
+      "rss_kib": 2863568
+    },
+    {
+      "utc": "2026-10-09T02:19:54.044218+00:00",
+      "elapsed_seconds": 25.937289666999998,
+      "rss_kib": 2923904
+    },
+    {
+      "utc": "2026-10-09T02:19:55.074783+00:00",
+      "elapsed_seconds": 26.967907042,
+      "rss_kib": 2923984
+    },
+    {
+      "utc": "2026-10-09T02:19:56.119958+00:00",
+      "elapsed_seconds": 28.012786084,
+      "rss_kib": 2922336
+    },
+    {
+      "utc": "2026-10-09T02:19:57.155419+00:00",
+      "elapsed_seconds": 29.048306167,
+      "rss_kib": 2924144
+    },
+    {
+      "utc": "2026-10-09T02:19:58.201172+00:00",
+      "elapsed_seconds": 30.093973291999998,
+      "rss_kib": 2924240
+    },
+    {
+      "utc": "2026-10-09T02:19:59.233949+00:00",
+      "elapsed_seconds": 31.126932459,
+      "rss_kib": 2924336
+    },
+    {
+      "utc": "2026-10-09T02:20:00.278540+00:00",
+      "elapsed_seconds": 32.170929084,
+      "rss_kib": 2924528
+    },
+    {
+      "utc": "2026-10-09T02:20:01.321705+00:00",
+      "elapsed_seconds": 33.214686125,
+      "rss_kib": 2924496
+    },
+    {
+      "utc": "2026-10-09T02:20:02.349357+00:00",
+      "elapsed_seconds": 34.242206209,
+      "rss_kib": 2924576
+    },
+    {
+      "utc": "2026-10-09T02:20:03.375520+00:00",
+      "elapsed_seconds": 35.267267625,
+      "rss_kib": 2924640
+    }
+  ],
+  "exit_code": 0,
+  "timed_out": false,
+  "applied_controls_log": [],
+  "physical_window_log": [],
+  "window_occlusion_log": [],
+  "drawable_proof_log": [
+    "2026-10-09T02:19:34.661885Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=300 warmup_plus_five=1205 present_frames=300 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:19:40.755885Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=600 warmup_plus_five=1205 present_frames=600 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:19:47.123881Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=900 warmup_plus_five=1205 present_frames=900 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:19:53.526365Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=1205 present_frames=1200 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:19:59.924178Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1500 warmup_plus_five=1205 present_frames=1500 missing_frames=0 measured_present_frames=295 measured_missing_frames=0",
+    "2026-10-09T02:20:03.664308Z  INFO engine::profiling: native profiling primary drawable proof final_summary=true render_frames=1669 warmup_plus_five=1205 present_frames=1668 missing_frames=1 measured_present_frames=463 measured_missing_frames=1"
+  ],
+  "drawable_proof": {
+    "final_summary": true,
+    "render_frames": 1669,
+    "warmup_plus_five": 1205,
+    "present_frames": 1668,
+    "missing_frames": 1,
+    "measured_present_frames": 463,
+    "measured_missing_frames": 1
+  },
+  "cpu_sample_capture_succeeded": false,
+  "samply_capture_succeeded": false,
+  "finished_utc": "2026-10-09T02:20:03.791693+00:00",
+  "peak_ps_rss_gib": 2.789154052734375,
+  "rss_measurement": "macOS ps rss in KiB, one sample per second; peak includes loading and warmup; not Metal allocated memory",
+  "binary_unchanged": true
+}
