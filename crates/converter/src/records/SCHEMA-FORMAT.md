@@ -172,8 +172,10 @@ ordered matching are distinct from fields that the source omitted; unknown
 signatures remain unexpected rather than rejected known fields. The public typed reader retains these facts for
 consumers rather than guessing missing values.
 
-The runtime adapter checks required terrain and movement semantics on each
-candidate before committing it as an override winner. An unusable candidate
+An incomplete override never replaces a complete earlier version of the same
+record; a first definition keeps its readable prefix. The runtime adapter checks
+required terrain and movement semantics on each candidate before committing it
+as an override winner. An unusable candidate
 leaves its earlier usable predecessor and records a bounded diagnostic. TES4
 headers remain separate, and header-only deletions still apply. Genuine
 texture/color-only LAND without VHGT uses the shared cache's established zero
