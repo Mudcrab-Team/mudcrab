@@ -26,11 +26,28 @@ use walkdir::WalkDir;
 
 pub struct MeshConverter;
 
-pub(crate) fn nif_source_hash(path: &Path) -> Result<String> {
+/// Hashes a NIF and its dependencies using the pre-repair cache contract.
+/// Legacy pruned packages retain this checksum and require exact source replay.
+pub(crate) fn nif_unrepaired_source_hash(path: &Path) -> Result<String> {
     let mut hash = crate::cache::hash_file(path)?;
     for dependency in MeshConverter::dependency_paths(path) {
         hash.push(':');
         hash.push_str(&crate::cache::hash_file(&dependency)?);
+    }
+    Ok(hash)
+}
+
+/// Hashes a NIF with the scoped repair revision and source-texture presence.
+/// Writer and retained-asset verifier supply the same canonical model key and
+/// their package's source snapshot, so current Data overrides cannot relabel it.
+pub(crate) fn nif_source_hash(
+    path: &Path,
+    model: &str,
+    source_textures: &BTreeSet<String>,
+) -> Result<String> {
+    let mut hash = nif_unrepaired_source_hash(path)?;
+    if let Some(suffix) = volcanic_normal_cache_suffix(model, source_textures) {
+        hash.push_str(&suffix);
     }
     Ok(hash)
 }
@@ -245,7 +262,7 @@ impl MeshConverter {
         Ok(texture_dependencies(&document))
     }
 
-    /// Removes image URIs with no file on disk from every GLB under `root`.
+    /// Repairs the scoped volcanic normal path, then removes image URIs with no file on disk.
     ///
     /// NIF sources occasionally reference textures Bethesda never shipped.
     /// Those references survive material publishing as dangling URIs, which
@@ -253,7 +270,8 @@ impl MeshConverter {
     /// with every texture and core or OPEN_SKYRIM material slot that points at
     /// them, so the mesh renders with its remaining maps instead of failing to
     /// load. Files without dangling URIs are left untouched. Returns one
-    /// report per rewritten file, ordered by path.
+    /// report per rewritten file, ordered by path. The two shipped volcanic grass models may
+    /// retain their normal through the published DLC02 replacement before pruning.
     pub fn prune_dangling_texture_uris(root: &Path) -> Result<Vec<PrunedGlb>> {
         Self::prune_dangling_texture_uris_with_sources(root, &BTreeSet::new())
     }
@@ -286,44 +304,144 @@ impl MeshConverter {
         glbs.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
         let mut pruned = Vec::new();
         for glb_path in glbs {
-            if let Some(report) = prune_dangling_uris_in_glb(root, &glb_path, source_textures)? {
+            if let Some(report) =
+                prune_dangling_uris_in_glb(root, &glb_path, source_textures, false)?
+            {
                 pruned.push(report);
             }
         }
         Ok(pruned)
     }
+
+    /// Repairs the two shipped volcanic grass normals after DDS conversion, before publishing
+    /// sampler aliases. A source at the original path always wins, even if its conversion failed.
+    pub(crate) fn repair_volcanic_grass_normals(
+        root: &Path,
+        source_textures: &BTreeSet<String>,
+    ) -> Result<Vec<PrunedGlb>> {
+        let mut repaired = Vec::new();
+        for model in VOLCANIC_GRASS_MODELS {
+            let glb = root.join(format!("{model}.glb"));
+            if glb.is_file()
+                && let Some(report) = prune_dangling_uris_in_glb(root, &glb, source_textures, true)?
+            {
+                repaired.push(report);
+            }
+        }
+        Ok(repaired)
+    }
 }
 
-/// One GLB rewritten by [`MeshConverter::prune_dangling_texture_uris`].
+const VOLCANIC_GRASS_MODELS: [&str; 2] = [
+    "meshes/landscape/grass/dlc02volcanicashgrass01",
+    "meshes/landscape/grass/dlc02volcanicashgrass02",
+];
+const VOLCANIC_NORMAL: &str = "textures/landscape/grass/volcanicashgrass02_n.ktx2";
+const VOLCANIC_NORMAL_TARGET: &str = "textures/dlc02/landscape/grass/volcanicashgrass02_n.ktx2";
+const VOLCANIC_NORMAL_SOURCE: &str = "textures/landscape/grass/volcanicashgrass02_n.dds";
+const VOLCANIC_NORMAL_TARGET_SOURCE: &str =
+    "textures/dlc02/landscape/grass/volcanicashgrass02_n.dds";
+
+/// Whether a canonical mesh key belongs to the two shipped models affected by issue #86.
+fn volcanic_grass_model(model: &str) -> bool {
+    model
+        .strip_suffix(".glb")
+        .or_else(|| model.strip_suffix(".nif"))
+        .is_some_and(|stem| VOLCANIC_GRASS_MODELS.contains(&stem))
+}
+
+/// Replaces only the authored missing normal path, retaining sampler and transfer suffixes.
+pub(crate) fn volcanic_normal_replacement(
+    model: &str,
+    runtime_key: &str,
+    sources: &BTreeSet<String>,
+) -> Option<String> {
+    if !volcanic_grass_model(model)
+        || sources.contains(VOLCANIC_NORMAL_SOURCE)
+        || crate::asset_path::runtime_texture_source(runtime_key).as_deref()
+            != Some(VOLCANIC_NORMAL)
+    {
+        return None;
+    }
+    Some(format!(
+        "textures/dlc02/{}",
+        runtime_key.strip_prefix("textures/")?
+    ))
+}
+
+/// Invalidates only the two affected meshes when this repair or either source presence changes.
+pub(crate) fn volcanic_normal_cache_suffix(
+    model: &str,
+    sources: &BTreeSet<String>,
+) -> Option<String> {
+    volcanic_grass_model(model).then(|| {
+        format!(
+            ":volcanic-normal-repair:1:original={}:target={}",
+            sources.contains(VOLCANIC_NORMAL_SOURCE),
+            sources.contains(VOLCANIC_NORMAL_TARGET_SOURCE)
+        )
+    })
+}
+
+/// One GLB rewritten by scoped texture-path repair or dangling-reference pruning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PrunedGlb {
     /// GLB path relative to the pruned root, with `/` separators.
     pub glb: String,
     /// Removed image URIs exactly as they appeared in the document.
     pub removed_uris: Vec<String>,
+    /// Original image URIs mapped to repaired URIs; all texture uses retain their indices.
+    pub repaired_uris: BTreeMap<String, String>,
 }
 
+/// Repairs scoped texture paths in the pipeline wrapper, then optionally prunes missing images.
+/// The bytes-level pruning helpers remain repair-free for legacy GLB replay during verified reuse.
 fn prune_dangling_uris_in_glb(
     root: &Path,
     glb_path: &Path,
     source_textures: &BTreeSet<String>,
+    repair_only: bool,
 ) -> Result<Option<PrunedGlb>> {
     let bytes =
         fs::read(glb_path).wrap_err_with(|| format!("failed to read {}", glb_path.display()))?;
-    let Some((pruned, removed_uris)) =
-        prune_glb_texture_bytes_with_sources(root, glb_path, &bytes, source_textures)?
-    else {
-        return Ok(None);
-    };
-    write_glb_atomic(glb_path, &pruned)?;
     let relative = glb_path
         .strip_prefix(root)
         .unwrap_or(glb_path)
         .to_string_lossy()
         .replace('\\', "/");
+    // The repair needs JSON inspection only for the two allowlisted models. Other meshes
+    // retain the bytes helper's single parse, including full-install directory scans.
+    let (repaired, repaired_uris) = if volcanic_grass_model(&relative) {
+        let mut document = glb_json_from_bytes(&bytes)
+            .wrap_err_with(|| format!("failed to inspect textures in {}", glb_path.display()))?;
+        let repairs = repair_volcanic_grass_normal(root, glb_path, &mut document, source_textures);
+        let repaired = if repairs.is_empty() {
+            bytes
+        } else {
+            rebuild_glb_with_document(&bytes, &document)
+                .wrap_err_with(|| format!("failed to rebuild {}", glb_path.display()))?
+        };
+        (repaired, repairs)
+    } else {
+        (bytes, BTreeMap::new())
+    };
+    // A repair-only pass preserves every image, texture use and sampler. In particular, it
+    // never remaps indices through prune_document_images when no references were removed.
+    let pruned = if repair_only {
+        None
+    } else {
+        prune_glb_texture_bytes_with_sources(root, glb_path, &repaired, source_textures)?
+    };
+    let (rewritten, removed_uris) = match pruned {
+        Some(pruned) => pruned,
+        None if !repaired_uris.is_empty() => (repaired, Vec::new()),
+        None => return Ok(None),
+    };
+    write_glb_atomic(glb_path, &rewritten)?;
     Ok(Some(PrunedGlb {
         glb: relative,
         removed_uris,
+        repaired_uris,
     }))
 }
 
@@ -371,6 +489,62 @@ fn prune_glb_texture_bytes_with_sources(
         pruned,
         missing.into_iter().map(|(_, uri)| uri).collect(),
     )))
+}
+
+/// Repairs normal images only when the authored source is absent and the target published.
+fn repair_volcanic_grass_normal(
+    root: &Path,
+    glb: &Path,
+    document: &mut serde_json::Value,
+    sources: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    let mut repairs = BTreeMap::new();
+    let Ok(relative) = glb.strip_prefix(root) else {
+        return repairs;
+    };
+    let model = relative.to_string_lossy().replace('\\', "/");
+    if !volcanic_grass_model(&model)
+        || sources.contains(VOLCANIC_NORMAL_SOURCE)
+        || root.join(VOLCANIC_NORMAL).is_file()
+        || !root.join(VOLCANIC_NORMAL_TARGET).is_file()
+    {
+        return repairs;
+    }
+    let normal_images: HashSet<usize> = document["materials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|material| material["normalTexture"]["index"].as_u64())
+        .filter_map(|index| usize::try_from(index).ok())
+        .filter_map(|index| document["textures"].get(index)?["source"].as_u64())
+        .filter_map(|index| usize::try_from(index).ok())
+        .collect();
+    if let Some(images) = document["images"].as_array_mut() {
+        for (index, image) in images.iter_mut().enumerate() {
+            let Some(uri) = image["uri"].as_str() else {
+                continue;
+            };
+            if !normal_images.contains(&index) || texture_uri_resolves(root, glb, uri) {
+                continue;
+            }
+            let Ok(resolved) = crate::asset_path::resolve_asset_uri(root, glb, uri) else {
+                continue;
+            };
+            let Ok(relative) = resolved.strip_prefix(root) else {
+                continue;
+            };
+            let key = relative.to_string_lossy().replace('\\', "/");
+            if let Some(replacement) = volcanic_normal_replacement(&model, &key, sources) {
+                let replacement = format!("../../../{replacement}");
+                repairs.insert(uri.to_owned(), replacement.clone());
+                image["uri"] = serde_json::Value::String(replacement);
+            }
+        }
+    }
+    if !repairs.is_empty() {
+        document["extras"]["mudcrab"]["texturePathRepairs"] = serde_json::json!(repairs);
+    }
+    repairs
 }
 
 fn texture_uri_resolves(root: &Path, glb_path: &Path, uri: &str) -> bool {
@@ -2108,6 +2282,148 @@ mod tests {
         let glb = root.join("meshes/a/model.glb");
         fs::write(&glb, glb_bytes(document, b"\x01\x02\x03\x04\x05")).unwrap();
         glb
+    }
+
+    /// Legacy byte replay never repairs; the pipeline's repair-only pass preserves unrelated images.
+    #[test]
+    fn volcanic_legacy_prune_replay_stays_repair_free_and_repair_only_preserves_images() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let glb = root.join("meshes/landscape/grass/dlc02volcanicashgrass01.glb");
+        fs::create_dir_all(glb.parent().unwrap()).unwrap();
+        let target = root.join(VOLCANIC_NORMAL_TARGET);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, b"published target").unwrap();
+        let original = "../../../textures/landscape/grass/volcanicashgrass02_n.ktx2";
+        let missing = "../../../textures/unrelated-missing.ktx2";
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "images": [{"uri": original}, {"uri": missing}],
+            "textures": [{"source": 0, "sampler": 1}, {"source": 1, "sampler": 0}],
+            "samplers": [{"wrapS": 33071}, {"wrapS": 10497}],
+            "materials": [{
+                "normalTexture": {"index": 0},
+                "emissiveTexture": {"index": 1},
+                "extensions": {"KHR_materials_specular": {"specularTexture": {"index": 0}}}
+            }]
+        });
+        let bytes = glb_bytes(&document, b"geometry survives both paths");
+        let (legacy, removed) = prune_glb_texture_bytes(root, &glb, &bytes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(removed, [original, missing]);
+        let legacy_document = glb_json_from_bytes(&legacy).unwrap();
+        assert!(legacy_document["images"].as_array().unwrap().is_empty());
+        assert!(legacy_document.get("extras").is_none());
+
+        fs::write(&glb, &bytes).unwrap();
+        let reports = MeshConverter::repair_volcanic_grass_normals(root, &BTreeSet::new()).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].removed_uris.is_empty());
+        let replacement = "../../../textures/dlc02/landscape/grass/volcanicashgrass02_n.ktx2";
+        assert_eq!(reports[0].repaired_uris.get(original).unwrap(), replacement);
+        let repaired = glb_json_from_bytes(&fs::read(&glb).unwrap()).unwrap();
+        assert_eq!(repaired["images"][0]["uri"], replacement);
+        assert_eq!(repaired["images"][1]["uri"], missing);
+        assert_eq!(repaired["textures"], document["textures"]);
+        assert_eq!(repaired["materials"], document["materials"]);
+        assert_eq!(repaired["samplers"], document["samplers"]);
+        assert_eq!(
+            repaired["extras"]["mudcrab"]["texturePathRepairs"][original],
+            replacement
+        );
+    }
+
+    /// The shipped two-model repair preserves all uses and does not affect other assets.
+    #[test]
+    fn volcanic_normal_repair_is_scoped_preserves_overrides_and_all_texture_uses() {
+        for model in [
+            "dlc02volcanicashgrass01",
+            "dlc02volcanicashgrass02",
+            "control",
+        ] {
+            for suffix in ["", ".opensky-wrap0", ".opensky-wrap1", ".opensky-wrap2"] {
+                for (original, target, original_source) in [
+                    (false, true, false),
+                    (true, true, true),
+                    (false, false, false),
+                    (false, true, true),
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let root = temp.path();
+                    let glb = root.join(format!("meshes/landscape/grass/{model}.glb"));
+                    fs::create_dir_all(glb.parent().unwrap()).unwrap();
+                    for (present, path) in [
+                        (
+                            original,
+                            "textures/landscape/grass/volcanicashgrass02_n.ktx2",
+                        ),
+                        (
+                            target,
+                            "textures/dlc02/landscape/grass/volcanicashgrass02_n.ktx2",
+                        ),
+                    ] {
+                        if present {
+                            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                            fs::write(root.join(path), b"texture").unwrap();
+                            fs::write(
+                                root.join(path.replace(".ktx2", &format!("{suffix}.ktx2"))),
+                                b"texture",
+                            )
+                            .unwrap();
+                        }
+                    }
+                    let document = serde_json::json!({"asset":{"version":"2.0"},
+                    "images":[{"uri":format!("../../../textures/landscape/grass/volcanicashgrass02_n{suffix}.ktx2")}],
+                    "textures":[{"source":0,"sampler":0},{"source":0,"sampler":1}], "samplers":[{"wrapS":10497,"wrapT":10497},{"wrapS":33071,"wrapT":33648}],
+                    "materials":[{"normalTexture":{"index":1},"extensions":{"KHR_materials_specular":{"specularTexture":{"index":1}}}}]});
+                    let before = glb_bytes(&document, b"distinct geometry bytes");
+                    fs::write(&glb, &before).unwrap();
+                    let sources = if original_source {
+                        BTreeSet::from([
+                            "textures/landscape/grass/volcanicashgrass02_n.dds".to_owned()
+                        ])
+                    } else {
+                        BTreeSet::new()
+                    };
+                    MeshConverter::prune_dangling_texture_uris_with_sources(root, &sources)
+                        .unwrap();
+                    let after = fs::read(&glb).unwrap();
+                    let actual = glb_json_from_bytes(&after).unwrap();
+                    let repaired = model != "control" && !original && !original_source && target;
+                    if original || original_source || repaired {
+                        assert_eq!(
+                            actual["images"][0]["uri"],
+                            if repaired {
+                                format!(
+                                    "../../../textures/dlc02/landscape/grass/volcanicashgrass02_n{suffix}.ktx2"
+                                )
+                            } else {
+                                format!(
+                                    "../../../textures/landscape/grass/volcanicashgrass02_n{suffix}.ktx2"
+                                )
+                            }
+                        );
+                        assert_eq!(actual["textures"], document["textures"]);
+                        assert_eq!(actual["materials"], document["materials"]);
+                        assert_eq!(actual["samplers"], document["samplers"]);
+                    } else {
+                        assert!(actual["images"].as_array().unwrap().is_empty());
+                        assert!(actual["materials"][0].get("normalTexture").is_none());
+                    }
+                    let before_len =
+                        u32::from_le_bytes(before[12..16].try_into().unwrap()) as usize;
+                    let after_len = u32::from_le_bytes(after[12..16].try_into().unwrap()) as usize;
+                    assert_eq!(&before[20 + before_len..], &after[20 + after_len..]);
+                    assert!(
+                        MeshConverter::prune_dangling_texture_uris_with_sources(root, &sources)
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert_eq!(fs::read(&glb).unwrap(), after);
+                }
+            }
+        }
     }
 
     #[test]
