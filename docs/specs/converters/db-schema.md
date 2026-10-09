@@ -465,10 +465,12 @@ supplied the winning record, so a localized override uses its own table and a
 plain plugin's override stays text. Tables are read from loose files first, then
 from the plugin's extracted archives, matching names without regard to case.
 `--language` (`PipelineConfig.language`, default `english`) selects the table,
-as Skyrim's `sLanguage` does. A string ID of 0, a missing table or a missing
-string stores `NULL` - never the ID's bytes read as text - and the conversion
-prints one warning per affected plugin. A string that is not valid UTF-8 is read
-as Windows-1252.
+as Skyrim's `sLanguage` does. A string ID of 0 means the record has no name and
+stores `NULL` without a warning. A missing table, a missing string or a `FULL`
+that is not 4 bytes also stores `NULL` - never the ID's bytes read as text - and
+the conversion prints one warning per affected plugin: once when the table cannot
+be loaded, or once with a count of the strings it lacks. A string that is not
+valid UTF-8 is read as Windows-1252.
 
 ```sql
 CREATE TABLE IF NOT EXISTS npcs (

@@ -348,6 +348,49 @@ mod tests {
         assert!(StringTable::parse(&past_end, StringsKind::Strings).is_err());
     }
 
+    /// A zero ID is "no name", not a failure: only missing strings and malformed fields are
+    /// counted for the warning, and a plugin whose table did not load is not warned about twice.
+    #[test]
+    fn counts_only_unresolved_strings_for_the_warning() {
+        let strings = PluginStrings {
+            names: vec!["text.esm".into(), "loaded.esm".into(), "missing.esm".into()],
+            tables: vec![
+                PluginTable::Text,
+                PluginTable::Localized(Some(
+                    StringTable::parse(
+                        &table(StringsKind::Strings, &[(1, b"Lydia")]),
+                        StringsKind::Strings,
+                    )
+                    .unwrap(),
+                )),
+                PluginTable::Localized(None),
+            ],
+            unresolved: RefCell::default(),
+        };
+        let id = |id: u32| id.to_le_bytes();
+
+        assert_eq!(
+            strings.lstring(0, 0x10, Some(b"Lydia\0")).as_deref(),
+            Some("Lydia")
+        );
+        assert_eq!(
+            strings.lstring(1, 0x20, Some(&id(1))).as_deref(),
+            Some("Lydia")
+        );
+        assert_eq!(strings.lstring(1, 0x21, Some(&id(0))), None);
+        assert_eq!(strings.lstring(1, 0x22, None), None);
+        assert_eq!(strings.lstring(1, 0x23, Some(&id(99))), None);
+        assert_eq!(strings.lstring(1, 0x24, Some(b"Ab")), None);
+        assert_eq!(strings.lstring(2, 0x30, Some(&id(0))), None);
+        assert_eq!(strings.lstring(2, 0x31, Some(&id(1))), None);
+
+        // One entry: loaded.esm, for the missing string and the malformed field, first 0x23.
+        assert_eq!(
+            strings.unresolved.into_inner(),
+            BTreeMap::from([(1, (2, 0x23))])
+        );
+    }
+
     #[test]
     fn finds_tables_ignoring_case_and_prefers_earlier_roots() {
         let loose = tempfile::tempdir().unwrap();
