@@ -158,9 +158,49 @@ fn plugin_slots(db: &Connection, data: &Path) -> Result<HashMap<String, u32>> {
     Ok(slots)
 }
 
+/// Every placement needs record and winning-plugin metadata before type filtering.
+/// Inner joins would otherwise hide orphan placements, including resurrected deleted rows.
+fn placed_references(db: &Connection) -> Result<HashMap<u32, Placed>> {
+    let mut statement = db.prepare(
+        "SELECT f.id, r.record_type, p.name, f.base_form_id,
+        f.pos_x, f.pos_y, f.pos_z, f.rot_x, f.rot_y, f.rot_z, f.scale
+        FROM \"references\" f LEFT JOIN records r ON r.form_id=f.id
+        LEFT JOIN plugins p ON p.priority=r.load_order",
+    )?;
+    let mut actual = HashMap::new();
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: u32 = row.get(0)?;
+        let kind: Option<String> = row.get(1)?;
+        let winner: Option<String> = row.get(2)?;
+        let kind = kind
+            .ok_or_else(|| color_eyre::eyre::eyre!("reference {id:08X} lacks record metadata"))?;
+        let winner = winner.ok_or_else(|| {
+            color_eyre::eyre::eyre!("reference {id:08X} lacks winning-plugin metadata")
+        })?;
+        // PGRE and other identified placed types remain outside this oracle's scope.
+        if !matches!(kind.as_str(), "REFR" | "ACHR") {
+            continue;
+        }
+        let placed = Placed {
+            kind,
+            winner,
+            base: row.get(3)?,
+            pos: [row.get(4)?, row.get(5)?, row.get(6)?],
+            rot: [row.get(7)?, row.get(8)?, row.get(9)?],
+            scale: row.get(10)?,
+        };
+        ensure!(
+            actual.insert(id, placed).is_none(),
+            "duplicate metadata for reference {id:08X}"
+        );
+    }
+    Ok(actual)
+}
+
 #[test]
 #[ignore = "requires external Mutagen JSONL and matching game plugins; see docs/testing-mutagen.md"]
-fn v122_current_references_match_mutagen_winning_overrides() -> Result<()> {
+fn v180_current_references_match_mutagen_winning_overrides() -> Result<()> {
     let env = |name| {
         std::env::var_os(name)
             .map(PathBuf::from)
@@ -179,28 +219,7 @@ fn v122_current_references_match_mutagen_winning_overrides() -> Result<()> {
     };
     let db = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let slots = plugin_slots(&db, &data)?;
-    // The oracle covers REFR/ACHR. PGRE and other placed types have no oracle row here.
-    let mut statement = db.prepare(
-        "SELECT f.id, r.record_type, p.name, f.base_form_id,
-        f.pos_x, f.pos_y, f.pos_z, f.rot_x, f.rot_y, f.rot_z, f.scale
-        FROM \"references\" f JOIN records r ON r.form_id=f.id
-        JOIN plugins p ON p.priority=r.load_order WHERE r.record_type IN ('REFR','ACHR')",
-    )?;
-    let mut actual: HashMap<u32, Placed> = statement
-        .query_map([], |r| {
-            Ok((
-                r.get(0)?,
-                Placed {
-                    kind: r.get(1)?,
-                    winner: r.get(2)?,
-                    base: r.get(3)?,
-                    pos: [r.get(4)?, r.get(5)?, r.get(6)?],
-                    rot: [r.get(7)?, r.get(8)?, r.get(9)?],
-                    scale: r.get(10)?,
-                },
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut actual = placed_references(&db)?;
     let mut seen = HashSet::new();
     let (mut matched, mut deleted, mut failures) = (0usize, 0usize, 0usize);
     let mut examples = Vec::new();
@@ -241,7 +260,7 @@ fn v122_current_references_match_mutagen_winning_overrides() -> Result<()> {
 }
 
 #[test]
-fn v122_oracle_comparison_rejects_resurrection_mismatches_and_nonfinite_values() {
+fn v180_oracle_comparison_rejects_resurrection_mismatches_and_nonfinite_values() {
     let slots = HashMap::from([("base.esm".into(), 0), ("patch.esl".into(), 0xFE00_2000)]);
     assert_eq!(form_id("000801:Patch.esl", &slots).unwrap(), 0xFE00_2801);
     assert!(form_id("001801:Patch.esl", &slots).is_err());
@@ -284,7 +303,7 @@ fn v122_oracle_comparison_rejects_resurrection_mismatches_and_nonfinite_values()
 }
 
 #[test]
-fn v122_rejects_missing_live_placement_and_unloaded_deleted_winner() {
+fn v180_rejects_missing_live_placement_and_unloaded_deleted_winner() {
     let slots = HashMap::from([("base.esm".into(), 0)]);
     let mut o: Oracle = serde_json::from_str(r#"{"form":"000800:Base.esm","type":"REFR","winner":"Base.esm","base":"000801:Base.esm","pos":[0,0,0],"rot":[0,0,0],"scale":null,"flags":0}"#).unwrap();
     let a = Placed {
@@ -308,7 +327,7 @@ fn v122_rejects_missing_live_placement_and_unloaded_deleted_winner() {
 }
 
 #[test]
-fn v123_oracle_flags_preserve_signed_and_unsigned_32_bit_masks() {
+fn v181_oracle_flags_preserve_signed_and_unsigned_32_bit_masks() {
     let mut row = serde_json::json!({"form":"000800:Base.esm","type":"REFR","winner":"Base.esm","base":"000801:Base.esm","pos":[0,0,0],"rot":[0,0,0],"scale":null,"flags":0});
     for (json, expected) in [
         (-2147482624i64, 0x80000400u32),
@@ -332,5 +351,69 @@ fn v123_oracle_flags_preserve_signed_and_unsigned_32_bit_masks() {
     ] {
         row["flags"] = invalid;
         assert!(serde_json::from_value::<Oracle>(row.clone()).is_err());
+    }
+}
+
+/// A procedural database with one in-scope reference and one out-of-scope PGRE.
+fn placement_database() -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE plugins (priority INTEGER PRIMARY KEY, name TEXT NOT NULL);
+         CREATE TABLE records (form_id INTEGER PRIMARY KEY, record_type TEXT, load_order INTEGER);
+         CREATE TABLE \"references\" (
+             id INTEGER PRIMARY KEY, base_form_id INTEGER,
+             pos_x REAL DEFAULT 0, pos_y REAL DEFAULT 0, pos_z REAL DEFAULT 0,
+             rot_x REAL DEFAULT 0, rot_y REAL DEFAULT 0, rot_z REAL DEFAULT 0,
+             scale REAL DEFAULT 1);
+         INSERT INTO plugins VALUES (0, 'Base.esm');
+         INSERT INTO records VALUES (2048, 'REFR', 0), (2050, 'PGRE', 0);
+         INSERT INTO \"references\" (id, base_form_id) VALUES (2048, 2049), (2050, 2049);",
+    )
+    .unwrap();
+    db
+}
+
+#[test]
+fn v180_database_orphans_are_rejected_before_oracle_comparison() {
+    for (mutation, expected) in [
+        ("DELETE FROM records WHERE form_id=2048", "record metadata"),
+        ("DELETE FROM plugins", "winning-plugin metadata"),
+    ] {
+        let db = placement_database();
+        db.execute_batch(mutation).unwrap();
+        let error = placed_references(&db).err().unwrap().to_string();
+        assert!(
+            error.contains("00000800") && error.contains(expected),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn v180_database_rows_cannot_resurrect_deleted_oracle_entries() {
+    let slots = HashMap::from([("base.esm".into(), 0)]);
+    for kind in ["REFR", "ACHR"] {
+        let db = placement_database();
+        db.execute(
+            "UPDATE records SET record_type=?1 WHERE form_id=2048",
+            [kind],
+        )
+        .unwrap();
+        let actual = placed_references(&db).unwrap();
+        assert_eq!(
+            actual.len(),
+            1,
+            "identified PGRE remains outside the oracle scope"
+        );
+        let oracle: Oracle = serde_json::from_value(serde_json::json!({
+            "form": "000800:Base.esm", "type": kind, "winner": "Base.esm",
+            "base": "000801:Base.esm", "flags": 32,
+        }))
+        .unwrap();
+        assert!(compare(&oracle, actual.get(&0x800), &slots).is_err());
+        db.execute("DELETE FROM \"references\" WHERE id=2048", [])
+            .unwrap();
+        assert!(placed_references(&db).unwrap().is_empty());
+        assert!(!compare(&oracle, None, &slots).unwrap());
     }
 }

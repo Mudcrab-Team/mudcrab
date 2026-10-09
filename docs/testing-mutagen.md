@@ -3,7 +3,7 @@
 This ignored test compares base FormIDs, positions (0.01 Creation units), rotations
 (0.0001 radians modulo a full turn), scale, record type, and winning plugin.
 Live rows must provide position and rotation; every winner must be loaded.
-Deleted winning overrides must be absent. Extra REFR/ACHR rows fail; PGRE and
+Every database placement must have record and winning-plugin metadata before type filtering; orphan rows fail rather than disappear through a join. Deleted winning overrides must be absent. Extra REFR/ACHR rows fail; PGRE and
 other types are outside this oracle mode. NaN and infinity fail comparisons. Record flags accept signed or unsigned
 32-bit JSON integers and preserve their bits; other values fail.
 
@@ -17,7 +17,7 @@ MUDCRAB_MUTAGEN_ORACLE=/path/to/mutagen-placed-lo.jsonl \
 MUDCRAB_MUTAGEN_DATA='/path/to/Skyrim Special Edition/Data' \
 MUDCRAB_MUTAGEN_PLUGINS=/path/to/plugins.txt \
 cargo test --locked -p converter --test mutagen_oracle \
-  v122_current_references_match_mutagen_winning_overrides -- --ignored --nocapture
+  v180_current_references_match_mutagen_winning_overrides -- --ignored --nocapture
 ```
 
 By default, the test builds a database with the current converter in a temporary

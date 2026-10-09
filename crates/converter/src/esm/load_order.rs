@@ -4,8 +4,81 @@ use color_eyre::{Result, eyre::ensure};
 use serde::Serialize;
 use std::{
     collections::{BTreeSet, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
+
+/// Whether Skyrim loads this plugin with the masters: ESM-flagged, or an `.esm`/`.esl` file.
+/// The ESL flag alone (an ESL-flagged `.esp`) narrows the slot but keeps regular priority.
+fn loads_with_masters(path: &Path, metadata: &PluginMetadata) -> bool {
+    metadata.flags & 0x1 != 0
+        || path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("esm") || ext.eq_ignore_ascii_case("esl"))
+}
+
+/// Give master files priority without moving them ahead of their regular dependencies.
+/// Keep master order and each regular dependency closure's listed order, hoisting the
+/// closure immediately before its master. Remaining regular plugins keep their list
+/// order; `LoadOrder::read` rejects any dependency inversions left after normalization.
+pub(crate) fn order_explicit_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    let mut indices = HashMap::new();
+    let mut metadata = Vec::with_capacity(paths.len());
+    let mut master_files = Vec::with_capacity(paths.len());
+    for (index, path) in paths.iter().enumerate() {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        ensure!(
+            indices.insert(name.clone(), index).is_none(),
+            "duplicate plugin {name}"
+        );
+        let header = parse_plugin_metadata(path)?;
+        master_files.push(loads_with_masters(path, &header));
+        metadata.push(header);
+    }
+
+    let mut emitted = vec![false; paths.len()];
+    let mut ordered = Vec::with_capacity(paths.len());
+    for (index, is_master) in master_files.iter().enumerate() {
+        if !is_master {
+            continue;
+        }
+        // A regular ESP may itself be a master's dependency. Find that closure before
+        // moving the master; retain the list's order within it. The visited vector
+        // bounds this iterative traversal even for cyclic or self-dependent headers.
+        let mut required = vec![false; paths.len()];
+        let mut pending = vec![index];
+        while let Some(dependent) = pending.pop() {
+            for master in &metadata[dependent].masters {
+                let Some(&dependency) = indices.get(&master.to_ascii_lowercase()) else {
+                    // LoadOrder::read reports missing masters with the dependent's name.
+                    continue;
+                };
+                if !master_files[dependency] && !emitted[dependency] && !required[dependency] {
+                    required[dependency] = true;
+                    pending.push(dependency);
+                }
+            }
+        }
+        for (dependency, needed) in required.into_iter().enumerate() {
+            if needed {
+                ordered.push(paths[dependency].clone());
+                emitted[dependency] = true;
+            }
+        }
+        ordered.push(paths[index].clone());
+        emitted[index] = true;
+    }
+    ordered.extend(
+        paths
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, path)| (!emitted[index]).then_some(path)),
+    );
+    Ok(ordered)
+}
 
 /// Order automatically discovered plugins by dependency, preferring ESM-flagged
 /// plugins and .esm/.esl files among ready nodes, then deterministic filename order.
@@ -43,12 +116,7 @@ pub(crate) fn order_discovered_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBu
             }
         }
     }
-    let priority = |index: usize| {
-        let is_master_file = paths[index]
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("esm") || ext.eq_ignore_ascii_case("esl"));
-        (!(metadata[index].flags & 0x1 != 0 || is_master_file), index)
-    };
+    let priority = |index: usize| (!loads_with_masters(&paths[index], &metadata[index]), index);
     let mut ready = BTreeSet::new();
     for (index, count) in remaining.iter().enumerate() {
         if *count == 0 {
