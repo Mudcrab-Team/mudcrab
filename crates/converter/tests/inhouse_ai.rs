@@ -664,3 +664,175 @@ async fn ai_families_publish_prior_winners_and_neighbors_after_bad_compression()
     );
     assert_eq!(diagnostics["decoder"]["damagedai.esp"]["skipped_fields"], 1);
 }
+
+/// Shared D conditions activate PACK root/procedure and IDLE roles with source-slot remapping.
+#[test]
+fn shared_conditions_activate_all_ai_roles_and_preserve_native_bytes() {
+    use dummy_content::inhouse_conditions as native;
+    let mut fixture = Fixture::new(&ai::records());
+    fixture.unrelated();
+    let add_plugin =
+        |fixture: &mut Fixture, name: &str, flags: u32, masters: &[&str], records: &[u8]| {
+            let mut header = fixture.header.clone();
+            for master in masters {
+                header.extend(ai::subrecord(b"MAST", &ai::text(master)));
+                header.extend(ai::subrecord(b"DATA", &[0xA7; 8]));
+            }
+            let path = fixture.directory.path().join(name);
+            fs::write(
+                &path,
+                [ai::record(b"TES4", 0, flags, &header), records.to_vec()].concat(),
+            )
+            .unwrap();
+            fixture.paths.push(path);
+        };
+    let objects = [
+        native::global(0x0100_1DC0),
+        native::reference_with_base(0x0100_1DC1, 0x0000_0014),
+    ]
+    .concat();
+    add_plugin(
+        &mut fixture,
+        "ConditionObjects.esm",
+        1,
+        &["Skyrim.esm"],
+        &objects,
+    );
+    add_plugin(
+        &mut fixture,
+        "ConditionLight.esl",
+        0x200,
+        &["Skyrim.esm"],
+        &native::reference_with_base(0x0100_08A3, 0x0000_0014),
+    );
+    let source_conditions: Vec<_> = (0..3usize)
+        .map(|index| {
+            let global = index != 1;
+            let mut bytes = native::condition(
+                if global { 4 } else { 0 },
+                if global {
+                    0x0100_1DC0
+                } else {
+                    (-7.375f32).to_bits()
+                },
+                1,
+                if index == 1 { 0x0000_08A3 } else { 0x0100_1DC1 },
+                0xFEA7_5319 + index as u32,
+                2,
+                if index == 1 { 0x0100_1DC1 } else { 0x0000_08A3 },
+            );
+            bytes[1] = 0x91 + index as u8;
+            bytes[11] = 0x53 + index as u8;
+            bytes[28..32].copy_from_slice(&(-19i32 - index as i32).to_le_bytes());
+            bytes
+        })
+        .collect();
+    let package = [
+        ai::subrecord(b"EDID", &ai::text("ActivatedPackageConditions")),
+        ai::subrecord(b"CTDA", &source_conditions[0]),
+        ai::subrecord(b"CIS1", &ai::text("root-argument")),
+        ai::subrecord(
+            b"PKCU",
+            &[0u32.to_le_bytes(), 0u32.to_le_bytes(), 19u32.to_le_bytes()].concat(),
+        ),
+        ai::subrecord(b"XNAM", &[0xA7]),
+        ai::subrecord(b"ANAM", &ai::text("Procedure")),
+        ai::subrecord(b"CITC", &1u32.to_le_bytes()),
+        ai::subrecord(b"CTDA", &source_conditions[1]),
+        ai::subrecord(b"CIS1", &ai::text("procedure-first")),
+        ai::subrecord(b"CIS2", &ai::text("procedure-second")),
+        ai::subrecord(b"PNAM", &ai::text("Wait")),
+    ]
+    .concat();
+    let idle = [
+        ai::subrecord(b"EDID", &ai::text("ActivatedIdleCondition")),
+        ai::subrecord(b"CTDA", &source_conditions[2]),
+        ai::subrecord(b"CIS1", &ai::text("idle-argument")),
+        ai::subrecord(b"DATA", &[11, 37, 0x89, 5, 0x53, 0xA7]),
+    ]
+    .concat();
+    let records = [
+        ai::record(b"PACK", 0x0300_1DC2, 0, &package),
+        ai::record(b"IDLE", 0x0300_1DC3, 0, &idle),
+    ]
+    .concat();
+    add_plugin(
+        &mut fixture,
+        "TypedAIConditions.esp",
+        0,
+        &["ConditionLight.esl", "ConditionObjects.esm", "Skyrim.esm"],
+        &records,
+    );
+    let result = fixture.read();
+    let package_record = &result.records[&0x0300_1DC2];
+    let idle_record = &result.records[&0x0300_1DC3];
+    assert_eq!(package_record.raw_payload, package);
+    assert_eq!(idle_record.raw_payload, idle);
+    let conditions: Vec<_> = package_record
+        .fields
+        .iter()
+        .chain(&idle_record.fields)
+        .filter(|field| field.signature == *b"CTDA")
+        .collect();
+    assert_eq!(conditions.len(), 3);
+    for (index, field) in conditions.iter().enumerate() {
+        assert_eq!(field.name, "condition");
+        assert_eq!(member(&field.value, "function_index"), &Value::Unsigned(1));
+        let first = if index == 1 {
+            0xFE00_08A3u32
+        } else {
+            0x0200_1DC1
+        };
+        let reference = if index == 1 {
+            0x0200_1DC1u32
+        } else {
+            0xFE00_08A3
+        };
+        assert_eq!(member(&field.value, "parameter_1"), &Value::FormId(first));
+        assert_eq!(
+            member(&field.value, "parameter_2"),
+            &Value::Bytes((0xFEA7_5319u32 + index as u32).to_le_bytes().to_vec())
+        );
+        assert_eq!(member(&field.value, "reference"), &Value::FormId(reference));
+        assert_eq!(
+            member(&field.value, "parameter_3"),
+            &Value::Signed(-19 - index as i64)
+        );
+        assert_eq!(
+            member(&field.value, "comparison"),
+            &if index == 1 {
+                Value::Float(-7.375)
+            } else {
+                Value::FormId(0x0200_1DC0)
+            }
+        );
+        let mut expected = source_conditions[index].clone();
+        expected[12..16].copy_from_slice(&first.to_le_bytes());
+        expected[24..28].copy_from_slice(&reference.to_le_bytes());
+        if index != 1 {
+            expected[4..8].copy_from_slice(&0x0200_1DC0u32.to_le_bytes());
+        }
+        assert_eq!(
+            field.canonical_bytes, expected,
+            "AI CTDA role {index}: exact non-link bytes"
+        );
+    }
+    let package_strings: Vec<_> = package_record
+        .fields
+        .iter()
+        .filter(|field| matches!(&field.signature, b"CIS1" | b"CIS2"))
+        .map(|field| field.value.clone())
+        .collect();
+    assert_eq!(
+        package_strings,
+        ["root-argument", "procedure-first", "procedure-second"]
+            .map(|text| Value::String(text.into()))
+    );
+    assert!(package_record.rejected_fields.is_empty());
+    assert!(idle_record.rejected_fields.is_empty());
+    let diagnostics = &result.diagnostics["typedaiconditions.esp"];
+    assert_eq!(diagnostics.skipped_records, 0);
+    assert_eq!(diagnostics.skipped_fields, 0);
+    assert_eq!(diagnostics.invalid_links, 0);
+    assert_eq!(diagnostics.unexpected_subrecords, 0);
+}

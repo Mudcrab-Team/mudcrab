@@ -303,12 +303,34 @@ pub(crate) fn decode(
     let mut fields = Vec::new();
     let mut rejected_fields = Vec::new();
     let mut editor_id = String::new();
+    // CIS leaves belong to the preceding CTDA, not the preceding surviving one.
+    let mut rejected_condition_strings = false;
+    // Response members must not move beneath an earlier surviving TRDT.
+    let mut rejected_info_response: Option<(usize, usize)> = None;
     let framed = subrecords(&scanned.payload, diagnostics, scanned.source_form_id);
     let link_kind = |source_id| {
         let id = remap(source_id, context, true, &mut PluginDiagnostics::default()).ok()?;
         context.winning_types?.get(&id).copied()
     };
     for (position, &(signature, bytes)) in framed.fields.iter().enumerate() {
+        let condition_string = matches!(&signature, b"CIS1" | b"CIS2");
+        if condition_string && rejected_condition_strings {
+            if !rejected_fields.contains(&signature) {
+                rejected_fields.push(signature);
+            }
+            diagnostics.note("field", || {
+                format!(
+                    "{} {id:08X} {}: string belongs to rejected CTDA",
+                    String::from_utf8_lossy(&scanned.record_type),
+                    String::from_utf8_lossy(&signature)
+                )
+            });
+            continue;
+        }
+        if !condition_string {
+            // A new source field ends this rejected condition's contiguous string block.
+            rejected_condition_strings = false;
+        }
         let selection = super::deciders::Context {
             record_type: scanned.record_type,
             form_version: scanned.form_version,
@@ -358,6 +380,9 @@ pub(crate) fn decode(
             continue;
         };
         let Some(index) = match_field(record_schema, &signature, cursor, last) else {
+            if signature == *b"CTDA" {
+                rejected_condition_strings = true;
+            }
             if record_schema.entries.iter().any(|entry| {
                 entry
                     .field
@@ -380,6 +405,23 @@ pub(crate) fn decode(
         let field_schema = &record_schema.entries[index].field;
         cursor = index + usize::from(!field_schema.repeat);
         last = Some(index);
+        if let Some((start, end)) = rejected_info_response {
+            if index > start && index < end {
+                if !rejected_fields.contains(&signature) {
+                    rejected_fields.push(signature);
+                }
+                diagnostics.note("field", || {
+                    format!(
+                        "{} {id:08X} {}: member belongs to rejected TRDT",
+                        String::from_utf8_lossy(&scanned.record_type),
+                        String::from_utf8_lossy(&signature)
+                    )
+                });
+                continue;
+            }
+            // A new response anchor or matched field outside this group ends it.
+            rejected_info_response = None;
+        }
         match value(
             field_schema,
             bytes,
@@ -403,6 +445,16 @@ pub(crate) fn decode(
                 });
             }
             Err(error) => {
+                if signature == *b"CTDA" {
+                    rejected_condition_strings = true;
+                }
+                if scanned.record_type == *b"INFO" && signature == *b"TRDT" {
+                    rejected_info_response = record_schema.entries[index]
+                        .repeat_ranges
+                        .iter()
+                        .find(|range| range.start == index)
+                        .map(|range| (range.start, range.end));
+                }
                 if field_schema.reject_record_on_error && scanned.flags & 0x20 == 0 {
                     return Err(format!(
                         "{} {id:08X} mandatory {}: {error}",

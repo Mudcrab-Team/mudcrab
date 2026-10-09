@@ -21,12 +21,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Identity includes schema bytes so an authored layout change invalidates reuse.
+/// Decoder/adapter behavior version for output changes outside the authored schema.
+pub const ADAPTER_VERSION: u32 = 3;
+
+/// Identity binds decoder behavior and schema bytes so stale output cannot prove reuse.
 pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
     match reader {
         RecordReader::Legacy => serde_json::json!({"mode": "legacy"}),
         RecordReader::Inhouse => serde_json::json!({
-            "mode": "inhouse", "adapter_version": 1,
+            "mode": "inhouse", "adapter_version": ADAPTER_VERSION,
             "schema_sha256": crate::cache::hash_bytes(records::SCHEMA_BYTES),
             "language": "english",
         }),

@@ -610,7 +610,7 @@
               "signature": "CTDA",
               "name": "condition_pending_d",
               "kind": "bytes",
-              "source": "ai_pending_d: shared condition-function types belong to section D",
+              "source": "pending-component:D",
               "repeat": true
             },
             {
@@ -860,7 +860,7 @@
                       "signature": "CTDA",
                       "name": "condition_pending_d",
                       "kind": "bytes",
-                      "source": "ai_pending_d: shared condition-function types belong to section D",
+                      "source": "pending-component:D",
                       "repeat": true
                     },
                     {
@@ -1283,7 +1283,7 @@
               "signature": "CTDA",
               "name": "condition_pending_d",
               "kind": "bytes",
-              "source": "ai_pending_d: shared condition-function types belong to section D",
+              "source": "pending-component:D",
               "repeat": true
             },
             {

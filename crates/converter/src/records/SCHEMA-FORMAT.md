@@ -343,6 +343,11 @@ conversions are comparison policies, not replacements for its native bytes.
 DIAL's child-group timestamp and unknown fields likewise belong to the GRUP7
 header and must not be confused with the DIAL record's version-control header.
 
+A malformed INFO response TRDT omits only the members in its matched response
+group with bounded field diagnostics. A new response or unrelated group ends
+that omission. Malformed text beneath a valid TRDT omits only that text, keeping
+the usable response and neighboring records.
+
 INFO records also retain their containing GRUP7 label independently of TPIC.
 The typed reader and JSON diagnostic export expose the resolved DIAL owner,
 the native file-relative label, and the source group/record byte offsets.
@@ -364,11 +369,16 @@ opaque parameter bytes without guessing references.
 Only run-on mode 2 interprets the offset-24 slot as a reference FormID. Other
 modes preserve that slot as an unused u32; the signed offset-28 parameter holds
 the run-on alias/package/event index. CIS1 and CIS2 are independent native
-zero-terminated strings. Safely framed malformed CTDA is omitted with a bounded
-field diagnostic while valid neighbors continue to publication. Invalid
-optional links are cleared through the existing remap/target-validation path.
+zero-terminated strings belonging to the preceding CTDA. A safely framed
+malformed or out-of-order CTDA and its immediately following CIS1/CIS2 are
+omitted with bounded field diagnostics, preserving other conditions and records
+through publication. The reader identity also includes the decoder/adapter
+behavior version so outputs predating this recovery policy cannot prove reuse.
+Invalid optional links are cleared through the existing remap/target-validation path.
 
-Complete VMAD fragment and alias interpretation remains the separate shared
-script component. Loading this section's schemas and conditions does not
+The assembled phase-3 schema activates shared conditions in all family overlays
+and uses the attached-script component for complete VMAD fragments and aliases.
+The components retain their separate schema and parser ownership. Loading
+these schemas and conditions does not
 establish all other phase-3 owners, a complete mod-list audit, or runtime quest
 and dialogue execution.

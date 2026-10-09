@@ -392,16 +392,16 @@ fn invalid_topic_owners_are_bounded_and_keep_override_source_provenance() {
         );
     }
     let damaged = &result.records[&0x0200_4605];
-    assert_eq!(damaged.rejected_fields, [*b"TRDT"]);
+    assert_eq!(damaged.rejected_fields, [*b"TRDT", *b"NAM1"]);
     assert!(
         damaged
             .fields
             .iter()
-            .any(|field| field.signature == *b"NAM1")
+            .all(|field| !matches!(&field.signature, b"TRDT" | b"NAM1"))
     );
     let diagnostics = &result.diagnostics["patch.esp"];
     assert_eq!(diagnostics.skipped_records, 0);
-    assert_eq!(diagnostics.skipped_fields, 1);
+    assert_eq!(diagnostics.skipped_fields, 2);
     assert_eq!(diagnostics.invalid_links, 5);
     assert_eq!(diagnostics.first_by_category.len(), 2);
 }
@@ -492,9 +492,15 @@ async fn grouped_info_metadata_exports_and_broken_owners_still_publish_neighbors
             !record.subrecords.iter().any(|field| field.tag == *b"TPIC"),
             "metadata must not synthesize a runtime subrecord"
         );
-        assert!(record.subrecords.iter().any(|field| field.tag == *b"NAM1"));
         if id == 0x0200_4605 {
-            assert!(!record.subrecords.iter().any(|field| field.tag == *b"TRDT"));
+            assert!(
+                record
+                    .subrecords
+                    .iter()
+                    .all(|field| !matches!(&field.tag, b"TRDT" | b"NAM1"))
+            );
+        } else {
+            assert!(record.subrecords.iter().any(|field| field.tag == *b"NAM1"));
         }
     }
     let source: (u32, Vec<u8>) = database
@@ -511,6 +517,6 @@ async fn grouped_info_metadata_exports_and_broken_owners_still_publish_neighbors
             .unwrap();
     let patch = &diagnostics["decoder"]["patch.esp"];
     assert_eq!(patch["skipped_records"], 0);
-    assert_eq!(patch["skipped_fields"], 1);
+    assert_eq!(patch["skipped_fields"], 2);
     assert_eq!(patch["invalid_links"], 5);
 }

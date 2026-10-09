@@ -767,14 +767,7 @@ async fn broken_dialogue_mod_publishes_all_family_neighbors_and_omits_unsafe_fie
     }
     let safe = published(&database, unsafe_id);
     assert!(!safe.subrecords.iter().any(|field| field.tag == *b"TRDT"));
-    assert_eq!(
-        safe.subrecords
-            .iter()
-            .find(|field| field.tag == *b"NAM1")
-            .unwrap()
-            .data,
-        native::text("Safe response beside damaged data")
-    );
+    assert!(!safe.subrecords.iter().any(|field| field.tag == *b"NAM1"));
     assert_eq!(
         safe.subrecords
             .iter()
@@ -788,7 +781,7 @@ async fn broken_dialogue_mod_publishes_all_family_neighbors_and_omits_unsafe_fie
             .unwrap();
     let damaged = &diagnostics["decoder"]["damageddialogue.esp"];
     assert_eq!(damaged["skipped_records"], 11);
-    assert_eq!(damaged["skipped_fields"], 1);
+    assert_eq!(damaged["skipped_fields"], 2);
     assert_eq!(damaged["invalid_links"], 1);
     assert!(
         damaged["first_by_category"]["record"]

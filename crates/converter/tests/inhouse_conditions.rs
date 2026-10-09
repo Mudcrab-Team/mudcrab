@@ -383,7 +383,7 @@ fn event_vats_float_and_cis_string_parameters_decode_in_physical_order() {
     assert_eq!(result.diagnostics["skyrim.esm"].skipped_fields, 0);
 }
 
-/// Unknown extension indices preserve slots, and malformed lengths drop only framed CTDA.
+/// Unknown indices preserve slots; malformed CTDA drops its dependent strings.
 #[test]
 fn unknown_functions_and_malformed_lengths_preserve_neighboring_fields() {
     let unknown = fixture::condition(
@@ -425,11 +425,11 @@ fn unknown_functions_and_malformed_lengths_preserve_neighboring_fields() {
         member(&condition(record, 1).value, "parameter_1"),
         &Value::Unsigned(89)
     );
-    assert_eq!(record.rejected_fields, [*b"CTDA"]);
-    assert_eq!(result.diagnostics["skyrim.esm"].skipped_fields, 2);
+    assert_eq!(record.rejected_fields, [*b"CTDA", *b"CIS1"]);
+    assert_eq!(result.diagnostics["skyrim.esm"].skipped_fields, 3);
     assert_eq!(result.diagnostics["skyrim.esm"].invalid_links, 0);
     assert!(
-        record
+        !record
             .fields
             .iter()
             .any(|field| field.value == Value::String("malformed predecessor string".into()))
@@ -484,7 +484,7 @@ async fn malformed_conditions_and_optional_refs_complete_real_publication() {
         &fixture::reference(0x0100_0BBB),
     );
     let mut fields = fixture::subrecord(b"CTDA", &[0; 31]);
-    fields.extend(fixture::subrecord(b"CIS1", b"kept string\0"));
+    fields.extend(fixture::subrecord(b"CIS1", b"rejected condition string\0"));
     fields.extend(fixture::subrecord(
         b"CTDA",
         &fixture::condition(4, 0x0000_2D30, 1, 0x0100_0BBB, 0xF173_9517, 2, 0x0100_0BBB),
@@ -535,7 +535,7 @@ async fn malformed_conditions_and_optional_refs_complete_real_publication() {
     .map(|name| data.join(name));
     let decoded = read_plugins(&paths, &LoadOrder::read(&paths).unwrap()).unwrap();
     let diagnostics = &decoded.diagnostics["brokenconditions.esp"];
-    assert_eq!(diagnostics.skipped_fields, 1);
+    assert_eq!(diagnostics.skipped_fields, 2);
     assert_eq!(diagnostics.invalid_links, 5);
     assert_eq!(diagnostics.first_by_category.len(), 2);
     let output = temp.path().join("pack");
@@ -575,17 +575,259 @@ async fn malformed_conditions_and_optional_refs_complete_real_publication() {
         published
             .subrecords
             .iter()
-            .any(|field| field.tag == *b"CIS1" && field.data == b"kept string\0")
+            .all(|field| field.tag != *b"CIS1")
     );
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();
     assert_eq!(
         diagnostics["decoder"]["brokenconditions.esp"]["skipped_fields"],
-        1
+        2
     );
     assert_eq!(
         diagnostics["decoder"]["brokenconditions.esp"]["invalid_links"],
         5
     );
+}
+
+/// A rejected condition must not publish its CIS2 as another condition's variable name.
+#[tokio::test]
+async fn rejected_condition_drops_only_its_strings_in_real_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(
+        &data,
+        layout::DEFAULT_SEED,
+        layout::Formats::parse("dds,nif,pex,esm").unwrap(),
+    )
+    .unwrap();
+    let base_bytes = fs::read(data.join("Skyrim.esm")).unwrap();
+    let header_length = u32::from_le_bytes(base_bytes[4..8].try_into().unwrap()) as usize;
+    let header = &base_bytes[24..24 + header_length];
+    let first = fixture::condition(0, 1.0f32.to_bits(), 53, 0x14, 0, 0, 0);
+    let broken = fixture::condition(0, 2.0f32.to_bits(), 53, 0x14, 0, 0, 0);
+    let third = fixture::condition(0, 3.0f32.to_bits(), 53, 0x14, 0, 0, 0);
+    let fields = [
+        fixture::subrecord(b"CTDA", &first),
+        fixture::subrecord(b"CIS2", b"first_variable\0"),
+        fixture::subrecord(b"CTDA", &broken[..31]),
+        fixture::subrecord(b"CIS2", b"rejected_variable\0"),
+        fixture::subrecord(b"CTDA", &third),
+        fixture::subrecord(b"CIS2", b"third_variable\0"),
+    ]
+    .concat();
+    write_plugin(
+        &data.join("BrokenConditionStrings.esp"),
+        header,
+        0,
+        &["Skyrim.esm"],
+        &[
+            fixture::spell(0x0100_2E40, &[]),
+            fixture::spell(0x0100_2E41, &fields),
+            fixture::spell(0x0100_2E42, &[]),
+        ]
+        .concat(),
+    );
+    let plugins_file = temp.path().join("plugins.txt");
+    fs::write(&plugins_file, "*Skyrim.esm\n*BrokenConditionStrings.esp\n").unwrap();
+    let output = temp.path().join("pack");
+    let mut config = PipelineConfig::new(&data, &output);
+    config.plugins_file = Some(plugins_file);
+    config.record_reader = RecordReader::Inhouse;
+    config.no_lod = true;
+    config.cpu_jobs = 2;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    for id in [0x0100_2E40, 0x0100_2E42] {
+        assert!(!published_record(&database, id).subrecords.is_empty());
+    }
+    let published = published_record(&database, 0x0100_2E41);
+    let condition_fields = published
+        .subrecords
+        .iter()
+        .filter(|field| matches!(&field.tag, b"CTDA" | b"CIS1" | b"CIS2"))
+        .map(|field| (field.tag, field.data.clone()))
+        .collect::<Vec<_>>();
+    // Each native CTDA starts a distinct string-parameter ownership block.
+    // Removing the bad CTDA alone would publish two CIS2 values under the first.
+    assert_eq!(
+        condition_fields,
+        [
+            (*b"CTDA", first.to_vec()),
+            (*b"CIS2", b"first_variable\0".to_vec()),
+            (*b"CTDA", third.to_vec()),
+            (*b"CIS2", b"third_variable\0".to_vec()),
+        ]
+    );
+    let diagnostics: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        diagnostics["decoder"]["brokenconditionstrings.esp"]["skipped_fields"],
+        2
+    );
+}
+/// Rejected response header must not attach its text to a different response.
+#[tokio::test]
+async fn malformed_info_response_header_preserves_response_ownership_in_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(
+        &data,
+        layout::DEFAULT_SEED,
+        layout::Formats::parse("dds,nif,pex,esm").unwrap(),
+    )
+    .unwrap();
+    let base_bytes = fs::read(data.join("Skyrim.esm")).unwrap();
+    let header_length = u32::from_le_bytes(base_bytes[4..8].try_into().unwrap()) as usize;
+    let header = &base_bytes[24..24 + header_length];
+    let mut first = [0u8; 24];
+    first[12] = 1;
+    let mut broken = [0u8; 24];
+    broken[12] = 2;
+    let mut third = [0u8; 24];
+    third[12] = 3;
+    let fields = [
+        fixture::subrecord(b"EDID", b"ResponseOwnershipProbe\0"),
+        fixture::subrecord(b"TRDT", &first),
+        fixture::subrecord(b"NAM1", b"First response text\0"),
+        fixture::subrecord(b"TRDT", &broken[..23]),
+        fixture::subrecord(b"NAM1", b"Rejected response text\0"),
+        fixture::subrecord(b"TRDT", &third),
+        fixture::subrecord(b"NAM1", b"Third response text\0"),
+    ]
+    .concat();
+    let info = fixture::record(b"INFO", 0x0100_2F41, 0, &fields);
+    write_plugin(
+        &data.join("BrokenInfoResponses.esp"),
+        header,
+        0,
+        &["Skyrim.esm"],
+        &[
+            fixture::spell(0x0100_2F40, &[]),
+            info,
+            fixture::spell(0x0100_2F42, &[]),
+        ]
+        .concat(),
+    );
+    let plugins_file = temp.path().join("plugins.txt");
+    fs::write(&plugins_file, "*Skyrim.esm\n*BrokenInfoResponses.esp\n").unwrap();
+    let output = temp.path().join("pack");
+    let mut config = PipelineConfig::new(&data, &output);
+    config.plugins_file = Some(plugins_file);
+    config.record_reader = RecordReader::Inhouse;
+    config.no_lod = true;
+    config.cpu_jobs = 2;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    let retained_fixture = temp.keep();
+    eprintln!(
+        "Retained INFO recovery fixture: {}",
+        retained_fixture.display()
+    );
+    assert!(report.complete, "{:?}", report.warnings);
+    let diagnostics: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        diagnostics["decoder"]["brokeninforesponses.esp"]["skipped_fields"],
+        2
+    );
+    assert_eq!(
+        diagnostics["decoder"]["brokeninforesponses.esp"]["skipped_records"],
+        0
+    );
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    for id in [0x0100_2F40, 0x0100_2F42] {
+        assert!(!published_record(&database, id).subrecords.is_empty());
+    }
+    let published = published_record(&database, 0x0100_2F41);
+    let fields = published
+        .subrecords
+        .iter()
+        .filter(|field| matches!(&field.tag, b"TRDT" | b"NAM1"))
+        .map(|field| (field.tag, field.data.clone()))
+        .collect::<Vec<_>>();
+    // The wire format uses each TRDT as the parent of following NAM1 text.
+    // Two NAM1 fields between valid headers would associate the bad second
+    // response's text with the first response, losing the native parent boundary.
+    assert_eq!(
+        fields,
+        [
+            (*b"TRDT", first.to_vec()),
+            (*b"NAM1", b"First response text\0".to_vec()),
+            (*b"TRDT", third.to_vec()),
+            (*b"NAM1", b"Third response text\0".to_vec()),
+        ]
+    );
+}
+#[test]
+fn malformed_info_text_omits_only_itself_with_valid_response_anchor() {
+    let mut first = [0u8; 24];
+    first[12] = 1;
+    let mut second = [0u8; 24];
+    second[12] = 2;
+    let fields = [
+        fixture::subrecord(b"TRDT", &first),
+        fixture::subrecord(b"NAM1", &[0x31, 0x42, 0x53]),
+        fixture::subrecord(b"NAM2", b"Usable first response notes\0"),
+        fixture::subrecord(b"TRDT", &second),
+        fixture::subrecord(b"NAM1", &0x3142_5364u32.to_le_bytes()),
+    ]
+    .concat();
+    let plugins = Plugins::new(&fixture::record(b"INFO", 0x2F51, 0, &fields));
+    // A localized source requires exactly four bytes for each NAM1 key.
+    let mut bytes = fs::read(&plugins.paths[0]).unwrap();
+    bytes[8..12].copy_from_slice(&0x80u32.to_le_bytes());
+    fs::write(&plugins.paths[0], bytes).unwrap();
+    let result = plugins.read();
+    let info = &result.records[&0x2F51];
+    let projected = info
+        .fields
+        .iter()
+        .map(|field| field.signature)
+        .collect::<Vec<_>>();
+    assert_eq!(projected, [*b"TRDT", *b"NAM2", *b"TRDT", *b"NAM1"]);
+    assert_eq!(info.fields[0].canonical_bytes, first);
+    assert_eq!(info.fields[2].canonical_bytes, second);
+    assert!(matches!(
+        info.fields[3].value,
+        Value::LocalizedString(0x3142_5364)
+    ));
+    assert_eq!(result.diagnostics["skyrim.esm"].skipped_fields, 1);
+    assert_eq!(result.diagnostics["skyrim.esm"].skipped_records, 0);
+}
+
+#[test]
+fn rejected_info_response_block_stops_at_matched_condition_group() {
+    let fields = [
+        fixture::subrecord(b"TRDT", &[0; 23]),
+        fixture::subrecord(b"NAM1", b"Rejected response text\0"),
+        fixture::subrecord(b"NAM2", b"Rejected response notes\0"),
+        fixture::subrecord(
+            b"CTDA",
+            &fixture::condition(0, 1.0f32.to_bits(), 53, 0x14, 0, 0, 0),
+        ),
+        fixture::subrecord(b"CIS2", b"Usable condition variable\0"),
+    ]
+    .concat();
+    let result = Plugins::new(&fixture::record(b"INFO", 0x2F52, 0, &fields)).read();
+    let info = &result.records[&0x2F52];
+    assert_eq!(
+        info.fields
+            .iter()
+            .map(|field| field.signature)
+            .collect::<Vec<_>>(),
+        [*b"CTDA", *b"CIS2"]
+    );
+    assert_eq!(result.diagnostics["skyrim.esm"].skipped_fields, 3);
+    assert_eq!(result.diagnostics["skyrim.esm"].skipped_records, 0);
 }

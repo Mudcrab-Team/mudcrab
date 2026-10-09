@@ -250,19 +250,54 @@ fn perk_links_remap_across_normal_and_light_plugins_without_touching_padding_or_
     assert!(record.rejected_fields.is_empty());
 }
 
-/// Root and nested conditions keep their raw pending bytes and signed tab boundaries.
+/// Root and nested CTDA preserve tab boundaries, typed links and all native non-link bytes.
 #[test]
-fn perk_condition_tabs_preserve_repeated_groups_and_pending_condition_bytes() {
+fn perk_condition_tabs_preserve_typed_groups_and_remapped_native_bytes() {
+    use dummy_content::inhouse_conditions as native;
+    let full = 0x0100_2731u32;
+    let light = 0x0000_08A3u32;
+    let global = 0x0100_2749u32;
+    let mut source_conditions = Vec::new();
+    for index in 0..5usize {
+        let first = if index % 2 == 0 { full } else { light };
+        let reference = if index % 2 == 0 { light } else { full };
+        let flags = [4, 1, 32, 65, 96][index];
+        let comparison = if index == 0 {
+            global
+        } else {
+            (-3.125f32 - index as f32).to_bits()
+        };
+        let mut bytes = native::condition(
+            flags,
+            comparison,
+            1,
+            first,
+            0xFEA7_5300 + index as u32,
+            2,
+            reference,
+        );
+        bytes[1] = 0x91 + index as u8;
+        bytes[3] = 0xD5 - index as u8;
+        bytes[11] = 0x53 + index as u8;
+        bytes[28..32].copy_from_slice(&(-17i32 - index as i32).to_le_bytes());
+        source_conditions.push(bytes);
+    }
     let mut payload = perks::subrecord(b"EDID", &perks::text("ConditionBoundaryPerk"));
-    payload.extend(perks::subrecord(b"CTDA", &[0xA7; 32]));
+    payload.extend(perks::subrecord(b"CTDA", &source_conditions[0]));
     payload.extend(perks::subrecord(b"CIS1", &perks::text("root-one")));
     payload.extend(perks::subrecord(b"DATA", &[0, 9, 2, 1, 0]));
-    for (function, first_tab, fill) in [(4, -1i8, 0x53u8), (5, 2, 0xC1)] {
+    for (effect, function, first_tab) in [(0usize, 4, -1i8), (1, 5, 2)] {
         payload.extend(perks::subrecord(b"PRKE", &[2, 3, 17]));
         payload.extend(perks::subrecord(b"DATA", &[35, function, 2]));
-        for (tab, condition) in [(first_tab, fill), (first_tab + 1, fill + 1)] {
-            payload.extend(perks::subrecord(b"PRKC", &tab.to_le_bytes()));
-            payload.extend(perks::subrecord(b"CTDA", &[condition; 32]));
+        for ordinal in 0..2usize {
+            payload.extend(perks::subrecord(
+                b"PRKC",
+                &(first_tab + ordinal as i8).to_le_bytes(),
+            ));
+            payload.extend(perks::subrecord(
+                b"CTDA",
+                &source_conditions[1 + effect * 2 + ordinal],
+            ));
             payload.extend(perks::subrecord(b"CIS1", &perks::text("condition-one")));
             payload.extend(perks::subrecord(b"CIS2", &perks::text("condition-two")));
         }
@@ -275,9 +310,29 @@ fn perk_condition_tabs_preserve_repeated_groups_and_pending_condition_bytes() {
         payload.extend(perks::subrecord(b"EPFD", &data));
         payload.extend(perks::subrecord(b"PRKF", &[]));
     }
-    let fixture = Fixture::new(&perks::record(b"PERK", perks::FIRST_ID, 0, &payload));
+    let mut fixture = Fixture::new(&[]);
+    fixture.plugin("Interposed.esp", 0, &[], &[]);
+    fixture.plugin(
+        "ConditionObjects.esm",
+        1,
+        &[],
+        &[native::reference(0x2731), native::global(0x2749)].concat(),
+    );
+    fixture.plugin(
+        "ConditionLight.esl",
+        0x200,
+        &["Skyrim.esm"],
+        &native::reference_with_base(0x0100_08A3, 0x0000_0014),
+    );
+    fixture.plugin(
+        "ConditionPerks.esp",
+        0,
+        &["ConditionLight.esl", "ConditionObjects.esm", "Skyrim.esm"],
+        &perks::record(b"PERK", 0x0300_2600, 0, &payload),
+    );
     let result = fixture.read();
-    let record = &result.records[&perks::FIRST_ID];
+    let record = &result.records[&0x0300_2600];
+    assert_eq!(record.raw_payload, payload);
     assert_eq!(
         values(record, "condition_tab"),
         [
@@ -287,21 +342,101 @@ fn perk_condition_tabs_preserve_repeated_groups_and_pending_condition_bytes() {
             &Value::Signed(3)
         ]
     );
-    let conditions = values(record, "pending_condition");
+    let conditions: Vec<_> = record
+        .fields
+        .iter()
+        .filter(|field| field.signature == *b"CTDA")
+        .collect();
+    assert_eq!(conditions.len(), 5);
+    for (index, field) in conditions.iter().enumerate() {
+        assert_eq!(field.name, "condition");
+        let first = if index % 2 == 0 {
+            0x0200_2731u32
+        } else {
+            0xFE00_08A3
+        };
+        let reference = if index % 2 == 0 {
+            0xFE00_08A3u32
+        } else {
+            0x0200_2731
+        };
+        assert_eq!(member(&field.value, "function_index"), &Value::Unsigned(1));
+        assert_eq!(
+            member(&field.value, "flags_and_operator"),
+            &Value::Unsigned([4, 1, 32, 65, 96][index])
+        );
+        assert_eq!(member(&field.value, "parameter_1"), &Value::FormId(first));
+        assert_eq!(
+            member(&field.value, "parameter_2"),
+            &Value::Bytes((0xFEA7_5300u32 + index as u32).to_le_bytes().to_vec())
+        );
+        assert_eq!(member(&field.value, "reference"), &Value::FormId(reference));
+        assert_eq!(
+            member(&field.value, "parameter_3"),
+            &Value::Signed(-17 - index as i64)
+        );
+        assert_eq!(
+            member(&field.value, "comparison"),
+            &if index == 0 {
+                Value::FormId(0x0200_2749)
+            } else {
+                Value::Float(-3.125 - index as f32)
+            }
+        );
+        let mut expected = source_conditions[index].clone();
+        expected[12..16].copy_from_slice(&first.to_le_bytes());
+        expected[24..28].copy_from_slice(&reference.to_le_bytes());
+        if index == 0 {
+            expected[4..8].copy_from_slice(&0x0200_2749u32.to_le_bytes());
+        }
+        assert_eq!(
+            field.canonical_bytes, expected,
+            "CTDA {index}: only known link spans change"
+        );
+    }
+    let grouped: Vec<_> = record
+        .fields
+        .iter()
+        .filter(|field| matches!(&field.signature, b"PRKE" | b"PRKC" | b"CTDA" | b"PRKF"))
+        .map(|field| field.signature)
+        .collect();
     assert_eq!(
-        conditions,
-        [0xA7, 0x53, 0x54, 0xC1, 0xC2]
-            .iter()
-            .map(|fill| Value::Bytes(vec![*fill; 32]))
-            .collect::<Vec<_>>()
-            .iter()
-            .collect::<Vec<_>>()
+        grouped,
+        [
+            *b"CTDA", *b"PRKE", *b"PRKC", *b"CTDA", *b"PRKC", *b"CTDA", *b"PRKF", *b"PRKE",
+            *b"PRKC", *b"CTDA", *b"PRKC", *b"CTDA", *b"PRKF"
+        ]
+    );
+    let strings: Vec<_> = record
+        .fields
+        .iter()
+        .filter(|field| matches!(&field.signature, b"CIS1" | b"CIS2"))
+        .map(|field| field.value.clone())
+        .collect();
+    assert_eq!(
+        strings,
+        [
+            "root-one",
+            "condition-one",
+            "condition-two",
+            "condition-one",
+            "condition-two",
+            "condition-one",
+            "condition-two",
+            "condition-one",
+            "condition-two"
+        ]
+        .map(|text| Value::String(text.into()))
     );
     let parameters = values(record, "function_parameters");
     assert_eq!(member(parameters[0], "first"), &Value::Float(2.75));
     assert_eq!(member(parameters[1], "actor_value"), &Value::Unsigned(24));
     assert!(record.rejected_fields.is_empty());
-    assert_eq!(result.diagnostics["skyrim.esm"].skipped_fields, 0);
+    let diagnostics = &result.diagnostics["conditionperks.esp"];
+    assert_eq!(diagnostics.skipped_fields, 0);
+    assert_eq!(diagnostics.skipped_records, 0);
+    assert_eq!(diagnostics.unexpected_subrecords, 0);
+    assert_eq!(diagnostics.invalid_links, 0);
 }
 
 /// Selector dependencies never borrow an EPFT from a completed previous effect.
