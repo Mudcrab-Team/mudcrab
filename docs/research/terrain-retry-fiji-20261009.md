@@ -11,8 +11,6 @@ Twenty fresh Riverwood starts with the retry fix passed lifecycle checks and ind
 
 The [per-run results](terrain-retry-fiji-20261009/results.json) retain timestamps, binary/input hashes, screenshot hashes, lifecycle validation, retry accounting and visual decisions. Every capture has a distinct process group and PNG hash. The primary agent and an independent subagent inspected all 24 original 1600×900 images.
 
-`functional_validation.visual_inspection` retains the original automated `pending` placeholder; `visual_review` records the final image-review decision for each run.
-
 ![Baseline at 1 MiB: landscape and village geometry missing](terrain-retry-fiji-20261009/baseline-1mib.png)
 
 ![Retry fix at 1 MiB: visible landscape and village restored](terrain-retry-fiji-20261009/fixed-1mib.png)
