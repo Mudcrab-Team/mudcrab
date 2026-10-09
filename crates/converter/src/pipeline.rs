@@ -1359,11 +1359,8 @@ impl ConversionBatch<'_> {
                             force_reconvert.contains(target_rel.to_string_lossy().as_ref());
                         let target = staging_root.join(&target_rel);
 
-                        let source_hash = if source_kind == "nif" {
-                            crate::mesh::nif_source_hash(&source, &key, &source_textures)
-                        } else {
-                            hash_file(&source)
-                        };
+                        // Dependencies come from the merged winners below, not physical neighbors.
+                        let source_hash = hash_file(&source);
                         let mut hash = match source_hash {
                             Ok(h) => h,
                             Err(err) => {
@@ -1430,6 +1427,13 @@ impl ConversionBatch<'_> {
                                     return;
                                 }
                             }
+                        }
+
+                        if source_kind == "nif"
+                            && let Some(suffix) =
+                                crate::mesh::volcanic_normal_cache_suffix(&key, &source_textures)
+                        {
+                            hash.push_str(&suffix);
                         }
 
                         // Check cache

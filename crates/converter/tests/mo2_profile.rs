@@ -268,6 +268,23 @@ async fn winning_skeleton_changes_invalidate_dependent_mesh() {
     );
     assert_ne!(manifest.entries[body].source_hash, original);
     assert!(second.converted >= 2);
+
+    // The body still physically neighbors Low's skeleton, but overwrite wins.
+    // Changing that losing source must not invalidate either winning asset.
+    replacement[name..name + 13].copy_from_slice(b"GeneratedLoss");
+    write(&instance, &format!("mods/Low/{skeleton}"), &replacement);
+    let third = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(third.complete);
+    assert_eq!(third.converted, 0);
+    assert_eq!(third.cache_hits, second.converted + second.cache_hits);
+    let unchanged = converter::cache::ConversionManifest::load(
+        &config.output_dir.join("conversion-manifest.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        unchanged.entries[body].source_hash,
+        manifest.entries[body].source_hash
+    );
 }
 
 /// Verifies conversion reads winning MO2 sources directly without copying them into staging.
