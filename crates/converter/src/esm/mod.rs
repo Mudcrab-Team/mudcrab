@@ -1,7 +1,8 @@
 use crate::esm::{
     binary::parse_plugin_file,
-    exporter::{create_tables, export_to_db_with_load_order},
+    exporter::{create_tables, export_to_db_with_strings},
     records::RawRecord,
+    strings::{PluginStrings, StringsSource},
 };
 use color_eyre::{Result, eyre::WrapErr};
 use rusqlite::{Connection, params};
@@ -19,6 +20,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 pub mod records;
+pub mod strings;
 pub mod types;
 
 pub struct EsmParser;
@@ -26,7 +28,16 @@ pub struct EsmParser;
 impl EsmParser {
     /// Parses .esm files and exports world data to skyrim_world.db
     pub fn convert_plugins(plugin_paths: &[PathBuf], db_path: &Path) -> Result<()> {
-        Self::convert_plugins_with_records(plugin_paths, db_path).map(|_| ())
+        Self::convert_plugins_with_strings(plugin_paths, db_path, &StringsSource::default())
+    }
+
+    /// As [`Self::convert_plugins`], looking up localized plugins' string tables in `strings`.
+    pub fn convert_plugins_with_strings(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        strings: &StringsSource,
+    ) -> Result<()> {
+        Self::convert_plugins_with_records(plugin_paths, db_path, strings).map(|_| ())
     }
 
     /// Export and return the same merged records used for the database, so the
@@ -34,6 +45,7 @@ impl EsmParser {
     pub(crate) fn convert_plugins_with_records(
         plugin_paths: &[PathBuf],
         db_path: &Path,
+        strings: &StringsSource,
     ) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
@@ -46,7 +58,12 @@ impl EsmParser {
                 params![priority as i64, path.file_name().unwrap_or_default().to_string_lossy(), priority as i64, checksum.as_slice()],
             )?;
         }
-        export_to_db_with_load_order(&conn, &master, &order)?;
+        export_to_db_with_strings(
+            &conn,
+            &master,
+            &order,
+            &PluginStrings::load(&order, strings),
+        )?;
 
         Ok(master)
     }

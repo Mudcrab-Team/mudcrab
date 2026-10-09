@@ -13,6 +13,7 @@ use crate::{
         exporter::validate_database,
         lodsettings::{LodSettings, sidecar_path},
         read_plugins_txt,
+        strings::StringsSource,
     },
     integration::{IntegrationReport, finalize_world_database},
     lod::{
@@ -630,7 +631,12 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
+            // Loose string tables override the ones extracted from archives.
+            let strings = StringsSource {
+                roots: vec![config.data_dir.clone(), vfs_dir.clone()],
+                language: config.language.clone(),
+            };
+            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path, &strings)?;
             validate_database(&Connection::open(&db_path)?)?;
             write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
             report.artifacts.extend([
@@ -3852,9 +3858,12 @@ mod tests {
         fs::create_dir_all(staging.join("vfs")).unwrap();
         overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
         let plugins = vec![data.join("Skyrim.esm")];
-        let records =
-            EsmParser::convert_plugins_with_records(&plugins, &staging.join("skyrim_world.db"))
-                .unwrap();
+        let records = EsmParser::convert_plugins_with_records(
+            &plugins,
+            &staging.join("skyrim_world.db"),
+            &Default::default(),
+        )
+        .unwrap();
         write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
         let bytes = fs::read(staging.join("cell_cache.rkyv")).unwrap();
         let mut cache = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(&bytes).unwrap();
