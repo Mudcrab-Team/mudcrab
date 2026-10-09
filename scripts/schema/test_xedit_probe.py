@@ -1,6 +1,7 @@
 """Trust-boundary tests for the incomplete xEdit console capability probe."""
 from contextlib import contextmanager
 import os
+import errno
 import hashlib
 import json
 import subprocess
@@ -64,6 +65,62 @@ def _popen_waits_for_markers(*markers: Path, readiness_timeout: float = 5):
 
 
 class XEditProbeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "requires a detached process group")
+    def test_timeout_case_writer_keeps_partial_output_and_cleanup_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "tools/xDump64.exe"
+            tool.parent.mkdir()
+            with tool.open("wb") as stream:
+                stream.truncate(probe.XDUMP_SIZE)
+            artifact = root / "artifacts"
+            args = SimpleNamespace(xdump=str(tool), wine=sys.executable, artifact_dir=str(artifact))
+            child = "import time; time.sleep(60)"
+            parent = (
+                "import subprocess,sys,time; from pathlib import Path; "
+                f"child=subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True); "
+                "Path('child.pid').write_text(str(child.pid)); "
+                "print('partial xedit stdout', flush=True); "
+                "print('partial xedit stderr', file=sys.stderr, flush=True); "
+                "Path('ready').write_text('ready'); time.sleep(60)"
+            )
+            real_killpg = os.killpg
+
+            def signal_group(pid, sig):
+                if sig == 9:
+                    raise PermissionError(errno.EPERM, "synthetic cleanup failure")
+                return real_killpg(pid, sig)
+
+            def supervised(command, **kwargs):
+                if kwargs["label"] == "wine-version":
+                    return subprocess.CompletedProcess(command, 0, "wine-test", "")
+                if kwargs["label"] == "help":
+                    return subprocess.CompletedProcess(command, 0, "", "SSEDump 4.1.5f x64")
+                kwargs["timeout"] = 0.1
+                with _popen_waits_for_markers(artifact / "ready"):
+                    return p0_tools._run_supervised([sys.executable, "-u", "-c", parent], **kwargs)
+
+            try:
+                with mock.patch.object(probe, "_read_verified_bytes", return_value=(probe.XDUMP_SHA256, probe.XDUMP_SIZE, b"synthetic tool")), \
+                     mock.patch.object(probe.p0_fixtures, "hand_encoded_cases", return_value={"p0-hand-light.esl": (b"synthetic plugin", "fixture")}), \
+                     mock.patch.object(probe, "_run_supervised", side_effect=supervised), \
+                     mock.patch.object(p0_tools.os, "killpg", side_effect=signal_group):
+                    report, artifact = probe.run_probe(args)
+                case = report["cases"][0]
+                self.assertEqual(case["status"], "incomplete")
+                self.assertFalse(case["completed_verdict_saved"])
+                self.assertEqual(case["cleanup_errors"][0]["errno"], errno.EPERM)
+                self.assertIn("partial xedit stdout", (artifact / "logs/p0-hand-light.esl.stdout.txt").read_text())
+                self.assertIn("partial xedit stderr", (artifact / "logs/p0-hand-light.esl.stderr.txt").read_text())
+                self.assertTrue((artifact / "logs/p0-hand-light.esl.command.json").is_file())
+                self.assertEqual(json.loads((artifact / "probe-results.json").read_text())["cases"][0], case)
+            finally:
+                if (artifact / "child.pid").exists():
+                    try:
+                        os.kill(int((artifact / "child.pid").read_text()), 9)
+                    except ProcessLookupError:
+                        pass
+
     def test_v157_runner_provenance_paths_use_posix_separators(self):
         path = PureWindowsPath(r"C:\repo\scripts\schema\run_xedit_p0.py")
         root = PureWindowsPath(r"C:\repo")

@@ -146,6 +146,9 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
     # Wine version and prefix startup are also deadline-bound; no host prefix is used.
     for label, command in [("wine-version", [str(wine), "--version"]),
                            ("help", [str(wine), str(artifact / "xDump64.exe"), "-SSE", "-?"])]:
+        (logs / f"{label}.command.json").write_text(
+            json.dumps(command, indent=2) + "\n", encoding="utf-8"
+        )
         try:
             result = _run_supervised(command, cwd=artifact, env=env, label=label, timeout=COMMAND_TIMEOUT)
             (logs / f"{label}.stdout.txt").write_text(result.stdout, encoding="utf-8")
@@ -163,6 +166,7 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
             return report, artifact
         except (ProcessTimeout, QualificationError, OSError) as exc:
             if isinstance(exc, ProcessTimeout):
+                report["cleanup_errors"] = exc.cleanup_errors
                 (logs / f"{label}.stdout.txt").write_text(exc.stdout, encoding="utf-8")
                 (logs / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
             report["startup_failure"] = str(exc)
@@ -192,7 +196,7 @@ def run_probe(args: argparse.Namespace) -> tuple[dict, Path]:
         except ProcessTimeout as exc:
             stdout, stderr = exc.stdout, exc.stderr
             observation = {"file_name": name, "status": "incomplete", "failure": str(exc),
-                           "completed_verdict_saved": False}
+                           "completed_verdict_saved": False, "cleanup_errors": exc.cleanup_errors}
         except OSError as exc:
             stdout, stderr = "", str(exc)
             observation = {"file_name": name, "status": "incomplete", "failure": str(exc),

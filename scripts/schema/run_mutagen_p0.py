@@ -103,6 +103,7 @@ def _run_checked(
     log_dir: Path,
     timeout: float,
 ):
+    _save_json(log_dir / f"{label}.command.json", command)
     try:
         result = _run_supervised(command, cwd=cwd, env=env, label=label, timeout=timeout)
     except ProcessOutputDecodeError as exc:
@@ -114,6 +115,7 @@ def _run_checked(
         (log_dir / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
         _save_json(log_dir / f"{label}.timeout.json", {
             "timeout_seconds": timeout, "completed_verdict_saved": False,
+            "cleanup_errors": exc.cleanup_errors,
         })
         _save_json(log_dir / f"{label}.command.json", command)
         raise QualificationError(f"{exc}; see {log_dir / (label + '.timeout.json')}") from exc
@@ -470,6 +472,7 @@ def _case_run(
     plugin_path = fixtures_dir / filename
     plugin_path.write_bytes(input_bytes)
     command = [str(dotnet), str(assembly), "inspect", str(plugin_path)]
+    _save_json((observations_dir / Path(filename).stem).with_suffix(".command.json"), command)
     try:
         result = _run_supervised(
             command,
@@ -496,6 +499,7 @@ def _case_run(
             {
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
+                "cleanup_errors": exc.cleanup_errors,
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
                 "stderr_sha256": _sha256(exc.stderr.encode("utf-8")),
@@ -566,6 +570,7 @@ def _run_legacy_command(
     label: str,
     observations_dir: Path,
 ) -> subprocess.CompletedProcess:
+    _save_json((observations_dir / label).with_suffix(".command.json"), command)
     try:
         result = _run_supervised(
             command,
@@ -589,6 +594,7 @@ def _run_legacy_command(
             {
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
+                "cleanup_errors": exc.cleanup_errors,
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
                 "stderr_sha256": _sha256(exc.stderr.encode("utf-8")),
@@ -727,6 +733,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             "DOTNET_CLI_USE_MSBUILD_SERVER": "0",
         }
     )
+    _save_json(logs_dir / "dotnet-version.command.json", [str(dotnet), "--version"])
     try:
         version = _run_supervised(
             [str(dotnet), "--version"],
@@ -746,6 +753,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             logs_dir / "dotnet-version.timeout.json",
             {
                 "timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False,
+                "cleanup_errors": exc.cleanup_errors,
             },
         )
         raise QualificationError(str(exc)) from exc

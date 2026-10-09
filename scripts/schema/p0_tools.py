@@ -31,6 +31,7 @@ class ProcessTimeout(QualificationError):
         self.timeout = timeout
         self.stdout = stdout
         self.stderr = stderr
+        self.cleanup_errors: list[dict] = []
 
 
 class ProcessOutputDecodeError(QualificationError):
@@ -62,6 +63,7 @@ class ProcessOutputDecodeError(QualificationError):
         self.byte_end = error.end
         self.reason = error.reason
         self.timeout = timeout
+        self.cleanup_errors: list[dict] = []
 
     def failure_record(self) -> dict:
         return {
@@ -71,6 +73,7 @@ class ProcessOutputDecodeError(QualificationError):
             "byte_end": self.byte_end,
             "reason": self.reason,
             "timed_out": self.timeout is not None,
+            "cleanup_errors": self.cleanup_errors,
             "raw_stdout_sha256": _sha256(self.stdout_bytes),
             "raw_stdout_size_bytes": len(self.stdout_bytes),
             "raw_stderr_sha256": _sha256(self.stderr_bytes),
@@ -162,6 +165,20 @@ def _contains(parent: Path, child: Path) -> bool:
         return False
 
 
+def _signal_owned_group(process, sig: int, cleanup_errors: list[dict]) -> None:
+    """Reap an exited leader, then still signal its original group for survivors."""
+    process.poll()
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        cleanup_errors.append({
+            "operation": f"killpg({sig})", "errno": exc.errno,
+            "error": str(exc),
+        })
+
+
 def _run_supervised(
     command: list[str], *, cwd: Path, env: dict[str, str], label: str, timeout: float
 ) -> subprocess.CompletedProcess:
@@ -173,14 +190,12 @@ def _run_supervised(
         stderr=subprocess.PIPE,
         start_new_session=(os.name == "posix"),
     )
+    cleanup_errors: list[dict] = []
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            _signal_owned_group(process, signal.SIGTERM, cleanup_errors)
         else:
             try:
                 subprocess.run(
@@ -196,10 +211,7 @@ def _run_supervised(
             stdout, stderr = process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
             if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                _signal_owned_group(process, signal.SIGKILL, cleanup_errors)
             else:
                 process.kill()
             try:
@@ -218,10 +230,16 @@ def _run_supervised(
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
-        output = _decode_process_output(
-            label, stdout or b"", stderr or b"", timeout=timeout
-        )
-        raise ProcessTimeout(label, timeout, output[0], output[1])
+        try:
+            output = _decode_process_output(
+                label, stdout or b"", stderr or b"", timeout=timeout
+            )
+        except ProcessOutputDecodeError as exc:
+            exc.cleanup_errors = cleanup_errors
+            raise
+        failure = ProcessTimeout(label, timeout, output[0], output[1])
+        failure.cleanup_errors = cleanup_errors
+        raise failure
     decoded_stdout, decoded_stderr = _decode_process_output(
         label, stdout or b"", stderr or b""
     )
