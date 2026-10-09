@@ -635,12 +635,19 @@ impl AssetPipeline {
                 &staging.join("vfs"),
             )?;
             validate_database(&Connection::open(&db_path)?)?;
-            write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
+            } else {
+                write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            }
             crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
             if config.record_reader == crate::config::RecordReader::Inhouse {
                 report
                     .artifacts
                     .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+                report
+                    .artifacts
+                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
             }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
@@ -2111,6 +2118,7 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         "skyrim_world.db-wal",
         "skyrim_world.db-shm",
         "cell_cache.rkyv",
+        "cell_cache_preserved.rkyv",
         "record-reader.json",
         "inhouse-reader-diagnostics.json",
         "integration-report.json",

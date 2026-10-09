@@ -959,7 +959,7 @@
     },
     {
       "signature": "MSTT",
-      "source": "xedit-tes5:7600 record definition;191-222 model facts",
+      "source": "xedit-tes5:7600-7625 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
       "fields": [
         {
           "signature": "EDID",
@@ -973,6 +973,11 @@
         {
           "signature": "OBND",
           "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
         },
         {
           "name": "model",
@@ -996,13 +1001,32 @@
             }
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "DATA",
+          "name": "moveable_flags",
+          "kind": "u8",
+          "flags": {
+            "1": "on_local_map"
+          }
+        },
+        {
+          "signature": "SNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
         }
       ],
       "allow_unordered": false
     },
     {
       "signature": "FURN",
-      "source": "xedit-tes5:7399 record definition;191-222 model facts",
+      "source": "xedit-tes5:7399-7486 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
       "fields": [
         {
           "signature": "EDID",
@@ -1016,6 +1040,11 @@
         {
           "signature": "OBND",
           "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
         },
         {
           "name": "model",
@@ -1039,13 +1068,161 @@
             }
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "marker_data_opaque",
+          "kind": "bytes",
+          "source": "xedit-tes5:7420 FURN and12845 FLOR explicitly undocumented; native DATA observed4bytes; opaque preservation with no guessed FormID interpretation or size restriction"
+        },
+        {
+          "signature": "FNAM",
+          "name": "furniture_flags",
+          "kind": "u16",
+          "flags": {
+            "2": "ignored_by_sandbox"
+          }
+        },
+        {
+          "signature": "KNAM",
+          "name": "interaction_keyword",
+          "kind": "form_id",
+          "targets": [
+            "KYWD"
+          ]
+        },
+        {
+          "signature": "MNAM",
+          "name": "active_markers_flags",
+          "kind": "u32",
+          "flags": {
+            "33554432": "disables_activation",
+            "67108864": "is_perch",
+            "134217728": "must_exit_to_talk"
+          }
+        },
+        {
+          "signature": "WBDT",
+          "name": "workbench_data",
+          "kind": "struct",
+          "size": 2,
+          "members": [
+            {
+              "name": "bench_type",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "uses_skill",
+              "kind": "i8",
+              "offset": 1
+            }
+          ]
+        },
+        {
+          "signature": "NAM1",
+          "name": "associated_spell",
+          "kind": "form_id",
+          "targets": [
+            "SPEL"
+          ]
+        },
+        {
+          "name": "markers",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "ENAM",
+              "name": "marker_index",
+              "kind": "u32"
+            },
+            {
+              "signature": "NAM0",
+              "name": "disabled_entry_points",
+              "kind": "struct",
+              "size": 4,
+              "members": [
+                {
+                  "name": "unused",
+                  "kind": "bytes",
+                  "size": 2,
+                  "offset": 0
+                },
+                {
+                  "name": "disabled_points",
+                  "kind": "u16",
+                  "offset": 2
+                }
+              ]
+            },
+            {
+              "signature": "FNMK",
+              "name": "marker_keyword",
+              "kind": "form_id",
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "FNPR",
+          "name": "marker_entry_points",
+          "kind": "struct",
+          "size": 4,
+          "repeat": true,
+          "members": [
+            {
+              "name": "animation_type",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "entry_points",
+              "kind": "u16",
+              "offset": 2
+            }
+          ]
+        },
+        {
+          "signature": "XMRK",
+          "name": "marker_model",
+          "kind": "zstring"
         }
       ],
       "allow_unordered": false
     },
     {
       "signature": "TREE",
-      "source": "xedit-tes5:12800 record definition;191-222 model facts",
+      "source": "xedit-tes5:12802-12834 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
       "fields": [
         {
           "signature": "EDID",
@@ -1082,13 +1259,133 @@
             }
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "PFIG",
+          "name": "ingredient",
+          "kind": "form_id",
+          "targets": [
+            "INGR",
+            "ALCH",
+            "MISC",
+            "LVLI"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "harvest_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "PFPC",
+          "name": "ingredient_production",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "spring",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "summer",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "fall",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "winter",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "tree_data",
+          "kind": "struct",
+          "size": 48,
+          "members": [
+            {
+              "name": "trunk_flexibility",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "branch_flexibility",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "trunk_amplitude",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "front_amplitude",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "back_amplitude",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "side_amplitude",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "front_frequency",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "back_frequency",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "side_frequency",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "leaf_flexibility",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "leaf_amplitude",
+              "kind": "f32",
+              "offset": 40
+            },
+            {
+              "name": "leaf_frequency",
+              "kind": "f32",
+              "offset": 44
+            }
+          ]
         }
       ],
       "allow_unordered": false
     },
     {
       "signature": "FLOR",
-      "source": "xedit-tes5:12836 record definition;191-222 model facts",
+      "source": "xedit-tes5:12836-12851 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
       "fields": [
         {
           "signature": "EDID",
@@ -1102,6 +1399,11 @@
         {
           "signature": "OBND",
           "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
         },
         {
           "name": "model",
@@ -1125,6 +1427,97 @@
             }
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "marker_data_opaque",
+          "kind": "bytes",
+          "source": "xedit-tes5:7420 FURN and12845 FLOR explicitly undocumented; native DATA observed4bytes; opaque preservation with no guessed FormID interpretation or size restriction"
+        },
+        {
+          "signature": "RNAM",
+          "name": "activate_text_override",
+          "kind": "lstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "activation_data_opaque",
+          "kind": "bytes",
+          "source": "xedit-tes5:12847 explicitly undocumented; native DATA observed2bytes; preserve opaque bytes without guessed flags or FormIDs"
+        },
+        {
+          "signature": "PFIG",
+          "name": "ingredient",
+          "kind": "form_id",
+          "targets": [
+            "INGR",
+            "ALCH",
+            "MISC",
+            "LVLI"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "harvest_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "PFPC",
+          "name": "ingredient_production",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "spring",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "summer",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "fall",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "winter",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
         }
       ],
       "allow_unordered": false
@@ -1174,7 +1567,7 @@
     },
     {
       "signature": "DOOR",
-      "source": "xedit-tes5:7068 record definition;191-222 model facts",
+      "source": "xedit-tes5:7068-7095 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
       "fields": [
         {
           "signature": "EDID",
@@ -1188,6 +1581,11 @@
         {
           "signature": "OBND",
           "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
         },
         {
           "name": "model",
@@ -1211,13 +1609,62 @@
             }
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "SNAM",
+          "name": "open_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ANAM",
+          "name": "close_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "BNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "door_flags",
+          "kind": "u8",
+          "flags": {
+            "2": "automatic",
+            "4": "hidden",
+            "8": "minimal_use",
+            "16": "sliding",
+            "32": "no_combat_search_open"
+          }
+        },
+        {
+          "signature": "TNAM",
+          "name": "teleport_destination",
+          "kind": "form_id",
+          "targets": [
+            "CELL",
+            "WRLD"
+          ],
+          "repeat": true
         }
       ],
       "allow_unordered": false
     },
     {
       "signature": "ACTI",
-      "source": "xedit-tes5:5325 record definition;191-222 model facts",
+      "source": "xedit-tes5:5325-5366 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
       "fields": [
         {
           "signature": "EDID",
@@ -1231,6 +1678,11 @@
         {
           "signature": "OBND",
           "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
         },
         {
           "name": "model",
@@ -1254,6 +1706,107 @@
             }
           ],
           "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "marker_color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "unused",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "VNAM",
+          "name": "activation_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "WNAM",
+          "name": "water_type",
+          "kind": "form_id",
+          "targets": [
+            "WATR"
+          ]
+        },
+        {
+          "signature": "RNAM",
+          "name": "activate_text_override",
+          "kind": "lstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "activation_flags",
+          "kind": "u16",
+          "flags": {
+            "1": "no_displacement",
+            "2": "ignored_by_sandbox"
+          }
+        },
+        {
+          "signature": "KNAM",
+          "name": "interaction_keyword",
+          "kind": "form_id",
+          "targets": [
+            "KYWD"
+          ]
         }
       ],
       "allow_unordered": false

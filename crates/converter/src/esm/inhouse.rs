@@ -22,7 +22,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 3;
+pub const ADAPTER_VERSION: u32 = 4;
 
 /// Identity binds decoder behavior and schema bytes so stale output cannot prove reuse.
 pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
@@ -32,6 +32,7 @@ pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
             "mode": "inhouse", "adapter_version": ADAPTER_VERSION,
             "schema_sha256": crate::cache::hash_bytes(records::SCHEMA_BYTES),
             "language": "english",
+            "text_encoding": "windows-1252", "vmad_text_encoding": "utf-8",
         }),
     }
 }
@@ -84,8 +85,7 @@ pub fn export_record_bundle_typed(
         &strings_root,
         (!signatures.is_empty()).then_some((output, signatures)),
     )?;
-    let count =
-        crate::esm::cell_cache::write_cell_cache(&records, &output.join("cell_cache.rkyv"))?;
+    let count = write_terrain_caches(&records, &output.join("skyrim_world.db"), output)?;
     write_reader_identity(output, RecordReader::Inhouse)?;
     fs::write(output.join("records-schema.json"), records::SCHEMA_BYTES)?;
     Ok(count)
@@ -122,7 +122,7 @@ pub(crate) fn localized_string_paths(plugins: &[PathBuf]) -> BTreeSet<PathBuf> {
 struct Warnings(BTreeMap<String, (u64, String)>);
 
 impl Warnings {
-    /// Count a local omission without accumulating every failing record.
+    /// Count a local decode or lookup issue without accumulating every failing record.
     fn skipped(&mut self, plugin: &str, message: String) {
         let entry = self.0.entry(plugin.to_owned()).or_insert((0, message));
         entry.0 += 1;
@@ -132,10 +132,97 @@ impl Warnings {
     fn report(&self) {
         for (plugin, (count, first)) in &self.0 {
             eprintln!(
-                "warning: {plugin}: inhouse adapter omitted {count} unusable fields/records (first: {first})"
+                "warning: {plugin}: inhouse adapter reported {count} local decode/lookup issues (first: {first})"
             );
         }
     }
+}
+
+/// A localized occurrence keeps its original key separately from safe runtime text.
+struct LocalizedField {
+    form_id: u32,
+    field_index: usize,
+    signature: [u8; 4],
+    field_name: String,
+    string_table: &'static str,
+    string_id: u32,
+    load_order: u32,
+    resolved_text: Option<String>,
+    status: &'static str,
+}
+
+/// Recover winning LAND physical order from this reader's published provenance.
+pub(crate) fn terrain_source_offsets(db_path: &Path) -> Result<HashMap<u32, u64>> {
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut statement =
+        conn.prepare("SELECT form_id,source_record_offset FROM inhouse_terrain_source_order")?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+}
+
+/// Read normalized native layer geometry and globally remapped source keys for accepted LAND.
+pub(crate) fn terrain_preserved_layers(
+    db_path: &Path,
+) -> Result<HashMap<u32, Vec<shared::TerrainLayer>>> {
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut statement = conn.prepare("SELECT form_id,layer_data FROM inhouse_terrain_layers")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut output = HashMap::new();
+    for row in rows {
+        let (id, bytes) = row?;
+        output.insert(
+            id,
+            rkyv::from_bytes::<Vec<shared::TerrainLayer>, rkyv::rancor::Error>(&bytes)?,
+        );
+    }
+    Ok(output)
+}
+
+/// Keep every layer and blend weight; unresolved texture keys become explicit runtime placeholders.
+pub(crate) fn terrain_runtime_layers(
+    db_path: &Path,
+    preserved: &HashMap<u32, Vec<shared::TerrainLayer>>,
+) -> Result<HashMap<u32, Vec<shared::TerrainLayer>>> {
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut statement = conn.prepare("SELECT form_id FROM records WHERE record_type='LTEX'")?;
+    let textures = statement
+        .query_map([], |row| row.get::<_, u32>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    let mut output = preserved.clone();
+    for layers in output.values_mut() {
+        for layer in layers {
+            if layer.texture_form_id != 0 && !textures.contains(&layer.texture_form_id) {
+                layer.texture_form_id = 0;
+            }
+        }
+    }
+    Ok(output)
+}
+
+/// Share source-order and layer preservation across conversion, diagnostics and metadata rebuild.
+pub(crate) fn write_terrain_caches(
+    records: &HashMap<u32, RawRecord>,
+    db_path: &Path,
+    output: &Path,
+) -> Result<usize> {
+    let offsets = terrain_source_offsets(db_path)?;
+    let preserved = terrain_preserved_layers(db_path)?;
+    let runtime = terrain_runtime_layers(db_path, &preserved)?;
+    let count = crate::esm::cell_cache::write_cell_cache_with_preserved_layers(
+        records,
+        &offsets,
+        &runtime,
+        &output.join("cell_cache.rkyv"),
+    )?;
+    crate::esm::cell_cache::write_cell_cache_with_preserved_layers(
+        records,
+        &offsets,
+        &preserved,
+        &output.join("cell_cache_preserved.rkyv"),
+    )?;
+    Ok(count)
 }
 
 /// Decode and export with one shared load-order mapping; plugin data failures stay local.
@@ -155,8 +242,32 @@ fn convert_plugins_with_dump(
     dump: Option<(&Path, &[[u8; 4]])>,
 ) -> Result<HashMap<u32, RawRecord>> {
     let order = LoadOrder::read(plugin_paths)?;
-    let decoded = records::read_plugins_with_validation(plugin_paths, &order, validate_candidate)?;
     let mut warnings = Warnings::default();
+    let mut preserved_layers = HashMap::new();
+    let decoded = records::read_plugins_with_validation_and_observer(
+        plugin_paths,
+        &order,
+        validate_candidate,
+        |accepted| {
+            for record in accepted
+                .records
+                .values()
+                .filter(|record| record.record_type == *b"LAND")
+            {
+                match crate::esm::cell_cache::preserved_texture_layers(&record.to_raw_record()) {
+                    Ok(layers) => {
+                        preserved_layers.insert(record.form_id, layers);
+                    }
+                    Err(error) => warnings.skipped(
+                        &order.names[record.load_order as usize],
+                        format!("{:08X} terrain layer provenance: {error}", record.form_id),
+                    ),
+                }
+            }
+        },
+    )?;
+    let mut localized_fields = Vec::new();
+    let mut unresolved_fields = HashMap::new();
     let mut tables: HashMap<(usize, String), HashMap<u32, String>> = HashMap::new();
     let mut typed_output = dump
         .map(|(output, _)| fs::File::create(output.join("typed-records.jsonl")).map(BufWriter::new))
@@ -166,11 +277,12 @@ fn convert_plugins_with_dump(
         let priority = record.load_order as usize;
         let plugin = &order.names[priority];
         let mut raw = record.to_raw_record();
-        let mut omitted = BTreeSet::new();
+        let mut unresolved = BTreeSet::new();
+        let mut localized = Vec::new();
         let mut localization = BTreeMap::new();
         for (index, field) in record.fields.iter().enumerate() {
             if let Value::String(text) = &field.value {
-                // Typed CP1252/UTF-8 decoding owns the text; exporters consume UTF-8.
+                // Typed Windows-1252 decoding owns ordinary text; runtime bytes are UTF-8.
                 raw.subrecords[index].1 = runtime_string(text);
             }
             if let Value::LocalizedString(id) = &field.value {
@@ -184,15 +296,36 @@ fn convert_plugins_with_dump(
                                 HashMap::new()
                             })
                     });
+                // Zero is a null key even if a malformed table gives it text.
+                let resolved = if *id == 0 { None } else { table.get(id) };
+                let status = if *id == 0 {
+                    "null_id"
+                } else if resolved.is_some() {
+                    "resolved"
+                } else {
+                    "missing"
+                };
                 localization.insert(
                     index,
-                    serde_json::json!({"bank": bank, "id": id, "text": table.get(id)}),
+                    serde_json::json!({"bank": bank, "id": id, "text": resolved, "status": status}),
                 );
-                // A missing ID means NULL, never the decimal key or its four raw bytes.
-                if let Some(text) = table.get(id) {
+                localized.push(LocalizedField {
+                    form_id: record.form_id,
+                    field_index: index,
+                    signature: field.signature,
+                    field_name: field.name.clone(),
+                    string_table: bank,
+                    string_id: *id,
+                    load_order: record.load_order,
+                    resolved_text: resolved.cloned(),
+                    status,
+                });
+                // Keep the occurrence and key; unresolved text is never invented.
+                if let Some(text) = resolved {
                     raw.subrecords[index].1 = runtime_string(text);
                 } else {
-                    omitted.insert(index);
+                    raw.subrecords[index].1 = runtime_string("");
+                    unresolved.insert(index);
                     if *id != 0 {
                         warnings.skipped(
                             plugin,
@@ -214,14 +347,6 @@ fn convert_plugins_with_dump(
             )?;
             writer.write_all(b"\n")?;
         }
-        if !omitted.is_empty() {
-            raw.subrecords = raw
-                .subrecords
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, field)| (!omitted.contains(&index)).then_some(field))
-                .collect();
-        }
         let invalid = validate_inhouse_record(&raw)
             .map_err(|error| error.to_string())
             .and_then(|_| {
@@ -242,6 +367,10 @@ fn convert_plugins_with_dump(
             );
             continue;
         }
+        if !unresolved.is_empty() {
+            unresolved_fields.insert(raw.form_id, unresolved);
+        }
+        localized_fields.extend(localized);
         master.insert(raw.form_id, raw);
     }
     if let Some(writer) = &mut typed_output {
@@ -261,11 +390,50 @@ fn convert_plugins_with_dump(
             ],
         )?;
     }
-    export_inhouse_to_db(&conn, &master, &order)?;
+    let terrain_offsets = decoded
+        .records
+        .values()
+        .filter(|record| record.record_type == *b"LAND" && master.contains_key(&record.form_id))
+        .map(|record| (record.form_id, record.source_record_offset))
+        .collect::<HashMap<_, _>>();
+    export_inhouse_to_db(&conn, &master, &order, &unresolved_fields, &terrain_offsets)?;
     // Keep the established rkyv records.data contract for runtime tools.
     // Auxiliary provenance holds verbatim source framing and file-relative IDs.
     let tx = conn.unchecked_transaction()?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_source_records(form_id INTEGER PRIMARY KEY, source_form_id INTEGER NOT NULL, load_order INTEGER NOT NULL, record_type TEXT NOT NULL, flags INTEGER NOT NULL, payload BLOB NOT NULL); DELETE FROM inhouse_source_records;")?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_localized_fields(form_id INTEGER NOT NULL, field_index INTEGER NOT NULL, signature TEXT NOT NULL, field_name TEXT NOT NULL, string_table TEXT NOT NULL, string_id INTEGER NOT NULL, load_order INTEGER NOT NULL, resolved_text TEXT, status TEXT NOT NULL CHECK(status IN ('resolved','null_id','missing')), PRIMARY KEY(form_id,field_index)); DELETE FROM inhouse_localized_fields; CREATE TABLE IF NOT EXISTS inhouse_terrain_source_order(form_id INTEGER PRIMARY KEY, source_record_offset INTEGER NOT NULL); DELETE FROM inhouse_terrain_source_order;")?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_terrain_layers(form_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL, load_order INTEGER NOT NULL, layer_data BLOB NOT NULL, unresolved_texture_ids TEXT NOT NULL); DELETE FROM inhouse_terrain_layers;")?;
+    for (id, layers) in preserved_layers {
+        let Some(record) = master.get(&id) else {
+            continue;
+        };
+        let unresolved = layers
+            .iter()
+            .map(|layer| layer.texture_form_id)
+            .filter(|id| {
+                *id != 0
+                    && !master
+                        .get(id)
+                        .is_some_and(|record| record.record_type == *b"LTEX")
+            })
+            .collect::<BTreeSet<_>>();
+        tx.execute(
+            "INSERT INTO inhouse_terrain_layers(form_id,cell_id,load_order,layer_data,unresolved_texture_ids) VALUES (?1,?2,?3,?4,?5)",
+            params![id, record.cell_form_id.unwrap_or(id), record.load_order, rkyv::to_bytes::<rkyv::rancor::Error>(&layers)?.as_slice(), serde_json::to_string(&unresolved)?],
+        )?;
+    }
+    for field in localized_fields {
+        tx.execute(
+            "INSERT INTO inhouse_localized_fields(form_id,field_index,signature,field_name,string_table,string_id,load_order,resolved_text,status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![field.form_id, field.field_index as u64, String::from_utf8_lossy(&field.signature), field.field_name, field.string_table, field.string_id, field.load_order, field.resolved_text, field.status],
+        )?;
+    }
+    for (id, offset) in terrain_offsets {
+        tx.execute(
+            "INSERT INTO inhouse_terrain_source_order(form_id,source_record_offset) VALUES (?1,?2)",
+            params![id, offset],
+        )?;
+    }
     for (&id, record) in &decoded.records {
         tx.execute(
             "INSERT INTO inhouse_source_records(form_id,source_form_id,load_order,record_type,flags,payload) VALUES (?1,?2,?3,?4,?5,?6)",

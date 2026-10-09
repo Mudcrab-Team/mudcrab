@@ -737,11 +737,8 @@ fn value(
     Ok((decoded, bytes.to_vec()))
 }
 
-/// Decode Windows-1252 plugin text while preserving already valid UTF-8.
+/// Ordinary Skyrim plugin text uses Windows-1252; VMAD owns its separate UTF-8 decoder.
 pub(crate) fn decode_string(bytes: &[u8]) -> String {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        return text.to_owned();
-    }
     const HIGH: [char; 32] = [
         '€', '\u{0081}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{008d}', 'Ž',
         '\u{008f}', '\u{0090}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ',

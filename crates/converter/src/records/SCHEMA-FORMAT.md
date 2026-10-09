@@ -132,6 +132,38 @@ FormIDs remain file-relative. Malformed fields are omitted from canonical
 consumer bytes while their source payload remains available as provenance.
 These omissions do not invent a value or damage valid neighbors.
 
+Localized field occurrences are retained even when their key is zero or absent
+from the selected plugin's string bank. Canonical bytes contain an empty
+NUL-terminated text value in those cases. `inhouse_localized_fields` records the
+canonical field index, signature, field name, bank, original string ID, winning
+load order, nullable resolved text and status (`resolved`, `null_id`, `missing`).
+An explicitly resolved empty string remains distinct from a null or missing ID.
+Runtime nullable text projections omit only unresolved occurrences during
+extraction, so a missing NPC name remains NULL. Original ID bytes remain in the
+source payload; no decimal ID or raw four-byte key is presented as text.
+Ordinary inline strings and English localization banks decode as Windows-1252;
+valid UTF-8 byte sequences do not override that native encoding. VMAD names and
+values retain their separately specified UTF-8 decoder. Canonical runtime text
+is UTF-8, with original encoded bytes preserved in the source payload or bank.
+
+Multiple live LAND identities can share one parent cell. Both the database's
+cell-keyed terrain projection and cache select the record with the highest
+winning load order, then the latest physical source-record offset. FormID is
+only a deterministic final tie-breaker for callers without physical order.
+`inhouse_terrain_source_order` retains accepted LAND offsets for the full
+pipeline and diagnostic exporter. All winning LAND identities and their native
+fields remain in the records/source tables, including unselected alternatives.
+
+`inhouse_terrain_layers` retains normalized, globally remapped original texture
+assignments for accepted LAND records, with their cell, load order and unresolved
+texture IDs. Source duplicate slots and authored NULL assignments are resolved
+before optional target clearing. `cell_cache_preserved.rkyv` uses these original
+assignments. The runtime cache replaces unusable texture keys with zero while
+retaining each selected assignment's quadrant, slot and blend weights; these
+placeholders must not be normalized again as native NULL assignments. Both
+caches select the same complete LAND record. Original VTXT padding and authored
+NULL weights remain in the independent native source payload.
+
 Decoded records report `payload_complete` and deduplicated `rejected_fields`.
 An incomplete subrecord boundary preserves the safely framed prefix and marks
 the payload incomplete; it cannot establish whether a required field was absent

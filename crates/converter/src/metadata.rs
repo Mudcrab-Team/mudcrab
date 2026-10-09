@@ -390,13 +390,20 @@ async fn rebuild_into(
     let merged =
         EsmParser::convert_plugins_with_reader(plugins, &database, config.record_reader, &vfs)?;
     validate_database(&Connection::open(&database)?)?;
-    write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+    if config.record_reader == crate::config::RecordReader::Inhouse {
+        crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
+    } else {
+        write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+    }
     crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
     report.artifacts.push(PathBuf::from("record-reader.json"));
     if config.record_reader == crate::config::RecordReader::Inhouse {
         report
             .artifacts
             .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+        report
+            .artifacts
+            .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
     drop(merged);
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;

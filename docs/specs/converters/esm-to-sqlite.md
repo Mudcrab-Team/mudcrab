@@ -13,6 +13,14 @@ opaque source records, not a claim of typed schema coverage. See
 [the pipeline specification](pipeline.md) for producer identity, diagnostics and
 English localized-name resolution.
 
+In-house output also retains localized occurrence IDs and lookup status in
+`inhouse_localized_fields`, winning LAND physical order in
+`inhouse_terrain_source_order`, and normalized source texture assignments in
+`inhouse_terrain_layers`. `cell_cache_preserved.rkyv` keeps original texture
+identities; the runtime cache uses explicit placeholders for unusable targets
+without dropping their blend weights. These auxiliary contracts preserve source
+information beyond the nullable runtime projections.
+
 ---
 
 ## 1. Overview & Objectives

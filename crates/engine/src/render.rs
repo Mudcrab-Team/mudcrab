@@ -430,6 +430,8 @@ pub struct TerrainImages {
 }
 
 impl TerrainExtension {
+    /// Builds the material without looking up zero texture IDs, retaining those layers' slots
+    /// and weights. Nonzero texture IDs still require a converted diffuse image.
     pub fn from_quadrant(
         terrain: &TerrainSnapshot,
         quadrant: u8,
@@ -442,7 +444,8 @@ impl TerrainExtension {
         let mut handles = Vec::with_capacity(layers.len());
         let mut normal_handles = Vec::new();
         for ((target, normal), layer) in textures.iter_mut().zip(normals.iter_mut()).zip(&layers) {
-            if layer.is_base && layer.texture_form_id == 0 {
+            if layer.texture_form_id == 0 {
+                // A preserved unresolved layer keeps its slot and weights with no image bound.
                 continue;
             }
             if let Some(path) = catalog.landscape_normal(layer.texture_form_id) {
@@ -1697,6 +1700,74 @@ mod tests {
                 > 1.0,
             "layers only need a repeating sampler because the shader tiles them"
         );
+    }
+
+    /// Zero overlays keep material slots and weights without image requests; a nonzero LTEX
+    /// with no diffuse image still fails without preventing a subsequent placeholder build.
+    #[test]
+    fn terrain_zero_texture_overlay_material_preserves_slots_without_image_requests() {
+        let directory = tempfile::tempdir().unwrap().keep();
+        let path = directory.join("placeholder-catalogue.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 INSERT INTO texture_sets VALUES(1,'textures/zero-must-not-load.dds');
+                 INSERT INTO landscape_textures VALUES(0,1),(2116,NULL);",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        assert!(
+            catalog.landscape_diffuse(0).is_some(),
+            "poison null lookup is observable"
+        );
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        let asset_server = app.world().resource::<AssetServer>();
+        let mut terrain =
+            terrain_fixture_with_overlays(91, &[vec![(0, 0.25), (18, 0.75)], vec![(3, 0.625)]]);
+        for layer in &mut terrain.layers {
+            layer.texture_form_id = 0;
+            if !layer.is_base && layer.layer == 2 {
+                layer.layer = 4;
+            }
+        }
+        let (extension, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+                .expect("zero overlays keep material slots and do not request a texture");
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(
+            extension.layer_0.is_none()
+                && extension.layer_1.is_none()
+                && extension.layer_2.is_none()
+        );
+        assert!(
+            extension.layer_3.is_none()
+                && extension.layer_4.is_none()
+                && extension.layer_5.is_none()
+        );
+        assert_eq!(extension.settings.tiling_and_layer_count.z, 3.0);
+        assert_eq!(extension.settings.normal_layers_0, Vec4::ZERO);
+        assert_eq!(extension.settings.normal_layers_1, Vec4::ZERO);
+        let sample = |overlay: usize, vertex: usize| {
+            extension.settings.weights[overlay * OVERLAY_WEIGHT_WORDS + vertex / 4][vertex % 4]
+        };
+        assert_eq!(sample(0, 0).to_bits(), 0.25f32.to_bits());
+        assert_eq!(sample(0, 18).to_bits(), 0.75f32.to_bits());
+        assert_eq!(sample(1, 3).to_bits(), 0.625f32.to_bits());
+        assert_eq!(sample(1, 0), 0.0);
+
+        terrain.layers[2].texture_form_id = 0x844;
+        let error = TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+            .err()
+            .expect("a nonzero LTEX without a diffuse image still fails");
+        assert!(error.contains("00000844") && error.contains("no diffuse image"));
+        terrain.layers[2].texture_form_id = 0;
+        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).is_ok());
     }
 
     /// The weight field is the quadrant's own `17x17` grids, one per overlay, in the order

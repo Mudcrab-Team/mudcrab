@@ -145,7 +145,7 @@ fn schema() -> &'static Schema {
     SCHEMA.get_or_init(|| Schema::parse(SCHEMA_BYTES).expect("build-validated record schema"))
 }
 
-/// Decode plugin text using the same policy as authored string fields.
+/// Decode English string-bank text with the ordinary plugin Windows-1252 encoding.
 pub(crate) fn decode_text(bytes: &[u8]) -> String {
     decoder::decode_string(bytes)
 }
@@ -165,7 +165,18 @@ pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadR
 pub(crate) fn read_plugins_with_validation(
     plugin_paths: &[PathBuf],
     order: &LoadOrder,
+    validate: impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
+) -> Result<ReadResult> {
+    read_plugins_with_validation_and_observer(plugin_paths, order, validate, |_| {})
+}
+
+/// Observe accepted, globally remapped winners before optional target links are cleared.
+/// Preservation consumers may retain explicitly unresolved keys without changing runtime links.
+pub(crate) fn read_plugins_with_validation_and_observer(
+    plugin_paths: &[PathBuf],
+    order: &LoadOrder,
     mut validate: impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
+    mut observe: impl FnMut(&ReadResult),
 ) -> Result<ReadResult> {
     color_eyre::eyre::ensure!(
         plugin_paths.len() == order.names.len(),
@@ -298,6 +309,7 @@ pub(crate) fn read_plugins_with_validation(
         result.diagnostics.insert(name.clone(), diagnostics);
     }
     decoder::resolve_deferred(&mut result, schema, order);
+    observe(&result);
     decoder::validate_targets(&mut result, schema, order);
     for (name, diagnostics) in &result.diagnostics {
         if let Some(example) = ["record", "field", "link", "unexpected"]
