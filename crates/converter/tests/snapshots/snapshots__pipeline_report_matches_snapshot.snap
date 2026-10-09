@@ -61,7 +61,9 @@ expression: report
   "lod_chunks": 6,
   "lod_elapsed_ms": "[lod_elapsed_ms]",
   "lod_warnings": [],
-  "notices": [],
+  "notices": [
+    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+  ],
   "pruned_texture_references": 0,
   "publication_elapsed_ms": "[publication_elapsed_ms]",
   "skipped": 0,
