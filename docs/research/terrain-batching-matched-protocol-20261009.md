@@ -11,7 +11,7 @@ corrected #205 sampler, #201 generation retry and #191 early config-root branche
 as the common base. Those corrections are owned separately. Until their actual
 merge commits are available, source equivalents are provisional and must be named
 by exact commit/tree in each receipt. Do not close #197 or retarget #200 before
-#205 actually merges.
+PR #205 actually merges.
 
 The baseline contains diagnostics and those prerequisites, with batching disabled
 by source selection. The candidate adds only batching, change-driven LOD/visibility
@@ -120,10 +120,12 @@ holes, preserve their limitation, and exclude this image run from timing compari
 Settled checkpoints must wait for ten consecutive quiet frames with zero ordinary
 queues, pending LOD queries/chunks, CPU batch work, initial replacement transfers,
 subsequent immutable selection uploads and specialization retries. Enforce the
-existing 30-second settle timeout; a timeout is failed/incomplete coverage. In #200,
-both batch `pending_count()` implementations count retained source hierarchies only,
-so zero initial queue gauges do not certify later selection uploads. Expose those
-states before accepting a movement or repeated-return result.
+existing 30-second settle timeout; a timeout is failed/incomplete coverage. Require
+`lod/pending_terrain_selection_uploads` to be zero alongside both initial CPU/GPU
+queue gauges. It counts pending immutable batch meshes after the initial source
+hierarchy transfer; initial uploads are counted separately. Zero queue gauges still
+do not establish exact image-frame matching, complete terrain coverage or drained
+specialization retries.
 
 Sample RSS externally at one-second intervals from the confirmed engine PID with
 monotonic and UTC timestamps. Compare full-run peak, post-settle growth and repeated
