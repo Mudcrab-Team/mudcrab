@@ -85,8 +85,8 @@ impl LodReuse {
         job: &TerrainChunkInput<'_>,
         origin: LodOrigin,
         input_hash: &str,
-    ) -> Option<TerrainChunk> {
-        self.checked_chunk(job, origin, input_hash).ok()
+    ) -> Result<TerrainChunk> {
+        self.checked_chunk(job, origin, input_hash)
     }
 
     fn checked_chunk(

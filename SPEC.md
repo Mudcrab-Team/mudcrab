@@ -217,16 +217,16 @@ V112: Combined converter 24/world 7 ! native-BC, lighting, grass & LOD contracts
 V113: Launcher Play readiness & runtime startup share read-only world DB/LOD validation; actual schema ! report schema. Empty/corrupt/unsupported DB ⊥ ready; grass-only schema 5 requires no LOD tables. Advertised current LOD ! exact producer/world/build identity & chunk count; stale/missing/mismatched identity ⊥ ready.
 
 V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publication timings → zero/empty defaults; explicit values retained. Timings measured by monotonic clock; absent historical values ≠ measured zero.
-V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed world/index/build metadata rebuilt; chunk reuse only with V120 proof; source package unchanged.
+V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed world/index/build metadata rebuilt; chunk reuse only with V171 proof; source package unchanged.
 V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
 
 V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
 V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
-V119: LOD atlas mip chain ! each supplied mip encoded once; container assembly reuses encoded base metadata; authored mip/color/gutter/runtime contracts retained; changed assembler/compiler identity invalidates LOD reuse without relabeling ordinary assets.
-V120: LOD chunk reuse ! current explicit compiler/producer identity, exact consumed cell/grid/height/VCLR/layer/opacity/material-byte/origin/tier/tiling proof & verified payload hash/structure. Changed/removed/corrupt/unproven inputs or output → rebuild affected chunk; fresh world/index/build metadata includes only accepted current chunks; no-lod publishes none.
-V121: LOD pipeline retains ≤ CPU worker count completed chunk payloads per batch; invalid content rolls back entire world & removes partial payloads; cancellation/input mutation/publication/DB errors remain fatal.
-V122: LOD cell-cache snapshot read/validated once per stage; each winning diffuse source read once & each selected authored DDS mip decoded once per stage; tier images shared across worlds/FormIDs; source bytes reverified before publication.
-V123: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; bytes 5–7 unused, excluded from typed/exported flags. Raw flags/unused bytes retained; normal load-order path remaps parent only & drops non-eight-byte XESP. Missing/truncated XESP → absent parent/flags.
+V170: LOD atlas mip chain ! each supplied mip encoded once; container assembly reuses encoded base metadata; authored mip/color/gutter/runtime contracts retained; changed assembler/compiler identity invalidates LOD reuse without relabeling ordinary assets.
+V171: LOD chunk reuse ! current explicit compiler/producer identity, exact consumed cell/grid/height/VCLR/layer/opacity/material-byte/origin/tier/tiling proof & verified payload hash/structure. Changed/removed/corrupt/unproven inputs or output → rebuild affected chunk; hash-consistent malformed node/mesh links rebuild rather than panic; refused package/chunk reasons and committed per-world reused/rebuilt totals retained in notices; fresh world/index/build metadata includes only accepted current chunks; no-lod publishes none.
+V172: LOD pipeline retains ≤ CPU worker count completed chunk payloads per batch; invalid content rolls back entire world & removes partial payloads; cancellation/input mutation/publication/DB errors remain fatal.
+V173: Winning LAND selected by highest plugin priority; distinct LAND records tied at the winning priority abort before publishing, including user mod lists. LOD cell-cache snapshot read/validated once per stage; each winning diffuse source read once & each selected authored DDS mip decoded once per stage; tier images shared across worlds/FormIDs; source bytes reverified before publication.
+V174: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; bytes 5–7 unused, excluded from typed/exported flags. Raw flags/unused bytes retained; normal load-order path remaps parent only & drops non-eight-byte XESP. Missing/truncated XESP → absent parent/flags.
 
 ## §T TASKS
 
@@ -274,7 +274,7 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
-T43|x|Remove redundant atlas compression; fuse diffuse decode/tier resizing; share stage inputs; bounded transactional chunk batches; verified prior-package chunk reuse; correctness regressions & cold/warm Fiji measurements|V29,V72,V92,V93,V100,V103,V105,V114,V115,V119,V120,V121,V122
+T70|x|Remove redundant atlas compression; fuse diffuse decode/tier resizing; share stage inputs; bounded transactional chunk batches; verified prior-package chunk reuse; correctness regressions & cold/warm Fiji measurements|V29,V72,V92,V93,V100,V103,V105,V114,V115,V170,V171,V172,V173
 
 ## §B BUGS
 
@@ -361,5 +361,6 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
 B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
 B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets
-B82|2026-10-04|Fiji terrain LOD took 3302.352s for 4673 chunks; every enabled run rebuilt all chunks; atlas independently encoded supplied mips then discarded extra generated pyramid; per-world cache reads & per-tier DDS decodes repeated; world retained all GLBs|V119,V120,V121,V122; measured contributions pending
-B83|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused bytes as u32, persisting non-zero retail padding as flags|V123; shared one-byte decoder; padded/missing/truncated regressions
+B170|2026-10-04|Fiji terrain LOD took 3302.352s for 4673 chunks; every enabled run rebuilt all chunks; atlas independently encoded supplied mips then discarded extra generated pyramid; per-world cache reads & per-tier DDS decodes repeated; world retained all GLBs|V170,V171,V172,V173; measured contributions pending
+B171|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused bytes as u32, persisting non-zero retail padding as flags|V174; shared one-byte decoder; padded/missing/truncated regressions
+B172|2026-10-09|Cached GLB forward node/mesh links used unchecked indexing, and reuse refusal reasons were discarded|V171; checked links, matching-hash malformed-cache regression, refusal notices and per-world totals; V116 overall weights unchanged

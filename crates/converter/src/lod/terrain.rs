@@ -926,7 +926,11 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
                 "source cell node must have exactly one terrain group"
             );
             let group_index = json_usize(&children[0], "terrain group node")?;
-            let group = &nodes[group_index];
+            let group = nodes.get(group_index).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "source cell references missing terrain group {group_index}"
+                )
+            })?;
             color_eyre::eyre::ensure!(
                 group["name"].as_str() == Some(nodes::terrain_group()),
                 "source cell node does not contain a terrain group"
@@ -942,35 +946,54 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
             );
             for (quadrant, child) in quadrants.iter().enumerate() {
                 let child_index = json_usize(child, "terrain quadrant node")?;
+                let child = nodes.get(child_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "terrain quadrant {quadrant} references missing node {child_index}"
+                    )
+                })?;
                 let (short_name, full_name, _, _) = QUADRANTS[quadrant];
                 color_eyre::eyre::ensure!(
-                    nodes[child_index]["name"].as_str()
+                    child["name"].as_str()
                         == Some(format!("terrain_quadrant_{short_name}").as_str())
-                        && nodes[child_index]["extras"]["quadrant"].as_str() == Some(full_name),
+                        && child["extras"]["quadrant"].as_str() == Some(full_name),
                     "terrain quadrant {quadrant} has an invalid name"
                 );
                 color_eyre::eyre::ensure!(
-                    nodes[child_index].get("mesh").is_some(),
+                    child.get("mesh").is_some(),
                     "terrain quadrant {quadrant} has no mesh"
                 );
-                let mesh_index = json_usize(&nodes[child_index]["mesh"], "quadrant mesh")?;
+                let mesh_index = json_usize(&child["mesh"], "quadrant mesh")?;
+                let mesh = meshes.get(mesh_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "terrain quadrant {quadrant} references missing mesh {mesh_index}"
+                    )
+                })?;
                 color_eyre::eyre::ensure!(
-                    meshes[mesh_index]["name"].as_str()
+                    mesh["name"].as_str()
                         == Some(
                             format!("terrain_{grid_x}_{grid_y}_quadrant_{short_name}").as_str()
                         ),
                     "source cell ({grid_x}, {grid_y}) quadrant {quadrant} maps to the wrong mesh"
                 );
-                let primitive = &meshes[mesh_index]["primitives"][0];
+                let primitive = mesh["primitives"]
+                    .as_array()
+                    .and_then(|primitives| primitives.first())
+                    .ok_or_else(|| color_eyre::eyre::eyre!("terrain quadrant has no primitive"))?;
                 let position_index = json_usize(
                     &primitive["attributes"]["POSITION"],
                     "quadrant POSITION accessor",
                 )?;
                 let index_index = json_usize(&primitive["indices"], "quadrant index accessor")?;
+                let position = accessors.get(position_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("terrain quadrant POSITION accessor is missing")
+                })?;
+                let indices = accessors.get(index_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("terrain quadrant index accessor is missing")
+                })?;
                 color_eyre::eyre::ensure!(
-                    json_usize(&accessors[position_index]["count"], "quadrant vertex count")?
+                    json_usize(&position["count"], "quadrant vertex count")?
                         == TERRAIN_QUADRANT_VERTEX_COUNT
-                        && json_usize(&accessors[index_index]["count"], "quadrant index count")?
+                        && json_usize(&indices["count"], "quadrant index count")?
                             == TERRAIN_QUADRANT_INDEX_COUNT,
                     "terrain quadrant {quadrant} has an invalid boundary-preserving shape"
                 );
@@ -1247,7 +1270,7 @@ mod tests {
     }
 
     #[test]
-    fn v120_cell_fingerprint_covers_consumed_fields() {
+    fn v171_cell_fingerprint_covers_consumed_fields() {
         let mut cell = flat_cell(0, 0, 1.0);
         let original = cell.fingerprint();
         cell.heights[500] += 1.0;
@@ -1283,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn v120_reuse_bounds_match_compiled_samples_in_all_tiers() {
+    fn v171_reuse_bounds_match_compiled_samples_in_all_tiers() {
         let mut cells = vec![flat_cell(-5, 11, 1.0), flat_cell(-4, 11, 2.0)];
         cells[0].heights[0] = -19.0;
         cells[1].heights[16 * 33 + 32] = 99.0;
@@ -1298,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn v122_cell_cache_snapshot_serves_worlds_without_rereading() {
+    fn v173_cell_cache_snapshot_serves_worlds_without_rereading() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cells.rkyv");
         let cache = shared::CellCache {
