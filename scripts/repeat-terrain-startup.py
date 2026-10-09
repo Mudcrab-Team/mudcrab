@@ -558,6 +558,7 @@ def main(argv=None):
         for budget in args.budgets:
             for repeat in range(1, args.repeats + 1):
                 run_id = f"{budget}mib-{repeat:02d}"
+                current_result = None
                 current_directory = args.output / run_id
                 result, interrupted = run_one(args, current_directory, budget, run_id, environment)
                 current_result = result

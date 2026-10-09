@@ -305,6 +305,34 @@ class ProcessTests(unittest.TestCase):
             untouched.terminate()
             untouched.wait(timeout=5)
 
+    def test_interrupt_before_second_launch_does_not_modify_completed_evidence(self):
+        output = self.root / "second-launch-interrupt"
+        completed = {
+            "run_id": "16mib-01", "upload_budget_mib": 16,
+            "functional_checks_passed": True, "visual_inspection": "pending",
+            "failures": [], "notes": [], "retry_accounting": {"status": "not_observed"},
+        }
+        validation = {key: value for key, value in completed.items()
+                      if key not in ("run_id", "upload_budget_mib")}
+
+        def launch(args, directory, budget, run_id, environment):
+            directory.mkdir()
+            if run_id == "16mib-02":
+                raise KeyboardInterrupt
+            json_file(directory / "validation.json", validation)
+            return copy.deepcopy(completed), False
+
+        with mock.patch.object(RUNNER, "run_one", side_effect=launch):
+            status = RUNNER.main(self.command(output, "--repeats", "2")[2:])
+        self.assertEqual(status, 130)
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertTrue(summary["interrupted"])
+        self.assertFalse(summary["functional_checks_passed"])
+        self.assertIsNotNone(summary["ended_utc"])
+        self.assertEqual(summary["runs"], [completed])
+        self.assertEqual(json.loads((output / "16mib-01/validation.json").read_text()), validation)
+        self.assertFalse((output / "16mib-02/validation.json").exists())
+
     def test_output_collision_preserves_existing_results_and_does_not_launch(self):
         output = self.root / "existing"
         output.mkdir()
