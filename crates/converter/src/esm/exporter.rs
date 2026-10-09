@@ -1,7 +1,7 @@
 use crate::esm::{
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
     load_order::LoadOrder,
-    records::RawRecord,
+    records::{RawRecord, achr::SubrecordXESP},
 };
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
@@ -254,6 +254,12 @@ fn export_records(
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
 ) -> Result<()> {
+    let land_winners = super::records::land_by_cell(master).map_err(|error| {
+        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        )))
+    })?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
     tx.execute("DELETE FROM movement_game_settings", [])?;
@@ -356,8 +362,11 @@ fn export_records(
                 )?;
             }
             "LAND" => {
-                let (heightmap, vtex, vclr, normals) = extract_land_data(&record.subrecords);
                 let cell_id = record.cell_form_id.unwrap_or(form_id);
+                if land_winners[&cell_id].form_id != form_id {
+                    continue;
+                }
+                let (heightmap, vtex, vclr, normals) = extract_land_data(&record.subrecords);
                 tx.execute("INSERT OR REPLACE INTO land(cell_id, heightmap, vtex, vclr, normals) VALUES (?1, ?2, ?3, ?4, ?5)", params![cell_id, heightmap, vtex, vclr, normals])?;
             }
             "LIGH" => {
@@ -697,13 +706,8 @@ pub fn insert_reference(
         .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte XRDS radius")));
     let (enable_parent_id, enable_parent_flags) = view
         .find(b"XESP")
-        .filter(|bytes| bytes.len() >= 8)
-        .map(|bytes| {
-            (
-                u32::from_le_bytes(bytes[..4].try_into().expect("four-byte XESP parent")),
-                u32::from_le_bytes(bytes[4..8].try_into().expect("four-byte XESP flags")),
-            )
-        })
+        .and_then(SubrecordXESP::parse)
+        .map(|parent| (parent.parent_ref, parent.flags))
         .unzip();
 
     tx.execute(
@@ -1401,6 +1405,72 @@ mod tests {
             })
             .unwrap();
         assert_eq!(statics, 1);
+    }
+
+    #[test]
+    fn v123_exported_enable_parent_ignores_xesp_padding() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let mut master = HashMap::new();
+        let mut expected = Vec::new();
+        let parent = 0x1234_5678u32;
+        let mut id = 0x1000;
+        for record_type in [*b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS"] {
+            for flags in [0u8, 1, 2, 3, 0x80, 0xFF] {
+                for padding in [[0; 3], [0x0D, 0xBF, 0x38]] {
+                    let mut record = reference(id, 0x100, 0x900, [0.0; 3], [0.0; 3]);
+                    record.record_type = record_type;
+                    let mut xesp = parent.to_le_bytes().to_vec();
+                    xesp.push(flags);
+                    xesp.extend_from_slice(&padding);
+                    record.subrecords.push((b"XESP".to_vec(), xesp));
+                    master.insert(id, record);
+                    expected.push((id, Some(parent), Some(u32::from(flags))));
+                    id += 1;
+                }
+            }
+        }
+        // Missing and incomplete enable-parent subrecords have no projection.
+        master.insert(id, reference(id, 0x100, 0x900, [0.0; 3], [0.0; 3]));
+        expected.push((id, None, None));
+        id += 1;
+        for length in 0..8 {
+            let mut record = reference(id, 0x100, 0x900, [0.0; 3], [0.0; 3]);
+            record
+                .subrecords
+                .push((b"XESP".to_vec(), vec![0xFF; length]));
+            master.insert(id, record);
+            expected.push((id, None, None));
+            id += 1;
+        }
+
+        export_to_db(&conn, &master).unwrap();
+
+        for (id, parent, flags) in expected {
+            let actual: (Option<u32>, Option<u32>, Vec<u8>) = conn
+                .query_row(
+                    "SELECT enable_parent_id, enable_parent_flags, data FROM \"references\" WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!((actual.0, actual.1), (parent, flags), "reference {id:08X}");
+            let raw =
+                rkyv::from_bytes::<crate::esm::types::ArchivedRecordData, rkyv::rancor::Error>(
+                    &actual.2,
+                )
+                .unwrap();
+            let stored = raw.subrecords.iter().find(|sub| &sub.tag == b"XESP");
+            let original = master[&id]
+                .subrecords
+                .iter()
+                .find(|(tag, _)| tag == b"XESP");
+            assert_eq!(
+                stored.map(|sub| &sub.data),
+                original.map(|(_, data)| data),
+                "raw XESP for reference {id:08X}"
+            );
+        }
     }
 
     #[test]

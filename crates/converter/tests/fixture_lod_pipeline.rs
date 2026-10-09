@@ -415,3 +415,155 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     assert_eq!(manifest["world_database_schema"], 7);
     assert_eq!(manifest["chunks"], report.lod_chunks);
 }
+
+#[tokio::test]
+async fn v120_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads() {
+    use dummy_content::esm;
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("assets");
+    generate_data(&data);
+    let cells = [
+        esm::Cell {
+            grid_x: 0,
+            grid_y: 0,
+        },
+        esm::Cell {
+            grid_x: 64,
+            grid_y: 0,
+        },
+    ];
+    let plugin = esm::plugin(&esm::Plugin {
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        cells: &cells,
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    })
+    .unwrap();
+    fs::write(data.join("Skyrim.esm"), &plugin).unwrap();
+    let config = || {
+        let mut config = converter::PipelineConfig::new(&data, &output);
+        config.cpu_jobs = 2;
+        config
+    };
+    let cold = convert_config(config()).await;
+    assert!(cold.complete);
+    assert_eq!(cold.lod_chunks, 6);
+    assert_eq!(cold.lod_cache_hits, 0);
+    let manifest_path = output.join("lod-manifest.json");
+    let original_manifest = fs::read(&manifest_path).unwrap();
+    let original: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+    let paths: Vec<_> = original["chunk_inputs"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let payloads: Vec<_> = paths
+        .iter()
+        .map(|path| fs::read(output.join(path)).unwrap())
+        .collect();
+    let warm = convert_config(config()).await;
+    assert!(warm.complete);
+    assert_eq!(warm.converted, 0);
+    assert_eq!(warm.lod_cache_hits, cold.lod_chunks);
+    assert_eq!(fs::read(&manifest_path).unwrap(), original_manifest);
+    for (path, bytes) in paths.iter().zip(&payloads) {
+        assert_eq!(fs::read(output.join(path)).unwrap(), *bytes);
+    }
+
+    let derived = directory.path().join("derived");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let metadata = converter::AssetPipeline::rebuild_metadata_async(
+        converter::PipelineConfig::new(&data, &derived),
+        &output,
+        tx,
+    )
+    .await
+    .unwrap();
+    drain.await.unwrap();
+    assert_eq!(metadata.lod_cache_hits, cold.lod_chunks);
+    assert_eq!(fs::read(&manifest_path).unwrap(), original_manifest);
+
+    // Only the damaged payload rebuilds; input proof cannot hide corruption.
+    fs::write(output.join(&paths[0]), b"broken GLB").unwrap();
+    let repaired = convert_config(config()).await;
+    assert!(repaired.complete);
+    assert_eq!(repaired.lod_cache_hits, cold.lod_chunks - 1);
+    assert_eq!(fs::read(output.join(&paths[0])).unwrap(), payloads[0]);
+
+    // A same-numbered legacy manifest has no explicit current compiler proof.
+    let mut unproven = original.clone();
+    unproven.as_object_mut().unwrap().remove("compiler_version");
+    fs::write(&manifest_path, serde_json::to_vec(&unproven).unwrap()).unwrap();
+    let rebuilt = convert_config(config()).await;
+    assert_eq!(rebuilt.lod_cache_hits, 0);
+    assert_eq!(rebuilt.lod_chunks, cold.lod_chunks);
+
+    // Editing one LAND height affects its three tiers, leaving the other cell reusable.
+    let mut changed_plugin = plugin.clone();
+    let height = changed_plugin
+        .windows(4)
+        .position(|bytes| bytes == b"VHGT")
+        .unwrap()
+        + 6;
+    changed_plugin[height..height + 4].copy_from_slice(&16.0f32.to_le_bytes());
+    fs::write(data.join("Skyrim.esm"), changed_plugin).unwrap();
+    let changed = convert_config(config()).await;
+    assert!(changed.complete);
+    assert_eq!(changed.lod_chunks, cold.lod_chunks);
+    assert_eq!(changed.lod_cache_hits, 3);
+
+    // An origin change invalidates placement and layout even with identical source cells.
+    let mut moved_config = config();
+    moved_config
+        .lod_origins
+        .insert(layout::GENERATED_WORLDSPACE.to_owned(), [0, 0]);
+    let moved = convert_config(moved_config).await;
+    assert_eq!(moved.lod_cache_hits, 0);
+    assert_eq!(moved.lod_chunks, cold.lod_chunks);
+
+    let diffuse = data.join(layout::GENERATED_DIFFUSE_PATH);
+    let mut dds = ddsfile::Dds::read(std::io::Cursor::new(fs::read(&diffuse).unwrap())).unwrap();
+    dds.data[0] ^= 0xff;
+    let mut bytes = Vec::new();
+    dds.write(&mut bytes).unwrap();
+    fs::write(diffuse, bytes).unwrap();
+    let mut material_config = config();
+    material_config
+        .lod_origins
+        .insert(layout::GENERATED_WORLDSPACE.to_owned(), [0, 0]);
+    let material = convert_config(material_config).await;
+    assert!(material.complete);
+    assert_eq!(material.lod_chunks, cold.lod_chunks);
+    assert_eq!(material.lod_cache_hits, 0);
+
+    fs::write(
+        data.join("Skyrim.esm"),
+        esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &cells[1..],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let removed = convert_config(config()).await;
+    assert!(removed.complete);
+    assert_eq!(removed.lod_chunks, 3);
+    let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let source_cells: Vec<String> = database
+        .prepare("SELECT source_cells FROM lod_chunks")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(source_cells, ["64,0", "64,0", "64,0"]);
+}
