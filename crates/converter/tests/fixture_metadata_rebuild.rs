@@ -2,11 +2,47 @@ use converter::{
     AssetPipeline, PipelineConfig,
     cache::{ConversionManifest, hash_file},
 };
-use dummy_content::{Entry, bsa, esm, layout};
+use dummy_content::{Entry, bsa, esm, layout, nif};
 use rusqlite::Connection;
 use std::{fs, path::Path};
 
 const PACKED_SETTINGS: [u8; 16] = [0xfc, 0xff, 0xfc, 0xff, 32, 0, 0, 0, 4, 0, 0, 0, 32, 0, 0, 0];
+const VOLCANIC_MODEL: &str = "meshes/landscape/grass/dlc02volcanicashgrass01.nif";
+const VOLCANIC_GLB: &str = "meshes/landscape/grass/dlc02volcanicashgrass01.glb";
+const VOLCANIC_ORIGINAL: &str = "textures/landscape/grass/volcanicashgrass02_n.dds";
+const VOLCANIC_TARGET: &str = "textures/dlc02/landscape/grass/volcanicashgrass02_n.dds";
+
+/// Adds a scoped volcanic model whose authored normal is absent but DLC02 source exists.
+fn add_volcanic_source(data: &Path) {
+    let model = data.join(VOLCANIC_MODEL);
+    fs::create_dir_all(model.parent().unwrap()).unwrap();
+    fs::write(
+        model,
+        nif::static_shape(&nif::StaticShape {
+            name: "VolcanicReuseTriangle",
+            positions: &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            indices: &[[0, 1, 2]],
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: VOLCANIC_ORIGINAL,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let target = data.join(VOLCANIC_TARGET);
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::copy(data.join(layout::GENERATED_NORMAL_PATH), target).unwrap();
+}
+
+/// Reads the external normal URI without reproducing the repair's path mapping.
+fn volcanic_normal_uri(glb: &Path) -> Option<String> {
+    converter::mesh::MeshConverter::glb_texture_dependencies(glb)
+        .unwrap()
+        .into_iter()
+        .find(|dependency| dependency.uri.contains("volcanicashgrass02_n"))
+        .map(|dependency| dependency.uri)
+}
 
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
@@ -566,6 +602,201 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
         })
         .unwrap();
     assert_eq!(indexed, report.lod_chunks);
+}
+
+/// Verified reuse preserves the repaired URI and bytes despite changed current Data assets.
+#[tokio::test]
+async fn metadata_rebuild_preserves_repaired_volcanic_normal_uri() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    add_volcanic_source(&data);
+    convert(&data, &source).await;
+    let uri = volcanic_normal_uri(&source.join(VOLCANIC_GLB)).unwrap();
+    assert!(uri.contains("textures/dlc02/landscape/grass/volcanicashgrass02_n"));
+    let manifest = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    assert!(
+        manifest.entries[VOLCANIC_MODEL]
+            .source_hash
+            .ends_with(":volcanic-normal-repair:1:original=false:target=true")
+    );
+    let source_manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let retained_hash = hash_file(&source.join(VOLCANIC_GLB)).unwrap();
+    assert!(
+        !source.join("vfs").exists(),
+        "exercise normal runtime-package reuse"
+    );
+
+    // These changes would undo the repair during normal conversion. Reuse keeps SOURCE's bytes.
+    let original = data.join(VOLCANIC_ORIGINAL);
+    fs::create_dir_all(original.parent().unwrap()).unwrap();
+    fs::copy(data.join(layout::GENERATED_NORMAL_PATH), original).unwrap();
+    fs::remove_file(data.join(VOLCANIC_TARGET)).unwrap();
+    fs::write(data.join(VOLCANIC_MODEL), b"changed current NIF override").unwrap();
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete);
+    assert_eq!(report.converted, 0);
+    assert_eq!(volcanic_normal_uri(&output.join(VOLCANIC_GLB)), Some(uri));
+    assert_eq!(
+        hash_file(&output.join(VOLCANIC_GLB)).unwrap(),
+        retained_hash
+    );
+    for entry in manifest.entries.values() {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap();
+    assert_eq!(
+        provenance["replay_verified_pruned_assets"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        source_manifest_hash
+    );
+}
+
+/// Legacy replay accepts old and scoped hashes using SOURCE's context and never applies repair.
+#[tokio::test]
+async fn metadata_rebuild_replays_volcanic_prunes_with_legacy_and_scoped_source_hashes() {
+    for (scoped_hash, wrong_presence, corrupt_nif) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        let output = directory.path().join("derived");
+        let preprune = directory.path().join("preprune");
+        generate(&data);
+        add_volcanic_source(&data);
+        convert(&data, &source).await;
+
+        // Build the historical raw GLB and retain a pure prune with no DLC02 repair available.
+        let candidate = preprune.join(VOLCANIC_GLB);
+        converter::mesh::MeshConverter::convert_nif_to_glb(
+            data.join(VOLCANIC_MODEL),
+            candidate.clone(),
+        )
+        .unwrap();
+        let original_hash = hash_file(&candidate).unwrap();
+        let original_size = fs::metadata(&candidate).unwrap().len();
+        for dependency in converter::mesh::MeshConverter::glb_texture_dependencies(&candidate)
+            .unwrap()
+            .into_iter()
+            .filter(|dependency| !dependency.uri.contains("volcanicashgrass02_n"))
+        {
+            let published = converter::asset_path::resolve_asset_uri(
+                &source,
+                &source.join(VOLCANIC_GLB),
+                &dependency.uri,
+            )
+            .unwrap();
+            let retained =
+                converter::asset_path::resolve_asset_uri(&preprune, &candidate, &dependency.uri)
+                    .unwrap();
+            fs::create_dir_all(retained.parent().unwrap()).unwrap();
+            fs::copy(published, retained).unwrap();
+        }
+        let pruned =
+            converter::mesh::MeshConverter::prune_dangling_texture_uris(&preprune).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].removed_uris.len(), 1);
+        let missing = converter::asset_path::resolve_asset_uri(
+            &preprune,
+            &candidate,
+            &pruned[0].removed_uris[0],
+        )
+        .unwrap();
+        let missing = missing
+            .strip_prefix(&preprune)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert_eq!(
+            missing,
+            "textures/landscape/grass/volcanicashgrass02_n.opensky-wrap0.ktx2"
+        );
+        assert!(volcanic_normal_uri(&candidate).is_none());
+        fs::copy(&candidate, source.join(VOLCANIC_GLB)).unwrap();
+
+        let retained_nif = source.join("vfs").join(VOLCANIC_MODEL);
+        fs::create_dir_all(retained_nif.parent().unwrap()).unwrap();
+        fs::copy(data.join(VOLCANIC_MODEL), &retained_nif).unwrap();
+        let mut manifest =
+            ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+        let entry = manifest.entries.get_mut(VOLCANIC_MODEL).unwrap();
+        entry.output_hash = original_hash;
+        entry.output_size = original_size;
+        // No skeleton is present: the pre-repair contract is exactly the raw NIF checksum.
+        entry.source_hash = hash_file(&retained_nif).unwrap();
+        if scoped_hash {
+            entry.source_hash.push_str(if wrong_presence {
+                ":volcanic-normal-repair:1:original=true:target=true"
+            } else {
+                ":volcanic-normal-repair:1:original=false:target=true"
+            });
+        }
+        manifest
+            .pruned_texture_references
+            .insert(VOLCANIC_GLB.into(), [missing].into());
+        manifest
+            .save(&source.join("conversion-manifest.json"))
+            .unwrap();
+        let source_manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+        let retained_hash = hash_file(&source.join(VOLCANIC_GLB)).unwrap();
+        if corrupt_nif {
+            fs::write(&retained_nif, b"tampered retained source NIF").unwrap();
+        }
+
+        // Data's current presence bits differ; only the retained package can verify its hash.
+        let original = data.join(VOLCANIC_ORIGINAL);
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        fs::copy(data.join(layout::GENERATED_NORMAL_PATH), original).unwrap();
+        fs::remove_file(data.join(VOLCANIC_TARGET)).unwrap();
+        let result = rebuild(&data, &source, &output).await;
+        if wrong_presence || corrupt_nif {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("pruned GLB source checksum mismatch"),
+                "{error}"
+            );
+            assert!(!output.exists());
+        } else {
+            let report = result.unwrap();
+            assert!(report.complete);
+            assert_eq!(
+                hash_file(&output.join(VOLCANIC_GLB)).unwrap(),
+                retained_hash
+            );
+            assert!(volcanic_normal_uri(&output.join(VOLCANIC_GLB)).is_none());
+            let updated =
+                ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+            assert_eq!(updated.entries[VOLCANIC_MODEL].output_hash, retained_hash);
+            let provenance: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                provenance["replay_verified_pruned_assets"],
+                serde_json::json!([VOLCANIC_GLB])
+            );
+        }
+        assert_eq!(
+            hash_file(&source.join(VOLCANIC_GLB)).unwrap(),
+            retained_hash
+        );
+        assert_eq!(
+            hash_file(&source.join("conversion-manifest.json")).unwrap(),
+            source_manifest_hash
+        );
+    }
 }
 
 #[tokio::test]
