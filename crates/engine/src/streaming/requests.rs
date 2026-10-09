@@ -48,6 +48,7 @@ struct SceneRequestKey(SceneKey);
 #[derive(Resource)]
 pub(super) struct SceneSchedulingState {
     pack_identity: String,
+    reconciled_subscribers: std::collections::HashSet<Entity>,
     pub dispatch_choices: u64,
     pub activation_choices: u64,
 }
@@ -67,6 +68,7 @@ impl FromWorld for SceneSchedulingState {
             None
         };
         Self {
+            reconciled_subscribers: default(),
             pack_identity: format!(
                 "{}#{}",
                 root.display(),
@@ -159,8 +161,32 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
             )
         })
         .collect();
-    let mut live_requests = world.query_filtered::<Entity, With<SceneRequest>>();
-    let live: std::collections::HashSet<_> = live_requests.iter(world).collect();
+    let mut live_requests = world.query::<(Entity, &SceneRequest)>();
+    let mut all_assigned = true;
+    let live: std::collections::HashSet<_> = live_requests
+        .iter(world)
+        .map(|(entity, request)| {
+            all_assigned &= request.handle.is_some();
+            entity
+        })
+        .collect();
+    let admission = world.resource::<SceneAdmission>();
+    if keys.is_empty()
+        && all_assigned
+        && admission.active_jobs() == 0
+        && admission.queued_jobs() == 0
+        && live
+            == world
+                .resource::<SceneSchedulingState>()
+                .reconciled_subscribers
+    {
+        // Immutable-pack terminal records need no polling. Compare exact owners so an
+        // unload/replacement still reconciles; unassigned, orphan or retry work never skips.
+        world
+            .resource_mut::<ProfilingState>()
+            .record_elapsed("streaming/admit_scenes", started);
+        return;
+    }
     for (entity, allow_retry, key) in keys {
         if allow_retry {
             let previous = world.resource::<SceneAdmission>().handle(&key);
@@ -320,6 +346,9 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
             .record_completed_latency_elapsed("streaming/scene_admission_wait", queued_at);
     }
     let stats = world.resource::<SceneAdmission>().stats();
+    world
+        .resource_mut::<SceneSchedulingState>()
+        .reconciled_subscribers = live;
     let mut profiler = world.resource_mut::<ProfilingState>();
     for (name, count) in [
         ("active_jobs", stats.active_jobs),
@@ -585,6 +614,37 @@ mod tests {
                 .unwrap()
                 .handle
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn settled_admission_still_releases_removed_owners_and_serves_new_demand() {
+        let (mut app, _dir, _, _) = fixture(false, false);
+        let first = spawn_request(&mut app, "a.glb", 1);
+        pump_until(&mut app, |world| {
+            world.resource::<SceneAdmission>().stats().completed_total == 1
+        });
+        app.update(); // Same owners and terminal jobs use the settled path.
+        assert_eq!(app.world().resource::<SceneAdmission>().stats().records, 1);
+        app.world_mut().despawn(first);
+        app.update();
+        let stats = app.world().resource::<SceneAdmission>().stats();
+        assert_eq!(stats.records, 0);
+        assert_eq!(stats.subscribers, 0);
+        let replacement = spawn_request(&mut app, "b.glb", 2);
+        pump_until(&mut app, |world| {
+            world.resource::<SceneAdmission>().stats().completed_total == 2
+        });
+        assert!(
+            app.world()
+                .get::<SceneRequest>(replacement)
+                .unwrap()
+                .handle
+                .is_some()
+        );
+        assert_eq!(
+            app.world().resource::<SceneAdmission>().stats().subscribers,
+            1
         );
     }
 
