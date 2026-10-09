@@ -172,7 +172,73 @@ pub struct IngestedFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestionCacheEntry {
     pub source_hash: String,
+    /// Extraction selection and checkpoint contract. Empty entries are legacy,
+    /// fully extracted archives whose individual files were synced.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recipe: String,
     pub files: Vec<IngestedFile>,
+}
+
+const INGESTION_JOURNAL_FILE: &str = ".ingestion-archives.jsonl";
+
+#[derive(Serialize, Deserialize)]
+struct IngestionJournalLine {
+    archive: String,
+    entry: IngestionCacheEntry,
+}
+
+/// Completed archive inventories. Sealed batch packs carry the durable bytes;
+/// this journal avoids decoding completed archives when resuming a staging run.
+pub(crate) struct IngestionJournal(fs::File);
+
+impl IngestionJournal {
+    pub(crate) fn open(staging: &Path) -> Result<Self> {
+        let path = staging.join(INGESTION_JOURNAL_FILE);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+        let length = file.metadata()?.len();
+        if length > 0 {
+            let mut last = [0_u8];
+            file.seek(SeekFrom::Start(length - 1))?;
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                file.write_all(b"\n")?;
+            }
+        }
+        Ok(Self(file))
+    }
+
+    pub(crate) fn record(&mut self, archive: &str, entry: &IngestionCacheEntry) -> Result<()> {
+        let mut bytes = serde_json::to_vec(&IngestionJournalLine {
+            archive: archive.to_owned(),
+            entry: entry.clone(),
+        })?;
+        bytes.push(b'\n');
+        self.0.write_all(&bytes)?;
+        self.0.sync_all()?;
+        Ok(())
+    }
+
+    pub(crate) fn load(staging: &Path) -> Result<BTreeMap<String, IngestionCacheEntry>> {
+        let path = staging.join(INGESTION_JOURNAL_FILE);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut entries = BTreeMap::new();
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if let Ok(record) = serde_json::from_slice::<IngestionJournalLine>(line) {
+                entries.insert(record.archive, record.entry);
+            }
+        }
+        Ok(entries)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -370,17 +436,24 @@ fn link_or_copy_spilling_with(
         Err(error) if !is_too_many_links(&error) => return fs::copy(blob, to).map(|_| ()),
         Err(_) => {}
     }
+    let expected_hash = hash_file(blob).map_err(std::io::Error::other)?;
     for index in 1..=MAX_SPILLS {
         let mut name = blob.as_os_str().to_owned();
         name.push(format!(".{index}"));
         let spill = std::path::PathBuf::from(name);
-        if !spill.is_file() {
-            // Written under a temporary name and renamed, so a reader never sees half a spill.
-            let mut partial = spill.as_os_str().to_owned();
-            partial.push(format!(".partial-{}", std::process::id()));
-            let partial = std::path::PathBuf::from(partial);
-            fs::copy(blob, &partial)?;
-            fs::rename(&partial, &spill)?;
+        let valid = hash_file(&spill).is_ok_and(|hash| hash == expected_hash);
+        if !valid {
+            // Concurrent writers need distinct temporary names. A spill left
+            // after power loss is derived data and must pass the same hash proof.
+            let partial = tempfile::NamedTempFile::new_in(blob.parent().unwrap_or(Path::new(".")))?;
+            fs::copy(blob, partial.path())?;
+            if let Err(error) = partial.persist_noclobber(&spill)
+                && !hash_file(&spill).is_ok_and(|hash| hash == expected_hash)
+            {
+                // An existing damaged spill needs replacement; a concurrent
+                // writer's complete matching spill can be used as it stands.
+                error.file.persist(&spill).map_err(|error| error.error)?;
+            }
         }
         match link(&spill, to) {
             Ok(()) => return Ok(()),
@@ -458,6 +531,84 @@ pub fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_spill_creation_uses_unique_temporary_files() {
+        fn full_blob(from: &Path, to: &Path) -> std::io::Result<()> {
+            if from.file_name().is_some_and(|name| name == "parallel_blob") {
+                static BARRIER: std::sync::OnceLock<std::sync::Barrier> =
+                    std::sync::OnceLock::new();
+                BARRIER.get_or_init(|| std::sync::Barrier::new(4)).wait();
+                Err(std::io::ErrorKind::TooManyLinks.into())
+            } else {
+                fs::hard_link(from, to)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("parallel_blob");
+        fs::write(&blob, b"immutable bytes").unwrap();
+        std::thread::scope(|scope| {
+            for index in 0..4 {
+                let blob = &blob;
+                let destination = directory.path().join(format!("asset{index}"));
+                scope.spawn(move || {
+                    link_or_copy_spilling_with(blob, &destination, full_blob).unwrap();
+                    assert_eq!(fs::read(destination).unwrap(), b"immutable bytes");
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn corrupt_derived_spills_are_replaced_before_reuse() {
+        fn full_blob(from: &Path, to: &Path) -> std::io::Result<()> {
+            if from.file_name().is_some_and(|name| name == "blob") {
+                Err(std::io::ErrorKind::TooManyLinks.into())
+            } else {
+                fs::hard_link(from, to)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"valid bytes").unwrap();
+        fs::write(directory.path().join("blob.1"), b"wrong bytes").unwrap();
+        let destination = directory.path().join("asset");
+        link_or_copy_spilling_with(&blob, &destination, full_blob).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"valid bytes");
+    }
+
+    #[test]
+    fn ingestion_journal_resumes_completed_inventories_and_drops_partial_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let entry = IngestionCacheEntry {
+            source_hash: "ab".repeat(32),
+            recipe: "converter-inputs-v1".to_owned(),
+            files: vec![IngestedFile {
+                path: "lodsettings/tamriel.lod".to_owned(),
+                size: 4,
+                hash: "cd".repeat(32),
+            }],
+        };
+        let mut journal = IngestionJournal::open(directory.path()).unwrap();
+        journal.record("base.bsa", &entry).unwrap();
+        drop(journal);
+        let path = directory.path().join(INGESTION_JOURNAL_FILE);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"archive\":\"truncated")
+            .unwrap();
+        assert_eq!(
+            IngestionJournal::load(directory.path()).unwrap()["base.bsa"],
+            entry
+        );
+        let mut journal = IngestionJournal::open(directory.path()).unwrap();
+        journal.record("dlc.bsa", &entry).unwrap();
+        let loaded = IngestionJournal::load(directory.path()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded["dlc.bsa"], entry);
+    }
 
     #[test]
     fn ambiguous_legacy_producers_cannot_reuse_staged_meshes_or_textures() {

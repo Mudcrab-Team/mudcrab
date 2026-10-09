@@ -321,7 +321,9 @@ mod tests {
                 .starts_with(modded)
         );
 
-        if !cfg!(windows) {
+        // Case sensitivity is a filesystem property; default macOS volumes
+        // resolve this spelling to the existing file just as Windows does.
+        if !base.join("Landscape/ROCK.dds").exists() {
             fs::write(base.join("Landscape/ROCK.dds"), b"collision").unwrap();
             assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
         }

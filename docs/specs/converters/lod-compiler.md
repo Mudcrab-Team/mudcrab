@@ -19,6 +19,12 @@ or generated chunks. Default conversion builds LOD and reuses unchanged chunks o
 when current input fingerprints and prior payloads verify. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
 for same-output locking, read-only installations and unowned backups.
 
+New CLI runs and `PipelineConfig::new` use GPU encoding for generated terrain
+atlases. `--lod-encoder cpu` selects CPU encoding. Ordinary source textures use
+the independent `--texture-encoder` setting, which still defaults to CPU.
+Deserializing a legacy config without `lod_texture_encoder` preserves CPU LOD
+encoding rather than changing its output recipe.
+
 ## Inputs
 
 - `references` (placement, rotation, scale, `radius_override`), `statics`
@@ -135,11 +141,19 @@ plugin hashes and settings. `--invalidate-cache` also bypasses LOD reuse.
 
 Every stage reads and validates one aligned cell-cache snapshot. Diffuse images
 share decoded authored mips and prepared tier images across worlds and FormIDs;
-source bytes are rechecked before publication. Each chunk keeps atlas baking,
-linear-light mip generation and encoding together. Each supplied mip is encoded
+source bytes are rechecked before publication. Chunks prepare geometry and
+atlas pixels in parallel, then encode one bounded batch of atlases. Each supplied mip is encoded
 once; a bounded atlas-local cache encodes identical 4x4 RGBA blocks once using
 the same upstream UASTC level-2 routine and transcode hints. The KTX2 writer is
 shared with the GPU path, and the level table uses the encoded base metadata.
+The default GPU path submits those same authored RGBA mips to the GPU UASTC
+encoder. The explicit CPU recipe preserves the existing fingerprints; the GPU
+recipe adds its encoder version and quality. GPU fallback chunks remain valid
+published payloads but omit reusable input proof, so a later GPU run retries
+them. Explicit CPU selection produces the CPU recipe and its reuse proof
+instead. Changing the LOD encoder does not invalidate ordinary meshes or textures.
+GLB assembly runs in parallel after atlas encoding, followed by serialized
+database publication.
 The terrain compiler revision changes when this output recipe changes. Only one
 CPU-worker-sized batch of payloads is retained at a time. World indexing is
 transactional: a later content failure removes earlier batch payloads and rolls

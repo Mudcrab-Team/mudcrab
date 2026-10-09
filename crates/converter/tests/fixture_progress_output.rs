@@ -1,6 +1,8 @@
 //! What a conversion prints when progress does not go to a terminal: one plain line per stage and
 //! every few seconds, rather than one line per event.
 
+mod common;
+
 use converter::progress::ProgressRenderer;
 use std::{fs, process::Command, time::Instant};
 use tokio::sync::mpsc;
@@ -22,6 +24,7 @@ fn notices_are_printed_on_complete_and_incomplete_runs() {
         let run = Command::new(env!("CARGO_BIN_EXE_converter"))
             .arg(&data)
             .arg(&output)
+            .args(["--lod-encoder", "cpu"])
             .arg("--report-json")
             .arg(&report_path)
             .output()
@@ -90,10 +93,9 @@ async fn a_piped_run_prints_far_fewer_lines_than_events() {
         (events, printed)
     });
 
-    let report =
-        converter::AssetPipeline::run_async(converter::PipelineConfig::new(&data, &output), tx)
-            .await
-            .unwrap();
+    let report = converter::AssetPipeline::run_async(common::cpu_lod_config(&data, &output), tx)
+        .await
+        .unwrap();
     let (events, printed) = collector.await.unwrap();
     assert!(report.complete);
 
@@ -125,6 +127,7 @@ fn the_converter_binary_prints_a_few_status_lines_and_a_summary() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .args(["--lod-encoder", "cpu"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -169,6 +172,7 @@ fn a_failed_run_prints_what_went_wrong_and_the_command_that_resumes_it() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .args(["--lod-encoder", "cpu"])
         .arg("--fail-fast")
         .output()
         .unwrap();
@@ -213,6 +217,7 @@ fn an_incomplete_run_does_not_call_itself_complete() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .args(["--lod-encoder", "cpu"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
