@@ -205,8 +205,8 @@ pub struct Light<'a> {
     /// `0x800` marks it initially disabled, the state whose extraction the
     /// LOD eligibility fixtures cover.
     pub reference_flags: u32,
-    /// `XESP` enable parent: the parent reference's FormID plus the XESP flag
-    /// word (bit 0 inverts the parent's state). `None` writes no `XESP`, the
+    /// `XESP` enable parent: the parent reference's FormID plus the flags byte
+    /// (bit 0 inverts the parent's state) and three preserved unused bytes. `None` writes no `XESP`, the
     /// shape of an unconditionally enabled placement.
     pub enable_parent: Option<(u32, u32)>,
 }
@@ -235,6 +235,24 @@ pub struct Plugin<'a> {
 /// Generates a minimal Skyrim SE plugin.
 pub fn plugin(spec: &Plugin<'_>) -> Result<Vec<u8>> {
     write_plugin(spec, None, None)
+}
+
+/// Generates one standalone `TXST` record with caller-selected physical slots.
+///
+/// Array indices name the `TX00` through `TX07` subrecords, independently of
+/// the converter's database column order. `None` omits that subrecord. The
+/// record can be appended to a generated plugin with an unused `form_id`.
+pub fn texture_set(form_id: u32, slots: [Option<&str>; 8]) -> Result<Vec<u8>> {
+    let mut subrecords = vec![(*b"EDID", cstring("GeneratedSlotTextures"))];
+    for (index, path) in slots.into_iter().enumerate() {
+        if let Some(path) = path {
+            split_asset_name(path, "ESM texture-set slot")?;
+            let mut signature = *b"TX00";
+            signature[3] += index as u8;
+            subrecords.push((signature, cstring(path)));
+        }
+    }
+    record(*b"TXST", form_id, &subrecords)
 }
 
 /// Generates the same plugin as [`plugin`], with `interior` and its two load
@@ -679,7 +697,7 @@ fn light_reference_record(form_id: u32, light: &Light<'_>) -> Result<Vec<u8>> {
         (*b"DATA", data),
         (*b"XRDS", light.radius_override.to_le_bytes().to_vec()),
     ];
-    // `XESP`: parent FormID then the flag word (bit 0 inverts). Written only
+    // `XESP`: parent FormID, flags byte (bit 0 inverts), then unused bytes. Written only
     // when the spec names a parent, so the default reference stays an
     // unconditionally enabled placement.
     if let Some((parent, flags)) = light.enable_parent {

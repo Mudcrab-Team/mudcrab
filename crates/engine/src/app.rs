@@ -130,16 +130,16 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let benchmark_active =
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
     configure_benchmark_priority(benchmark_active)?;
-    let window = (!config.headless || shots_active).then(|| Window {
+    let window = (!config.headless || shots_active || config.hidden_window).then(|| Window {
         title: config.window_title(),
+        visible: !config.hidden_window,
         // A shots file's frame is the size its reference screenshots were taken at, so the window,
         // and every PNG taken of it, is exactly that many pixels.
         resolution: match &shots {
             Some(run) => run.file.window_resolution(),
             None => (1600, 900).into(),
         },
-        // A timing or shots run opens on screen, in the middle, so whoever is at the machine can
-        // see what is running and not disturb it.
+        // Visible timing and shots runs open in the middle of the primary screen.
         position: if benchmark_active || shots_active {
             WindowPosition::Centered(MonitorSelection::Primary)
         } else {
@@ -160,7 +160,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some(asset_lock) = asset_lock {
         app.insert_resource(AssetDirectoryReadLock { _guard: asset_lock });
     }
-    if benchmark_active || shots_active {
+    if benchmark_active || shots_active || config.hidden_window {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
         // unfocused window to 60 Hz, which makes a 16.67 ms P95 gate measure the
@@ -210,7 +210,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
-        .add_systems(Update, (fly_camera, capture_acceptance_screenshot));
+        .add_systems(Update, (fly_camera, capture_acceptance_screenshot))
+        .add_systems(PostUpdate, keep_windows_hidden);
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
             .insert_resource(catalog)
@@ -278,6 +279,18 @@ fn finished(exit: &AppExit) -> Result<()> {
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
+    }
+}
+
+/// Reset accidental visibility changes before Bevy applies Window changes in Last.
+/// The primary window starts hidden, so screenshot rendering needs no visible flash.
+fn keep_windows_hidden(config: Res<EngineConfig>, mut windows: Query<&mut Window>) {
+    if config.hidden_window {
+        for mut window in &mut windows {
+            if window.visible {
+                window.visible = false;
+            }
+        }
     }
 }
 
@@ -2205,6 +2218,30 @@ mod tests {
     use super::*;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
+
+    /// A capture window remains hidden if an update system tries to show it.
+    #[test]
+    fn hidden_capture_suppresses_visibility_changes_before_window_sync() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig {
+            hidden_window: true,
+            ..default()
+        })
+        .add_systems(PostUpdate, keep_windows_hidden);
+        let entity = app
+            .world_mut()
+            .spawn(Window {
+                visible: true,
+                ..default()
+            })
+            .id();
+        app.update();
+        assert!(!app.world().get::<Window>(entity).unwrap().visible);
+        app.world_mut().resource_mut::<EngineConfig>().hidden_window = false;
+        app.world_mut().get_mut::<Window>(entity).unwrap().visible = true;
+        app.update();
+        assert!(app.world().get::<Window>(entity).unwrap().visible);
+    }
 
     #[test]
     fn an_existing_io_pool_of_another_size_is_an_error_only_for_an_explicit_request() {

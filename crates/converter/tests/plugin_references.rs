@@ -1033,7 +1033,9 @@ fn database_field(conn: &rusqlite::Connection, table: &str, id: u32, tag: &[u8; 
 /// The real pipeline publishes resolved IDs in every blob projection, including
 /// non-identity master lists, light masters, overrides and repeated subrecords.
 /// Malformed fields are absent from both record and reference blobs; valid neighbors survive.
-/// Rerunning it replaces stale database blobs without invalidating asset caches.
+/// Enable-parent flags use one byte even when all three unused bytes are nonzero;
+/// zero flags and the combined inversion/pop-in bits preserve their raw payloads.
+/// Rerunning replaces stale database blobs and old textures, retaining proven meshes/scripts.
 #[tokio::test]
 async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     use converter::{AssetPipeline, PipelineConfig};
@@ -1052,7 +1054,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     plugin(&data, "Light.esl", &["Skyrim.esm"], 0x201, Vec::new());
     let mut xtel = 0x0200_0801u32.to_le_bytes().to_vec();
     xtel.extend([0xAB; 28]);
-    let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat();
+    let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0x94, 0x27, 0xE1]].concat();
     let xapr = [0x0200_0803u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat();
     let cell = 0x0200_0900;
     // Light.esl is local master 0, Skyrim.esm is 1; the plugin itself is 2.
@@ -1099,7 +1101,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             [
                                 sub(
                                     b"XESP",
-                                    &[0x0300_0802u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+                                    &[0x0300_0802u32.to_le_bytes(), [2, 0x35, 0x6B, 0xC4]].concat(),
                                 ),
                                 sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                             ]
@@ -1111,6 +1113,19 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             0,
                             [
                                 sub(b"XESP", &[0xAB; 4]),
+                                sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0808,
+                            0,
+                            [
+                                sub(
+                                    b"XESP",
+                                    &[0x0000_0802u32.to_le_bytes(), [0, 0xD8, 0x18, 0x7C]].concat(),
+                                ),
                                 sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                             ]
                             .concat(),
@@ -1146,7 +1161,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                         sub(b"XAPR", &[0xAB; 12]),
                         sub(
                             b"XESP",
-                            &[0x0200_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat(),
+                            &[0x0200_0802u32.to_le_bytes(), [3, 0xA7, 0x51, 0xD2]].concat(),
                         ),
                         sub(
                             b"XAPR",
@@ -1171,6 +1186,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     let output = dir.path().join("modern");
     let mut config = PipelineConfig::new(&data, &output);
     config.plugins_file = Some(list);
+    let mut expected_texture_rebuilds = 0;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1178,10 +1194,14 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         drain.await.unwrap();
         assert!(report.complete, "{:?}", report.warnings);
         if pass == 1 {
-            assert_eq!(report.converted, 0);
+            assert_eq!(report.converted, expected_texture_rebuilds);
             assert!(report.cache_hits > 0);
         }
         let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let schema: u32 = conn
+            .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema, converter::shared::WORLD_DATABASE_SCHEMA_VERSION);
         let mut expected_xtel = xtel.clone();
         expected_xtel[..4].copy_from_slice(&0x0300_0804u32.to_le_bytes());
         for table in ["records", "references"] {
@@ -1192,7 +1212,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0806, b"XESP"),
-                [0u32.to_le_bytes(), [2, 0, 0, 0]].concat()
+                [0u32.to_le_bytes(), [2, 0x35, 0x6B, 0xC4]].concat()
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XTEL"),
@@ -1200,7 +1220,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XESP"),
-                [0xFE00_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat()
+                [0xFE00_0802u32.to_le_bytes(), [3, 0xA7, 0x51, 0xD2]].concat()
+            );
+            assert_eq!(
+                database_field(&conn, table, 0x0300_0808, b"XESP"),
+                [0xFE00_0802u32.to_le_bytes(), [0, 0xD8, 0x18, 0x7C]].concat()
             );
             assert_eq!(
                 database_fields(&conn, table, 0x0300_0800, b"XAPR"),
@@ -1213,9 +1237,10 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         // The enable-parent columns follow the remapped XESP: valid, cleared to
         // zero with its flags kept, and NULL when the malformed subrecord was dropped.
         for (id, expected) in [
-            (0x0300_0800u32, (Some(0xFE00_0802i64), Some(1i64))),
+            (0x0300_0800u32, (Some(0xFE00_0802i64), Some(3i64))),
             (0x0300_0806, (Some(0), Some(2))),
             (0x0300_0807, (None, None)),
+            (0x0300_0808, (Some(0xFE00_0802), Some(0))),
         ] {
             let columns: (Option<i64>, Option<i64>) = conn
                 .query_row(
@@ -1229,6 +1254,15 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         for table in ["records", "references"] {
             assert!(database_fields(&conn, table, 0x0300_0807, b"XESP").is_empty());
         }
+        let identity: (String, u32, u32) = conn
+            .query_row(
+                "SELECT m.plugin_name, m.internal_id, r.load_order FROM formid_map m \
+                 JOIN records r ON r.form_id=m.form_id WHERE m.form_id=?1",
+                [0x0300_0800u32],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, ("links.esp".to_owned(), 0x800, 5));
         for table in ["records", "cells"] {
             assert!(database_fields(&conn, table, 0x0300_0900, b"XCLR").is_empty());
             assert_eq!(
@@ -1237,7 +1271,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
         }
         // Simulate an old pack with plugin-local IDs; the next conversion must
-        // replace it even though the source plugins and asset cache are unchanged.
+        // replace it even though the source plugins are unchanged.
         if pass == 0 {
             let old = converter::esm::extractors::serialize_subrecords(&[(
                 b"XTEL".to_vec(),
@@ -1253,6 +1287,23 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                 rusqlite::params![old, 0x0300_0800u32],
             )
             .unwrap();
+            // Producer 24 has compatible meshes/scripts, but its world projection
+            // contains padding in enable-parent flags. Rebuild the world while
+            // reusing proved meshes/scripts and regenerating all old textures.
+            let manifest_path = output.join("conversion-manifest.json");
+            let mut manifest: converter::cache::ConversionManifest =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            expected_texture_rebuilds = manifest
+                .entries
+                .values()
+                .filter(|entry| entry.output.ends_with(".ktx2"))
+                .count() as u64;
+            manifest.schema_version = 24;
+            manifest.configuration_hash =
+                converter::cache::configuration_hash_for_schema(&config, 24).unwrap();
+            manifest.save(&manifest_path).unwrap();
+            conn.execute("UPDATE schema_info SET version=7", [])
+                .unwrap();
         }
     }
 }
