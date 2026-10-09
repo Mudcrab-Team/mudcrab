@@ -91,6 +91,8 @@ impl Schema {
                 }
                 "dialogue" => "QUST DIAL INFO DLBR DLVW SCEN SMBN SMQN SMEN MESG LCTN",
                 "conditions" => "",
+                "ai" => "PACK IDLE IDLM AACT",
+                "perks" => "PERK",
                 _ => return Err(format!("unknown schema family {family}")),
             };
             let module: serde_json::Value =

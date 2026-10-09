@@ -988,13 +988,12 @@ fn primary_vmad() -> Vec<u8> {
     bytes.extend([0xc3, 0xd4]);
     bytes.extend(0x789a_u16.to_le_bytes());
     bytes.extend(0x1400_u32.to_le_bytes());
-    bytes.extend(b"opaque-fragment-tail");
     bytes
 }
 
-/// Primary script links use the shared master list even on otherwise opaque record types.
+/// Primary scripts retain typed links and padding; unframed tails are omitted locally.
 #[test]
-fn primary_vmad_links_remap_with_divergent_slots_and_preserve_opaque_tail() {
+fn primary_vmad_links_remap_with_divergent_slots_and_reject_unframed_tail() {
     let mut fixture = Fixture::new();
     fixture.add("Unused.esm", &[], 1, vec![]);
     fixture.add("Owner.esm", &[], 1, static_record(0x1400, "ScriptObject"));
@@ -1022,7 +1021,7 @@ fn primary_vmad_links_remap_with_divergent_slots_and_preserve_opaque_tail() {
                 0x0100_1801,
                 0,
                 &[
-                    subrecord(b"EDID", b"OpaqueScriptOwner\0"),
+                    subrecord(b"EDID", b"PackageScriptOwner\0"),
                     subrecord(b"VMAD", &vmad),
                 ]
                 .concat(),
@@ -1048,6 +1047,19 @@ fn primary_vmad_links_remap_with_divergent_slots_and_preserve_opaque_tail() {
                 ]
                 .concat(),
             ),
+            record(
+                b"ACTI",
+                0x0100_1805,
+                0,
+                &[
+                    subrecord(b"EDID", b"UnframedScriptTail\0"),
+                    subrecord(
+                        b"VMAD",
+                        &[vmad.clone(), b"opaque-fragment-tail".to_vec()].concat(),
+                    ),
+                ]
+                .concat(),
+            ),
         ]
         .concat(),
     );
@@ -1061,7 +1073,8 @@ fn primary_vmad_links_remap_with_divergent_slots_and_preserve_opaque_tail() {
         assert_eq!(word(canonical, 56), 0x0200_1400);
         assert_eq!(&canonical[32..36], &[0xa1, 0xb2, 0x56, 0x34]);
         assert_eq!(&canonical[52..56], &[0xc3, 0xd4, 0x9a, 0x78]);
-        assert_eq!(&canonical[60..], b"opaque-fragment-tail");
+        assert_eq!(canonical.len(), 60);
+        assert!(matches!(field(owner, b"VMAD").value, Value::Struct(_)));
         assert!(
             owner
                 .raw_payload
@@ -1070,7 +1083,7 @@ fn primary_vmad_links_remap_with_divergent_slots_and_preserve_opaque_tail() {
         );
     }
     assert!(result.records[&0x0300_1800].supported);
-    assert!(!result.records[&0x0300_1801].supported);
+    assert!(result.records[&0x0300_1801].supported);
     let broken = &result.records[&0x0300_1802];
     assert!(
         !broken
@@ -1085,7 +1098,15 @@ fn primary_vmad_links_remap_with_divergent_slots_and_preserve_opaque_tail() {
             .any(|field| field.signature == *b"EDID")
     );
     assert!(result.records.contains_key(&0x0300_1803));
-    assert_eq!(result.diagnostics["scripts.esp"].skipped_fields, 1);
+    let tail = &result.records[&0x0300_1805];
+    assert!(!tail.fields.iter().any(|field| field.signature == *b"VMAD"));
+    assert!(tail.fields.iter().any(|field| field.signature == *b"EDID"));
+    assert!(
+        tail.raw_payload
+            .windows(20)
+            .any(|bytes| bytes == b"opaque-fragment-tail")
+    );
+    assert_eq!(result.diagnostics["scripts.esp"].skipped_fields, 2);
     let dangling = &result.records[&0x0300_1804];
     let canonical = &field(dangling, b"VMAD").canonical_bytes;
     assert_eq!(word(canonical, 36), 0);

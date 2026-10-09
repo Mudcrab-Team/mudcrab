@@ -160,19 +160,26 @@ the original payload as an alternative runtime projection.
 | `movement_speeds` | SPED 40 bytes has ten floats; 44 bytes adds rotate-while-moving-run. |
 | `water_visual` | DNAM 228 bytes has 57 four-byte slots; 232 bytes adds flowmap scale. |
 | `alternate_textures` | MODS/MO2S/MO4S has a u32 entry count, then entries of u32 name length, name bytes, TXST FormID and u32 shape index. Validate every variable boundary. |
-| `vmad` | Reuse MudCrab's existing bounded primary-script object-link remapper. Object formats 1/2 and scalar/array object properties retain their established consumer contract; record-specific fragment bytes remain opaque. |
+| `vmad` | Decode version1-5 scripts, all scalar/array property types and object formats1/2, owner-specific INFO/PACK/PERK/QUST/SCEN fragments, and quest alias scripts. Remap every typed object FormID while preserving other canonical bytes. |
 
 The alternate texture hook is attached to an otherwise opaque `bytes` field.
 It produces bounded typed entries and remaps their TXST links;
 the hook must not treat a missing or malformed entry as a whole-run error. VMAD
-keeps byte representation but applies the bounded primary-script object-link
-remapper before using MudCrab's existing script parser in the exporter. The
+uses the independently authored bounded `records/vmad.rs` hook and returns a
+typed struct while retaining its canonical byte representation. Script/property
+names and values use the native UTF-8 encoding. Primary and alias objects retain
+their signed alias numbers and unused words; only FormIDs are rewritten. The
 shared `vmad` definition applies to explicit VMAD occurrences and to the
 top-level `common_fields` occurrence on otherwise opaque record types. That
 fallback preserves the existing generic script consumer contract; it does not
-provide full semantic coverage for those record types. Malformed primary script
-bytes omit only that field. Record-specific fragment/alias links are not decoded
-or remapped by this hook, and fragment bytes remain unchanged.
+provide full semantic coverage for those record types. Each owner-specific
+fragment tail must be fully consumed, including QUST aliases and their separate
+script headers. Every set event flag bit frames one named fragment; bits with
+unknown meaning retain their numeric identity. Malformed fields, unsupported
+layouts or incomplete tails omit only VMAD. Original source bytes remain in the
+auxiliary provenance table. The existing exporter still writes primary scripts;
+its compatibility parser also accepts explicit absent type0 properties. Typed
+fragment/alias decoding does not introduce script execution or alias runtime APIs.
 Future contextual layouts add Rust hooks explicitly rather than executable
 code or expressions embedded in schema data.
 
@@ -300,8 +307,8 @@ means multilayer and TX07 means backlight mask/specular, rather than universally
 meaning a detail or specular image. Runtime column naming remains an adapter
 contract and does not redefine those source facts.
 
-No complete mod compatibility, full VMAD fragment/alias-link coverage, all 126 Skyrim
-record types, or visual parity is established by this document. Those claims
+No complete mod compatibility, all 126 Skyrim record types, gameplay execution,
+or visual parity is established by this document. Those claims
 require decoder tests and comparison reports for the final implementation.
 Optional REFR room/patrol groups reuse INAM with different target types. The
 flattened matcher needs group context to distinguish every such nonconsumer

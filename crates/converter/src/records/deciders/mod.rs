@@ -2,8 +2,10 @@
 use super::schema_format::FieldSchema;
 pub mod actors;
 pub mod conditions;
+pub mod ai;
 pub mod items;
 pub mod magic;
+pub mod perks;
 
 /// Binary context available to a family selector without reference-tool dependencies.
 #[derive(Clone, Copy)]
@@ -29,6 +31,8 @@ pub fn known(name: &str) -> bool {
         || actors::NAMES.contains(&name)
         || magic::NAMES.contains(&name)
         || conditions::NAMES.contains(&name)
+        || ai::NAMES.contains(&name)
+        || perks::NAMES.contains(&name)
 }
 
 /// Dispatch only to the family that explicitly owns a named selector.
@@ -69,6 +73,10 @@ pub fn select(
         magic::select(name, field, bytes, context)
     } else if conditions::NAMES.contains(&name) {
         conditions::select(name, field, bytes, context)
+    } else if ai::NAMES.contains(&name) {
+        ai::select(name, field, bytes, context)
+    } else if perks::NAMES.contains(&name) {
+        perks::select(name, field, bytes, context)
     } else {
         Err(format!("unknown family decider {name}"))
     }
