@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import zlib
 
 
@@ -244,6 +245,65 @@ class ProcessTests(unittest.TestCase):
 
     def command(self, output, *extra):
         return [sys.executable, str(SCRIPT), "--engine", str(self.engine), "--assets", str(self.assets), "--output", str(output), "--repeats", "1", "--upload-budgets", "16", "--warmup", "100", "--duration", "1", *extra]
+
+    def test_interrupts_during_hashing_analysis_and_cleanup_finalize_campaign(self):
+        untouched = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        try:
+            for stage in ("baseline", "before", "after", "campaign", "analysis", "cleanup"):
+                with self.subTest(stage=stage):
+                    output = self.root / stage
+                    real_hashes = RUNNER.input_hashes
+                    real_cleanup = RUNNER.stop_owned_group
+                    calls = 0
+
+                    def hashes(*args):
+                        nonlocal calls
+                        calls += 1
+                        if calls == {"baseline": 1, "before": 2, "after": 3, "campaign": 4}.get(stage):
+                            raise KeyboardInterrupt
+                        return real_hashes(*args)
+
+                    def cleanup(process):
+                        if stage == "cleanup":
+                            # Repeated actual stop signals during cleanup must not interrupt it.
+                            os.kill(os.getpid(), signal.SIGTERM)
+                            os.kill(os.getpid(), signal.SIGTERM)
+                        return real_cleanup(process)
+
+                    if stage == "analysis":
+                        analysis = mock.patch.object(RUNNER, "analyze_run", side_effect=KeyboardInterrupt)
+                    elif stage == "campaign":
+                        analysis = mock.patch.object(RUNNER, "analyze_run", return_value={
+                            "functional_checks_passed": True, "visual_inspection": "pending",
+                            "failures": [], "notes": [], "retry_accounting": {"status": "not_observed"},
+                        })
+                    else:
+                        analysis = mock.patch.object(RUNNER, "analyze_run", wraps=RUNNER.analyze_run)
+                    with mock.patch.object(RUNNER, "input_hashes", side_effect=hashes), \
+                         mock.patch.object(RUNNER, "stop_owned_group", side_effect=cleanup), analysis:
+                        status = RUNNER.main(self.command(output)[2:])
+                    self.assertEqual(status, 130)
+                    summary = json.loads((output / "summary.json").read_text())
+                    self.assertTrue(summary["interrupted"])
+                    self.assertIsNotNone(summary["ended_utc"])
+                    self.assertFalse(summary["functional_checks_passed"])
+                    self.assertIsNone(untouched.poll())
+                    if stage == "baseline":
+                        self.assertEqual(summary["runs"], [])
+                        continue
+                    self.assertEqual(len(summary["runs"]), 1)
+                    manifest = json.loads((output / "16mib-01/run.json").read_text())
+                    validation = json.loads((output / "16mib-01/validation.json").read_text())
+                    self.assertIsNotNone(manifest["ended_utc"])
+                    self.assertFalse(validation["functional_checks_passed"])
+                    if stage != "campaign":
+                        self.assertTrue(manifest["interrupted"])
+                    if "owned_process_group" in manifest:
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(manifest["owned_process_group"], 0)
+        finally:
+            untouched.terminate()
+            untouched.wait(timeout=5)
 
     def test_output_collision_preserves_existing_results_and_does_not_launch(self):
         output = self.root / "existing"

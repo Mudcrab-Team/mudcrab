@@ -42,7 +42,7 @@ The validator checks the initial logged camera target and offset, PNG chunk CRCs
 
 When retry logs exist, every accounting record must satisfy `tracked = resumed + canceled + pending`, and the last pending count must be zero. Missing retry logs are flagged for inspection; a startup that never reaches the retry path can still be valid.
 
-`summary.json` is updated after every launch. Exit status `0` means every planned run passed the functional gates, `1` means a run failed, and `130` means the campaign was interrupted. **Visual inspection remains pending even when all counters pass.** Inspect every saved image for terrain holes and retain those findings with the campaign; counters and a valid PNG cannot establish pixel coverage.
+`summary.json` is updated after every launch and finalized when the campaign stops. Interruptions during hashing, engine waits, cleanup or analysis retain the current `run.json` and `validation.json`; an interruption before the first run retains a summary with no launches. Repeated stop signals are deferred while the runner cleans up its owned group and saves evidence. Exit status `0` means every planned run passed the functional gates, `1` means a run failed, and `130` means the campaign was interrupted. **Visual inspection remains pending even when all counters pass.** Inspect every saved image for terrain holes and retain those findings with the campaign; counters and a valid PNG cannot establish pixel coverage.
 
 Run the focused runner tests without opening a graphics session:
 
