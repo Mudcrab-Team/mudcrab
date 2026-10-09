@@ -11,9 +11,11 @@
 use super::{load_order::LoadOrder, records::tes4};
 use color_eyre::{Result, eyre::ensure};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::{BTreeMap, HashMap},
     fs,
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -41,10 +43,13 @@ impl StringsKind {
     }
 }
 
-/// One parsed string table, keyed by string ID.
+/// One parsed string table, keyed by string ID. IDs may share or overlap their bytes, so the
+/// table keeps its data once and a range per ID, and decodes a string only when it is looked up:
+/// memory and parsing work stay linear in the file size however the directory points into it.
 #[derive(Debug, Default)]
 pub struct StringTable {
-    strings: HashMap<u32, String>,
+    data: Vec<u8>,
+    ranges: HashMap<u32, Range<usize>>,
 }
 
 impl StringTable {
@@ -72,45 +77,57 @@ impl StringTable {
             data.len()
         );
         let data = &data[..data_size as usize];
+        // Terminator positions, found in one pass, so an entry's end is a binary search rather
+        // than a rescan of its string.
+        let terminators: Vec<u32> = match kind {
+            StringsKind::Strings => (0..data.len() as u32)
+                .filter(|&at| data[at as usize] == 0)
+                .collect(),
+            StringsKind::DlStrings | StringsKind::IlStrings => Vec::new(),
+        };
 
-        let mut strings = HashMap::with_capacity(count as usize);
+        let mut ranges = HashMap::with_capacity(count as usize);
         for entry in 0..count as usize {
             let id = u32_at(8 + entry * 8).unwrap_or_default();
             let offset = u32_at(12 + entry * 8).unwrap_or_default() as usize;
-            let text = match kind {
-                StringsKind::Strings => data.get(offset..).and_then(|rest| {
-                    rest.iter()
-                        .position(|&byte| byte == 0)
-                        .map(|end| &rest[..end])
-                }),
-                StringsKind::DlStrings | StringsKind::IlStrings => {
-                    let length = data
-                        .get(offset..offset + 4)
-                        .map(|field| u32::from_le_bytes(field.try_into().unwrap()) as usize);
-                    length
-                        .and_then(|length| data.get(offset + 4..offset + 4 + length))
-                        .map(|text| text.strip_suffix(&[0]).unwrap_or(text))
-                }
+            let range = match kind {
+                StringsKind::Strings => terminators
+                    .get(terminators.partition_point(|&at| (at as usize) < offset))
+                    .map(|&end| offset..end as usize),
+                StringsKind::DlStrings | StringsKind::IlStrings => data
+                    .get(offset..offset + 4)
+                    .map(|field| u32::from_le_bytes(field.try_into().unwrap()) as usize)
+                    .map(|length| offset + 4..offset + 4 + length)
+                    .filter(|range| range.end <= data.len())
+                    .map(|range| match data[range.clone()].last() {
+                        Some(0) => range.start..range.end - 1,
+                        _ => range,
+                    }),
             };
-            let text = text.ok_or_else(|| {
+            let range = range.ok_or_else(|| {
                 color_eyre::eyre::eyre!("string {id:08X} at offset {offset} is outside the table")
             })?;
-            strings.insert(id, decode(text));
+            ranges.insert(id, range);
         }
-        Ok(Self { strings })
+        Ok(Self {
+            data: data.to_vec(),
+            ranges,
+        })
     }
 
-    pub fn get(&self, id: u32) -> Option<&str> {
-        self.strings.get(&id).map(String::as_str)
+    pub fn get(&self, id: u32) -> Option<Cow<'_, str>> {
+        self.ranges
+            .get(&id)
+            .map(|range| decode(&self.data[range.clone()]))
     }
 }
 
 /// Official tables are UTF-8 in some languages and Windows-1252 in others, and a table records
 /// neither. A string that is not valid UTF-8 is read as Windows-1252, which every byte decodes in.
-fn decode(bytes: &[u8]) -> String {
+fn decode(bytes: &[u8]) -> Cow<'_, str> {
     match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_owned(),
-        Err(_) => bytes.iter().map(|&byte| windows_1252(byte)).collect(),
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(bytes.iter().map(|&byte| windows_1252(byte)).collect()),
     }
 }
 
@@ -238,7 +255,7 @@ impl PluginStrings {
                 .or_insert((0, form_id))
                 .0 += 1;
         }
-        text.map(str::to_owned)
+        text.map(Cow::into_owned)
     }
 
     /// Prints one summary per plugin whose lstrings did not resolve.
@@ -313,9 +330,9 @@ mod tests {
         ] {
             let bytes = table(kind, &[(0x1234, b"Lydia"), (7, b""), (9, b"Ysolda")]);
             let table = StringTable::parse(&bytes, kind).unwrap();
-            assert_eq!(table.get(0x1234), Some("Lydia"), "{kind:?}");
-            assert_eq!(table.get(7), Some(""), "{kind:?}");
-            assert_eq!(table.get(9), Some("Ysolda"), "{kind:?}");
+            assert_eq!(table.get(0x1234).as_deref(), Some("Lydia"), "{kind:?}");
+            assert_eq!(table.get(7).as_deref(), Some(""), "{kind:?}");
+            assert_eq!(table.get(9).as_deref(), Some("Ysolda"), "{kind:?}");
             assert_eq!(table.get(8), None, "{kind:?}");
         }
     }
@@ -327,8 +344,47 @@ mod tests {
             &[(1, b"J\xE9r\x96me"), (2, "Jérôme".as_bytes())],
         );
         let table = StringTable::parse(&bytes, StringsKind::Strings).unwrap();
-        assert_eq!(table.get(1), Some("Jér–me"));
-        assert_eq!(table.get(2), Some("Jérôme"));
+        assert_eq!(table.get(1).as_deref(), Some("Jér–me"));
+        assert_eq!(table.get(2).as_deref(), Some("Jérôme"));
+    }
+
+    /// Many IDs may point at one string, or into the middle of it. Storing each ID's text would
+    /// let a 1 MiB table hold gigabytes; the table must stay the size of its data.
+    #[test]
+    fn shared_and_overlapping_offsets_do_not_multiply_the_table() {
+        const LENGTH: usize = 1 << 20;
+        const IDS: u32 = 8192;
+        for kind in [StringsKind::Strings, StringsKind::DlStrings] {
+            let mut data = Vec::new();
+            if kind == StringsKind::DlStrings {
+                data.extend((LENGTH as u32 + 1).to_le_bytes());
+            }
+            let text_start = data.len();
+            data.extend(std::iter::repeat_n(b'a', LENGTH));
+            data.push(0);
+            let mut bytes = [IDS.to_le_bytes(), (data.len() as u32).to_le_bytes()].concat();
+            for id in 0..IDS {
+                // Half the IDs share the string's start; for .STRINGS the rest start inside it.
+                let offset = match kind {
+                    StringsKind::Strings if id % 2 == 1 => text_start + id as usize,
+                    _ => 0,
+                };
+                bytes.extend(id.to_le_bytes());
+                bytes.extend((offset as u32).to_le_bytes());
+            }
+            bytes.extend(&data);
+
+            let table = StringTable::parse(&bytes, kind).unwrap();
+            assert_eq!(table.data.len(), data.len(), "{kind:?}");
+            assert_eq!(table.ranges.len(), IDS as usize, "{kind:?}");
+            assert_eq!(table.get(0).unwrap().len(), LENGTH, "{kind:?}");
+            let expected = if kind == StringsKind::Strings {
+                LENGTH - 101
+            } else {
+                LENGTH
+            };
+            assert_eq!(table.get(101).unwrap().len(), expected, "{kind:?}");
+        }
     }
 
     #[test]
