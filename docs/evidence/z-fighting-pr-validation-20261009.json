@@ -1,0 +1,148 @@
+{
+  "schema": "mudcrab-z-fighting-pr-validation-v1",
+  "recorded_at_utc": "2026-10-09T17:23:59.599750+00:00",
+  "base_commit": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+  "environment": {
+    "os": "macOS 26.6.2",
+    "adapter": "Apple M1 Pro",
+    "backend": "Metal",
+    "cargo_profile": "quick",
+    "locked": true,
+    "offline": true
+  },
+  "source_sha256": {
+    "crates/engine/examples/material_depth_probe.rs": "f2a054d41ff8de220aab33028271b05b0b0d245eb0df329319b9d5ca29edabf6",
+    "crates/engine/examples/material_normal_probe.rs": "2e748024349d20a222f2803a29510376fb3ad0da7029a7d3bb38ad91424801be",
+    "crates/engine/examples/material_specular_probe.rs": "7f3e3a6d625bdb03686001a15f30291d13a1e7328f0d5d39b979fbda0fcb1a75",
+    "crates/engine/examples/wall_depth_probe.rs": "540e72aed805c9ebb861e959bf3a62de6835ee4d14e806445af50426873eff76",
+    "crates/engine/examples/wall_surface_id.wgsl": "a97ef245aeebb42aca8237a5f656936981d0d00d38faa97458d2266f4fff732c",
+    "crates/engine/src/config.rs": "5b11f78b58b3258103c14ca6951bc57d89b92c29a4f86adf7a31a463e4126cfe",
+    "crates/engine/src/lib.rs": "82fd28fb8473b6cc9ad4d193e8cd9a20c1d970c71351923854759efd89487c86",
+    "crates/engine/src/nif_depth.rs": "ff098b72a4b8f920b23dddbb179838c7f79c2fb13e74be7df82a3165dda6d2bb",
+    "crates/engine/src/nif_material.rs": "61cd4a82d981a8fae3886742ab900a1419c4365041cc17d7b7deca68a31b375e",
+    "crates/engine/src/render.rs": "16cbc59237cbd9b1d2e7d60e92a6fa3066066f808b958e473785570e48719519",
+    "crates/engine/src/shaders/terrain.wgsl": "2c2681c310eed271afac36b8c080cd537137de72178da18fca4d55fc82689422",
+    "crates/engine/src/streaming.rs": "af9cf2b9ce9c531847b59532a874d6d61a0daf44732e4d0ff4497fcbe77d8b71",
+    "scripts/audit-z-fighting.py": "b83beab05dd8c65c508a6015284b4204a7e8997a519210b84c661f4939ffbfdd",
+    "scripts/tests/test_audit_z_fighting.py": "b12b2c44dc8f68da6f742db599942c29809b83b4a925003d92cbd6facb982f4a"
+  },
+  "rust_checks": {
+    "cargo_check_workspace": {
+      "exit_code": 0
+    },
+    "cargo_fmt_all_check": {
+      "exit_code": 0
+    },
+    "cargo_clippy_workspace_all_targets_all_features_deny_warnings": {
+      "exit_code": 0
+    },
+    "unfiltered_workspace_all_targets": {
+      "exit_code": 101,
+      "failed_test": "asset_path::tests::later_roots_override_and_same_root_collisions_fail",
+      "source_unchanged_from_main": true,
+      "cause": "The test expects two distinct case-only filenames on a case-insensitive filesystem."
+    },
+    "filtered_workspace_all_targets": {
+      "command": "cargo test --workspace --all-targets --no-fail-fast -- --skip asset_path::tests::later_roots_override_and_same_root_collisions_fail",
+      "libtest_results": {
+        "passed": 1101,
+        "failed": 0,
+        "ignored": 18,
+        "filtered_out": 1
+      },
+      "engine_tests_passed": 338,
+      "exit_code": 101,
+      "remaining_cli_failure": "Criterion writer benchmark rejects the libtest --skip argument."
+    },
+    "writer_benchmark_test_mode": {
+      "command": "cargo test -p dummy-content --bench writers -- --test",
+      "exit_code": 0,
+      "cases_passed": 7
+    },
+    "workspace_doctests": {
+      "exit_code": 0,
+      "targets": 5,
+      "tests": 0
+    },
+    "unfiltered_suite_passed": false
+  },
+  "python_audit_tests": {
+    "command": "TMPDIR=/private/tmp python3 -m unittest discover -s scripts/tests -p test_audit_z_fighting.py -v",
+    "exit_code": 0,
+    "tests_passed": 25
+  },
+  "gpu_probes": {
+    "pr-synthetic": {
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_seconds": 14.829,
+      "binary_sha256": "b586e5bbad77964751d1ef7cb4f48d0bfda6dd41b1f0de5ea19ebe2529708609",
+      "report_sha256": "4de8f228a267c3f52fadcfac5d9edefa277efcd4ff1ee27b0d2e40edee73a881",
+      "passed": true,
+      "views": 9,
+      "failing_views": 0,
+      "samples": 54,
+      "failing_samples": 0
+    },
+    "pr-synthetic-legacy": {
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "elapsed_seconds": 11.637,
+      "binary_sha256": "b586e5bbad77964751d1ef7cb4f48d0bfda6dd41b1f0de5ea19ebe2529708609",
+      "report_sha256": "a6468ab5a28d099f880621ae5d7e9d5a395e4fa4611a17ea63228b5273b414ca",
+      "passed": false,
+      "views": 9,
+      "failing_views": 8,
+      "samples": 54,
+      "failing_samples": 9
+    },
+    "pr-world-scale": {
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_seconds": 11.144,
+      "binary_sha256": "b586e5bbad77964751d1ef7cb4f48d0bfda6dd41b1f0de5ea19ebe2529708609",
+      "report_sha256": "75ff6d18f424cd0308fed2d7134d56d3d330dfb3a8f53efa6823783014c709f7",
+      "passed": true,
+      "views": 9,
+      "failing_views": 0,
+      "samples": 54,
+      "failing_samples": 0
+    },
+    "pr-wall": {
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_seconds": 35.601,
+      "binary_sha256": "7e95b64421f8778a96c8f540639279655b675c60f3b3479e3be355426ec29256",
+      "report_sha256": "8909961cad8c50d533661783074729c88e4353bb034dbdcc421c286f3a003488",
+      "passed": true,
+      "views": 12,
+      "failing_views": 0,
+      "matched_pixels": 561467,
+      "missing_pixels": 0
+    },
+    "pr-wall-omitted": {
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "elapsed_seconds": 30.413,
+      "binary_sha256": "7e95b64421f8778a96c8f540639279655b675c60f3b3479e3be355426ec29256",
+      "report_sha256": "48e93d7036ce217c9b9180b4bff5ed2d596eca677e59d3ea63c37e8661bd23cf",
+      "passed": false,
+      "views": 12,
+      "failing_views": 12,
+      "matched_pixels": 561467,
+      "missing_pixels": 561467
+    }
+  },
+  "synthetic_images": {
+    "docs/evidence/z-fighting-synthetic/authored-depth.png": "f8b7f3b0807deb0b2541c636feb91f77ca1fe45028db2166f04f6d73a0c86d8e",
+    "docs/evidence/z-fighting-synthetic/legacy-control.png": "d985243b386061a9701502dea9ea86b7a8cf1f509536b80072aa2fe2902bde72"
+  },
+  "scope": {
+    "final_branch_gpu_checks": true,
+    "gameplay_acceptance": "The user accepted the archived slope-fix build after Fort Sungard and follow-up routes.",
+    "windows_linux_gpu_verified": false,
+    "exhaustive_world_verified": false,
+    "real_wall_legacy_control_also_passes": true,
+    "isolated_wall_reproduces_original_full_scene_flicker": false
+  }
+}

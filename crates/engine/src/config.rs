@@ -931,6 +931,16 @@ mod tests {
         "--candidate-inventory", // audit-riverwood-reuse.py
         "--reference-inventory", // audit-riverwood-reuse.py
         "--manifest",            // audit-riverwood-reuse.py
+        "--include",             // audit-z-fighting.py
+        "--materials-only",      // audit-z-fighting.py
+        "--no-placements",       // audit-z-fighting.py
+        "--plane-tolerance",     // audit-z-fighting.py
+        "--min-overlap-area",    // audit-z-fighting.py
+        "--max-triangles",       // audit-z-fighting.py
+        "--max-comparisons",     // audit-z-fighting.py
+        "--max-examples",        // audit-z-fighting.py
+        "--progress",            // audit-z-fighting.py
+        "--jobs",                // audit-z-fighting.py
         "--locked",              // cargo run
         "--manifest-path",       // cargo run
         "--cpu-jobs",            // converter
