@@ -14,7 +14,7 @@ Each sample identifies a `main_frame`, elapsed time, actual frame delta and benc
 
 An embedded GPU observation has its own `source_main_frame` and `render_observation_seq`. The source frame is the request extracted into the render world; the sequence counts actual inventory observations. Requests retain a per-frame clock, but inventories are sampled only at source frame 1 and multiples of 8. The latest observation can lag by both this cadence and pipelined rendering, and successive main samples can contain the same observation. Compare source identities before calculating changes. Do not align render observations or shader timing to the enclosing main frame without evidence.
 
-`collection_ms` records CPU elapsed time for the inventory scan and observation preparation, before bridge publication. It is not GPU execution time or the enclosing main-frame duration. Headless observations leave it unavailable. This measures the collector's own cost and does not establish zero profiling overhead.
+`collection_ms` records CPU elapsed time for the inventory scan and observation preparation, before bridge publication. It is not GPU execution time or the enclosing main-frame duration. It remains unavailable when no render app or inventory resources are present. This measures the collector's own cost and does not establish zero profiling overhead.
 
 ## Counts and readiness
 
