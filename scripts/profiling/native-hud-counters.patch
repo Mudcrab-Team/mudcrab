@@ -1,43 +1,68 @@
 diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
-index e5f8401..ecd483d 100644
+index 76c56d7..279dcb8 100644
 --- a/crates/engine/src/app.rs
 +++ b/crates/engine/src/app.rs
-@@ -32,6 +32,8 @@ use bevy::{
-     log::{Level, LogPlugin},
-     prelude::*,
-     render::diagnostic::RenderDiagnosticsPlugin,
-+    render::RenderPlugin,
-+    render::settings::{RenderCreation, WgpuFeatures, WgpuSettings},
+@@ -36,6 +36,7 @@ use bevy::{
      render::occlusion_culling::OcclusionCulling,
      render::render_asset::RenderAssetBytesPerFrame,
      render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-@@ -172,12 +174,29 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
++    render::settings::{WgpuFeatures, WgpuSettings},
+     render::view::screenshot::{Screenshot, save_to_disk},
+     tasks::{IoTaskPool, TaskPoolBuilder},
+     window::{MonitorSelection, PresentMode, WindowPlugin, WindowPosition},
+@@ -169,6 +170,26 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
          app.insert_resource(WinitSettings::continuous());
      }
      let render_asset_budget = upload_budget(&config);
-+    // Local measurement experiment: leave every rendering feature and CPU
-+    // diagnostic enabled, but release native counter ownership for Metal HUD.
++    // Local measurement experiment: release native counter ownership for Metal HUD
++    // while retaining CPU diagnostics and every unrelated renderer setting.
 +    let mut native_diagnostic_settings = WgpuSettings::default();
-+    if cfg!(target_os = "macos")
-+        && std::env::var_os("MUDCRAB_NATIVE_GPU_DIAGNOSTICS").is_some()
-+    {
++    if cfg!(target_os = "macos") && std::env::var_os("MUDCRAB_NATIVE_GPU_DIAGNOSTICS").is_some() {
 +        let timestamp_features = WgpuFeatures::TIMESTAMP_QUERY
 +            | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_PASSES
 +            | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-+        native_diagnostic_settings.features.remove(timestamp_features);
-+        native_diagnostic_settings.disabled_features = Some(timestamp_features);
-+        eprintln!("native GPU diagnostic experiment: application timestamp queries omitted; CPU diagnostics and rendering retained");
++        native_diagnostic_settings
++            .features
++            .remove(timestamp_features);
++        native_diagnostic_settings.disabled_features = Some(
++            native_diagnostic_settings
++                .disabled_features
++                .unwrap_or_default()
++                | timestamp_features,
++        );
++        eprintln!(
++            "native GPU diagnostic experiment: application timestamp queries omitted; CPU diagnostics and rendering retained"
++        );
 +    }
      app.insert_resource(config)
          .insert_resource(origin)
          .insert_resource(render_asset_budget)
-         .init_resource::<StreamingMetrics>()
-         .add_plugins(
+@@ -177,7 +198,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
              DefaultPlugins
-+                .set(RenderPlugin {
-+                    render_creation: RenderCreation::Automatic(Box::new(native_diagnostic_settings)),
-+                    ..default()
-+                })
+                 .build()
+                 .disable::<bevy::render::RenderPlugin>()
+-                .add_before::<bevy::render::RenderPlugin>(RendererInitPlugin::default())
++                .add_before::<bevy::render::RenderPlugin>(RendererInitPlugin::with_settings(
++                    native_diagnostic_settings,
++                ))
                  .set(AssetPlugin {
                      file_path: asset_path,
                      ..default()
+diff --git a/crates/engine/src/renderer_init.rs b/crates/engine/src/renderer_init.rs
+index b143220..cd15f66 100644
+--- a/crates/engine/src/renderer_init.rs
++++ b/crates/engine/src/renderer_init.rs
+@@ -17,6 +17,13 @@ use bevy::{
+ #[derive(Default)]
+ pub struct RendererInitPlugin(WgpuSettings);
+
++impl RendererInitPlugin {
++    /// Builds the renderer from explicit Wgpu settings.
++    pub(crate) fn with_settings(settings: WgpuSettings) -> Self {
++        Self(settings)
++    }
++}
++
+ impl Plugin for RendererInitPlugin {
+     /// Adds `RenderPlugin`, initialized manually when DX12 may be selected.
+     fn build(&self, app: &mut App) {

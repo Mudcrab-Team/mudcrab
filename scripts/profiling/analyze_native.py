@@ -30,12 +30,14 @@ def main():
  valid=[c for c in cb.values() if c.get('completed',{}).get('gpu_time_valid')]
  acquire=[r for r in acq.values() if 'begin' in r and 'end' in r]
  if not acquire:raise ValueError('No complete acquire_begin/acquire_end pairs; trace may have no drawables or start after exit')
- incomplete=len(acq)-len(acquire)
- if incomplete:raise ValueError(f'{incomplete} incomplete acquisition pairs; use a complete zero-drop capture')
  # Drop first/last one-second observation tails to avoid ownership of partial frames.
  lo=min(r['end']['end_ns'] for r in acquire)+1000000000
  hi=max(r['end']['end_ns'] for r in acquire)-1000000000
  if hi<=lo:raise ValueError('Need more than two seconds of paired acquisitions for one-second tail cropping')
+ last_complete=max(aid for aid,r in acq.items() if 'begin' in r and 'end' in r)
+ incomplete=[(aid,r) for aid,r in acq.items() if not ('begin' in r and 'end' in r)]
+ interior=[aid for aid,r in incomplete if aid<=last_complete or 'begin' not in r or r['begin']['host_ns']<=hi]
+ if interior:raise ValueError(f'{len(interior)} incomplete acquisition pairs; use a complete zero-drop capture')
  accepted=[c for c in valid if lo<=c['completed']['gpu_start_s']*1e9 and c['completed']['gpu_end_s']*1e9<=hi]
  agg=collections.defaultdict(lambda:{'gpu_ms':[],'commit_ms':[],'queue_ms':[],'encoder_cpu_ms':[],'encoder_wall_ms':[]})
  frame_counts=collections.Counter();slim=[]
@@ -58,6 +60,7 @@ def main():
   if merged and x<=merged[-1][1]:merged[-1][1]=max(y,merged[-1][1])
   else:merged.append([x,y])
  summary={'schema':1,'source':a.input,'clock':begin_clock,'event_counts':dict(types),'health_last':health[-1],'window_host_ns':[lo,hi],'window_s':(hi-lo)/1e9,'acquisition_count':len(acquire),'command_buffers_with_valid_gpu_time':len(valid),'accepted_gpu_buffers':len(accepted),'accepted_gpu_interval_union_s':sum(y-x for x,y in merged),'accepted_gpu_interval_sum_s':sum(y-x for x,y in intervals),'acquire_wait_ms':stats([(r['end']['end_ns']-r['begin']['host_ns'])/1e6 for r in acquire if lo<=r['begin']['host_ns'] and r['end']['end_ns']<=hi]),'acquire_cpu_ms':stats([(r['end']['thread_cpu_ns']-r['begin']['thread_cpu_ns'])/1e6 for r in acquire if lo<=r['begin']['host_ns'] and r['end']['end_ns']<=hi]),'encoder_labels':enc_labels.most_common(),'groups':{k:{n:stats(v) for n,v in values.items()} for k,values in agg.items()},'qualification':'Observed command-buffer elapsed GPU spans include idle, dependency waits, and overlap. Dropped event rows can make pass labels incomplete. Empty means no covered encoder_end event; not proof of no GPU work. No per-shader active-cycle measurements.'}
+ summary['trailing_incomplete_acquisition_count']=len(incomplete)
  out=Path(a.output);out.write_text(json.dumps(summary,indent=2)+'\n');out.with_name(out.stem+'-timeline.json').write_text(json.dumps({'window_host_ns':[lo,hi],'command_buffers':slim,'acquisitions':[r for r in acquire if lo<=r['begin']['host_ns'] and r['end']['end_ns']<=hi],'presented':[r for r in present.values() if lo<=r['host_ns']<=hi]},separators=(',',':'))+'\n')
  print(json.dumps({k:summary[k] for k in ('window_s','accepted_gpu_buffers','accepted_gpu_interval_union_s','accepted_gpu_interval_sum_s','acquire_wait_ms','acquire_cpu_ms','health_last')},indent=2))
  print('Top aggregate elapsed spans (nonadditive):')
