@@ -64,8 +64,12 @@ The analyzers crop one second from each native acquisition range boundary.
 Their native acquisition IDs are not engine frame IDs. Correlation expects one
 stable drawable pool and the renderer's `upscaling` and
 `(wgpu internal) Present` labels. Surface recreation, multiple layers or changed
-render graph labels require additional identity checks. Empty or incomplete
-captures fail with an input error; acquisition-only traces cannot produce
+render graph labels require additional identity checks. Empty captures, orphan
+acquisition ends and incomplete pairs before the last complete acquisition fail
+with an input error. The analyzer allows a trailing acquisition begin only when
+its ID follows every complete pair and its timestamp falls after the cropped
+measurement window. It reports the excluded count as
+`trailing_incomplete_acquisition_count`; acquisition-only traces cannot produce
 render/presentation correlation pairs.
 
 ## Controls and optional capture

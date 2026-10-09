@@ -46,6 +46,7 @@ class NativeProfilingTests(unittest.TestCase):
         summary = json.loads((root/'summary.json').read_text())
         self.assertEqual(summary['window_s'], 4)
         self.assertEqual(summary['acquisition_count'], 7)
+        self.assertEqual(summary['trailing_incomplete_acquisition_count'], 0)
         self.assertAlmostEqual(summary['acquire_cpu_ms']['mean'], 1)
         self.assertAlmostEqual(summary['acquire_wait_ms']['mean'], 10)
         self.assertLessEqual(summary['accepted_gpu_interval_union_s'],
@@ -61,11 +62,41 @@ class NativeProfilingTests(unittest.TestCase):
                 self.assertFalse((root/'summary.json').exists())
 
     def test_incomplete_acquisition_is_rejected(self):
-        records = native_records()
-        records.append({'type':'acquire_begin', 'acquisition_id':100})
-        result, _ = self.run_analyzer(records)
+        records = [r for r in native_records()
+                   if not (r['type'] == 'acquire_end' and r['acquisition_id'] == 4)]
+        result, root = self.run_analyzer(records)
         self.assertEqual(result.returncode, 2)
         self.assertIn('incomplete acquisition pairs', result.stderr)
+        self.assertFalse((root/'summary.json').exists())
+
+    def test_trailing_incomplete_acquisition_is_cropped_and_reported(self):
+        records = native_records()
+        records.append({'type':'acquire_begin', 'acquisition_id':8,
+                        'host_ns':8_000_000_000, 'thread_cpu_ns':8_000_000_000})
+        result, root = self.run_analyzer(records)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summary = json.loads((root/'summary.json').read_text())
+        self.assertEqual(summary['acquisition_count'], 7)
+        self.assertEqual(summary['window_s'], 4)
+        self.assertEqual(summary['trailing_incomplete_acquisition_count'], 1)
+
+    def test_trailing_id_cannot_hide_an_incomplete_measured_acquisition(self):
+        records = native_records()
+        records.append({'type':'acquire_begin', 'acquisition_id':100,
+                        'host_ns':4_000_000_000, 'thread_cpu_ns':4_000_000_000})
+        result, root = self.run_analyzer(records)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('incomplete acquisition pairs', result.stderr)
+        self.assertFalse((root/'summary.json').exists())
+
+    def test_orphan_acquisition_end_is_rejected_even_in_shutdown_tail(self):
+        records = native_records()
+        records.append({'type':'acquire_end', 'acquisition_id':100,
+                        'end_ns':8_000_000_000, 'thread_cpu_ns':8_000_000_000})
+        result, root = self.run_analyzer(records)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('incomplete acquisition pairs', result.stderr)
+        self.assertFalse((root/'summary.json').exists())
 
     def test_unhealthy_middle_record_cannot_be_hidden_by_shutdown_health(self):
         for counter in ('dropped','exceptions','hook_failures',
