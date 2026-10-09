@@ -170,7 +170,8 @@ fn aliased_tags_and_wrong_length_factions_keep_their_bytes() {
         // `wbWorldLargeRefs` defines WRLD.RNAM as rows with Y/X i16 cell coordinates
         // (Core/wbDefinitionsCommon.pas:10011-10038), included by WRLD at
         // Core/wbDefinitionsTES5.pas:10645-10651. WRLD.TNAM is `wbString` at
-        // Core/wbDefinitionsTES5.pas:10708. Keep both byte sequences unchanged.
+        // Core/wbDefinitionsTES5.pas:10708. Keep these four-byte payloads unchanged;
+        // nested RNAM references require separate layout-aware remapping.
         // https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsCommon.pas#L10011-L10038
         // https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas#L10645-L10651
         // https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas#L10708

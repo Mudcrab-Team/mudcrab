@@ -321,8 +321,9 @@ fn is_form_id_subrecord(record_type: &[u8; 4], tag: &[u8], len: usize) -> bool {
         (b"CELL", b"XCWT") => true,
         (b"WRLD", b"NAM2" | b"NAM3") => true,
         // xEdit TES5Edit @ 9fb016884bec138ea6c7b872cec831537d464c3e defines
-        // WRLD.RNAM as cell-coordinate rows (Common:10011-10038) and TNAM as
-        // a string (TES5:10708); neither field is a FormID.
+        // WRLD.RNAM as mixed coordinate/reference rows (Common:10011-10038)
+        // and TNAM as a string (TES5:10708). Neither is a single FormID;
+        // nested RNAM reference remapping remains separate work.
         (b"WRLD", b"WNAM" | b"CNAM") => true,
         (b"CELL", b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") => true,
         (b"NPC_", b"RNAM" | b"CNAM" | b"INAM") => true,
