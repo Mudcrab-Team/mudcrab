@@ -15,7 +15,7 @@ use crate::{
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
-    mesh::{MeshConverter, nif_source_hash, prune_glb_texture_bytes},
+    mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
     pipeline::{
         archive_load_order_priority, compile_lod_chunks, discover, overlay_loose_assets,
         publish_new_directory, sort_archives_by_load_order, staging_path, validate_artifacts,
@@ -427,11 +427,21 @@ async fn rebuild_into(
     Ok(report)
 }
 
+/// Copies verified runtime bytes, reproducing historical pruning for stale output hashes.
+/// Repair presence bits come from the complete source manifest rather than current Data.
 fn copy_verified_assets(
     source: &Path,
     staging: &Path,
     manifest: &mut ConversionManifest,
 ) -> Result<(BTreeMap<String, String>, BTreeSet<String>)> {
+    // Reuse requires a complete package with no failed assets. Its successful DDS entries
+    // therefore preserve the producer's texture-source presence even without a raw VFS.
+    let source_textures = manifest
+        .entries
+        .keys()
+        .filter(|key| key.starts_with("textures/") && key.ends_with(".dds"))
+        .cloned()
+        .collect();
     let mut expected = BTreeMap::new();
     for entry in manifest.entries.values() {
         let kind = if entry.output.starts_with("meshes/") {
@@ -519,6 +529,7 @@ fn copy_verified_assets(
                     &relative,
                     &actual_hash,
                     actual_size,
+                    &source_textures,
                 )?;
                 replay.insert(relative.clone());
             }
@@ -534,6 +545,9 @@ fn copy_verified_assets(
     Ok((retained, replay))
 }
 
+/// Verifies exact source and pre-prune checksums, then reproduces only historical pruning.
+/// Accepts the original unsuffixed hash or the shared scoped hash for SOURCE's texture snapshot;
+/// never applies repair or refreshes a retained material from current Data.
 fn verify_legacy_prune(
     source: &Path,
     staging: &Path,
@@ -541,6 +555,7 @@ fn verify_legacy_prune(
     glb: &str,
     retained_hash: &str,
     retained_size: u64,
+    source_textures: &BTreeSet<String>,
 ) -> Result<()> {
     let source_key = canonical_asset_path(glb, AssetKind::Mesh, "nif")?;
     let entry = manifest
@@ -554,7 +569,8 @@ fn verify_legacy_prune(
         nif.display()
     );
     ensure!(
-        nif_source_hash(&nif)? == entry.source_hash,
+        nif_source_hash(&nif, &source_key, source_textures)? == entry.source_hash
+            || nif_unrepaired_source_hash(&nif)? == entry.source_hash,
         "pruned GLB source checksum mismatch: {glb}"
     );
     let target = staging.join(glb);

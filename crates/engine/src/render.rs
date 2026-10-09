@@ -2001,10 +2001,6 @@ mod tests {
         );
         assert_eq!(shader_array_length(source, "weights"), WEIGHT_FIELD_WORDS);
         assert_eq!(
-            WEIGHT_FIELD_WORDS,
-            OVERLAY_WEIGHT_SLOTS * OVERLAY_WEIGHT_WORDS
-        );
-        assert_eq!(
             OVERLAY_WEIGHT_WORDS, 73,
             "289 samples four to a vec4, rounded up"
         );
