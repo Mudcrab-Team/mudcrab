@@ -52,6 +52,18 @@ impl ProfilingState {
         self.record_ms(name, started.elapsed().as_secs_f64() * 1000.0);
     }
 
+    /// The samples recorded for a span so far, in milliseconds.
+    #[cfg(test)]
+    pub fn span_samples(&self, name: &str) -> &[f64] {
+        self.cpu_spans_ms.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether a timeline event with exactly this stage was recorded.
+    #[cfg(test)]
+    pub fn has_event_stage(&self, stage: &str) -> bool {
+        self.timeline.iter().any(|event| event.stage == stage)
+    }
+
     pub fn record_micros(&mut self, name: impl Into<String>, micros: u64) {
         self.record_ms(name, micros as f64 / 1000.0);
     }
@@ -370,7 +382,12 @@ fn summary_markdown(
     streaming: Option<&StreamingMetrics>,
     renderer: &RendererMetrics,
 ) -> String {
-    let mut top_cpu: Vec<_> = cpu.iter().collect();
+    // `assets_added/*` spans hold counts, not milliseconds (see `schedule_timing`), so they must not
+    // be listed among the slowest spans. They stay in `cpu-spans.json`.
+    let mut top_cpu: Vec<_> = cpu
+        .iter()
+        .filter(|(name, _)| !name.starts_with("assets_added/"))
+        .collect();
     top_cpu.sort_by(|left, right| right.1.total.total_cmp(&left.1.total));
     let mut top_gpu: Vec<_> = render
         .iter()
@@ -388,6 +405,22 @@ fn summary_markdown(
         renderer.indirect_drawing_active,
         renderer.hzb_views,
     );
+    for (key, title) in [
+        ("frames_after_ready", "Frames after world ready"),
+        ("jump_load_window", "Jump loading window"),
+    ] {
+        let window = &frame[key];
+        if window.is_object() {
+            output.push_str(&format!(
+                "- {title}: {} frames, P99 {:.2} ms, worst {:.2} ms, over 33 ms: {}, over 50 ms: {}\n",
+                window["frames"].as_u64().unwrap_or_default(),
+                window["p99_ms"].as_f64().unwrap_or_default(),
+                window["worst_ms"].as_f64().unwrap_or_default(),
+                window["over_33ms"].as_u64().unwrap_or_default(),
+                window["over_50ms"].as_u64().unwrap_or_default(),
+            ));
+        }
+    }
     output.push_str(
         "\n## Top CPU spans\n\n| Span | Mean ms | P95 ms | Total ms |\n|---|---:|---:|---:|\n",
     );
@@ -491,6 +524,30 @@ mod tests {
         assert_eq!(summary.count, 100);
         assert_eq!(summary.p95, 96.0);
         assert_eq!(summary.worst, 100.0);
+    }
+
+    #[test]
+    fn the_top_cpu_table_omits_asset_count_spans() {
+        let mut cpu = BTreeMap::new();
+        cpu.insert("assets_added/mesh".to_owned(), summarize(&[9.0, 9.0]));
+        cpu.insert("streaming/plan".to_owned(), summarize(&[2.0, 3.0]));
+        let render = BTreeMap::new();
+        let summary = summary_markdown(
+            &EngineConfig::default(),
+            &serde_json::json!({}),
+            &cpu,
+            &render,
+            None,
+            &RendererMetrics::default(),
+        );
+        assert!(
+            summary.contains("| streaming/plan |"),
+            "a real span must stay in the table"
+        );
+        assert!(
+            !summary.contains("assets_added/mesh"),
+            "a count span must not be shown as milliseconds"
+        );
     }
 
     #[test]
