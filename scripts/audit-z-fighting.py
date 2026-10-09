@@ -74,7 +74,8 @@ def load_glb(path, geometry=True):
             else:
                 source.seek(size, 1)
             offset += 8 + size
-    if not isinstance(document, dict) or document.get("asset", {}).get("version") != "2.0":
+    asset = document.get("asset") if isinstance(document, dict) else None
+    if not isinstance(asset, dict) or asset.get("version") != "2.0":
         raise AuditError("missing glTF 2.0 document")
     return document, binary
 
@@ -88,9 +89,16 @@ def hash_file(path):
     return digest.hexdigest()
 
 
+def skyrim_tag(material):
+    """Return optional Skyrim metadata only when it is a JSON object."""
+    extras = material.get("extras") if isinstance(material, dict) else None
+    tag = extras.get("openSkyrim") if isinstance(extras, dict) else None
+    return tag if isinstance(tag, dict) else {}
+
+
 def material_risks(material):
     """Return authored depth requirements not implemented by the native hook."""
-    tag = material.get("extras", {}).get("openSkyrim", {})
+    tag = skyrim_tag(material)
     first, second = tag.get("shaderFlags1"), tag.get("shaderFlags2")
     if any(type(value) is not int or not 0 <= value <= 0xffffffff
            for value in (first, second)):
@@ -267,7 +275,7 @@ def triangles(document, binary, max_triangles):
                 normal = tuple(v/length * (-1 if determinant < 0 else 1) for v in normal)
                 bounds = (tuple(min(p[k] for p in points) for k in range(3)),
                           tuple(max(p[k] for p in points) for k in range(3)))
-                tag = material.get("extras", {}).get("openSkyrim", {})
+                tag = skyrim_tag(material)
                 identity = {"node": index, "mesh": mesh_index, "primitive": primitive_index,
                             "triangle": offset//3, "material": material_index,
                             "shape_block": tag.get("shapeBlock"), "shader_block": tag.get("shaderBlock")}
@@ -459,7 +467,7 @@ def audit_file(task):
         if entry["material_risks"] or entry.get("geometry", {}).get("pairs") or entry.get("geometry", {}).get("complete") is False:
             entry["sha256"] = hash_file(path)
             included = True
-    except (OSError, ValueError, KeyError, IndexError, TypeError, struct.error) as error:
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, struct.error) as error:
         errors.append({"path": relative, "error": str(error)})
     return counts, materials, entry if included else None, errors
 

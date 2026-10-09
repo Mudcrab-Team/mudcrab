@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -126,6 +127,70 @@ class OverlapTests(unittest.TestCase):
 
 
 class InputTests(unittest.TestCase):
+    def test_optional_metadata_accepts_non_object_json(self):
+        for value in (None, [], "x", 7, 1.5, True):
+            for metadata in ({"extras": value}, {"extras": {"openSkyrim": value}}):
+                with self.subTest(metadata=metadata):
+                    self.assertIsNone(AUDIT.material_risks(metadata))
+                    document, binary = fixture([(0,0,0), (1,0,0), (0,1,0)], materials=[metadata])
+                    geometry, _ = AUDIT.triangles(document, binary, 100)
+                    self.assertEqual(len(geometry), 1)
+                    self.assertIsNone(geometry[0].identity["shape_block"])
+                    self.assertIsNone(geometry[0].identity["shader_block"])
+
+    def test_non_object_asset_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "test.glb"
+            for value in (None, [], "x", 7, 1.5, True):
+                with self.subTest(asset=value):
+                    document, binary = fixture([(0,0,0), (1,0,0), (0,1,0)])
+                    document["asset"] = value
+                    write_glb(path, document, binary)
+                    with self.assertRaisesRegex(AUDIT.AuditError, "missing glTF 2.0 document"):
+                        AUDIT.load_glb(path)
+
+    def test_cli_malformed_files_do_not_stop_serial_or_parallel_scan(self):
+        for jobs in (1, 2):
+            for risk in (False, True):
+                with self.subTest(jobs=jobs, risk=risk), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    meshes = root / "meshes"
+                    meshes.mkdir()
+                    create_database(root / "skyrim_world.db")
+                    points = [(0,0,0), (1,0,0), (0,1,0)]
+                    document, binary = fixture(points)
+                    document["asset"] = []
+                    write_glb(meshes / "a-invalid-asset.glb", document, binary)
+                    document, binary = fixture(points)
+                    document["materials"] = None
+                    write_glb(meshes / "b-invalid-materials.glb", document, binary)
+                    document, binary = fixture(points)
+                    document["nodes"] = ["x"]
+                    write_glb(meshes / "c-invalid-node.glb", document, binary)
+                    for name, metadata in (("d-extras", {"extras": []}),
+                                           ("e-tag", {"extras": {"openSkyrim": "x"}})):
+                        document, binary = fixture(points, materials=[metadata])
+                        write_glb(meshes / (name + ".glb"), document, binary)
+                    document, binary = fixture(points, materials=[material(
+                        first=AUDIT.DEPTH_TEST | (AUDIT.DECAL if risk else 0))])
+                    write_glb(meshes / "z-valid.glb", document, binary)
+                    report = root / "report.json"
+                    process = subprocess.run([sys.executable, str(SPEC.origin), str(root),
+                        "--jobs", str(jobs), "--out", str(report)], capture_output=True, text=True)
+                    self.assertEqual(process.returncode, 2, process.stderr)
+                    self.assertNotIn("Traceback", process.stderr)
+                    result = json.loads(report.read_text())
+                    self.assertEqual(result["coverage"]["selected_files"], 6)
+                    self.assertEqual(result["coverage"]["geometry_complete_files"], 3)
+                    self.assertEqual(result["material_requirements"]["unannotated"], 2)
+                    self.assertEqual({entry["path"] for entry in result["errors"]},
+                        {"a-invalid-asset.glb", "b-invalid-materials.glb", "c-invalid-node.glb"})
+                    self.assertEqual(result["risks_found"], risk)
+                    self.assertFalse(result["static_scope_passed"])
+                    self.assertTrue(result["coverage_gaps"])
+                    if risk:
+                        self.assertIn("z-valid.glb", [entry["path"] for entry in result["files"]])
+
     def test_depth_requirements_and_blend_exception(self):
         self.assertEqual(AUDIT.material_risks(material()), [])
         self.assertEqual(AUDIT.material_risks(material(AUDIT.DEPTH_TEST | AUDIT.DECAL | AUDIT.DYNAMIC_DECAL, 0)),
