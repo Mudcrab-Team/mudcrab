@@ -2,6 +2,7 @@ pub mod app;
 pub mod color_pipeline;
 pub mod config;
 pub mod lights;
+pub mod mesh_preparation_retry;
 pub mod metrics;
 pub mod nif_material;
 pub mod papyrus_runtime;
