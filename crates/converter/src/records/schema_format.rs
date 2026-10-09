@@ -93,6 +93,13 @@ impl Schema {
                 "conditions" => "",
                 "ai" => "PACK IDLE IDLM AACT",
                 "perks" => "PERK",
+                "world_extras" => "NAVM NAVI REGN ECZN SCOL PLYR CLDC HAIR PWAT RGDL SCPT",
+                "visual_extras" => {
+                    "WTHR CLMT IMGS IMAD LGTM MATO MATT IPCT IPDS CAMS CPTH VOLI LENS SPGD RFCT"
+                }
+                "audio_extras" => {
+                    "SOUN SNDR SOPM SNCT MUSC MUST ASPC REVB FSTP FSTS DOBJ DEBR ADDN AVIF CLFM COLL ANIO TACT LSCR"
+                }
                 _ => return Err(format!("unknown schema family {family}")),
             };
             let module: serde_json::Value =
@@ -255,7 +262,7 @@ impl Schema {
             return Err("schema nesting or definition cycle exceeds 32 levels".into());
         }
         if let Some(signature) = &field.signature {
-            check_signature(signature)?;
+            check_subrecord_signature(signature)?;
         }
         for target in &field.targets {
             if target != "*" {
@@ -396,22 +403,20 @@ fn activate_conditions(value: &mut serde_json::Value) {
                             "name".into(),
                             format!("condition_string_{}", &signature[3..]).into(),
                         );
-                        object.insert("source".into(), "conditions-native".into());
-                    }
                     _ => {}
                 }
-            }
             for child in object.values_mut() {
                 activate_conditions(child);
-            }
         }
         serde_json::Value::Array(values) => {
             for child in values {
-                activate_conditions(child);
-            }
-        }
         _ => {}
     }
+/// Preserve four native ASCII bytes, including binary weather and image curve tags.
+fn check_subrecord_signature(signature: &str) -> Result<(), String> {
+    if signature.len() != 4 || !signature.is_ascii() {
+        return Err(format!("invalid subrecord schema signature {signature:?}"));
+    Ok(())
 }
 
 /// Accept four printable ASCII signature bytes, never variable-width text.
