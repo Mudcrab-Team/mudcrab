@@ -179,17 +179,21 @@ jobs:
 
       - name: Setup kache compiler cache
         uses: kunobi-ninja/kache-action@v1
+        with:
+          # Clippy and tests produce different artifacts. GitHub cache keys are
+          # immutable, so the test build must not compete with Clippy's save.
+          cache-key-prefix: kache-test
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
       - name: Run unit & integration tests
-        run: cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
+        run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
 
       - name: Test GPU texture encoder on software Vulkan
-        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v120_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips)'
+        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips)'
         env:
           WGPU_BACKEND: vulkan
 
@@ -235,7 +239,7 @@ jobs:
           toolchain: "1.98.1"
 
       - name: Run release performance budgets
-        run: cargo test --release -p dummy-content -- --ignored performance --test-threads=1
+        run: cargo test --locked --release -p dummy-content --test performance -- --ignored --nocapture --test-threads=1
 
   tests_pass:
     needs:

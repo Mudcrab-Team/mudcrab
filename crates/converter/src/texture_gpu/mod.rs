@@ -1494,7 +1494,7 @@ mod tests {
     /// CI runs this explicitly with Mesa's software Vulkan adapter. Missing support fails.
     #[test]
     #[ignore = "requires a software Vulkan adapter; CI runs explicitly"]
-    fn v120_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips() {
+    fn v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips() {
         use crate::texture::{TextureConverter, tests::decode_uastc_level};
         let gpu = GpuUastc::new_software_for_test().expect("open software Vulkan encoder");
         let (sender, jobs) = job_channel(&gpu);
