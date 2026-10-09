@@ -191,7 +191,8 @@ class ManifestSafetyTests(unittest.TestCase):
                 ) SELECT sum(n) FROM work''').fetchone()
 
         with mock.patch.object(TOOL, "build", side_effect=costly_query):
-            with mock.patch.object(TOOL.time, "monotonic", side_effect=[0, 121]):
+            calls = iter([0])
+            with mock.patch.object(TOOL.time, "monotonic", side_effect=lambda: next(calls, 121)):
                 error = io.StringIO()
                 with contextlib.redirect_stderr(error), self.assertRaises(SystemExit) as raised:
                     TOOL.main([str(self.database), "--output", str(output)])
