@@ -2,6 +2,7 @@ use crate::esm::{
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
     load_order::LoadOrder,
     records::RawRecord,
+    strings::PluginStrings,
 };
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
@@ -232,19 +233,35 @@ type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 /// Export selected records without changing existing provenance. Grass records
 /// outside this subset are preserved; movement projections are rebuilt from it.
 /// Synthetic records without a source load order have no formid_map entry.
+/// Without a load order, lstring fields are read as text.
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
-    export_records(conn, master, None)
+    export_records(conn, master, None, &PluginStrings::text_only())
 }
 
 /// Export a complete effective load order, replacing both grass projections.
 /// Record stable owning-plugin/local-ID pairs separately from the winning
-/// override priority in records.load_order.
+/// override priority in records.load_order. Localized plugins have no string
+/// tables here, so their lstring fields are stored as NULL.
 pub fn export_to_db_with_load_order(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
 ) -> Result<()> {
-    export_records(conn, master, Some(order))
+    let strings = PluginStrings::load(order, &Default::default());
+    export_to_db_with_strings(conn, master, order, &strings)
+}
+
+/// Export a complete effective load order, resolving localized plugins'
+/// lstring fields through their string tables.
+pub fn export_to_db_with_strings(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: &LoadOrder,
+    strings: &PluginStrings,
+) -> Result<()> {
+    export_records(conn, master, Some(order), strings)?;
+    strings.report();
+    Ok(())
 }
 
 /// Writes every merged record; with a load order, also records each record's
@@ -253,6 +270,7 @@ fn export_records(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
+    strings: &PluginStrings,
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
@@ -401,9 +419,10 @@ fn export_records(
             }
             "NPC_" => {
                 let view = SubrecordView::new(&record.subrecords);
+                let full_name = strings.lstring(record.load_order, form_id, view.find(b"FULL"));
                 tx.execute(
                     "INSERT OR REPLACE INTO npcs(id, editor_id, full_name, race_id, class_id, flags) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![form_id, view.get_string(b"EDID"), view.get_string(b"FULL"), view.get_form_id(b"RNAM"), view.get_form_id(b"CNAM"), record.flags],
+                    params![form_id, view.get_string(b"EDID"), full_name, view.get_form_id(b"RNAM"), view.get_form_id(b"CNAM"), record.flags],
                 )?;
             }
             "RACE" => {

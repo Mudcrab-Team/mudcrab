@@ -452,3 +452,31 @@ grass definitions. The subset export used by movement annotation preserves unrel
 grass rows; if it includes an LTEX, only that texture's association list is replaced.
 Movement annotation continues to accept schema 4 through the current schema and
 preserves the existing database version; it does not perform a full reconversion.
+
+---
+
+### 15. NPC Base Records (`npcs`)
+
+One row per winning `NPC_` record. `full_name` is the record's `FULL` name. A
+plugin with the TES4 `Localized` flag (0x80), which every official master sets,
+stores `FULL` as a 4-byte ID into `Strings/<plugin>_<language>.STRINGS` instead
+of as text; the converter resolves it through the table of the plugin that
+supplied the winning record, so a localized override uses its own table and a
+plain plugin's override stays text. Tables are read from loose files first, then
+from the plugin's extracted archives, matching names without regard to case.
+`--language` (`PipelineConfig.language`, default `english`) selects the table,
+as Skyrim's `sLanguage` does. A string ID of 0, a missing table or a missing
+string stores `NULL` - never the ID's bytes read as text - and the conversion
+prints one warning per affected plugin. A string that is not valid UTF-8 is read
+as Windows-1252.
+
+```sql
+CREATE TABLE IF NOT EXISTS npcs (
+    id INTEGER PRIMARY KEY,        -- NPC_ FormID
+    editor_id TEXT,
+    full_name TEXT,                -- FULL, resolved through the string table when localized
+    race_id INTEGER,               -- RNAM
+    class_id INTEGER,              -- CNAM
+    flags INTEGER NOT NULL         -- record header flags
+);
+```

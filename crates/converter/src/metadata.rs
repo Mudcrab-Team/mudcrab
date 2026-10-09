@@ -12,7 +12,10 @@ use crate::{
         CONVERTER_SCHEMA_VERSION, ConversionManifest, configuration_hash, hash_bytes, hash_file,
         retained_configuration_matches,
     },
-    esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
+    esm::{
+        EsmParser, cell_cache::write_cell_cache, exporter::validate_database,
+        strings::StringsSource,
+    },
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, prune_glb_texture_bytes},
@@ -290,6 +293,7 @@ async fn rebuild_into(
     fs::create_dir(&vfs)?;
     for archive in &archives {
         ArchiveExtractor::extract_lod_settings(archive, &vfs)?;
+        ArchiveExtractor::extract_strings(archive, &vfs)?;
     }
     let loose: Vec<_> = files
         .iter()
@@ -308,7 +312,12 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    let merged = EsmParser::convert_plugins_with_records(plugins, &database)?;
+    // Loose string tables override the ones extracted from archives.
+    let strings = StringsSource {
+        roots: vec![config.data_dir.clone(), vfs.clone()],
+        language: config.language.clone(),
+    };
+    let merged = EsmParser::convert_plugins_with_records(plugins, &database, &strings)?;
     validate_database(&Connection::open(&database)?)?;
     write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
     drop(merged);
