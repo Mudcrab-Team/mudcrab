@@ -2563,10 +2563,27 @@ async fn compile_lod_chunks_with_cancel(
     }
     use rayon::prelude::*;
     let connection = Connection::open(&db_path)?;
-    let reuse = if config.invalidate_cache {
+    let prior_package = reuse_root.join("conversion-manifest.json").exists()
+        || reuse_root.join("lod-manifest.json").exists()
+        || reuse_root.join("skyrim_world.db").exists();
+    let reuse = if config.invalidate_cache || !prior_package {
         None
     } else {
-        LodReuse::open(reuse_root).ok()
+        match LodReuse::open(reuse_root) {
+            Ok(reuse) => Some(reuse),
+            Err(error) => {
+                let message = format!("Previous terrain LOD package refused: {error:#}");
+                report.notices.push(message.clone());
+                let _ = progress_tx
+                    .send(ProgressEvent::notice(
+                        ProgressStage::LodChunks,
+                        None,
+                        &message,
+                    ))
+                    .await;
+                None
+            }
+        }
     };
     let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
     let mut texture_cache = TerrainTextureCache::default();
@@ -2598,7 +2615,7 @@ async fn compile_lod_chunks_with_cancel(
     let mut gpu_attempted = false;
     enum LodBatchItem {
         Reused(TerrainChunk, String),
-        Prepared(PreparedTerrainChunk, TerrainAtlas, String),
+        Prepared(PreparedTerrainChunk, TerrainAtlas, String, Option<String>),
     }
     'world: for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
         interrupt(cancellation)?;
@@ -2721,6 +2738,7 @@ async fn compile_lod_chunks_with_cancel(
         let mut reused = 0u64;
         let mut gpu_chunks = 0u64;
         let mut fallback_chunks = 0u64;
+        let mut refusals = BTreeMap::<String, u64>::new();
         let mut content_error = validation.err();
         for batch in jobs.chunks(compiler_pool.current_num_threads()) {
             if content_error.is_some() {
@@ -2738,14 +2756,16 @@ async fn compile_lod_chunks_with_cancel(
                             &textures,
                             config.lod_texture_encoder,
                         )?;
-                        if let Some(chunk) = reuse
-                            .as_ref()
-                            .and_then(|reuse| reuse.chunk(job, origin, &input_hash))
-                        {
-                            return Ok(LodBatchItem::Reused(chunk, input_hash));
-                        }
+                        let refusal = if let Some(reuse) = &reuse {
+                            match reuse.chunk(job, origin, &input_hash) {
+                                Ok(chunk) => return Ok(LodBatchItem::Reused(chunk, input_hash)),
+                                Err(error) => Some(format!("{error:#}")),
+                            }
+                        } else {
+                            None
+                        };
                         let (geometry, atlas) = job.prepare(origin, &textures)?;
-                        Ok(LodBatchItem::Prepared(geometry, atlas, input_hash))
+                        Ok(LodBatchItem::Prepared(geometry, atlas, input_hash, refusal))
                     })
                     .collect()
             });
@@ -2763,10 +2783,10 @@ async fn compile_lod_chunks_with_cancel(
             for (position, item) in items.into_iter().enumerate() {
                 match item {
                     LodBatchItem::Reused(chunk, input_hash) => {
-                        chunks[position] = Some((chunk, input_hash, true, true))
+                        chunks[position] = Some((chunk, input_hash, true, true, None))
                     }
-                    LodBatchItem::Prepared(geometry, atlas, input_hash) => {
-                        prepared.push((position, geometry, input_hash));
+                    LodBatchItem::Prepared(geometry, atlas, input_hash, refusal) => {
+                        prepared.push((position, geometry, input_hash, refusal));
                         atlases.push(atlas);
                     }
                 }
@@ -2808,13 +2828,14 @@ async fn compile_lod_chunks_with_cancel(
                 prepared
                     .into_par_iter()
                     .zip(encoded)
-                    .map(|((position, geometry, input_hash), atlas)| {
+                    .map(|((position, geometry, input_hash, refusal), atlas)| {
                         Ok((
                             position,
                             geometry.finish(&atlas.bytes)?,
                             input_hash,
                             atlas.gpu_used,
                             atlas.fallback_reason,
+                            refusal,
                         ))
                     })
                     .collect()
@@ -2826,7 +2847,7 @@ async fn compile_lod_chunks_with_cancel(
                     break;
                 }
             };
-            for (position, chunk, input_hash, gpu_used, fallback_reason) in finished {
+            for (position, chunk, input_hash, gpu_used, fallback_reason, refusal) in finished {
                 let reusable =
                     matches!(config.lod_texture_encoder, TextureEncoder::Cpu) || gpu_used;
                 if gpu_used {
@@ -2844,17 +2865,20 @@ async fn compile_lod_chunks_with_cancel(
                         .notices
                         .push(format!("Terrain atlas GPU fallback: {reason}"));
                 }
-                chunks[position] = Some((chunk, input_hash, false, reusable));
+                chunks[position] = Some((chunk, input_hash, false, reusable, refusal));
             }
             if content_error.is_some() {
                 break;
             }
             interrupt(cancellation)?;
-            for (chunk, input_hash, hit, reusable) in chunks.into_iter().flatten() {
+            for (chunk, input_hash, hit, reusable, refusal) in chunks.into_iter().flatten() {
                 publish_chunk(&tx, staging, &chunk)?;
                 let relative = shared::lod::chunk_payload_path(chunk.key);
                 accepted.push((relative, input_hash, hash_bytes(&chunk.glb), reusable));
                 reused += u64::from(hit);
+                if let Some(reason) = refusal {
+                    *refusals.entry(reason).or_default() += 1;
+                }
             }
             send(
                 progress_tx,
@@ -2894,6 +2918,31 @@ async fn compile_lod_chunks_with_cancel(
             continue 'world;
         }
         tx.commit()?;
+        for (reason, count) in refusals {
+            let message =
+                format!("Terrain LOD {editor_id}: {count} cached chunks refused: {reason}");
+            report.notices.push(message.clone());
+            let _ = progress_tx
+                .send(ProgressEvent::notice(
+                    ProgressStage::LodChunks,
+                    None,
+                    &message,
+                ))
+                .await;
+        }
+        let message = format!(
+            "Terrain LOD {editor_id}: {reused} reused, {} rebuilt, {} total chunks",
+            accepted.len() as u64 - reused,
+            accepted.len()
+        );
+        report.notices.push(message.clone());
+        let _ = progress_tx
+            .send(ProgressEvent::notice(
+                ProgressStage::LodChunks,
+                None,
+                &message,
+            ))
+            .await;
         terrain_sources.extend(textures.source_hashes);
         report.lod_chunks += accepted.len() as u64;
         report.lod_cache_hits += reused;

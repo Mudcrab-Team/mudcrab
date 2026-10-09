@@ -146,9 +146,24 @@ fn the_converter_binary_prints_a_few_status_lines_and_a_summary() {
         "a piped fixture run printed {} status lines:\n{stderr}",
         lines.len()
     );
+    let lod_totals = "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks";
     assert!(
-        lines.iter().all(|line| line.contains(" elapsed")),
+        lines
+            .iter()
+            .all(|line| line.contains(" elapsed") || line.ends_with(lod_totals)),
         "{stderr}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.ends_with(lod_totals))
+            .count(),
+        1,
+        "one final per-world totals notice:\n{stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("  note: {lod_totals}")),
+        "{stdout}"
     );
     assert!(stdout.contains("Conversion complete in"), "{stdout}");
     assert!(stdout.contains("converted"), "{stdout}");

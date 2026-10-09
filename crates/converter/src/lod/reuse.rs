@@ -5,7 +5,7 @@ use crate::{
     asset_path::resolve_asset_uri,
     cache::{CONVERTER_SCHEMA_VERSION, ConversionManifest, hash_bytes},
 };
-use color_eyre::{Result, eyre::ensure};
+use color_eyre::{Result, eyre::WrapErr, eyre::ensure};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use shared::lod::LodOrigin;
@@ -50,16 +50,22 @@ struct CachedLodChunk {
 
 impl LodReuse {
     pub(crate) fn open(root: &Path) -> Result<Self> {
-        let conversion: ConversionManifest =
-            serde_json::from_slice(&fs::read(root.join("conversion-manifest.json"))?)?;
+        let conversion_path = root.join("conversion-manifest.json");
+        let conversion: ConversionManifest = serde_json::from_slice(
+            &fs::read(&conversion_path)
+                .wrap_err_with(|| format!("failed to read {}", conversion_path.display()))?,
+        )?;
         ensure!(
             conversion.complete
                 && conversion.failures.is_empty()
                 && conversion.schema_version == CONVERTER_SCHEMA_VERSION,
             "LOD reuse requires a complete current producer package"
         );
-        let manifest: LodManifest =
-            serde_json::from_slice(&fs::read(root.join("lod-manifest.json"))?)?;
+        let manifest_path = root.join("lod-manifest.json");
+        let manifest: LodManifest = serde_json::from_slice(
+            &fs::read(&manifest_path)
+                .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?,
+        )?;
         ensure!(
             manifest.compiler_version == crate::lod::TERRAIN_COMPILER_VERSION,
             "LOD compiler identity changed"
@@ -85,8 +91,8 @@ impl LodReuse {
         job: &TerrainChunkInput<'_>,
         origin: LodOrigin,
         input_hash: &str,
-    ) -> Option<TerrainChunk> {
-        self.checked_chunk(job, origin, input_hash).ok()
+    ) -> Result<TerrainChunk> {
+        self.checked_chunk(job, origin, input_hash)
     }
 
     fn checked_chunk(

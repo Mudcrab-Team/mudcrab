@@ -1408,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn v123_exported_enable_parent_ignores_xesp_padding() {
+    fn v174_exported_enable_parent_ignores_xesp_padding() {
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
         let mut master = HashMap::new();

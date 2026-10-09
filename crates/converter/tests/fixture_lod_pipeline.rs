@@ -468,7 +468,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
 }
 
 #[tokio::test]
-async fn v120_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads() {
+async fn v171_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads() {
     use dummy_content::esm;
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
@@ -503,6 +503,12 @@ async fn v120_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads(
     assert!(cold.complete);
     assert_eq!(cold.lod_chunks, 6);
     assert_eq!(cold.lod_cache_hits, 0);
+    assert!(
+        !cold
+            .notices
+            .iter()
+            .any(|notice| { notice.contains("Previous terrain LOD package refused") })
+    );
     let manifest_path = output.join("lod-manifest.json");
     let original_manifest = fs::read(&manifest_path).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
@@ -546,6 +552,88 @@ async fn v120_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads(
     assert_eq!(repaired.lod_cache_hits, cold.lod_chunks - 1);
     assert_eq!(fs::read(output.join(&paths[0])).unwrap(), payloads[0]);
 
+    // A prior producer may have recorded matching hashes for malformed bytes. Node and
+    // mesh references must fail validation rather than panic, and only that chunk rebuilds.
+    for bad_mesh in [false, true] {
+        let bytes = &payloads[0];
+        let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
+        let nodes = json["nodes"].as_array_mut().unwrap();
+        let cell_index = nodes
+            .iter()
+            .position(|node| {
+                node["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("cell_"))
+            })
+            .unwrap();
+        let group_index = nodes[cell_index]["children"][0].as_u64().unwrap() as usize;
+        let quadrant_index = nodes[group_index]["children"][0].as_u64().unwrap() as usize;
+        // Exercise forward references: the old one-pass validation checks the source cell
+        // before the terrain group's children or the quadrant's mesh.
+        assert!(cell_index < group_index && cell_index < quadrant_index);
+        if bad_mesh {
+            nodes[quadrant_index]["mesh"] = serde_json::json!(u32::MAX);
+        } else {
+            nodes[group_index]["children"][0] = serde_json::json!(u32::MAX);
+        }
+        let mut json_bytes = serde_json::to_vec(&json).unwrap();
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
+        let mut malformed = bytes[..12].to_vec();
+        malformed.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        malformed.extend_from_slice(b"JSON");
+        malformed.extend_from_slice(&json_bytes);
+        malformed.extend_from_slice(&bytes[20 + json_length..]);
+        let total = malformed.len() as u32;
+        malformed[8..12].copy_from_slice(&total.to_le_bytes());
+        fs::write(output.join(&paths[0]), &malformed).unwrap();
+        let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        db.execute(
+            "UPDATE lod_chunks SET content_hash=?1 WHERE payload_path=?2",
+            rusqlite::params![converter::cache::hash_bytes(&malformed), paths[0]],
+        )
+        .unwrap();
+        drop(db);
+        let repaired = convert_config(config()).await;
+        assert!(repaired.complete);
+        assert_eq!(repaired.lod_cache_hits, cold.lod_chunks - 1);
+        assert_eq!(repaired.lod_chunks, cold.lod_chunks);
+        assert_eq!(fs::read(output.join(&paths[0])).unwrap(), payloads[0]);
+        assert!(
+            repaired.notices.iter().any(|notice| {
+                notice.contains("1 cached chunks refused")
+                    && notice.contains(if bad_mesh {
+                        "missing mesh"
+                    } else {
+                        "missing node"
+                    })
+            }),
+            "{:?}",
+            repaired.notices
+        );
+        assert!(repaired.notices.iter().any(|notice| {
+            notice == "Terrain LOD GeneratedWorld: 5 reused, 1 rebuilt, 6 total chunks"
+        }));
+        for (path, bytes) in paths.iter().zip(&payloads) {
+            assert_eq!(fs::read(output.join(path)).unwrap(), *bytes);
+        }
+    }
+
+    // A prior package with a deleted manifest reports why all chunks rebuilt. A missing
+    // manifest is not treated as a fresh output when the prior package's other files remain.
+    fs::remove_file(&manifest_path).unwrap();
+    let rebuilt = convert_config(config()).await;
+    assert!(rebuilt.complete);
+    assert_eq!(rebuilt.lod_cache_hits, 0);
+    assert_eq!(rebuilt.lod_chunks, cold.lod_chunks);
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice.contains("Previous terrain LOD package refused")
+            && notice.contains("lod-manifest.json")
+    }));
+
     // A same-numbered legacy manifest has no explicit current compiler proof.
     let mut unproven = original.clone();
     unproven.as_object_mut().unwrap().remove("compiler_version");
@@ -553,6 +641,13 @@ async fn v120_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads(
     let rebuilt = convert_config(config()).await;
     assert_eq!(rebuilt.lod_cache_hits, 0);
     assert_eq!(rebuilt.lod_chunks, cold.lod_chunks);
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice.contains("Previous terrain LOD package refused")
+            && notice.contains("LOD compiler identity changed")
+    }));
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice == "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+    }));
 
     // Editing one LAND height affects its three tiers, leaving the other cell reusable.
     let mut changed_plugin = plugin.clone();

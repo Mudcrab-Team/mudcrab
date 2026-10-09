@@ -9,7 +9,7 @@ The corrected Fiji cold/warm pair passed: cold generated 4,673 chunks with zero
 chunk hits; warm reused **all 4,673 chunks**. Both runs completed, passed integration,
 converted/skipped zero ordinary inputs and preserved all 76,213 ordinary entry
 proofs. An independent pass verified every final ordinary output size/hash and
-every LOD payload hash. T43 is complete; runtime captures remain deferred under T40.
+every LOD payload hash. T70 is complete; runtime captures remain deferred under T40.
 
 The change removes a second, disposable atlas mip encoding; shares one validated
 cell snapshot and decoded terrain textures across worlds; publishes bounded chunk
@@ -304,3 +304,13 @@ legacy-proof misses, affected-tier rebuilds, origin/diffuse invalidation, remove
 cells, metadata-source preservation and later-batch world rollback.
 
 This work does not supply new runtime rendering captures or complete deferred T40.
+
+## Cached payload validation follow-up
+
+Malformed prior payloads with a matching recorded hash now return a validation error for missing terrain groups, quadrant nodes or meshes, rather than panic. The affected chunk rebuilds; independently verified chunks continue to reuse. Package and chunk refusal reasons, and committed per-world reused/rebuilt totals, remain in the final report notices. Stage progress remains labeled; no overall LOD weight or ETA is invented.
+
+The winning-priority LAND tie policy is intentional: distinct LAND records for one cell at the highest plugin priority stop conversion before publication. Different priorities select the highest winner.
+
+These changes and the merged grass repair have no new Fiji cold/warm acceptance run. The native measurements and hashes above still describe `c9894ed`.
+
+Local follow-up validation on macOS: `cargo test --offline --locked -p converter --test fixture_lod_pipeline -- --test-threads=1` passed all 10 tests, including the combined grass export, normal/metadata/no-LOD routes and both matching-hash malformed-cache cases. The affected payload was restored while the five valid chunks reused. The external Fiji acceptance limits above are unchanged.
