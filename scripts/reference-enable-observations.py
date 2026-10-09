@@ -9,8 +9,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
+import tempfile
 import time
 
 
@@ -155,14 +157,47 @@ def build(database, path):
             "snapshot_sha256": digest, **proof}
 
 
-def main():
+def validate_destination(database, output, verify):
+    destination = output if output is not None else verify
+    if destination.resolve() == database.resolve() or (
+        destination.exists() and database.exists() and destination.samefile(database)
+    ):
+        raise ValueError("manifest path must differ from the database")
+    if output is not None and (output.exists() or output.is_symlink()):
+        raise ValueError("output path already exists; choose a new manifest path")
+    if verify is not None and not verify.is_file():
+        raise ValueError("verification manifest must be an existing file")
+
+
+def publish_manifest(path, manifest):
+    # Link a completed temporary file into a new name. Unlike replace/write_text,
+    # this refuses an existing destination even if it appeared after validation.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path)
     destination = parser.add_mutually_exclusive_group(required=True)
     destination.add_argument("--output", type=Path)
     destination.add_argument("--verify", type=Path, help="verify the unobserved source manifest")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
+        validate_destination(args.database, args.output, args.verify)
         with sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro", uri=True) as database:
             database.row_factory = sqlite3.Row
             deadline = time.monotonic() + 120
@@ -171,10 +206,10 @@ def main():
             database.execute("BEGIN")
             manifest = build(database, args.database)
         if args.verify:
-            if json.loads(args.verify.read_text()) != manifest:
+            if json.loads(args.verify.read_text(encoding="utf-8")) != manifest:
                 raise ValueError("manifest differs from the bounded database snapshot")
         else:
-            args.output.write_text(json.dumps(manifest, indent=2) + "\n")
+            publish_manifest(args.output, manifest)
         selected = sum(case["sample_status"] == "selected" for case in manifest["cases"])
         print(f"Verified database samples: {selected}/{len(manifest['cases'])}; retail gate pending")
     except (OSError, ValueError, sqlite3.Error) as error:
