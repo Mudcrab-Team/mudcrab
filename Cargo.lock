@@ -2848,6 +2848,7 @@ dependencies = [
  "sha2",
  "shared",
  "tempfile",
+ "wgpu",
  "windows-sys 0.61.2",
 ]
 

@@ -394,6 +394,8 @@ impl AssetPipeline {
     /// Converts resolved inputs into staging, reusing valid cached outputs and reporting progress.
     ///
     /// Rebuilds MO2 input selection on resume and records conversion results in the staging manifest.
+    /// Preserves usable outputs through texture repair, alias publication, pruning, and artifact
+    /// verification, and returns the report for pack publication.
     async fn run_into(
         config: &PipelineConfig,
         staging: &Path,
@@ -803,7 +805,7 @@ impl AssetPipeline {
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .collect();
         invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
-        let texture_semantics = collect_texture_semantics(staging)?;
+        let texture_semantics = collect_texture_semantics(staging, &source_textures)?;
         {
             let mut batch = ConversionBatch {
                 config,
@@ -827,6 +829,10 @@ impl AssetPipeline {
                     &BTreeSet::new(),
                 )
                 .await?;
+            // Repair after the canonical DDS target publishes, retaining sampler aliases in
+            // the URI so the alias publisher below creates the correct per-image variant.
+            let mut repaired =
+                MeshConverter::repair_volcanic_grass_normals(staging, &source_textures)?;
             let aliases = publish_texture_aliases(staging)?;
             batch.report.artifacts.extend(aliases);
             // A reused mesh that still holds its published bytes keeps the prune record of the
@@ -866,14 +872,27 @@ impl AssetPipeline {
             }
             // A missing artifact whose DDS source exists under `staging/vfs` is a failed
             // publication, not absent game data: the prune leaves those references alone.
-            let pruned =
+            let mut pruned =
                 MeshConverter::prune_dangling_texture_uris_with_sources(staging, &source_textures)?;
+            pruned.append(&mut repaired);
             let pruned_uris: u64 = pruned
                 .iter()
                 .map(|file| file.removed_uris.len() as u64)
                 .sum();
             let mut pruned_completed = 0;
             for file in &pruned {
+                for (original, target) in &file.repaired_uris {
+                    send_notice(
+                        progress_tx,
+                        ProgressStage::Textures,
+                        Some(PathBuf::from(&file.glb)),
+                        &format!(
+                            "repaired texture {original} -> {target} referenced by {}",
+                            file.glb
+                        ),
+                    )
+                    .await;
+                }
                 for uri in &file.removed_uris {
                     pruned_completed += 1;
                     // The warning goes out as a notice on the progress channel rather than to
@@ -917,18 +936,18 @@ impl AssetPipeline {
                     batch.record_pruned_texture_reference(glb, reference);
                 }
             }
-            // The prune rewrote the GLB after its cache entry was recorded, so refresh every
+            // Repair or pruning rewrote the GLB after its cache entry was recorded, so refresh every
             // entry that publishes it from the rewritten bytes. Otherwise the next run fails the
             // entry's size and hash check and converts the mesh again.
             //
             // The staging journal is deliberately left alone. A journal record carries no prune
             // references, so certifying the pruned bytes would let a resumed run reuse the mesh
             // with nothing left for the prune pass to find, and the published manifest would lose
-            // the record. The mesh's journal record still holds its pre-prune hash, which the
-            // pruned file no longer matches, so a resume converts it again and prunes it again.
+            // the record. The mesh's journal record still holds its original conversion hash,
+            // which repaired or pruned bytes no longer match, so a resume rewrites it again.
             let pruned_outputs: BTreeSet<String> = pruned
                 .iter()
-                .filter(|file| !file.removed_uris.is_empty())
+                .filter(|file| !file.removed_uris.is_empty() || !file.repaired_uris.is_empty())
                 .map(|file| file.glb.clone())
                 .collect();
             for entry in batch.manifest.entries.values_mut() {
@@ -1099,6 +1118,7 @@ impl ConversionBatch<'_> {
     /// Converts every file of one kind (`dds`, `nif` or `pex`) on the worker pool, reusing cached
     /// and staged outputs, and records each result in the manifest, the journal and the report.
     /// Textures the GPU encoder takes are batched to it instead of being encoded on a worker.
+    /// Scoped mesh repair hashes use source-texture presence from the full VFS snapshot.
     async fn convert_kind(
         &mut self,
         files: &[PathBuf],
@@ -1187,6 +1207,7 @@ impl ConversionBatch<'_> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
+        let source_textures = texture_source_keys(self.staging, files);
         let etc1s_quality = self.config.texture_fallback_quality;
         let uastc_level = self.config.texture_uastc_level;
         let zstd_level = self.config.texture_zstd_level;
@@ -1331,14 +1352,18 @@ impl ConversionBatch<'_> {
                         {
                             return;
                         }
-                        // A mesh whose pruned texture source is back must be converted again:
-                        // the mesh cache does not hash texture dependencies, so a reused GLB
-                        // would never regain the reference.
+                        // Retry a mesh whose pruned source or scoped fallback is back. General
+                        // mesh hashes omit texture bytes, and the volcanic presence bits alone
+                        // cannot detect a failed fallback DDS repaired in place.
                         let forced =
                             force_reconvert.contains(target_rel.to_string_lossy().as_ref());
                         let target = staging_root.join(&target_rel);
 
-                        let source_hash = hash_file(&source);
+                        let source_hash = if source_kind == "nif" {
+                            crate::mesh::nif_source_hash(&source, &key, &source_textures)
+                        } else {
+                            hash_file(&source)
+                        };
                         let mut hash = match source_hash {
                             Ok(h) => h,
                             Err(err) => {
@@ -1787,9 +1812,10 @@ impl ConversionBatch<'_> {
     }
 }
 
-/// Collects texture usage from staged GLBs and the world database, grouped by source texture key.
+/// Collects texture usage from staged GLBs and the world database, including scoped replacement normals.
 pub(crate) fn collect_texture_semantics(
     staging: &Path,
+    source_textures: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, BTreeSet<TextureSemantic>>> {
     use rayon::prelude::*;
     let mut semantics = BTreeMap::<String, BTreeSet<TextureSemantic>>::new();
@@ -1810,14 +1836,35 @@ pub(crate) fn collect_texture_semantics(
                         AssetKind::Texture,
                         "ktx2",
                     )
-                    .and_then(|key| source_texture_key(&key))?;
-                    Ok((key, dependency.semantic))
+                    .and_then(|key| source_texture_key(&key))
+                    .wrap_err_with(|| {
+                        format!(
+                            "invalid texture dependency {:?} resolved from {}",
+                            dependency.uri,
+                            glb.display()
+                        )
+                    })?;
+                    let replacement = if dependency.semantic == TextureSemantic::Normal {
+                        let model = glb
+                            .strip_prefix(staging)
+                            .ok()
+                            .map(|path| path.to_string_lossy().replace('\\', "/"));
+                        model.and_then(|model| {
+                            crate::mesh::volcanic_normal_replacement(&model, &key, source_textures)
+                        })
+                    } else {
+                        None
+                    };
+                    Ok((key, dependency.semantic, replacement))
                 })
                 .collect()
         })
         .collect::<Result<Vec<_>>>()?;
-    for (key, semantic) in dependencies.into_iter().flatten() {
+    for (key, semantic, replacement) in dependencies.into_iter().flatten() {
         semantics.entry(key).or_default().insert(semantic);
+        if let Some(replacement) = replacement {
+            semantics.entry(replacement).or_default().insert(semantic);
+        }
     }
 
     let database = staging.join("skyrim_world.db");
@@ -1901,9 +1948,9 @@ fn texture_reference_source_key(reference: &str) -> Option<String> {
     canonical_asset_path(&source, AssetKind::Texture, "dds").ok()
 }
 
-/// Target outputs of meshes that must be converted again: one of their pruned references has
-/// its source back under `staging/vfs`. The mesh cache does not hash texture dependencies, so a
-/// reused GLB would never regain the restored reference.
+/// Meshes whose pruned reference has its source back, or whose scoped volcanic fallback source
+/// is present. Retry the latter even when source presence is unchanged: its first DDS conversion
+/// may have failed, leaving the authored reference pruned behind the mesh cache.
 fn restored_mesh_outputs(
     previous: &ConversionManifest,
     source_textures: &BTreeSet<String>,
@@ -1911,10 +1958,13 @@ fn restored_mesh_outputs(
     previous
         .pruned_texture_references
         .iter()
-        .filter(|(_, references)| {
+        .filter(|(glb, references)| {
             references.iter().any(|reference| {
                 texture_reference_source_key(reference)
                     .is_some_and(|key| source_textures.contains(&key))
+                    || crate::mesh::volcanic_normal_replacement(glb, reference, source_textures)
+                        .and_then(|replacement| texture_reference_source_key(&replacement))
+                        .is_some_and(|key| source_textures.contains(&key))
             })
         })
         .map(|(glb, _)| glb.clone())
@@ -4995,6 +5045,146 @@ mod tests {
         assert!(!conversion_is_complete(&report));
     }
 
+    /// Both volcanic models recover failed fallback publication and follow loose mod changes.
+    #[tokio::test]
+    async fn volcanic_normal_pipeline_publishes_target_and_tracks_mod_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("meshes/landscape/grass")).unwrap();
+        fs::create_dir_all(data.join("textures/dlc02/landscape/grass")).unwrap();
+        fs::create_dir_all(data.join("textures/landscape/grass")).unwrap();
+        let positions = [[-2.0, -1.0, 0.0], [3.0, -1.0, 0.0], [0.0, 4.0, 0.0]];
+        let normals = [[0.0, 0.0, 1.0]; 3];
+        let uvs = [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]];
+        let indices = [[0, 1, 2]];
+        for model in [
+            "dlc02volcanicashgrass01",
+            "dlc02volcanicashgrass02",
+            "control",
+        ] {
+            let shape = dummy_content::nif::StaticShape {
+                name: model,
+                positions: &positions,
+                normals: &normals,
+                uvs: &uvs,
+                indices: &indices,
+                diffuse: "textures/present.dds",
+                normal_texture: if model == "control" {
+                    ""
+                } else {
+                    "textures/landscape/grass/volcanicashgrass02_n.dds"
+                },
+            };
+            let mut nif = dummy_content::nif::static_shape(&shape).unwrap();
+            // This generated four-block fixture ends with a nine-slot texture set and the
+            // 100-byte lighting shader directly before it. Enable its authored specular flag.
+            let texture_set_size = 4 + 9 * 4 + shape.diffuse.len() + shape.normal_texture.len();
+            let shader = nif.len() - texture_set_size - 100;
+            assert_eq!(&nif[shader + 16..shader + 20], &0u32.to_le_bytes());
+            nif[shader + 16..shader + 20].copy_from_slice(&1u32.to_le_bytes());
+            fs::write(
+                data.join(format!("meshes/landscape/grass/{model}.nif")),
+                nif,
+            )
+            .unwrap();
+        }
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc7Unorm, 8, 8),
+            &mut dummy_content::rng::Rng::new(71),
+        )
+        .unwrap();
+        fs::write(data.join("textures/present.dds"), &dds).unwrap();
+        fs::write(
+            data.join("textures/dlc02/landscape/grass/volcanicashgrass02_n.dds"),
+            &dds,
+        )
+        .unwrap();
+        let override_dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc7Unorm, 8, 8),
+            &mut dummy_content::rng::Rng::new(93),
+        )
+        .unwrap();
+        assert_ne!(dds, override_dds);
+        let target_source = data.join("textures/dlc02/landscape/grass/volcanicashgrass02_n.dds");
+        fs::write(&target_source, b"invalid DDS, still present in the VFS").unwrap();
+        let failed = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(
+            !failed.complete,
+            "invalid target texture cannot complete publication"
+        );
+        for model in ["dlc02volcanicashgrass01", "dlc02volcanicashgrass02"] {
+            let glb = output.join(format!("meshes/landscape/grass/{model}.glb"));
+            assert_eq!(MeshConverter::glb_texture_uris(&glb).unwrap().len(), 1);
+        }
+        // Repair the DDS bytes without changing either source-presence bit or any NIF bytes.
+        fs::write(&target_source, &dds).unwrap();
+        let mut control_bytes = None;
+        for (run, original) in [false, true, false, false].into_iter().enumerate() {
+            let source = data.join("textures/landscape/grass/volcanicashgrass02_n.dds");
+            if original {
+                fs::write(&source, &override_dds).unwrap();
+            } else if source.exists() {
+                fs::remove_file(&source).unwrap();
+            }
+            let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+            assert!(report.complete, "{:?}", report.warnings);
+            let control = fs::read(output.join("meshes/landscape/grass/control.glb")).unwrap();
+            if let Some(previous) = &control_bytes {
+                assert_eq!(&control, previous);
+                assert!(
+                    report.cache_hits >= 2,
+                    "unchanged control and diffuse must be reused"
+                );
+            } else {
+                control_bytes = Some(control);
+            }
+            if run == 3 {
+                assert_eq!(
+                    report.converted, 0,
+                    "unchanged repaired meshes must remain cache hits"
+                );
+            }
+            for model in ["dlc02volcanicashgrass01", "dlc02volcanicashgrass02"] {
+                let glb = output.join(format!("meshes/landscape/grass/{model}.glb"));
+                let uris = MeshConverter::glb_texture_uris(&glb).unwrap();
+                let expected = if original {
+                    "../../../textures/landscape/grass/volcanicashgrass02_n.opensky-wrap0.ktx2"
+                } else {
+                    "../../../textures/dlc02/landscape/grass/volcanicashgrass02_n.opensky-wrap0.ktx2"
+                };
+                assert!(
+                    uris.iter().any(|uri| uri == expected),
+                    "expected {expected}, got {uris:?}"
+                );
+                assert!(
+                    resolve_asset_uri(&output, &glb, expected)
+                        .unwrap()
+                        .is_file()
+                );
+                if original {
+                    assert_ne!(
+                        fs::read(resolve_asset_uri(&output, &glb, expected).unwrap()).unwrap(),
+                        fs::read(
+                            output.join("textures/dlc02/landscape/grass/volcanicashgrass02_n.ktx2")
+                        )
+                        .unwrap()
+                    );
+                }
+                let bytes = fs::read(&glb).unwrap();
+                let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+                let json: serde_json::Value =
+                    serde_json::from_slice(&bytes[20..20 + length]).unwrap();
+                assert_eq!(
+                    json["materials"][0]["normalTexture"]["index"],
+                    json["materials"][0]["extensions"]["KHR_materials_specular"]["specularTexture"]
+                        ["index"]
+                );
+                assert!(json["materials"][0]["normalTexture"]["index"].is_number());
+            }
+        }
+    }
+
     #[tokio::test]
     async fn publishes_meshes_with_missing_textures_and_stays_complete() {
         let temp = tempfile::tempdir().unwrap();
@@ -6484,7 +6674,7 @@ mod tests {
         {
             BTreeMap::new()
         } else {
-            collect_texture_semantics(&output).unwrap_or_else(|error| {
+            collect_texture_semantics(&output, &BTreeSet::new()).unwrap_or_else(|error| {
                 eprintln!("texture semantics unavailable, validating without them: {error:#}");
                 BTreeMap::new()
             })
