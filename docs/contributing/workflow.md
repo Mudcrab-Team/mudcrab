@@ -41,12 +41,16 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 ## 5. Review
 
 - CodeRabbit reviews every non-draft PR automatically. Answer each of its comments: fix it, or say why not, then resolve the thread. Unresolved threads block the merge.
+- Get an **Approve** review from another human collaborator listed in [CODEOWNERS](../../.github/CODEOWNERS). CodeRabbit's review and passing CI do not replace this approval. A comment or a resolved thread does not count as approval.
 - Answer human reviewers point by point, in their order: **Fixed** (with the commit), **No change** (with the reason), or **Unresolved**.
 - If `main` moves while your PR is open, merge `main` into your branch (or use the "Update branch" button). Don't rebase or force-push a branch that is under review.
+- Changes pushed after approval need another review: stale approvals are dismissed, and someone other than the last person to push must approve the latest push.
 
 ## 6. Merge (maintainers)
 
-`main` accepts squash or rebase merges, requires the `tests_pass` check, requires the branch to be up to date with `main`, and requires every review thread to be resolved. It requires no approving review, and there is no merge queue.
+The `main_protection` ruleset requires at least one approving review, approval from a human code owner, passing `tests_pass` and `CodeRabbit` checks from their respective GitHub Apps, an up-to-date branch, and every review thread resolved. It dismisses stale approvals and requires approval of the latest push by someone other than the person who pushed it. There are no bypass actors, and these requirements apply to administrators too. `main` accepts squash or rebase merges; there is no merge queue.
+
+The PR author may merge after another human collaborator approves and all checks pass. Keep [CODEOWNERS](../../.github/CODEOWNERS) in sync when collaborators gain or lose write access. Its catch-all rule also covers changes to CODEOWNERS itself. Administrators can still edit repository settings, so changing or disabling these requirements is a separate policy change.
 
 - Use **Squash and merge**. Keep the PR title as the commit title.
 - Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
