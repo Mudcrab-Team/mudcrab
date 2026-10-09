@@ -728,11 +728,6 @@ async fn malformed_info_response_header_preserves_response_ownership_in_publicat
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    let retained_fixture = temp.keep();
-    eprintln!(
-        "Retained INFO recovery fixture: {}",
-        retained_fixture.display()
-    );
     assert!(report.complete, "{:?}", report.warnings);
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())

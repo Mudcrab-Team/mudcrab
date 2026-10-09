@@ -1706,8 +1706,8 @@ mod tests {
     /// with no diffuse image still fails without preventing a subsequent placeholder build.
     #[test]
     fn terrain_zero_texture_overlay_material_preserves_slots_without_image_requests() {
-        let directory = tempfile::tempdir().unwrap().keep();
-        let path = directory.join("placeholder-catalogue.db");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("placeholder-catalogue.db");
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
             .execute_batch(

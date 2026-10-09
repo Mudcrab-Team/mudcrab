@@ -835,9 +835,9 @@ async fn metadata_reader_switch_preserves_retained_producer_identity() {
         assert!(report.complete);
         assert!(
             report
-                .warnings
+                .notices
                 .iter()
-                .any(|warning| warning.contains("retained models and textures"))
+                .any(|notice| notice.contains("retained models and textures"))
         );
         let manifest: converter::cache::ConversionManifest =
             serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())

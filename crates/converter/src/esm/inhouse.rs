@@ -281,9 +281,10 @@ fn convert_plugins_with_dump(
         let mut localized = Vec::new();
         let mut localization = BTreeMap::new();
         for (index, field) in record.fields.iter().enumerate() {
-            if let Value::String(text) = &field.value {
-                // Typed Windows-1252 decoding owns ordinary text; runtime bytes are UTF-8.
-                raw.subrecords[index].1 = runtime_string(text);
+            if let Value::String(text) = &field.value
+                && let Some(bytes) = runtime_text(text)
+            {
+                raw.subrecords[index].1 = bytes;
             }
             if let Value::LocalizedString(id) = &field.value {
                 let bank = records::string_table(&record.record_type, &field.name);
@@ -476,6 +477,12 @@ fn validate_candidate(record: &records::DecodedRecord) -> std::result::Result<()
 }
 
 /// Encode decoded text for the shared runtime extractor without changing original source bytes.
+/// Typed Windows-1252 decoding owns ordinary text; runtime bytes are UTF-8.
+/// ASCII is identical in both, so its source bytes (and any fixed slot width) stay as read.
+fn runtime_text(text: &str) -> Option<Vec<u8>> {
+    (!text.is_ascii()).then(|| runtime_string(text))
+}
+
 fn runtime_string(text: &str) -> Vec<u8> {
     let mut bytes = text.as_bytes().to_vec();
     bytes.push(0);
@@ -566,6 +573,16 @@ fn parse_text_table(bytes: &[u8], length_prefixed: bool) -> Result<HashMap<u32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A four-byte event code without a terminator keeps its width; accented text becomes UTF-8.
+    #[test]
+    fn runtime_text_rewrites_only_non_ascii() {
+        assert_eq!(runtime_text("ADIA"), None);
+        assert_eq!(
+            runtime_text("Caf\u{e9}"),
+            Some("Caf\u{e9}\0".as_bytes().to_vec())
+        );
+    }
 
     /// A broken length-prefixed entry cannot consume its valid table neighbor.
     #[test]

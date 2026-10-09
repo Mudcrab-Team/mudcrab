@@ -320,9 +320,9 @@ async fn rebuild_into(
         ..Default::default()
     };
     if provenance.record_reader != provenance.retained_asset_record_reader {
-        let warning = "Metadata reader changed; retained models and textures keep their verified source producer bytes, including earlier texture-role encodings. Use normal conversion to regenerate those assets.";
-        eprintln!("warning: {warning}");
-        report.warnings.push(warning.to_owned());
+        let notice = "Metadata reader changed; retained models and textures keep their verified source producer bytes, including earlier texture-role encodings. Use normal conversion to regenerate those assets.";
+        eprintln!("note: {notice}");
+        report.notices.push(notice.to_owned());
     }
     progress_event(
         progress,

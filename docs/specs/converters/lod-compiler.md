@@ -172,7 +172,7 @@ settings cannot survive in staged metadata or payloads.
   Preserve `retained_asset_configuration_hash` independently of rebuilt
   metadata settings. Explicit reuse accepts the historical schema-15 fixed-Zstd-6 configuration or native schema-16 projection
   with fixed `texture_zstd_level=6` only when every other setting matches;
-  normal conversion regenerates schema-12?23 meshes; compatible producer-24
+  normal conversion regenerates schema-12–23 meshes; compatible producer-24
   meshes still require matching source, bytes and configuration. Equal schema
   numbers do not establish equal producer contracts. Repeated rebuilds keep
   the original retained configuration hash and verify it again. Missing

@@ -300,7 +300,8 @@ fn localized_fields_preserve_zero_missing_resolved_and_repeated_keys() {
 /// English plugin/bank bytes use CP1252 even if they also form valid UTF-8; VMAD uses UTF-8.
 #[test]
 fn english_text_encoding_is_explicit_and_distinct_from_vmad() {
-    let directory = tempfile::tempdir().unwrap().keep();
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path();
     let data = directory.join("Data");
     fs::create_dir(&data).unwrap();
     let generated = world();

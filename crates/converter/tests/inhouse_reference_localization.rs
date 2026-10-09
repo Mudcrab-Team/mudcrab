@@ -96,11 +96,6 @@ fn unresolved_marker_text_preserves_identical_reference_and_record_archives() {
     fs::write(&plugins, "*Skyrim.esm\n*ReferenceLocalization.esp\n").unwrap();
     let output = temp.path().join("bundle");
     inhouse::export_record_bundle_typed(&data, &plugins, &output, &[*b"REFR"]).unwrap();
-    let retained = temp.keep();
-    eprintln!(
-        "Retained reference-localization fixture: {}",
-        retained.display()
-    );
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (id, expected) in [
         (0x0100_3F11u32, b"\0".as_slice()),

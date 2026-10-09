@@ -314,9 +314,9 @@ Existing runtime tables determine the initial typed subset. Ordinary world-model
 types describe EDID, VMAD, OBND and the model group; their remaining gameplay
 fields remain verbatim in the auxiliary source payload rather than canonical
 `records.data`. Explicit `bytes` fields remain opaque canonical fields.
-NPC_ describes identity, race, class, name
+`NPC_` describes identity, race, class, name
 and several common compound links; it does not claim full actor conversion.
-NPC_ SPLO actor effects admit SPEL, SHOU and LVSP targets, as specified by the
+`NPC_` SPLO actor effects admit SPEL, SHOU and LVSP targets, as specified by the
 pinned TES5 shared actor-effect definition at lines4092-4093 and its NPC use at
 line10942. A spell-only target list would clear valid shouts and leveled spells.
 RACE covers identity/name and WKMV/RNMV movement links. WATR's known visual

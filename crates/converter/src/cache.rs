@@ -436,7 +436,7 @@ pub(crate) fn retained_configuration_matches(
     if recorded == configuration_hash_for_schema(config, schema)? {
         return Ok(true);
     }
-    if !matches!(schema, 15 | 16) {
+    if !matches!(schema, 15 | 16) || config.texture_zstd_level != 6 {
         return Ok(false);
     }
     let native = serde_json::json!({
@@ -496,8 +496,11 @@ mod tests {
         let mut changed = config.clone();
         changed.texture_fallback_quality = 191;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
-        let mut changed = config;
+        let mut changed = config.clone();
         changed.script_abi_version = 2;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+        let mut changed = config;
+        changed.texture_zstd_level = 7;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
     }
 
