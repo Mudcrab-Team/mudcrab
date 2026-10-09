@@ -452,6 +452,12 @@ async fn v171_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads(
     assert!(cold.complete);
     assert_eq!(cold.lod_chunks, 6);
     assert_eq!(cold.lod_cache_hits, 0);
+    assert!(
+        !cold
+            .notices
+            .iter()
+            .any(|notice| { notice.contains("Previous terrain LOD package refused") })
+    );
     let manifest_path = output.join("lod-manifest.json");
     let original_manifest = fs::read(&manifest_path).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
@@ -564,6 +570,18 @@ async fn v171_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads(
             assert_eq!(fs::read(output.join(path)).unwrap(), *bytes);
         }
     }
+
+    // A prior package with a deleted manifest reports why all chunks rebuilt. A missing
+    // manifest is not treated as a fresh output when the prior package's other files remain.
+    fs::remove_file(&manifest_path).unwrap();
+    let rebuilt = convert_config(config()).await;
+    assert!(rebuilt.complete);
+    assert_eq!(rebuilt.lod_cache_hits, 0);
+    assert_eq!(rebuilt.lod_chunks, cold.lod_chunks);
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice.contains("Previous terrain LOD package refused")
+            && notice.contains("lod-manifest.json")
+    }));
 
     // A same-numbered legacy manifest has no explicit current compiler proof.
     let mut unproven = original.clone();

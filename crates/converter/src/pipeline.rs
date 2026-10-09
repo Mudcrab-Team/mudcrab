@@ -2477,7 +2477,10 @@ async fn compile_lod_chunks_with_cancel(
     }
     use rayon::prelude::*;
     let connection = Connection::open(&db_path)?;
-    let reuse = if config.invalidate_cache || !reuse_root.join("lod-manifest.json").exists() {
+    let prior_package = reuse_root.join("conversion-manifest.json").exists()
+        || reuse_root.join("lod-manifest.json").exists()
+        || reuse_root.join("skyrim_world.db").exists();
+    let reuse = if config.invalidate_cache || !prior_package {
         None
     } else {
         match LodReuse::open(reuse_root) {
