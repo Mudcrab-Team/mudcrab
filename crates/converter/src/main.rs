@@ -2,6 +2,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
+use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
     pipeline::{Cancellation, Interrupted, PipelineFailure},
@@ -28,6 +29,7 @@ struct Cli {
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
     texture_encoder: TextureEncoder,
+    record_reader: RecordReader,
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
@@ -158,6 +160,7 @@ async fn main() -> Result<()> {
     config.resume_staging = cli.resume_staging.clone();
     config.fail_fast = cli.fail_fast;
     config.invalidate_cache = cli.invalidate_cache;
+    config.record_reader = cli.record_reader;
     config.verify_cache = cli.verify_cache;
     config.no_lod = cli.no_lod;
     config.texture_encoder = cli.texture_encoder;
@@ -448,6 +451,9 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
+    if cli.record_reader == RecordReader::Inhouse {
+        command.push_str(" --record-reader inhouse");
+    }
     command
 }
 
@@ -655,6 +661,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
+    let mut record_reader = RecordReader::Legacy;
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
     let mut fail_fast = false;
@@ -692,6 +699,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     Some("cpu") => false,
                     Some("gpu") => true,
                     _ => bail!("--texture-encoder must be cpu or gpu"),
+                };
+            }
+            Some("--record-reader") => {
+                record_reader = match next_value(&mut args, "--record-reader")?.to_str() {
+                    Some("legacy") => RecordReader::Legacy,
+                    Some("inhouse") => RecordReader::Inhouse,
+                    _ => bail!("--record-reader must be legacy or inhouse"),
                 };
             }
             Some("--gpu-quality") => {
@@ -741,6 +755,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         cpu_jobs,
         io_jobs,
         texture_encoder,
+        record_reader,
         fail_fast,
         invalidate_cache,
         verify_cache,
@@ -786,6 +801,7 @@ fn usage() -> &'static str {
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
+                 [--record-reader legacy|inhouse]
        converter check <output directory> [--full]
 
 Converts a Skyrim Data directory into runtime assets.
@@ -1036,6 +1052,7 @@ mod tests {
             cpu_jobs: None,
             io_jobs: None,
             texture_encoder: TextureEncoder::Cpu,
+            record_reader: RecordReader::Legacy,
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
@@ -1057,6 +1074,25 @@ mod tests {
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
         assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        let inhouse = parse_cli(vec![
+            "Data".into(),
+            "--record-reader".into(),
+            "inhouse".into(),
+        ])
+        .unwrap();
+        assert_eq!(inhouse.record_reader, RecordReader::Inhouse);
+        assert!(
+            resume_command("converter", &inhouse, staging).ends_with(" --record-reader inhouse")
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--record-reader".into(),
+                "other".into()
+            ])
+            .is_err()
+        );
+        assert!(parse_cli(vec!["Data".into(), "--record-reader".into()]).is_err());
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {

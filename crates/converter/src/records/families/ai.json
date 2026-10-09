@@ -1,0 +1,1461 @@
+{
+  "version": 1,
+  "sources": {
+    "ai_xedit": {
+      "title": "Pinned xEdit Skyrim/SSE AI layout facts",
+      "revision": "xedit-4.1.5f f5c00f3",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas",
+      "facts_only": true
+    },
+    "ai_common": {
+      "title": "Pinned xEdit RGBA fact",
+      "revision": "xedit-4.1.5f f5c00f3",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsCommon.pas",
+      "facts_only": true
+    },
+    "ai_pending_d": {
+      "title": "Shared conditions pending section D",
+      "status": "pending component; no condition-function semantic coverage claimed"
+    }
+  },
+  "definitions": {
+    "ai_animation_list": {
+      "name": "animations",
+      "kind": "array",
+      "count": {
+        "kind": "remaining",
+        "stride": 4
+      },
+      "members": [
+        {
+          "name": "animation",
+          "kind": "form_id",
+          "offset": 0,
+          "targets": [
+            "IDLE"
+          ]
+        }
+      ],
+      "source": "ai_xedit:7635-7644,11222-11233 IDLA ordered FormID list"
+    },
+    "ai_topic_data": {
+      "name": "topic",
+      "kind": "struct",
+      "size": 8,
+      "members": [
+        {
+          "name": "kind",
+          "kind": "u32",
+          "offset": 0,
+          "enum": {
+            "0": "topic_reference",
+            "1": "topic_subtype"
+          }
+        },
+        {
+          "name": "value",
+          "kind": "union",
+          "offset": 4,
+          "size": 4,
+          "decider": "ai_topic",
+          "fields": [
+            {
+              "name": "topic",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "DIAL"
+              ]
+            },
+            {
+              "name": "subtype",
+              "kind": "zstring",
+              "offset": 0,
+              "size": 4
+            }
+          ]
+        }
+      ],
+      "source": "ai_xedit:5165-5177 PDTO kind and four-byte topic/subtype union"
+    },
+    "ai_location_data": {
+      "name": "location",
+      "kind": "struct",
+      "size": 12,
+      "members": [
+        {
+          "name": "kind",
+          "kind": "i32",
+          "offset": 0,
+          "enum": {
+            "0": "near_reference",
+            "1": "in_cell",
+            "2": "package_start",
+            "3": "editor_location",
+            "4": "object_id",
+            "5": "object_type",
+            "6": "linked_keyword",
+            "7": "package_location",
+            "8": "reference_alias",
+            "9": "location_alias",
+            "10": "unknown_10",
+            "11": "unknown_11",
+            "12": "near_self"
+          }
+        },
+        {
+          "name": "value",
+          "kind": "union",
+          "offset": 4,
+          "size": 4,
+          "decider": "ai_location",
+          "fields": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "DOOR",
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "cell",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "CELL"
+              ]
+            },
+            {
+              "name": "package_start_unused",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "editor_location_unused",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "object",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ACTI",
+                "DOOR",
+                "STAT",
+                "MSTT",
+                "FURN",
+                "SPEL",
+                "SCRL",
+                "NPC_",
+                "CONT",
+                "ARMO",
+                "AMMO",
+                "MISC",
+                "WEAP",
+                "BOOK",
+                "KEYM",
+                "ALCH",
+                "LIGH",
+                "FACT",
+                "FLST",
+                "IDLM",
+                "SHOU"
+              ]
+            },
+            {
+              "name": "object_type",
+              "kind": "u32",
+              "offset": 0,
+              "enum": {
+                "0": "none",
+                "1": "activators",
+                "2": "armor",
+                "3": "books",
+                "4": "clothing",
+                "5": "containers",
+                "6": "doors",
+                "7": "ingredients",
+                "8": "lights",
+                "9": "misc",
+                "10": "flora",
+                "11": "furniture",
+                "12": "weapons_any",
+                "13": "ammo",
+                "14": "npcs",
+                "15": "creatures",
+                "16": "keys",
+                "17": "alchemy",
+                "18": "food",
+                "19": "combat_wearable",
+                "20": "wearable",
+                "21": "weapons_ranged",
+                "22": "weapons_melee",
+                "23": "weapons_none",
+                "24": "actor_effect_any",
+                "25": "actor_effect_target",
+                "26": "actor_effect_touch",
+                "27": "actor_effect_self",
+                "28": "actors_any"
+              }
+            },
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            },
+            {
+              "name": "package_location_unused",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "reference_alias",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "location_alias",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "unknown_10",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "unknown_11",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "near_self_unknown",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            }
+          ]
+        },
+        {
+          "name": "radius",
+          "kind": "i32",
+          "offset": 8
+        }
+      ],
+      "source": "ai_xedit:5009-5029 PLDT location discriminator, value and radius"
+    },
+    "ai_target_data": {
+      "name": "target",
+      "kind": "struct",
+      "size": 12,
+      "members": [
+        {
+          "name": "kind",
+          "kind": "i32",
+          "offset": 0,
+          "enum": {
+            "0": "specific_reference",
+            "1": "object_id",
+            "2": "object_type",
+            "3": "linked_reference",
+            "4": "reference_alias",
+            "5": "unknown_5",
+            "6": "self"
+          }
+        },
+        {
+          "name": "value",
+          "kind": "union",
+          "offset": 4,
+          "size": 4,
+          "decider": "ai_target",
+          "fields": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "object",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ACTI",
+                "DOOR",
+                "STAT",
+                "MSTT",
+                "FURN",
+                "SPEL",
+                "SCRL",
+                "NPC_",
+                "CONT",
+                "ARMO",
+                "AMMO",
+                "MISC",
+                "WEAP",
+                "BOOK",
+                "KEYM",
+                "ALCH",
+                "LIGH",
+                "FACT",
+                "FLST",
+                "IDLM",
+                "SHOU",
+                "INGR",
+                "SOUN",
+                "TXST",
+                "PROJ",
+                "FLOR",
+                "SLGM"
+              ]
+            },
+            {
+              "name": "object_type",
+              "kind": "u32",
+              "offset": 0,
+              "enum": {
+                "0": "none",
+                "1": "activators",
+                "2": "armor",
+                "3": "books",
+                "4": "clothing",
+                "5": "containers",
+                "6": "doors",
+                "7": "ingredients",
+                "8": "lights",
+                "9": "misc",
+                "10": "flora",
+                "11": "furniture",
+                "12": "weapons_any",
+                "13": "ammo",
+                "14": "npcs",
+                "15": "creatures",
+                "16": "keys",
+                "17": "alchemy",
+                "18": "food",
+                "19": "combat_wearable",
+                "20": "wearable",
+                "21": "weapons_ranged",
+                "22": "weapons_melee",
+                "23": "weapons_none",
+                "24": "actor_effect_any",
+                "25": "actor_effect_target",
+                "26": "actor_effect_touch",
+                "27": "actor_effect_self",
+                "28": "actors_any"
+              }
+            },
+            {
+              "name": "linked_reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "*"
+              ]
+            },
+            {
+              "name": "reference_alias",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "unknown_5",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "self_unknown",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            }
+          ]
+        },
+        {
+          "name": "count_distance",
+          "kind": "i32",
+          "offset": 8
+        }
+      ],
+      "source": "ai_xedit:5049-5070 TargetData kind, typed value and signed count/distance"
+    }
+  },
+  "records": [
+    {
+      "signature": "PACK",
+      "source": "ai_xedit:11182-11362 PACK",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "PKDT",
+          "reject_record_on_error": true,
+          "name": "package_configuration",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "general_flags",
+              "kind": "u32",
+              "offset": 0,
+              "flags": {
+                "1": "offers_services",
+                "2": "unknown_2",
+                "4": "must_complete",
+                "8": "maintain_speed_at_goal",
+                "16": "unknown_5",
+                "32": "unknown_6",
+                "64": "unlock_at_start",
+                "128": "unlock_at_end",
+                "256": "unknown_9",
+                "512": "continue_if_player_near",
+                "1024": "once_per_day",
+                "2048": "unknown_12",
+                "4096": "unknown_13",
+                "8192": "preferred_speed",
+                "16384": "unknown_15",
+                "32768": "unknown_16",
+                "65536": "unknown_17",
+                "131072": "always_sneak",
+                "262144": "allow_swimming",
+                "524288": "unknown_20",
+                "1048576": "ignore_combat",
+                "2097152": "weapons_unequipped",
+                "4194304": "unknown_23",
+                "8388608": "weapon_drawn",
+                "16777216": "unknown_25",
+                "33554432": "unknown_26",
+                "67108864": "unknown_27",
+                "134217728": "no_combat_alert",
+                "268435456": "unknown_29",
+                "536870912": "unused_sleep_outfit",
+                "1073741824": "unknown_31",
+                "2147483648": "unknown_32"
+              }
+            },
+            {
+              "name": "kind",
+              "kind": "u8",
+              "offset": 4,
+              "enum": {
+                "18": "package",
+                "19": "package_template"
+              }
+            },
+            {
+              "name": "interrupt_override",
+              "kind": "u8",
+              "offset": 5,
+              "enum": {
+                "0": "none",
+                "1": "spectator",
+                "2": "observe_dead",
+                "3": "guard_warn",
+                "4": "combat"
+              }
+            },
+            {
+              "name": "preferred_speed",
+              "kind": "u8",
+              "offset": 6,
+              "enum": {
+                "0": "walk",
+                "1": "jog",
+                "2": "run",
+                "3": "fast_walk"
+              }
+            },
+            {
+              "name": "unknown_7",
+              "kind": "bytes",
+              "offset": 7,
+              "size": 1
+            },
+            {
+              "name": "interrupt_flags",
+              "kind": "u16",
+              "offset": 8,
+              "flags": {
+                "1": "player_hellos",
+                "2": "random_conversations",
+                "4": "observe_combat",
+                "8": "greet_corpse",
+                "16": "react_to_player",
+                "32": "friendly_fire_comments",
+                "64": "aggro_radius",
+                "128": "idle_chatter",
+                "256": "unknown_9",
+                "512": "world_interactions",
+                "1024": "unknown_11",
+                "2048": "unknown_12",
+                "4096": "unknown_13",
+                "8192": "unknown_14",
+                "16384": "unknown_15",
+                "32768": "unknown_16"
+              }
+            },
+            {
+              "name": "unknown_10",
+              "kind": "bytes",
+              "offset": 10,
+              "size": 2
+            }
+          ]
+        },
+        {
+          "signature": "PSDT",
+          "name": "schedule",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "month",
+              "kind": "i8",
+              "offset": 0
+            },
+            {
+              "name": "day_of_week",
+              "kind": "i8",
+              "offset": 1,
+              "enum": {
+                "-1": "any",
+                "0": "sunday",
+                "1": "monday",
+                "2": "tuesday",
+                "3": "wednesday",
+                "4": "thursday",
+                "5": "friday",
+                "6": "saturday",
+                "7": "weekdays",
+                "8": "weekends",
+                "9": "monday_wednesday_friday",
+                "10": "tuesday_thursday"
+              }
+            },
+            {
+              "name": "date",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "hour",
+              "kind": "i8",
+              "offset": 3
+            },
+            {
+              "name": "minute",
+              "kind": "i8",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 5,
+              "size": 3
+            },
+            {
+              "name": "duration_minutes",
+              "kind": "i32",
+              "offset": 8
+            }
+          ]
+        },
+        {
+          "name": "conditions_pending_d",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "CTDA",
+              "name": "condition_pending_d",
+              "kind": "bytes",
+              "source": "pending-component:D",
+              "repeat": true
+            },
+            {
+              "signature": "CIS1",
+              "name": "condition_parameter_1",
+              "kind": "zstring"
+            },
+            {
+              "signature": "CIS2",
+              "name": "condition_parameter_2",
+              "kind": "zstring"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "idle_animations",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "IDLF",
+              "name": "idle_flags",
+              "kind": "u8",
+              "enum": {
+                "0": "unknown",
+                "8": "random",
+                "9": "sequence",
+                "12": "random_once",
+                "13": "sequence_once"
+              }
+            },
+            {
+              "signature": "IDLC",
+              "name": "idle_count",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "count",
+                  "kind": "u8",
+                  "offset": 0
+                },
+                {
+                  "name": "unknown",
+                  "kind": "bytes",
+                  "offset": 1,
+                  "size": 3,
+                  "optional": true
+                }
+              ],
+              "sizes": [
+                1,
+                4
+              ]
+            },
+            {
+              "signature": "IDLT",
+              "name": "idle_timer",
+              "kind": "f32"
+            },
+            {
+              "signature": "IDLA",
+              "definition": "ai_animation_list"
+            },
+            {
+              "signature": "IDLB",
+              "name": "idle_unknown",
+              "kind": "bytes",
+              "size": 4,
+              "source": "ai_xedit:11233 IDLB explicitly unknown"
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "signature": "CNAM",
+          "name": "combat_style",
+          "kind": "form_id",
+          "targets": [
+            "CSTY"
+          ]
+        },
+        {
+          "signature": "QNAM",
+          "name": "owner_quest",
+          "kind": "form_id",
+          "targets": [
+            "QUST"
+          ]
+        },
+        {
+          "signature": "PKCU",
+          "name": "input_counter",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "input_count",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "template",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "PACK"
+              ]
+            },
+            {
+              "name": "version_counter",
+              "kind": "u32",
+              "offset": 8
+            }
+          ]
+        },
+        {
+          "name": "package_data",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "input_values",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ANAM",
+                  "name": "input_type",
+                  "kind": "zstring"
+                },
+                {
+                  "signature": "CNAM",
+                  "name": "input_value",
+                  "kind": "union",
+                  "decider": "ai_package_value",
+                  "source": "ai_xedit:3738-3758,11263-11268 CNAM Bool/Int/Float/ObjectList; default explicitly unknown",
+                  "fields": [
+                    {
+                      "name": "unknown_value",
+                      "kind": "bytes",
+                      "offset": 0
+                    },
+                    {
+                      "name": "boolean",
+                      "kind": "u8",
+                      "offset": 0,
+                      "enum": {
+                        "0": "false",
+                        "1": "true"
+                      }
+                    },
+                    {
+                      "name": "integer",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "float",
+                      "kind": "f32",
+                      "offset": 0
+                    }
+                  ]
+                },
+                {
+                  "signature": "BNAM",
+                  "name": "input_unknown",
+                  "kind": "bytes",
+                  "source": "ai_xedit:11269 BNAM explicitly unknown"
+                },
+                {
+                  "signature": "PDTO",
+                  "definition": "ai_topic_data",
+                  "repeat": true
+                },
+                {
+                  "signature": "PLDT",
+                  "definition": "ai_location_data"
+                },
+                {
+                  "signature": "PTDA",
+                  "definition": "ai_target_data"
+                },
+                {
+                  "signature": "TPIC",
+                  "name": "input_topic_unknown",
+                  "kind": "bytes",
+                  "source": "ai_xedit:11273 TPIC explicitly unknown"
+                }
+              ],
+              "repeat": true
+            },
+            {
+              "name": "input_definitions",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "UNAM",
+                  "name": "input_index",
+                  "kind": "i8"
+                },
+                {
+                  "signature": "BNAM",
+                  "name": "input_name",
+                  "kind": "zstring"
+                },
+                {
+                  "signature": "PNAM",
+                  "name": "input_flags",
+                  "kind": "u32",
+                  "flags": {
+                    "1": "public"
+                  }
+                }
+              ],
+              "repeat": true
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "signature": "XNAM",
+          "name": "procedure_marker",
+          "kind": "bytes",
+          "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+        },
+        {
+          "name": "procedure_tree",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "branches",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ANAM",
+                  "name": "branch_type",
+                  "kind": "zstring"
+                },
+                {
+                  "signature": "CITC",
+                  "name": "branch_condition_count",
+                  "kind": "u32"
+                },
+                {
+                  "name": "conditions_pending_d",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "signature": "CTDA",
+                      "name": "condition_pending_d",
+                      "kind": "bytes",
+                      "source": "pending-component:D",
+                      "repeat": true
+                    },
+                    {
+                      "signature": "CIS1",
+                      "name": "condition_parameter_1",
+                      "kind": "zstring"
+                    },
+                    {
+                      "signature": "CIS2",
+                      "name": "condition_parameter_2",
+                      "kind": "zstring"
+                    }
+                  ],
+                  "repeat": true
+                },
+                {
+                  "signature": "PRCB",
+                  "name": "branch_root",
+                  "kind": "struct",
+                  "size": 8,
+                  "members": [
+                    {
+                      "name": "branch_count",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 4,
+                      "flags": {
+                        "1": "repeat_when_complete",
+                        "2": "unknown_1"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "signature": "PNAM",
+                  "name": "procedure_type",
+                  "kind": "zstring"
+                },
+                {
+                  "signature": "FNAM",
+                  "name": "procedure_flags",
+                  "kind": "u32",
+                  "flags": {
+                    "1": "success_completes_package"
+                  }
+                },
+                {
+                  "signature": "PKC2",
+                  "name": "input_index",
+                  "kind": "u8",
+                  "repeat": true
+                },
+                {
+                  "signature": "PFO2",
+                  "repeat": true,
+                  "name": "flags_override",
+                  "kind": "struct",
+                  "size": 16,
+                  "members": [
+                    {
+                      "name": "set_general",
+                      "kind": "u32",
+                      "offset": 0,
+                      "flags": {
+                        "1": "offers_services",
+                        "2": "unknown_2",
+                        "4": "must_complete",
+                        "8": "maintain_speed_at_goal",
+                        "16": "unknown_5",
+                        "32": "unknown_6",
+                        "64": "unlock_at_start",
+                        "128": "unlock_at_end",
+                        "256": "unknown_9",
+                        "512": "continue_if_player_near",
+                        "1024": "once_per_day",
+                        "2048": "unknown_12",
+                        "4096": "unknown_13",
+                        "8192": "preferred_speed",
+                        "16384": "unknown_15",
+                        "32768": "unknown_16",
+                        "65536": "unknown_17",
+                        "131072": "always_sneak",
+                        "262144": "allow_swimming",
+                        "524288": "unknown_20",
+                        "1048576": "ignore_combat",
+                        "2097152": "weapons_unequipped",
+                        "4194304": "unknown_23",
+                        "8388608": "weapon_drawn",
+                        "16777216": "unknown_25",
+                        "33554432": "unknown_26",
+                        "67108864": "unknown_27",
+                        "134217728": "no_combat_alert",
+                        "268435456": "unknown_29",
+                        "536870912": "unused_sleep_outfit",
+                        "1073741824": "unknown_31",
+                        "2147483648": "unknown_32"
+                      }
+                    },
+                    {
+                      "name": "clear_general",
+                      "kind": "u32",
+                      "offset": 4,
+                      "flags": {
+                        "1": "offers_services",
+                        "2": "unknown_2",
+                        "4": "must_complete",
+                        "8": "maintain_speed_at_goal",
+                        "16": "unknown_5",
+                        "32": "unknown_6",
+                        "64": "unlock_at_start",
+                        "128": "unlock_at_end",
+                        "256": "unknown_9",
+                        "512": "continue_if_player_near",
+                        "1024": "once_per_day",
+                        "2048": "unknown_12",
+                        "4096": "unknown_13",
+                        "8192": "preferred_speed",
+                        "16384": "unknown_15",
+                        "32768": "unknown_16",
+                        "65536": "unknown_17",
+                        "131072": "always_sneak",
+                        "262144": "allow_swimming",
+                        "524288": "unknown_20",
+                        "1048576": "ignore_combat",
+                        "2097152": "weapons_unequipped",
+                        "4194304": "unknown_23",
+                        "8388608": "weapon_drawn",
+                        "16777216": "unknown_25",
+                        "33554432": "unknown_26",
+                        "67108864": "unknown_27",
+                        "134217728": "no_combat_alert",
+                        "268435456": "unknown_29",
+                        "536870912": "unused_sleep_outfit",
+                        "1073741824": "unknown_31",
+                        "2147483648": "unknown_32"
+                      }
+                    },
+                    {
+                      "name": "set_interrupt",
+                      "kind": "u16",
+                      "offset": 8,
+                      "flags": {
+                        "1": "player_hellos",
+                        "2": "random_conversations",
+                        "4": "observe_combat",
+                        "8": "greet_corpse",
+                        "16": "react_to_player",
+                        "32": "friendly_fire_comments",
+                        "64": "aggro_radius",
+                        "128": "idle_chatter",
+                        "256": "unknown_9",
+                        "512": "world_interactions",
+                        "1024": "unknown_11",
+                        "2048": "unknown_12",
+                        "4096": "unknown_13",
+                        "8192": "unknown_14",
+                        "16384": "unknown_15",
+                        "32768": "unknown_16"
+                      }
+                    },
+                    {
+                      "name": "clear_interrupt",
+                      "kind": "u16",
+                      "offset": 10,
+                      "flags": {
+                        "1": "player_hellos",
+                        "2": "random_conversations",
+                        "4": "observe_combat",
+                        "8": "greet_corpse",
+                        "16": "react_to_player",
+                        "32": "friendly_fire_comments",
+                        "64": "aggro_radius",
+                        "128": "idle_chatter",
+                        "256": "unknown_9",
+                        "512": "world_interactions",
+                        "1024": "unknown_11",
+                        "2048": "unknown_12",
+                        "4096": "unknown_13",
+                        "8192": "unknown_14",
+                        "16384": "unknown_15",
+                        "32768": "unknown_16"
+                      }
+                    },
+                    {
+                      "name": "speed",
+                      "kind": "u8",
+                      "offset": 12,
+                      "enum": {
+                        "0": "walk",
+                        "1": "jog",
+                        "2": "run",
+                        "3": "fast_walk"
+                      }
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 13,
+                      "size": 3
+                    }
+                  ]
+                },
+                {
+                  "signature": "PFOR",
+                  "name": "procedure_unknown",
+                  "kind": "bytes",
+                  "repeat": true,
+                  "source": "ai_xedit:11313 PFOR explicitly unknown"
+                }
+              ],
+              "repeat": true
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "input_definitions",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "UNAM",
+              "name": "input_index",
+              "kind": "i8"
+            },
+            {
+              "signature": "BNAM",
+              "name": "input_name",
+              "kind": "zstring"
+            },
+            {
+              "signature": "PNAM",
+              "name": "input_flags",
+              "kind": "u32",
+              "flags": {
+                "1": "public"
+              }
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "on_begin",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "POBA",
+              "name": "on_begin_marker",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "INAM",
+              "name": "on_begin_idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "signature": "SCHR",
+              "name": "on_begin_schr_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "SCTX",
+              "name": "on_begin_sctx_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "QNAM",
+              "name": "on_begin_qnam_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "TNAM",
+              "name": "on_begin_tnam_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "PDTO",
+              "definition": "ai_topic_data",
+              "repeat": true,
+              "name": "on_begin_topic"
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "on_end",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "POEA",
+              "name": "on_end_marker",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "INAM",
+              "name": "on_end_idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "signature": "SCHR",
+              "name": "on_end_schr_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "SCTX",
+              "name": "on_end_sctx_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "QNAM",
+              "name": "on_end_qnam_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "TNAM",
+              "name": "on_end_tnam_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "PDTO",
+              "definition": "ai_topic_data",
+              "repeat": true,
+              "name": "on_end_topic"
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "on_change",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "POCA",
+              "name": "on_change_marker",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "INAM",
+              "name": "on_change_idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "signature": "SCHR",
+              "name": "on_change_schr_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "SCDA",
+              "name": "on_change_scda_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "SCTX",
+              "name": "on_change_sctx_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "QNAM",
+              "name": "on_change_qnam_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "TNAM",
+              "name": "on_change_tnam_unused",
+              "kind": "bytes",
+              "source": "ai_xedit:11278,11318-11360 variable-sized byte arrays (declared length0); source-known marker/obsolete unused data, distinct from wbEmpty event markers"
+            },
+            {
+              "signature": "PDTO",
+              "definition": "ai_topic_data",
+              "repeat": true,
+              "name": "on_change_topic"
+            }
+          ],
+          "repeat": false
+        }
+      ]
+    },
+    {
+      "signature": "IDLE",
+      "source": "ai_xedit:10233-10256 IDLE",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "name": "conditions_pending_d",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "CTDA",
+              "name": "condition_pending_d",
+              "kind": "bytes",
+              "source": "pending-component:D",
+              "repeat": true
+            },
+            {
+              "signature": "CIS1",
+              "name": "condition_parameter_1",
+              "kind": "zstring"
+            },
+            {
+              "signature": "CIS2",
+              "name": "condition_parameter_2",
+              "kind": "zstring"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "DNAM",
+          "name": "file_name",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ENAM",
+          "name": "animation_event",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ANAM",
+          "name": "related_idles",
+          "kind": "array",
+          "size": 8,
+          "count": {
+            "kind": "fixed",
+            "value": 2,
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "idle",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "AACT",
+                "IDLE"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "reject_record_on_error": true,
+          "name": "unused_animation_data",
+          "kind": "struct",
+          "size": 6,
+          "members": [
+            {
+              "name": "loop_min",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "loop_max",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 2,
+              "flags": {
+                "1": "parent",
+                "2": "sequence",
+                "4": "no_attacking",
+                "8": "blocking"
+              }
+            },
+            {
+              "name": "animation_group_section",
+              "kind": "u8",
+              "offset": 3
+            },
+            {
+              "name": "replay_delay",
+              "kind": "u16",
+              "offset": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "IDLM",
+      "source": "ai_xedit:7628-7646 IDLM",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "IDLF",
+          "name": "flags",
+          "kind": "u8",
+          "flags": {
+            "1": "sequence",
+            "2": "unknown_1",
+            "4": "do_once",
+            "8": "unknown_3",
+            "16": "ignored_by_sandbox"
+          }
+        },
+        {
+          "signature": "IDLC",
+          "name": "animation_count",
+          "kind": "u8"
+        },
+        {
+          "signature": "IDLT",
+          "name": "idle_timer",
+          "kind": "f32"
+        },
+        {
+          "signature": "IDLA",
+          "definition": "ai_animation_list"
+        },
+        {
+          "definition": "model"
+        }
+      ]
+    },
+    {
+      "signature": "AACT",
+      "source": "ai_xedit:7527-7530 AACT; ai_common:1291-1303 RGBA",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "alpha",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

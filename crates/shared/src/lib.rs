@@ -8,10 +8,10 @@ pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-// Schema 5 belongs to grass data (#152); LOD tables first appear in schema 6.
-pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 7;
+/// Current combined database contract: corrected TXST roles and one-byte XESP flags.
+pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 /// Latest producer required when a package advertises the combined LOD contract.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 24;
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 26;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
