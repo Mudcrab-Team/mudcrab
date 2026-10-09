@@ -368,7 +368,12 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         "Resolved {} runtime sources; inspecting published texture semantics",
         sources.len()
     );
-    let mut semantics = collect_texture_semantics(&published)?;
+    let source_textures = sources
+        .keys()
+        .filter(|key| key.starts_with("textures/") && key.ends_with(".dds"))
+        .cloned()
+        .collect();
+    let mut semantics = collect_texture_semantics(&published, &source_textures)?;
     for key in targets
         .clone()
         .into_iter()
@@ -425,7 +430,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             }
         }
     }
-    for (key, values) in collect_texture_semantics(&staged)? {
+    for (key, values) in collect_texture_semantics(&staged, &source_textures)? {
         semantics.entry(key).or_default().extend(values);
     }
     // Stage existing texture dependencies by link, and repair missing dependencies
@@ -516,11 +521,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             )?;
         }
     }
-    let source_textures = sources
-        .keys()
-        .filter(|key| key.starts_with("textures/") && key.ends_with(".dds"))
-        .cloned()
-        .collect();
+
     for file in MeshConverter::prune_dangling_texture_uris_with_sources(&staged, &source_textures)?
     {
         if !file.removed_uris.is_empty() {
