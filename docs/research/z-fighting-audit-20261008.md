@@ -144,8 +144,11 @@ paths and position/rotation/scale values within the same exterior worldspace
 or interior cell. Exterior references can match across cell boundaries;
 unrelated interiors cannot match. Deleted and initially disabled references are
 excluded. References with enable parents remain unknown because the static
-audit does not evaluate the live enable graph. Distinct FormIDs at the same
-transform remain candidates, not an instruction to delete either reference.
+audit does not evaluate the live enable graph. NULL header flags, or NULL
+transforms on references remaining after those exclusions, are coverage gaps.
+`null_placement_fields` counts affected references, not individual fields.
+Distinct FormIDs at the same transform remain candidates, not an instruction
+to delete either reference.
 
 ## Real-asset findings
 
@@ -261,7 +264,9 @@ expected. PNGs and per-sample JSON are retained under ignored
 including depth-state, malformed-annotation and scene-cloning regressions.
 
 These checks verify authored depth state at the selected GPU poses. The user
-still reports flicker on Fort Sungard's stone walls and dirt/moss patches.
+still reported flicker on Fort Sungard's stone walls and dirt/moss patches at
+this stage; the [second renderer fix below](#second-renderer-fix-decal-slope-bias)
+records the later fix and scoped visual acceptance.
 Duplicate placements, ordinary shape overlaps, terrain/road intersections and
 LOD transitions also remain candidates. The full surface-ID detector below
 remains work.

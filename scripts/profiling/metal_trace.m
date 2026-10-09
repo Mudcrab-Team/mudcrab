@@ -45,7 +45,7 @@ static atomic_uint_fast64_t gNextCB, gNextAcquisition, gCommits, gCompleted;
 static atomic_uint_fast64_t gScheduled, gPresents, gPresented, gAcquired;
 static atomic_uint_fast64_t gTexturesMatched, gTextureMisses, gEmptyAcquire;
 static atomic_uint_fast64_t gFactoryCalls, gDuplicateCommit;
-static atomic_uint_fast64_t gThreadCPUClockFailures, gCaptureConfigErrors;
+static atomic_uint_fast64_t gThreadCPUClockFailures, gTraceConfigErrors, gCaptureConfigErrors;
 static uint64_t gMaxRows = 1000000, gStartAcquisition;
 static char kBufferState, kDrawableState, kEncoderState;
 static id<MTLDevice> gCaptureDevice;
@@ -166,15 +166,18 @@ static void emit(Event value) {
     else { gRing[gHead] = value; gHead = next; }
     pthread_mutex_unlock(&gRingMutex);
 }
-static BOOL parse_positive_u64(const char *text, uint64_t *result) {
+static BOOL parse_u64(const char *text, uint64_t *result) {
     if (!text || !*text) return NO;
     for (const char *p = text; *p; p++) if (*p < '0' || *p > '9') return NO;
     errno = 0;
     char *end = NULL;
     unsigned long long value = strtoull(text, &end, 10);
-    if (errno == ERANGE || !end || *end || value == 0 || value > UINT64_MAX) return NO;
+    if (errno == ERANGE || !end || *end || value > UINT64_MAX) return NO;
     *result = (uint64_t)value;
     return YES;
+}
+static BOOL parse_positive_u64(const char *text, uint64_t *result) {
+    return parse_u64(text, result) && *result != 0;
 }
 static void capture_configuration_error(const char *parameter, const char *reason) {
     atomic_fetch_add(&gCaptureConfigErrors, 1);
@@ -234,6 +237,29 @@ static void write_event(Event *e) {
         e->status == MTLCommandBufferStatusCompleted && e->gpu_start > 0 && e->gpu_end >= e->gpu_start
             ? "true" : "false");
 }
+static void trace_configuration_error(const char *parameter, const char *reason) {
+    atomic_fetch_add(&gTraceConfigErrors, 1);
+    fprintf(stderr, "metal_trace: config_error parameter=%s reason=%s observer_disabled=1\n",
+        parameter, reason);
+    Event e = event("trace_config_error");
+    copy_text(e.selector, sizeof(e.selector), parameter);
+    copy_text(e.name, sizeof(e.name), reason);
+    write_event(&e);
+}
+static BOOL configure_trace(void) {
+    const char *limit = getenv("MUDCRAB_METAL_TRACE_MAX_ROWS");
+    const char *warmup = getenv("MUDCRAB_METAL_TRACE_START_ACQUISITION");
+    BOOL valid = YES;
+    if (limit && !parse_positive_u64(limit, &gMaxRows)) {
+        trace_configuration_error("MUDCRAB_METAL_TRACE_MAX_ROWS", "must be a positive decimal uint64");
+        valid = NO;
+    }
+    if (warmup && !parse_u64(warmup, &gStartAcquisition)) {
+        trace_configuration_error("MUDCRAB_METAL_TRACE_START_ACQUISITION", "must be a decimal uint64; zero starts immediately");
+        valid = NO;
+    }
+    return valid;
+}
 static void capture_stop_if_ready(void) {
     if (!atomic_load(&gCaptureActive)) return;
     uint64_t begin = atomic_load(&gCaptureBeginNS);
@@ -253,7 +279,7 @@ static void write_health(void) {
         "\"presented_callbacks\":%llu,\"acquired\":%llu,\"nil_acquires\":%llu,"
         "\"matched_render_attachments\":%llu,\"unmatched_render_attachments\":%llu,"
         "\"duplicate_commit_wrappers\":%llu,\"thread_cpu_clock_failures\":%llu,"
-        "\"capture_config_errors\":%llu,\"enabled\":%s}\n",
+        "\"trace_config_errors\":%llu,\"capture_config_errors\":%llu,\"enabled\":%s}\n",
         (unsigned long long)now_ns(), (unsigned long long)atomic_load(&gRows),
         (unsigned long long)atomic_load(&gDropped), (unsigned long long)atomic_load(&gExceptions),
         (unsigned long long)atomic_load(&gHookFailures), (unsigned long long)atomic_load(&gFactoryCalls),
@@ -263,6 +289,7 @@ static void write_health(void) {
         (unsigned long long)atomic_load(&gEmptyAcquire), (unsigned long long)atomic_load(&gTexturesMatched),
         (unsigned long long)atomic_load(&gTextureMisses), (unsigned long long)atomic_load(&gDuplicateCommit),
         (unsigned long long)atomic_load(&gThreadCPUClockFailures),
+        (unsigned long long)atomic_load(&gTraceConfigErrors),
         (unsigned long long)atomic_load(&gCaptureConfigErrors),
         atomic_load(&gEnabled) ? "true" : "false");
 }
@@ -634,10 +661,10 @@ __attribute__((constructor)) static void start(void) {
     const char *path = getenv("MUDCRAB_METAL_TRACE_FILE"); if (!path || !*path) return;
     gMinimal = getenv("MUDCRAB_METAL_TRACE_ACQUIRE_ONLY") != NULL;
     mach_timebase_info(&gTimebase); if (!gTimebase.denom) { gTimebase.numer = 1; gTimebase.denom = 1; }
-    const char *limit = getenv("MUDCRAB_METAL_TRACE_MAX_ROWS"); if (limit) gMaxRows = strtoull(limit, NULL, 10);
-    const char *warmup = getenv("MUDCRAB_METAL_TRACE_START_ACQUISITION");
-    if (warmup) gStartAcquisition = strtoull(warmup, NULL, 10);
     gFile = fopen(path, "wx"); if (!gFile) { perror("MUDCRAB_METAL_TRACE_FILE"); return; }
+    if (!configure_trace()) {
+        write_health(); fclose(gFile); gFile = NULL; return;
+    }
     struct timespec wall; clock_gettime(CLOCK_REALTIME, &wall);
     fprintf(gFile, "{\"type\":\"trace_begin\",\"schema\":1,\"pid\":%d,\"wall_unix_s\":%lld,\"wall_ns\":%ld,"
         "\"mach_ticks\":%llu,\"host_ns\":%llu,\"ca_current_media_s\":%.9f,\"timebase_numer\":%u,"

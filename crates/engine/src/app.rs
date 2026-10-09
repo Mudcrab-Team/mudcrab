@@ -473,9 +473,10 @@ fn check_existing_io_pool(requested: usize, threads: usize, existing: Option<usi
              first, or use 0 to keep the existing pool"
         );
     }
-    warn!(
-        threads,
-        existing, "the asset IO pool already exists with a different thread count; keeping it"
+    // `run` checks the pool before installing LogPlugin, so report directly to stderr.
+    eprintln!(
+        "warning: the asset IO pool already exists with {existing} threads; \
+         automatic sizing selected {threads}; keeping the existing pool"
     );
     Ok(())
 }

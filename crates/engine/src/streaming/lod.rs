@@ -963,6 +963,10 @@ pub(super) fn update_terrain_lod_visibility(
         profiler.set_gauge("lod/resident_terrain_batches", generated_batches as f64);
         profiler.set_gauge("lod/visible_terrain_batches", visible_batches as f64);
         profiler.set_gauge(
+            "lod/pending_terrain_selection_uploads",
+            batches.pending_selection_uploads() as f64,
+        );
+        profiler.set_gauge(
             "lod/batched_selected_triangles",
             (batched_quadrants * TERRAIN_QUADRANT_INDEX_COUNT / 3) as f64,
         );

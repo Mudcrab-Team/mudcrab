@@ -149,13 +149,19 @@ Run these commands from the repository after the integrated release build is com
 window unobscured and record its actual physical resolution from the bundle. Benchmarks request
 `AutoNoVsync`; interactive runs request `AutoVsync`. Preserve the native surface log to establish
 the resolved mode, which is not currently a metadata field. The commands retain the normal
-acceptance thresholds and save each exit code, including failures.
+acceptance thresholds and save each exit code, including failures. The dirty-worktree
+flag is added only when Git reports staged, unstaged or untracked changes.
 
 ```sh
 # Run from the repository root; keep artifacts outside ignored target/.
 ARTIFACT_ROOT=${ARTIFACT_ROOT:-../mudcrab-profiles/2026-10-08-riverwood/runs}
 capture_stamp=$(date -u +%Y%m%dT%H%M%SZ)
 profile_commit=$(git rev-parse HEAD)
+profile_status=$(git status --porcelain)
+set --
+if [ -n "$profile_status" ]; then
+  set -- --profile-dirty-worktree
+fi
 for upload_mib in 16 1; do
   moving_run="${ARTIFACT_ROOT}/moving-${upload_mib}mib-${capture_stamp}"
   mkdir -p "$moving_run"
@@ -181,7 +187,7 @@ for upload_mib in 16 1; do
       --profile-output "$moving_run/profile" \
       --profile-scenario riverwood-moving-streaming \
       --profile-run-id "moving-${upload_mib}mib-${capture_stamp}" \
-      --profile-commit "$profile_commit" --profile-dirty-worktree \
+      --profile-commit "$profile_commit" "$@" \
       --profile-hardware 'Apple M1 Pro' \
       > "$moving_run/stdout.log" 2> "$moving_run/stderr.log"
   run_exit=$?
@@ -203,6 +209,9 @@ pending roots, and changed selections clone complete batch vertex streams before
 costs can differ substantially from a stationary interval. The gauges
 `lod/pending_terrain_batch_chunks` and `lod/pending_initial_terrain_upload_chunks`, plus
 `initial_uploads_drained` events in `streaming.json`, distinguish CPU preparation from initial GPU
-activation. Gauges report the latest value, not a history. Compare `memory.json` samples over
+activation. For the #200 candidate, also require `lod/pending_terrain_selection_uploads`
+to be zero before accepting a settled checkpoint; it counts pending immutable batch
+meshes after initial activation. Check loading/query work and specialization retries
+separately. Gauges report the latest value, not a history. Compare `memory.json` samples over
 repeated traversals and inspect the final `assets/meshes` and scene counts for continued growth.
 These commands are a validation protocol; this document does not claim they have passed.

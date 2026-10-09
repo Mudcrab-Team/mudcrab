@@ -25,7 +25,7 @@ def main():
  if begin_clock is None:raise ValueError('Missing trace_begin record; capture provenance and clock are unknown')
  if not health:raise ValueError('Missing health records; capture completeness cannot be checked')
  for record in health:
-  for counter in ('dropped','exceptions','hook_failures','thread_cpu_clock_failures','capture_config_errors'):
+  for counter in ('dropped','exceptions','hook_failures','thread_cpu_clock_failures','trace_config_errors','capture_config_errors'):
    if record.get(counter,0):raise ValueError(f'Unhealthy capture: {counter}={record[counter]}')
  valid=[c for c in cb.values() if c.get('completed',{}).get('gpu_time_valid')]
  acquire=[r for r in acq.values() if 'begin' in r and 'end' in r]

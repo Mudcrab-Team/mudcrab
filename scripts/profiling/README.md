@@ -54,6 +54,14 @@ coverage matter. A successful analyzer command does not certify a valid capture.
 The final shutdown health record normally has `enabled=false`; inspect periodic
 records inside the measured range to distinguish shutdown from an earlier cap.
 
+Trace limits accept decimal integers through `18446744073709551615`. Set
+`MUDCRAB_METAL_TRACE_MAX_ROWS` to a positive value; its default is `1000000`.
+`MUDCRAB_METAL_TRACE_START_ACQUISITION` defaults to `0`, which starts observation
+immediately, and accepts an explicit `0`. Empty values, signs, whitespace,
+fractions, scientific notation and overflow are rejected. Invalid limits write
+`trace_config_error` records and disabled health with `trace_config_errors`,
+then stop the observer before installing hooks. The application continues.
+
 Keep the game visible, preserve a scene image and actual surface dimensions,
 and verify the final streaming/renderer checks. Check for other builds, tests
 and GPU workloads before starting a comparison. Keep exact binaries, source
@@ -163,3 +171,8 @@ Run the procedural analyzer checks with:
 ```sh
 python3 -m unittest scripts.tests.test_native_metal_profiling -v
 ```
+
+On macOS, the same command also compiles and loads the native observer in short
+processes to check valid defaults, integer boundaries and rejected configuration.
+Those checks need the Command Line Tools and use no renderer or game assets;
+they are skipped on other platforms. They do not qualify a native capture.

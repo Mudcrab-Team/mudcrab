@@ -396,11 +396,17 @@ def duplicate_placements(database, max_examples):
         counts = Counter()
         for row in rows:
             counts["model_references"] += 1
+            if row[11] is None:
+                counts["null_placement_fields"] += 1
+                continue
             if row[11] & (0x20 | 0x800):
                 counts["deleted_or_initially_disabled"] += 1
                 continue
             if row[12] is not None:
                 counts["conditional_enable_state_unknown"] += 1
+                continue
+            if any(value is None for value in row[4:11]):
+                counts["null_placement_fields"] += 1
                 continue
             if not all(math.isfinite(v) for v in row[4:11]):
                 counts["nonfinite_transforms"] += 1
@@ -522,7 +528,9 @@ def audit(args):
                 gaps.append("conditional placement enable states not evaluated")
             if placement["coverage"].get("nonfinite_transforms"):
                 gaps.append("nonfinite placement transforms")
-        except (OSError, sqlite3.Error, ValueError) as error:
+            if placement["coverage"].get("null_placement_fields"):
+                gaps.append("NULL placement flags or transforms")
+        except (OSError, sqlite3.Error, ValueError, TypeError) as error:
             errors.append({"path": "skyrim_world.db", "error": str(error)})
             gaps.append("placement audit failed")
     else:
@@ -571,9 +579,12 @@ def main(argv=None):
         parser.error("thresholds must be finite and nonnegative; budgets must be positive")
     try:
         result = audit(args)
-    except (AuditError, OSError, ValueError) as error:
+    except Exception as error:
+        # Limit this fallback to the scan: output failures still surface, and
+        # KeyboardInterrupt/SystemExit retain their normal control flow.
         result = {"format": FORMAT, "static_scope_passed": False,
-                  "rendered_z_fighting_verified": False, "coverage_gaps": [str(error)]}
+                  "rendered_z_fighting_verified": False,
+                  "coverage_gaps": [f"audit failed ({type(error).__name__}): {error}"]}
     result["audit_script_sha256"] = hash_file(Path(__file__))
     encoded = json.dumps(result, indent=2, allow_nan=False) + "\n"
     if args.out:

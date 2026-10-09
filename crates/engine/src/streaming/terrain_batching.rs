@@ -615,6 +615,16 @@ impl LodBatchVisibility<'_, '_> {
             .count()
     }
 
+    /// Immutable selection meshes still awaiting activation after their initial hierarchy transfer.
+    pub(super) fn pending_selection_uploads(&self) -> usize {
+        self.chunks
+            .iter()
+            .filter(|(_, chunk, _)| chunk.source_children.is_none())
+            .flat_map(|(_, chunk, _)| &chunk.batches)
+            .filter(|batch| batch.pending_upload)
+            .count()
+    }
+
     /// Run after semantic selection has updated every inactive mask. A transfer changes the
     /// representation of the same ready coverage, so its exact source removal events can be
     /// ignored by the next selector pass rather than rebuilding the tier map again.
@@ -1227,6 +1237,73 @@ mod tests {
                 TerrainSurfaceReady,
             ))
             .id()
+    }
+
+    #[test]
+    fn selection_upload_gauge_separates_initial_chunks_and_tracks_activation() {
+        let mut app = selection_app();
+        let fixture = fixture(&mut app, &[IVec2::ZERO, IVec2::new(3, 0)], LodTier::Tier4);
+        let output = tempfile::tempdir().unwrap();
+        let assert_gauges = |app: &App, initial: f64, selection: f64| {
+            let config = EngineConfig {
+                profile_output_dir: Some(output.path().to_owned()),
+                ..default()
+            };
+            app.world()
+                .resource::<ProfilingState>()
+                .write_bundle(
+                    &config,
+                    &serde_json::json!({"average_fps": 90.0, "frame_ms_p95": 14.0, "passed": true}),
+                    Some(app.world().resource::<StreamingMetrics>()),
+                    &crate::render::RendererMetrics::default(),
+                    None,
+                )
+                .unwrap();
+            let report: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(output.path().join("cpu-spans.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                report["gauges"]["lod/pending_initial_terrain_upload_chunks"],
+                initial
+            );
+            assert_eq!(
+                report["gauges"]["lod/pending_terrain_selection_uploads"],
+                selection
+            );
+        };
+
+        ready_source(&mut app, &fixture);
+        queue_source(&mut app, &fixture);
+        app.update();
+        // Preparation consumes this frame's commit slot; sample the retained initial queue
+        // on the next update while all mesh acknowledgments are still withheld.
+        app.update();
+        assert_gauges(&app, 1.0, 0.0);
+        acknowledge_uploads(&app, fixture.root);
+        app.update();
+        assert_gauges(&app, 0.0, 0.0);
+
+        full_quadrant(&mut app, IVec2::ZERO, 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        assert_gauges(&app, 0.0, 1.0);
+        full_quadrant(&mut app, IVec2::new(3, 0), 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        assert_gauges(&app, 0.0, 2.0);
+        let revision = app.world().resource::<LodStreaming>().visibility_revision;
+        acknowledge_uploads(&app, fixture.root);
+        app.update();
+        assert_gauges(&app, 0.0, 0.0);
+        assert_eq!(
+            app.world().resource::<LodStreaming>().visibility_revision,
+            revision
+        );
     }
 
     #[test]
