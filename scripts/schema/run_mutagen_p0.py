@@ -49,6 +49,7 @@ class ProcessTimeout(QualificationError):
         self.stdout = stdout
         self.stderr = stderr
         self.raw_output: tuple[bytes, bytes] | None = None
+        self.cleanup_errors: list[dict] = []
 
 
 def _sha256(raw: bytes) -> str:
@@ -148,6 +149,20 @@ def _resolve_dotnet(explicit: str | None) -> Path:
     return path
 
 
+def _signal_owned_group(process, sig: int, cleanup_errors: list[dict]) -> None:
+    """Reap an exited leader, then still signal its original group for survivors."""
+    process.poll()
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        cleanup_errors.append({
+            "operation": f"killpg({sig})", "errno": exc.errno,
+            "error": str(exc),
+        })
+
+
 def _run_supervised(
     command: list[str], *, cwd: Path, env: dict[str, str], label: str, timeout: float
 ) -> subprocess.CompletedProcess:
@@ -160,14 +175,12 @@ def _run_supervised(
         text=True,
         start_new_session=(os.name == "posix"),
     )
+    cleanup_errors: list[dict] = []
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            _signal_owned_group(process, signal.SIGTERM, cleanup_errors)
         else:
             # Stop descendants before their parent so inherited pipe handles
             # do not keep the timeout cleanup waiting for compiler workers.
@@ -185,10 +198,7 @@ def _run_supervised(
             stdout, stderr = process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
             if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                _signal_owned_group(process, signal.SIGKILL, cleanup_errors)
             else:
                 process.kill()
             try:
@@ -213,8 +223,11 @@ def _run_supervised(
                 except UnicodeDecodeError as exc:
                     failure = ProcessTimeout(label, timeout, "", "")
                     failure.raw_output = raw_output
+                    failure.cleanup_errors = cleanup_errors
                     raise failure from exc
-        raise ProcessTimeout(label, timeout, stdout or "", stderr or "")
+        failure = ProcessTimeout(label, timeout, stdout or "", stderr or "")
+        failure.cleanup_errors = cleanup_errors
+        raise failure
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
@@ -227,6 +240,7 @@ def _run_checked(
     log_dir: Path,
     timeout: float,
 ):
+    _save_json(log_dir / f"{label}.command.json", command)
     try:
         result = _run_supervised(command, cwd=cwd, env=env, label=label, timeout=timeout)
     except ProcessTimeout as exc:
@@ -234,6 +248,7 @@ def _run_checked(
         (log_dir / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
         _save_json(log_dir / f"{label}.timeout.json", {
             "timeout_seconds": timeout, "completed_verdict_saved": False,
+            "cleanup_errors": exc.cleanup_errors,
             **_save_timeout_raw(exc, log_dir / f"{label}.stdout.txt", log_dir / f"{label}.stderr.txt"),
         })
         _save_json(log_dir / f"{label}.command.json", command)
@@ -591,6 +606,7 @@ def _case_run(
     plugin_path = fixtures_dir / filename
     plugin_path.write_bytes(input_bytes)
     command = [str(dotnet), str(assembly), "inspect", str(plugin_path)]
+    _save_json((observations_dir / Path(filename).stem).with_suffix(".command.json"), command)
     try:
         result = _run_supervised(
             command,
@@ -608,6 +624,7 @@ def _case_run(
             {
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
+                "cleanup_errors": exc.cleanup_errors,
                 **_save_timeout_raw(exc, case_base.with_suffix(".raw.stdout.txt"), case_base.with_suffix(".stderr.txt")),
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
@@ -679,6 +696,7 @@ def _run_legacy_command(
     label: str,
     observations_dir: Path,
 ) -> subprocess.CompletedProcess:
+    _save_json((observations_dir / label).with_suffix(".command.json"), command)
     try:
         result = _run_supervised(
             command,
@@ -697,6 +715,7 @@ def _run_legacy_command(
             {
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
+                "cleanup_errors": exc.cleanup_errors,
                 **_save_timeout_raw(exc, base.with_suffix(".timeout.stdout.txt"), base.with_suffix(".timeout.stderr.txt")),
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
@@ -834,6 +853,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             "DOTNET_CLI_USE_MSBUILD_SERVER": "0",
         }
     )
+    _save_json(logs_dir / "dotnet-version.command.json", [str(dotnet), "--version"])
     try:
         version = _run_supervised(
             [str(dotnet), "--version"],
@@ -849,6 +869,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             logs_dir / "dotnet-version.timeout.json",
             {
                 "timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False,
+                "cleanup_errors": exc.cleanup_errors,
                 **_save_timeout_raw(exc, logs_dir / "dotnet-version.stdout.txt", logs_dir / "dotnet-version.stderr.txt"),
             },
         )

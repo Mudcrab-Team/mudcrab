@@ -1,6 +1,7 @@
 """Bounded timeout cleanup, including inherited child pipe handles."""
 import importlib
 import hashlib
+import errno
 import json
 import os
 import subprocess
@@ -18,6 +19,83 @@ supervisor = importlib.import_module(run_mutagen_p0._run_supervised.__module__)
 
 
 class ProcessSupervisorTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_timeout_writer_retains_detached_child_output_and_signal_error(self):
+        self._check_real_timeout_writer(detached=True, fail_escalation=True)
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_timeout_writer_kills_same_group_survivor_after_reaping_leader(self):
+        self._check_real_timeout_writer(detached=False, fail_escalation=False)
+
+    def _check_real_timeout_writer(self, *, detached, fail_escalation):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child_code = (
+                "import os,signal,time; from pathlib import Path; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "Path('child.pid').write_text(str(os.getpid())); "
+                "print('partial child output', flush=True); "
+                "print('partial child error', file=__import__('sys').stderr, flush=True); "
+                "Path('ready').write_text('ready'); time.sleep(60)"
+            )
+            parent = (
+                "import subprocess,sys,time\n"
+                f"subprocess.Popen([sys.executable, '-u', '-c', {child_code!r}], start_new_session={detached!r})\n"
+                "time.sleep(60)\n"
+            )
+            command = [sys.executable, "-u", "-c", parent]
+            real_popen, real_killpg = subprocess.Popen, os.killpg
+            parents = []
+            escalation_leader_status = []
+
+            def ready_popen(argv, **kwargs):
+                process = real_popen(argv, **kwargs)
+                parents.append(process)
+                deadline = time.monotonic() + 5
+                while not (root / "ready").exists():
+                    if process.poll() is not None or time.monotonic() > deadline:
+                        raise AssertionError("fixture child did not become ready")
+                    time.sleep(0.01)
+                return process
+
+            def signal_group(pid, sig):
+                if sig == 9:
+                    escalation_leader_status.append(parents[0].returncode)
+                    if fail_escalation:
+                        raise PermissionError(errno.EPERM, "synthetic cleanup permission failure")
+                return real_killpg(pid, sig)
+
+            started = time.monotonic()
+            try:
+                with mock.patch.object(supervisor.subprocess, "Popen", side_effect=ready_popen), \
+                     mock.patch.object(supervisor.os, "killpg", side_effect=signal_group):
+                    with self.assertRaises(run_mutagen_p0.QualificationError):
+                        run_mutagen_p0._run_checked(
+                            command, cwd=root, env=dict(os.environ), label="writer",
+                            log_dir=root, timeout=0.1,
+                        )
+                self.assertLess(time.monotonic() - started, 8)
+                self.assertIn("partial child output", (root / "writer.stdout.txt").read_text())
+                self.assertIn("partial child error", (root / "writer.stderr.txt").read_text())
+                metadata = json.loads((root / "writer.timeout.json").read_text())
+                self.assertFalse(metadata["completed_verdict_saved"])
+                self.assertEqual(json.loads((root / "writer.command.json").read_text()), command)
+                self.assertEqual(escalation_leader_status, [-15], "leader must be reaped before SIGKILL")
+                if fail_escalation:
+                    self.assertEqual(metadata["cleanup_errors"][0]["errno"], errno.EPERM)
+                else:
+                    self.assertEqual(metadata["cleanup_errors"], [])
+            finally:
+                if (root / "child.pid").exists():
+                    try:
+                        os.kill(int((root / "child.pid").read_text()), 9)
+                    except ProcessLookupError:
+                        pass
+                for process in parents:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=2)
+
     def test_v148_partial_multibyte_timeout_preserves_raw_evidence(self):
         root = Path.cwd()
         process = mock.Mock(pid=1234)
