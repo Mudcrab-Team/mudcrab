@@ -424,8 +424,10 @@ def run_one(args, directory, budget, run_id, environment):
                 manifest["timed_out"] = True
                 stop_owned_group(process)
                 manifest["exit_code"] = process.returncode
-            except KeyboardInterrupt:
-                manifest["interrupted"] = True
+        except KeyboardInterrupt:
+            # Signals can arrive while publishing the owned process group, before wait starts.
+            manifest["interrupted"] = True
+            if process is not None:
                 stop_owned_group(process)
                 manifest["exit_code"] = process.returncode
         except OSError as error:

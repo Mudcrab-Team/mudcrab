@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import zlib
 
 
@@ -326,6 +327,33 @@ class ProcessTests(unittest.TestCase):
             if campaign.poll() is None:
                 campaign.kill()
                 campaign.communicate(timeout=5)
+
+    def test_interrupt_while_publishing_owned_group_preserves_partial_evidence(self):
+        self.engine.write_text(self.engine.read_text() + "import time\ntime.sleep(60)\n")
+        output = self.root / "interrupted-publication"
+        output.mkdir()
+        args = RUNNER.parse_args(self.command(output)[2:])
+        write_json = RUNNER.write_json
+        interrupted = False
+
+        def interrupt_publication(path, value):
+            nonlocal interrupted
+            write_json(path, value)
+            if "owned_process_group" in value and value["ended_utc"] is None and not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt
+
+        directory = output / "16mib-01"
+        with patch.object(RUNNER, "write_json", side_effect=interrupt_publication):
+            result, stopped = RUNNER.run_one(args, directory, 16, "16mib-01", os.environ.copy())
+        self.assertTrue(stopped)
+        self.assertFalse(result["functional_checks_passed"])
+        manifest = json.loads((directory / "run.json").read_text())
+        self.assertTrue(manifest["interrupted"])
+        self.assertIsNotNone(manifest["ended_utc"])
+        self.assertTrue((directory / "validation.json").is_file())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(manifest["owned_process_group"], 0)
 
 
 if __name__ == "__main__":
