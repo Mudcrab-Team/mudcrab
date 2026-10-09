@@ -321,10 +321,12 @@ mod tests {
                 .starts_with(modded)
         );
 
-        if !cfg!(windows) {
-            fs::write(base.join("Landscape/ROCK.dds"), b"collision").unwrap();
-            assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
-        }
+        // A repeated kind prefix normalizes to the same key on case-sensitive and
+        // case-insensitive filesystems alike; two names differing only in case would overwrite
+        // one another on the default macOS and Windows filesystems.
+        fs::create_dir_all(base.join("textures/landscape")).unwrap();
+        fs::write(base.join("textures/landscape/rock.dds"), b"collision").unwrap();
+        assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
     }
 
     #[test]
