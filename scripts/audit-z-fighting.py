@@ -405,7 +405,9 @@ def duplicate_placements(database, max_examples):
             if row[12] is not None:
                 counts["conditional_enable_state_unknown"] += 1
                 continue
-            if any(value is None for value in row[4:11]):
+            if (row[0] is None or row[3] is None
+                    or (row[2] if row[3] else row[1]) is None
+                    or any(value is None for value in row[4:11])):
                 counts["null_placement_fields"] += 1
                 continue
             if not all(math.isfinite(v) for v in row[4:11]):
@@ -529,7 +531,7 @@ def audit(args):
             if placement["coverage"].get("nonfinite_transforms"):
                 gaps.append("nonfinite placement transforms")
             if placement["coverage"].get("null_placement_fields"):
-                gaps.append("NULL placement flags or transforms")
+                gaps.append("NULL placement flags, transforms, reference ID or selected scope")
         except (OSError, sqlite3.Error, ValueError, TypeError) as error:
             errors.append({"path": "skyrim_world.db", "error": str(error)})
             gaps.append("placement audit failed")

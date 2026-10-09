@@ -296,6 +296,9 @@ class InputTests(unittest.TestCase):
 class PlacementTests(unittest.TestCase):
     null_fields = ("header_flags", "pos_x", "pos_y", "pos_z",
                    "rot_x", "rot_y", "rot_z", "scale")
+    missing_scope_or_id = ("is_exterior=NULL", "worldspace_id=NULL",
+                           "is_exterior=0,cell_id=NULL", "id=NULL")
+    null_gap = "NULL placement flags, transforms, reference ID or selected scope"
 
     def prepare_assets(self, root):
         (root / "meshes").mkdir()
@@ -371,7 +374,7 @@ class PlacementTests(unittest.TestCase):
                 self.assertEqual(result["placements"]["coverage"]["null_placement_fields"], 1)
                 self.assertEqual(result["placements"]["duplicate_groups"], 1)
                 self.assertEqual(result["errors"], [])
-                self.assertIn("NULL placement flags or transforms", result["coverage_gaps"])
+                self.assertIn(self.null_gap, result["coverage_gaps"])
                 self.assertTrue(result["risks_found"])
                 self.assertFalse(result["static_scope_passed"])
 
@@ -388,7 +391,7 @@ class PlacementTests(unittest.TestCase):
                 status, result = self.run_cli(root)
                 self.assertEqual(status, 2 if conditional else 0)
                 self.assertEqual(result["placements"]["coverage"].get("null_placement_fields", 0), 0)
-                self.assertNotIn("NULL placement flags or transforms", result["coverage_gaps"])
+                self.assertNotIn(self.null_gap, result["coverage_gaps"])
                 self.assertEqual(result["coverage_gaps"],
                     ["conditional placement enable states not evaluated"] if conditional else [])
                 self.assertEqual(result["static_scope_passed"], not conditional)
@@ -405,6 +408,115 @@ class PlacementTests(unittest.TestCase):
             self.assertEqual(result["errors"][0]["path"], "skyrim_world.db")
             self.assertIn("placement audit failed", result["coverage_gaps"])
             self.assertFalse(result["static_scope_passed"])
+
+    def test_missing_scope_or_id_is_excluded_from_duplicate_grouping(self):
+        for mutation in self.missing_scope_or_id:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "world.db"
+                create_database(path)
+                with sqlite3.connect(path) as db:
+                    for ident in (1, 2, 3, 4):
+                        insert_reference(db, ident)
+                    db.execute(f'UPDATE "references" SET {mutation} WHERE id IN (3,4)')
+                result = AUDIT.duplicate_placements(path, 10)
+                self.assertEqual(result["coverage"]["model_references"], 4)
+                self.assertEqual(result["coverage"]["null_placement_fields"], 2)
+                self.assertEqual(result["duplicate_groups"], 1)
+                self.assertEqual(result["extra_placements"], 1)
+                self.assertEqual(result["examples"][0]["reference_ids"], [1, 2])
+
+    def test_multiple_null_scope_flags_and_transforms_count_each_row_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "world.db"
+            create_database(path)
+            with sqlite3.connect(path) as db:
+                for ident in (1, 2, 3, 4):
+                    insert_reference(db, ident)
+                db.execute('UPDATE "references" SET is_exterior=NULL,cell_id=NULL,worldspace_id=NULL,pos_x=NULL')
+                db.execute('UPDATE "references" SET id=NULL WHERE id=3')
+                db.execute('UPDATE "references" SET header_flags=NULL WHERE id=4')
+            result = AUDIT.duplicate_placements(path, 10)
+            self.assertEqual(result["coverage"]["model_references"], 4)
+            self.assertEqual(result["coverage"]["null_placement_fields"], 4)
+            self.assertEqual(result["duplicate_groups"], 0)
+
+    def test_valid_unused_null_scope_fields_keep_distinct_scope_groups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "world.db"
+            create_database(path)
+            with sqlite3.connect(path) as db:
+                for ident in (1, 2, 3, 4):
+                    insert_reference(db, ident)
+                db.execute('UPDATE "references" SET cell_id=NULL WHERE id IN (1,2)')
+                db.execute('UPDATE "references" SET is_exterior=0,worldspace_id=NULL WHERE id IN (3,4)')
+            result = AUDIT.duplicate_placements(path, 10)
+            self.assertEqual(result["coverage"].get("null_placement_fields", 0), 0)
+            self.assertEqual(result["duplicate_groups"], 2)
+            self.assertEqual(result["extra_placements"], 2)
+            self.assertEqual({tuple(row["scope"]): row["reference_ids"] for row in result["examples"]},
+                             {("worldspace", 60): [1, 2], ("interior", 10): [3, 4]})
+
+    def test_cli_missing_scope_or_id_reports_gap_instead_of_a_false_pass(self):
+        for mutation in self.missing_scope_or_id:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.prepare_assets(root)
+                database = root / "skyrim_world.db"
+                with sqlite3.connect(database) as db:
+                    insert_reference(db, 1)
+                    db.execute(f'UPDATE "references" SET {mutation}')
+                original_database = database.read_bytes()
+                status, result = self.run_cli(root)
+                self.assertEqual(status, 2)
+                self.assertEqual(database.read_bytes(), original_database)
+                self.assertEqual(result["placements"]["coverage"]["null_placement_fields"], 1)
+                self.assertEqual(result["placements"]["duplicate_groups"], 0)
+                self.assertEqual(result["errors"], [])
+                self.assertEqual(result["coverage_gaps"], [self.null_gap])
+                self.assertFalse(result["risks_found"])
+                self.assertFalse(result["static_scope_passed"])
+
+    def test_cli_valid_unused_null_scope_fields_pass_without_changing_database(self):
+        for mutation in ("cell_id=NULL", "is_exterior=0,worldspace_id=NULL"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.prepare_assets(root)
+                database = root / "skyrim_world.db"
+                with sqlite3.connect(database) as db:
+                    insert_reference(db, 1)
+                    db.execute(f'UPDATE "references" SET {mutation}')
+                original_database = database.read_bytes()
+                status, result = self.run_cli(root)
+                self.assertEqual(status, 0)
+                self.assertEqual(database.read_bytes(), original_database)
+                self.assertEqual(result["placements"]["coverage"].get("null_placement_fields", 0), 0)
+                self.assertEqual(result["coverage_gaps"], [])
+                self.assertTrue(result["static_scope_passed"])
+
+    def test_cli_excluded_missing_scopes_preserve_gate_priority(self):
+        for conditional in (False, True):
+            with self.subTest(conditional=conditional), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.prepare_assets(root)
+                database = root / "skyrim_world.db"
+                with sqlite3.connect(database) as db:
+                    insert_reference(db, 1, 0x20)
+                    insert_reference(db, 2, 0x800)
+                    if conditional:
+                        insert_reference(db, 3, parent=42)
+                    db.execute('UPDATE "references" SET id=NULL,is_exterior=NULL,cell_id=NULL,worldspace_id=NULL')
+                original_database = database.read_bytes()
+                status, result = self.run_cli(root)
+                self.assertEqual(status, 2 if conditional else 0)
+                self.assertEqual(database.read_bytes(), original_database)
+                coverage = result["placements"]["coverage"]
+                self.assertEqual(coverage["deleted_or_initially_disabled"], 2)
+                self.assertEqual(coverage.get("conditional_enable_state_unknown", 0), int(conditional))
+                self.assertEqual(coverage.get("null_placement_fields", 0), 0)
+                self.assertEqual(result["placements"]["duplicate_groups"], 0)
+                self.assertEqual(result["coverage_gaps"],
+                    ["conditional placement enable states not evaluated"] if conditional else [])
+                self.assertEqual(result["static_scope_passed"], not conditional)
 
     def test_unexpected_audit_failures_report_gap_and_exit_two(self):
         for error in (TypeError("invalid placement"), RuntimeError("worker failed"),
