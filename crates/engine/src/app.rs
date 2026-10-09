@@ -1,5 +1,5 @@
 use crate::{
-    config::EngineConfig,
+    config::{EngineConfig, MAX_IO_THREADS},
     metrics::AcceptanceMetricsPlugin,
     physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
@@ -8,6 +8,7 @@ use crate::{
         VercidiumRendererPlugin, WATER_LAYER, WaterExtension, WaterMaterial,
         WaterReflectionTexture, terrain_layer_sampler,
     },
+    renderer_init::RendererInitPlugin,
     shots::{ShotsFile, ShotsPlugin, ShotsRun, default_output_dir},
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
@@ -62,7 +63,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
-    configure_io_task_pool();
+    configure_io_task_pool(config.io_threads)?;
     let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
         let fixture = StreamingFixtureDirectory::create(config.worldspace_id, config.start_grid)?;
@@ -174,6 +175,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .init_resource::<StreamingMetrics>()
         .add_plugins(
             DefaultPlugins
+                .build()
+                .disable::<bevy::render::RenderPlugin>()
+                .add_before::<bevy::render::RenderPlugin>(RendererInitPlugin::default())
                 .set(AssetPlugin {
                     file_path: asset_path,
                     ..default()
@@ -403,11 +407,62 @@ fn io_task_pool_builder(threads: usize) -> TaskPoolBuilder {
         .stack_size(IO_TASK_STACK_BYTES)
 }
 
-fn configure_io_task_pool() {
-    let threads = std::thread::available_parallelism()
-        .map(|count| count.get().div_ceil(4).clamp(1, 4))
+/// IO pool size for `requested` threads; `0` means automatic: a quarter of the hardware threads,
+/// at least one and at most four (16 -> 4, 8 -> 2, 4 -> 1, 64 -> 4). A requested size is used as
+/// given, up to [`MAX_IO_THREADS`]: a caller that builds `EngineConfig` by hand skips the
+/// `--io-threads` check, and each thread reserves [`IO_TASK_STACK_BYTES`] of address space.
+///
+/// More threads were measured on a 16-thread machine: 8 loaded a world no faster than 4 (the
+/// ranges overlapped) and lengthened the worst frame while loading (27.5-33.6 ms against
+/// 14.7-20.4 ms, both arming 4 models a frame), so the automatic size stays as it was.
+fn io_pool_threads(requested: usize, available: usize) -> Result<usize> {
+    if requested > MAX_IO_THREADS {
+        let stack_mib = IO_TASK_STACK_BYTES / (1024 * 1024);
+        color_eyre::eyre::bail!(
+            "io_threads is {requested}, but the asset IO pool takes at most {MAX_IO_THREADS} \
+             threads (each reserves {stack_mib} MiB of address space); use 0 for the automatic size"
+        );
+    }
+    Ok(if requested > 0 {
+        requested
+    } else {
+        available.div_ceil(4).clamp(1, 4)
+    })
+}
+
+fn configure_io_task_pool(requested: usize) -> Result<()> {
+    let available = std::thread::available_parallelism()
+        .map(|count| count.get())
         .unwrap_or(1);
-    IoTaskPool::get_or_init(|| io_task_pool_builder(threads).build());
+    let threads = io_pool_threads(requested, available)?;
+    // The pool is process-global (a `OnceLock` in bevy_tasks) and cannot be resized: if a host
+    // built it before `run`, that pool stays, so check it rather than claiming the requested size.
+    // The pool `get_or_init` returns is the one in use, whoever built it, so that is the one
+    // checked: reading it first with `try_get` would miss a host that builds it between the calls.
+    let pool = IoTaskPool::get_or_init(|| io_task_pool_builder(threads).build());
+    check_existing_io_pool(requested, threads, Some(pool.thread_num()))
+}
+
+/// Compares the IO pool a host built before `run` with the size `run` wants. An explicit
+/// `--io-threads` that the existing pool does not match is an error, because the pool cannot be
+/// resized and the caller asked for that size; the automatic size (`requested` 0) is only a
+/// default, so a host's own pool is kept with a warning.
+fn check_existing_io_pool(requested: usize, threads: usize, existing: Option<usize>) -> Result<()> {
+    let Some(existing) = existing.filter(|&existing| existing != threads) else {
+        return Ok(());
+    };
+    if requested > 0 {
+        color_eyre::eyre::bail!(
+            "io_threads is {requested}, but the asset IO pool already exists with {existing} \
+             threads and cannot be resized; let run build the pool rather than building it \
+             first, or use 0 to keep the existing pool"
+        );
+    }
+    warn!(
+        threads,
+        existing, "the asset IO pool already exists with a different thread count; keeping it"
+    );
+    Ok(())
 }
 
 /// The interior cell the streaming fixture loads by id. An interior carries no grid square and
@@ -2151,6 +2206,38 @@ mod tests {
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
 
+    #[test]
+    fn an_existing_io_pool_of_another_size_is_an_error_only_for_an_explicit_request() {
+        // No pool yet, or one that already has the wanted size: nothing to report.
+        check_existing_io_pool(4, 4, None).unwrap();
+        check_existing_io_pool(4, 4, Some(4)).unwrap();
+        // An explicit request the existing pool cannot meet is an actionable error.
+        let error = check_existing_io_pool(4, 4, Some(2))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("io_threads is 4"), "{error}");
+        assert!(error.contains("2 threads"), "{error}");
+        // The automatic size is a default: the host's pool is kept.
+        check_existing_io_pool(0, 2, Some(3)).unwrap();
+    }
+
+    #[test]
+    fn io_pool_is_a_quarter_of_the_hardware_threads_unless_requested() {
+        assert_eq!(io_pool_threads(0, 16).unwrap(), 4);
+        assert_eq!(io_pool_threads(0, 8).unwrap(), 2);
+        assert_eq!(io_pool_threads(0, 4).unwrap(), 1);
+        assert_eq!(io_pool_threads(0, 1).unwrap(), 1);
+        assert_eq!(io_pool_threads(0, 64).unwrap(), 4);
+        assert_eq!(io_pool_threads(6, 16).unwrap(), 6);
+        assert_eq!(io_pool_threads(32, 16).unwrap(), 32);
+        assert_eq!(io_pool_threads(MAX_IO_THREADS, 16).unwrap(), MAX_IO_THREADS);
+        // A hand-built `EngineConfig` skips the `--io-threads` check; the pool still refuses it.
+        let error = io_pool_threads(MAX_IO_THREADS + 1, 16)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("at most 64 threads"), "{error}");
+    }
+
     /// Uses real loaders with a generated external normal image, without game assets or a GPU.
     fn world_normal_loader_fixture(wrap_s: u32, wrap_t: u32) -> (tempfile::TempDir, App) {
         use bevy::{
@@ -3276,39 +3363,42 @@ mod tests {
     }
 
     #[test]
-    fn accepts_passing_schema_four_integration_report() {
-        let directory = tempfile::tempdir().unwrap();
-        for required in ["skyrim_world.db", "cell_cache.rkyv"] {
-            std::fs::write(directory.path().join(required), []).unwrap();
+    fn accepts_schema_15_assets_with_matching_legacy_reports() {
+        // Cover both legacy world schemas and retain the report/database mismatch gate.
+        for schema in [3, 4] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+            database.execute_batch(&format!("CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES({schema});")).unwrap();
+            std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
+            std::fs::write(
+                directory.path().join("conversion-manifest.json"),
+                br#"{"schema_version":15,"complete":true}"#,
+            )
+            .unwrap();
+            let report = directory.path().join("integration-report.json");
+            std::fs::write(
+                &report,
+                format!(r#"{{"schema_version":{schema},"passed":true}}"#),
+            )
+            .unwrap();
+            let config = EngineConfig {
+                assets_dir: directory.path().to_owned(),
+                ..default()
+            };
+            validate_runtime_assets(&config).unwrap();
+            let wrong = schema + 1;
+            std::fs::write(
+                &report,
+                format!(r#"{{"schema_version":{wrong},"passed":true}}"#),
+            )
+            .unwrap();
+            assert!(
+                validate_runtime_assets(&config)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&format!("does not match integration report schema {wrong}"))
+            );
         }
-        let database = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
-        database.execute_batch("CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(4);").unwrap();
-        std::fs::write(
-            directory.path().join("conversion-manifest.json"),
-            br#"{"schema_version":15,"complete":true}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            directory.path().join("integration-report.json"),
-            br#"{"schema_version":4,"passed":true}"#,
-        )
-        .unwrap();
-        let config = EngineConfig {
-            assets_dir: directory.path().to_owned(),
-            ..default()
-        };
-        validate_runtime_assets(&config).unwrap();
-        std::fs::write(
-            directory.path().join("integration-report.json"),
-            br#"{"schema_version":5,"passed":true}"#,
-        )
-        .unwrap();
-        assert!(
-            validate_runtime_assets(&config)
-                .unwrap_err()
-                .to_string()
-                .contains("does not match integration report schema 5")
-        );
     }
 
     #[test]
@@ -3339,31 +3429,6 @@ mod tests {
             .unwrap();
             validate_runtime_assets(&config).unwrap();
         }
-    }
-
-    #[test]
-    fn accepts_legacy_schema_15_assets_with_runtime_proxy_fallback() {
-        // A real pre-merge conversion: converter schema 15 wrote world database schema 3.
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("skyrim_world.db"), []).unwrap();
-        let database = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
-        database.execute_batch("CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(3);").unwrap();
-        std::fs::write(directory.path().join("cell_cache.rkyv"), []).unwrap();
-        std::fs::write(
-            directory.path().join("conversion-manifest.json"),
-            br#"{"schema_version":15,"complete":true}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            directory.path().join("integration-report.json"),
-            br#"{"schema_version":3,"passed":true}"#,
-        )
-        .unwrap();
-        let config = EngineConfig {
-            assets_dir: directory.path().to_owned(),
-            ..default()
-        };
-        validate_runtime_assets(&config).unwrap();
     }
 
     #[test]

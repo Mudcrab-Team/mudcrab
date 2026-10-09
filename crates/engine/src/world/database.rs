@@ -768,6 +768,11 @@ const ABSENT_LIGHT_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL";
 const RADIUS_OVERRIDE_COLUMN: &str = "r.radius_override";
 const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 
+// PR #128 owns door decoding at 25..=33. Reserve that suffix so combining its
+// optional door projection with enable state cannot reinterpret either feature.
+const ABSENT_DOOR_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL";
+const REFERENCE_ENABLE_START: usize = 34;
+
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
 /// each reference lighting the space at its own radius.
 const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
@@ -858,7 +863,7 @@ impl ReferenceQuery {
         };
         Ok(Self {
             columns: format!(
-                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},{reference_enable_columns}"
+                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},{ABSENT_DOOR_COLUMNS},{reference_enable_columns}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
@@ -1000,7 +1005,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             light,
             light_radius_override: row.get(24)?,
         },
-        map_enable_inputs(row, 25)?,
+        map_enable_inputs(row, REFERENCE_ENABLE_START)?,
     ))
 }
 
@@ -1064,6 +1069,73 @@ mod tests {
              ALTER TABLE \"references\" ADD COLUMN enable_parent_flags INTEGER;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn enable_metadata_does_not_decode_reserved_door_slots() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=2048,enable_parent_id=20,enable_parent_flags=1 WHERE id=30;",
+            )
+            .unwrap();
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            query.columns, query.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                for index in 25..34 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // Model #128's nine-column projection with distinct destination and
+        // arrival values, without implementing or depending on its door tables.
+        // Bounds COALESCE expressions contain commas, so replace the exact
+        // suffix instead of treating the SQL text as a CSV list.
+        query.columns = query.columns.replace(
+            &format!(",{ABSENT_DOOR_COLUMNS},r.header_flags"),
+            ",123,456,NULL,1.25,2.5,3.75,0.1,0.2,0.3,r.header_flags",
+        );
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            query.columns, query.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                assert_eq!(row.get::<_, u32>(25)?, 123);
+                assert_eq!(row.get::<_, u32>(26)?, 456);
+                assert_eq!(row.get::<_, Option<u32>>(27)?, None);
+                assert_eq!(row.get::<_, f32>(28)?, 1.25);
+                let (_, inputs) = map_reference(row)?;
+                assert_eq!(inputs.header_flags, 2048);
+                assert_eq!(inputs.parent_id, Some(20));
+                assert_eq!(inputs.parent_flags, 1);
+                Ok(())
+            })
+            .unwrap();
+        for key in [
+            CellKey::Interior(10),
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        ] {
+            let payload = super::load_cell(&connection, &mut query, 1, key).unwrap();
+            let child = payload
+                .references
+                .iter()
+                .find(|row| row.form_id == 30)
+                .unwrap();
+            assert!(!child.initially_enabled);
+        }
     }
 
     #[test]
