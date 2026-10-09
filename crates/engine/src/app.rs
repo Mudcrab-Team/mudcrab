@@ -204,6 +204,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
         .add_plugins((
             VercidiumRendererPlugin,
+            crate::mesh_residency_audit::MeshResidencyAuditPlugin,
             SkyPlugin,
             crate::nif_material::NifMaterialPlugin,
         ))

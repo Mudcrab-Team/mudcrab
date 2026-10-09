@@ -915,7 +915,8 @@ mod tests {
         "--ignore-submodules",   // git diff
         "--quiet",               // git diff
         "--short",               // git rev-parse
-        "--output",              // world-inspect
+        "--output",              // world-inspect, native profiling analyzers
+        "--pairs-output",        // correlate_drawables.py
         "--radius",              // world-inspect
         "--library-path",        // ld-linux
         "--meshes",              // audit-collision.py

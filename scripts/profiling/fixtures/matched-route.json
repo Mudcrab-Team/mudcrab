@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "worldspace_id": 60,
+  "start_creation": [
+    22528,
+    -47104,
+    6000
+  ],
+  "yaw_degrees": 90,
+  "pitch_degrees": 20,
+  "hfov_degrees": 90,
+  "cell_size": 4096,
+  "step_creation_units": 64,
+  "legs_relative_x": [
+    16384,
+    -16384,
+    0
+  ],
+  "cycles": 3,
+  "movement_steps": 3072,
+  "checkpoint_policy": "before and after each cell/tile boundary, every reversal, every return; transition plus settled captures",
+  "driver_status": "Protocol fixture only; existing auto-flight is time dependent and cannot execute this exact route. No deterministic route driver is included."
+}

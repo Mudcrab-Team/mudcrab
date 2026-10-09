@@ -1,0 +1,856 @@
+{
+  "label": "fixes-moving-v4-16mib-1",
+  "started_utc": "2026-10-09T02:16:09.027818+00:00",
+  "command": [
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+    "--assets",
+    "/Users/taylor/Projects/mudcrab/modern_assets",
+    "--worldspace",
+    "0x3c",
+    "--grid-x",
+    "5",
+    "--grid-y",
+    "-12",
+    "--stream-radius",
+    "2",
+    "--benchmark-duration",
+    "120",
+    "--benchmark-warmup-frames",
+    "1200",
+    "--benchmark-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/report.json",
+    "--benchmark-frame-times",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/frames.csv",
+    "--profile-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/profile",
+    "--profile-scenario",
+    "riverwood-mac-profiling",
+    "--profile-run-id",
+    "fixes-moving-v4-16mib-1",
+    "--profile-dirty-worktree",
+    "--profile-commit",
+    "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "--accept-min-fps",
+    "0",
+    "--accept-p95-ms",
+    "1000",
+    "--accept-max-memory-growth-gib",
+    "4",
+    "--auto-fly-speed",
+    "2048.0",
+    "--max-upload-mib-per-frame",
+    "16"
+  ],
+  "launcher_command": [
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/tools/samply-aarch64-apple-darwin/samply",
+    "record",
+    "--save-only",
+    "--unstable-presymbolicate",
+    "--rate",
+    "1000",
+    "--profile-name",
+    "fixes-moving-v4-16mib-1",
+    "--output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/cpu-profile.json.gz",
+    "--",
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+    "--assets",
+    "/Users/taylor/Projects/mudcrab/modern_assets",
+    "--worldspace",
+    "0x3c",
+    "--grid-x",
+    "5",
+    "--grid-y",
+    "-12",
+    "--stream-radius",
+    "2",
+    "--benchmark-duration",
+    "120",
+    "--benchmark-warmup-frames",
+    "1200",
+    "--benchmark-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/report.json",
+    "--benchmark-frame-times",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/frames.csv",
+    "--profile-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/profile",
+    "--profile-scenario",
+    "riverwood-mac-profiling",
+    "--profile-run-id",
+    "fixes-moving-v4-16mib-1",
+    "--profile-dirty-worktree",
+    "--profile-commit",
+    "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "--accept-min-fps",
+    "0",
+    "--accept-p95-ms",
+    "1000",
+    "--accept-max-memory-growth-gib",
+    "4",
+    "--auto-fly-speed",
+    "2048.0",
+    "--max-upload-mib-per-frame",
+    "16"
+  ],
+  "cwd": "/Users/taylor/Projects/mudcrab",
+  "environment_overrides": {
+    "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+  },
+  "effective_profiling_environment": {
+    "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+  },
+  "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+  "profiling_overhead_requested": {
+    "metal_hud": false,
+    "cpu_sample": false
+  },
+  "sample_requested_duration_seconds": 3,
+  "sample_requested_interval_ms": 5,
+  "samply_sampling_hz": 1000,
+  "build_profile": "external binary: see hash and command",
+  "scope": "moving Riverwood functional validation",
+  "pid": 42791,
+  "rss_samples": [
+    {
+      "utc": "2026-10-09T02:16:10.195752+00:00",
+      "elapsed_seconds": 1.051004375,
+      "rss_kib": 828144
+    },
+    {
+      "utc": "2026-10-09T02:16:11.219362+00:00",
+      "elapsed_seconds": 2.124298166,
+      "rss_kib": 1540896
+    },
+    {
+      "utc": "2026-10-09T02:16:12.242039+00:00",
+      "elapsed_seconds": 3.1513931250000002,
+      "rss_kib": 2042736
+    },
+    {
+      "utc": "2026-10-09T02:16:13.263137+00:00",
+      "elapsed_seconds": 4.170582499999999,
+      "rss_kib": 2047840
+    },
+    {
+      "utc": "2026-10-09T02:16:14.291683+00:00",
+      "elapsed_seconds": 5.200867333,
+      "rss_kib": 2460032
+    },
+    {
+      "utc": "2026-10-09T02:16:15.311196+00:00",
+      "elapsed_seconds": 6.219603332999999,
+      "rss_kib": 2637984
+    },
+    {
+      "utc": "2026-10-09T02:16:16.333065+00:00",
+      "elapsed_seconds": 7.2418825,
+      "rss_kib": 2705488
+    },
+    {
+      "utc": "2026-10-09T02:16:17.353979+00:00",
+      "elapsed_seconds": 8.262257083,
+      "rss_kib": 2889776
+    },
+    {
+      "utc": "2026-10-09T02:16:18.379534+00:00",
+      "elapsed_seconds": 9.288707,
+      "rss_kib": 2998272
+    },
+    {
+      "utc": "2026-10-09T02:16:19.401825+00:00",
+      "elapsed_seconds": 10.310206416,
+      "rss_kib": 2996272
+    },
+    {
+      "utc": "2026-10-09T02:16:20.428840+00:00",
+      "elapsed_seconds": 11.336339833,
+      "rss_kib": 3011792
+    },
+    {
+      "utc": "2026-10-09T02:16:21.450246+00:00",
+      "elapsed_seconds": 12.359427,
+      "rss_kib": 3022208
+    },
+    {
+      "utc": "2026-10-09T02:16:22.476372+00:00",
+      "elapsed_seconds": 13.385447958,
+      "rss_kib": 3042608
+    },
+    {
+      "utc": "2026-10-09T02:16:23.502521+00:00",
+      "elapsed_seconds": 14.411822916,
+      "rss_kib": 3043264
+    },
+    {
+      "utc": "2026-10-09T02:16:24.528779+00:00",
+      "elapsed_seconds": 15.437210666,
+      "rss_kib": 2995424
+    },
+    {
+      "utc": "2026-10-09T02:16:25.550205+00:00",
+      "elapsed_seconds": 16.459692166,
+      "rss_kib": 2999168
+    },
+    {
+      "utc": "2026-10-09T02:16:26.565546+00:00",
+      "elapsed_seconds": 17.474343208,
+      "rss_kib": 3102864
+    },
+    {
+      "utc": "2026-10-09T02:16:27.581663+00:00",
+      "elapsed_seconds": 18.490634291000003,
+      "rss_kib": 3095040
+    },
+    {
+      "utc": "2026-10-09T02:16:28.603583+00:00",
+      "elapsed_seconds": 19.512259916,
+      "rss_kib": 3106544
+    },
+    {
+      "utc": "2026-10-09T02:16:29.616462+00:00",
+      "elapsed_seconds": 20.524812750000002,
+      "rss_kib": 3106128
+    },
+    {
+      "utc": "2026-10-09T02:16:30.651388+00:00",
+      "elapsed_seconds": 21.560029375000003,
+      "rss_kib": 3122464
+    },
+    {
+      "utc": "2026-10-09T02:16:31.673781+00:00",
+      "elapsed_seconds": 22.582567708000003,
+      "rss_kib": 3123504
+    },
+    {
+      "utc": "2026-10-09T02:16:32.706377+00:00",
+      "elapsed_seconds": 23.615065458,
+      "rss_kib": 3124720
+    },
+    {
+      "utc": "2026-10-09T02:16:33.732506+00:00",
+      "elapsed_seconds": 24.6412775,
+      "rss_kib": 3124768
+    },
+    {
+      "utc": "2026-10-09T02:16:34.767517+00:00",
+      "elapsed_seconds": 25.676390083,
+      "rss_kib": 3233296
+    },
+    {
+      "utc": "2026-10-09T02:16:35.810760+00:00",
+      "elapsed_seconds": 26.719799666,
+      "rss_kib": 3233344
+    },
+    {
+      "utc": "2026-10-09T02:16:36.851921+00:00",
+      "elapsed_seconds": 27.760343000000002,
+      "rss_kib": 3236016
+    },
+    {
+      "utc": "2026-10-09T02:16:37.888687+00:00",
+      "elapsed_seconds": 28.79744725,
+      "rss_kib": 3231808
+    },
+    {
+      "utc": "2026-10-09T02:16:38.927688+00:00",
+      "elapsed_seconds": 29.836696125000003,
+      "rss_kib": 3253776
+    },
+    {
+      "utc": "2026-10-09T02:16:39.976977+00:00",
+      "elapsed_seconds": 30.8861965,
+      "rss_kib": 3253552
+    },
+    {
+      "utc": "2026-10-09T02:16:41.015704+00:00",
+      "elapsed_seconds": 31.925120291,
+      "rss_kib": 3271616
+    },
+    {
+      "utc": "2026-10-09T02:16:42.047697+00:00",
+      "elapsed_seconds": 32.956732208,
+      "rss_kib": 3274816
+    },
+    {
+      "utc": "2026-10-09T02:16:43.079610+00:00",
+      "elapsed_seconds": 33.9883205,
+      "rss_kib": 3281456
+    },
+    {
+      "utc": "2026-10-09T02:16:44.108376+00:00",
+      "elapsed_seconds": 35.01801025,
+      "rss_kib": 3283776
+    },
+    {
+      "utc": "2026-10-09T02:16:45.127660+00:00",
+      "elapsed_seconds": 36.03675375,
+      "rss_kib": 3288752
+    },
+    {
+      "utc": "2026-10-09T02:16:46.148978+00:00",
+      "elapsed_seconds": 37.05789375,
+      "rss_kib": 3288784
+    },
+    {
+      "utc": "2026-10-09T02:16:47.170378+00:00",
+      "elapsed_seconds": 38.079820833,
+      "rss_kib": 3293712
+    },
+    {
+      "utc": "2026-10-09T02:16:48.196186+00:00",
+      "elapsed_seconds": 39.104708041,
+      "rss_kib": 3292192
+    },
+    {
+      "utc": "2026-10-09T02:16:49.249595+00:00",
+      "elapsed_seconds": 40.156683583,
+      "rss_kib": 3293984
+    },
+    {
+      "utc": "2026-10-09T02:16:50.281773+00:00",
+      "elapsed_seconds": 41.190826791,
+      "rss_kib": 3293104
+    },
+    {
+      "utc": "2026-10-09T02:16:51.313381+00:00",
+      "elapsed_seconds": 42.222908041000004,
+      "rss_kib": 3293504
+    },
+    {
+      "utc": "2026-10-09T02:16:52.348870+00:00",
+      "elapsed_seconds": 43.258218291,
+      "rss_kib": 3293808
+    },
+    {
+      "utc": "2026-10-09T02:16:53.384819+00:00",
+      "elapsed_seconds": 44.294329083,
+      "rss_kib": 3295328
+    },
+    {
+      "utc": "2026-10-09T02:16:54.412866+00:00",
+      "elapsed_seconds": 45.32234775,
+      "rss_kib": 3305376
+    },
+    {
+      "utc": "2026-10-09T02:16:55.440500+00:00",
+      "elapsed_seconds": 46.349470458,
+      "rss_kib": 3302976
+    },
+    {
+      "utc": "2026-10-09T02:16:56.470941+00:00",
+      "elapsed_seconds": 47.380426416,
+      "rss_kib": 3300368
+    },
+    {
+      "utc": "2026-10-09T02:16:57.496509+00:00",
+      "elapsed_seconds": 48.405924666000004,
+      "rss_kib": 3298048
+    },
+    {
+      "utc": "2026-10-09T02:16:58.525721+00:00",
+      "elapsed_seconds": 49.434943166000004,
+      "rss_kib": 3337200
+    },
+    {
+      "utc": "2026-10-09T02:16:59.557097+00:00",
+      "elapsed_seconds": 50.466085916000004,
+      "rss_kib": 3332528
+    },
+    {
+      "utc": "2026-10-09T02:17:00.581197+00:00",
+      "elapsed_seconds": 51.490543375,
+      "rss_kib": 3332672
+    },
+    {
+      "utc": "2026-10-09T02:17:01.613026+00:00",
+      "elapsed_seconds": 52.522424541,
+      "rss_kib": 3332608
+    },
+    {
+      "utc": "2026-10-09T02:17:02.640224+00:00",
+      "elapsed_seconds": 53.548675958000004,
+      "rss_kib": 3328624
+    },
+    {
+      "utc": "2026-10-09T02:17:03.666943+00:00",
+      "elapsed_seconds": 54.575628541,
+      "rss_kib": 3329456
+    },
+    {
+      "utc": "2026-10-09T02:17:04.701527+00:00",
+      "elapsed_seconds": 55.610833833,
+      "rss_kib": 3229808
+    },
+    {
+      "utc": "2026-10-09T02:17:05.737029+00:00",
+      "elapsed_seconds": 56.646057833,
+      "rss_kib": 3229568
+    },
+    {
+      "utc": "2026-10-09T02:17:06.758951+00:00",
+      "elapsed_seconds": 57.667748875,
+      "rss_kib": 3306256
+    },
+    {
+      "utc": "2026-10-09T02:17:07.796957+00:00",
+      "elapsed_seconds": 58.7061325,
+      "rss_kib": 3305664
+    },
+    {
+      "utc": "2026-10-09T02:17:08.819466+00:00",
+      "elapsed_seconds": 59.727422166000004,
+      "rss_kib": 3307696
+    },
+    {
+      "utc": "2026-10-09T02:17:09.861576+00:00",
+      "elapsed_seconds": 60.770710666,
+      "rss_kib": 3304768
+    },
+    {
+      "utc": "2026-10-09T02:17:10.900219+00:00",
+      "elapsed_seconds": 61.808877666,
+      "rss_kib": 3304384
+    },
+    {
+      "utc": "2026-10-09T02:17:11.920859+00:00",
+      "elapsed_seconds": 62.830130791,
+      "rss_kib": 3305920
+    },
+    {
+      "utc": "2026-10-09T02:17:12.958951+00:00",
+      "elapsed_seconds": 63.868136,
+      "rss_kib": 3321200
+    },
+    {
+      "utc": "2026-10-09T02:17:13.997070+00:00",
+      "elapsed_seconds": 64.90690525000001,
+      "rss_kib": 3329584
+    },
+    {
+      "utc": "2026-10-09T02:17:15.044703+00:00",
+      "elapsed_seconds": 65.953391375,
+      "rss_kib": 3338368
+    },
+    {
+      "utc": "2026-10-09T02:17:16.074058+00:00",
+      "elapsed_seconds": 66.983110416,
+      "rss_kib": 3339392
+    },
+    {
+      "utc": "2026-10-09T02:17:17.112730+00:00",
+      "elapsed_seconds": 68.022308916,
+      "rss_kib": 3343472
+    },
+    {
+      "utc": "2026-10-09T02:17:18.149014+00:00",
+      "elapsed_seconds": 69.058126791,
+      "rss_kib": 3341696
+    },
+    {
+      "utc": "2026-10-09T02:17:19.178299+00:00",
+      "elapsed_seconds": 70.087792833,
+      "rss_kib": 3337840
+    },
+    {
+      "utc": "2026-10-09T02:17:20.206032+00:00",
+      "elapsed_seconds": 71.1152555,
+      "rss_kib": 3344592
+    },
+    {
+      "utc": "2026-10-09T02:17:21.240905+00:00",
+      "elapsed_seconds": 72.15069275,
+      "rss_kib": 3328560
+    },
+    {
+      "utc": "2026-10-09T02:17:22.273283+00:00",
+      "elapsed_seconds": 73.182905375,
+      "rss_kib": 3327520
+    },
+    {
+      "utc": "2026-10-09T02:17:23.307083+00:00",
+      "elapsed_seconds": 74.2163865,
+      "rss_kib": 3328752
+    },
+    {
+      "utc": "2026-10-09T02:17:24.349428+00:00",
+      "elapsed_seconds": 75.257800416,
+      "rss_kib": 3326800
+    },
+    {
+      "utc": "2026-10-09T02:17:25.391007+00:00",
+      "elapsed_seconds": 76.300767208,
+      "rss_kib": 3336240
+    },
+    {
+      "utc": "2026-10-09T02:17:26.420004+00:00",
+      "elapsed_seconds": 77.329457291,
+      "rss_kib": 3338096
+    },
+    {
+      "utc": "2026-10-09T02:17:27.455373+00:00",
+      "elapsed_seconds": 78.36536220800001,
+      "rss_kib": 3338240
+    },
+    {
+      "utc": "2026-10-09T02:17:28.496208+00:00",
+      "elapsed_seconds": 79.405296541,
+      "rss_kib": 3333264
+    },
+    {
+      "utc": "2026-10-09T02:17:29.524952+00:00",
+      "elapsed_seconds": 80.434339291,
+      "rss_kib": 3332944
+    },
+    {
+      "utc": "2026-10-09T02:17:30.560110+00:00",
+      "elapsed_seconds": 81.469398791,
+      "rss_kib": 3344768
+    },
+    {
+      "utc": "2026-10-09T02:17:31.596983+00:00",
+      "elapsed_seconds": 82.50629241600001,
+      "rss_kib": 3340048
+    },
+    {
+      "utc": "2026-10-09T02:17:32.623777+00:00",
+      "elapsed_seconds": 83.533095166,
+      "rss_kib": 3339376
+    },
+    {
+      "utc": "2026-10-09T02:17:33.657477+00:00",
+      "elapsed_seconds": 84.566851291,
+      "rss_kib": 3341136
+    },
+    {
+      "utc": "2026-10-09T02:17:34.686147+00:00",
+      "elapsed_seconds": 85.59595041600001,
+      "rss_kib": 3335168
+    },
+    {
+      "utc": "2026-10-09T02:17:35.713012+00:00",
+      "elapsed_seconds": 86.621888833,
+      "rss_kib": 3336560
+    },
+    {
+      "utc": "2026-10-09T02:17:36.741509+00:00",
+      "elapsed_seconds": 87.6498015,
+      "rss_kib": 3256784
+    },
+    {
+      "utc": "2026-10-09T02:17:37.765218+00:00",
+      "elapsed_seconds": 88.674460458,
+      "rss_kib": 3257104
+    },
+    {
+      "utc": "2026-10-09T02:17:38.796760+00:00",
+      "elapsed_seconds": 89.70565475000001,
+      "rss_kib": 3326512
+    },
+    {
+      "utc": "2026-10-09T02:17:39.829168+00:00",
+      "elapsed_seconds": 90.738073,
+      "rss_kib": 3326464
+    },
+    {
+      "utc": "2026-10-09T02:17:40.861917+00:00",
+      "elapsed_seconds": 91.771134041,
+      "rss_kib": 3314816
+    },
+    {
+      "utc": "2026-10-09T02:17:41.886650+00:00",
+      "elapsed_seconds": 92.795730666,
+      "rss_kib": 3310384
+    },
+    {
+      "utc": "2026-10-09T02:17:42.918961+00:00",
+      "elapsed_seconds": 93.827662875,
+      "rss_kib": 3358304
+    },
+    {
+      "utc": "2026-10-09T02:17:43.959067+00:00",
+      "elapsed_seconds": 94.868525166,
+      "rss_kib": 3358320
+    },
+    {
+      "utc": "2026-10-09T02:17:44.992890+00:00",
+      "elapsed_seconds": 95.90251875,
+      "rss_kib": 3358448
+    },
+    {
+      "utc": "2026-10-09T02:17:46.028397+00:00",
+      "elapsed_seconds": 96.937646375,
+      "rss_kib": 3362352
+    },
+    {
+      "utc": "2026-10-09T02:17:47.062152+00:00",
+      "elapsed_seconds": 97.971016208,
+      "rss_kib": 3360864
+    },
+    {
+      "utc": "2026-10-09T02:17:48.107269+00:00",
+      "elapsed_seconds": 99.016442666,
+      "rss_kib": 3358000
+    },
+    {
+      "utc": "2026-10-09T02:17:49.141260+00:00",
+      "elapsed_seconds": 100.050559083,
+      "rss_kib": 3360960
+    },
+    {
+      "utc": "2026-10-09T02:17:50.164221+00:00",
+      "elapsed_seconds": 101.073843166,
+      "rss_kib": 3360800
+    },
+    {
+      "utc": "2026-10-09T02:17:51.189489+00:00",
+      "elapsed_seconds": 102.098555958,
+      "rss_kib": 3352256
+    },
+    {
+      "utc": "2026-10-09T02:17:52.205144+00:00",
+      "elapsed_seconds": 103.114644,
+      "rss_kib": 3357184
+    },
+    {
+      "utc": "2026-10-09T02:17:53.242533+00:00",
+      "elapsed_seconds": 104.151685125,
+      "rss_kib": 3341312
+    },
+    {
+      "utc": "2026-10-09T02:17:54.281011+00:00",
+      "elapsed_seconds": 105.189989083,
+      "rss_kib": 3341184
+    },
+    {
+      "utc": "2026-10-09T02:17:55.316039+00:00",
+      "elapsed_seconds": 106.224542291,
+      "rss_kib": 3340576
+    },
+    {
+      "utc": "2026-10-09T02:17:56.350934+00:00",
+      "elapsed_seconds": 107.260245708,
+      "rss_kib": 3341616
+    },
+    {
+      "utc": "2026-10-09T02:17:57.388033+00:00",
+      "elapsed_seconds": 108.298062,
+      "rss_kib": 3350016
+    },
+    {
+      "utc": "2026-10-09T02:17:58.420863+00:00",
+      "elapsed_seconds": 109.330463583,
+      "rss_kib": 3351584
+    },
+    {
+      "utc": "2026-10-09T02:17:59.447585+00:00",
+      "elapsed_seconds": 110.356862166,
+      "rss_kib": 3352592
+    },
+    {
+      "utc": "2026-10-09T02:18:00.482931+00:00",
+      "elapsed_seconds": 111.39258025,
+      "rss_kib": 3355632
+    },
+    {
+      "utc": "2026-10-09T02:18:01.522041+00:00",
+      "elapsed_seconds": 112.431557666,
+      "rss_kib": 3353168
+    },
+    {
+      "utc": "2026-10-09T02:18:02.544369+00:00",
+      "elapsed_seconds": 113.452362083,
+      "rss_kib": 3349232
+    },
+    {
+      "utc": "2026-10-09T02:18:03.583808+00:00",
+      "elapsed_seconds": 114.4933805,
+      "rss_kib": 3348912
+    },
+    {
+      "utc": "2026-10-09T02:18:04.617823+00:00",
+      "elapsed_seconds": 115.525920791,
+      "rss_kib": 3345584
+    },
+    {
+      "utc": "2026-10-09T02:18:05.653493+00:00",
+      "elapsed_seconds": 116.561488333,
+      "rss_kib": 3346160
+    },
+    {
+      "utc": "2026-10-09T02:18:06.683246+00:00",
+      "elapsed_seconds": 117.593193916,
+      "rss_kib": 3344000
+    },
+    {
+      "utc": "2026-10-09T02:18:07.712027+00:00",
+      "elapsed_seconds": 118.621363458,
+      "rss_kib": 3343888
+    },
+    {
+      "utc": "2026-10-09T02:18:08.744254+00:00",
+      "elapsed_seconds": 119.653371125,
+      "rss_kib": 3274016
+    },
+    {
+      "utc": "2026-10-09T02:18:09.795773+00:00",
+      "elapsed_seconds": 120.704184375,
+      "rss_kib": 3285792
+    },
+    {
+      "utc": "2026-10-09T02:18:10.830560+00:00",
+      "elapsed_seconds": 121.7398695,
+      "rss_kib": 3327360
+    },
+    {
+      "utc": "2026-10-09T02:18:11.866359+00:00",
+      "elapsed_seconds": 122.7757245,
+      "rss_kib": 3327312
+    },
+    {
+      "utc": "2026-10-09T02:18:12.897880+00:00",
+      "elapsed_seconds": 123.807054666,
+      "rss_kib": 3323936
+    },
+    {
+      "utc": "2026-10-09T02:18:13.919147+00:00",
+      "elapsed_seconds": 124.828740041,
+      "rss_kib": 3323984
+    },
+    {
+      "utc": "2026-10-09T02:18:14.949629+00:00",
+      "elapsed_seconds": 125.858787916,
+      "rss_kib": 3349536
+    },
+    {
+      "utc": "2026-10-09T02:18:15.973292+00:00",
+      "elapsed_seconds": 126.882656125,
+      "rss_kib": 3350944
+    },
+    {
+      "utc": "2026-10-09T02:18:17.004903+00:00",
+      "elapsed_seconds": 127.91449129099999,
+      "rss_kib": 3375904
+    },
+    {
+      "utc": "2026-10-09T02:18:18.038161+00:00",
+      "elapsed_seconds": 128.947490208,
+      "rss_kib": 3379024
+    },
+    {
+      "utc": "2026-10-09T02:18:19.076280+00:00",
+      "elapsed_seconds": 129.984792625,
+      "rss_kib": 3377856
+    },
+    {
+      "utc": "2026-10-09T02:18:20.096843+00:00",
+      "elapsed_seconds": 131.006881833,
+      "rss_kib": 3380240
+    },
+    {
+      "utc": "2026-10-09T02:18:21.127907+00:00",
+      "elapsed_seconds": 132.037613916,
+      "rss_kib": 3383088
+    },
+    {
+      "utc": "2026-10-09T02:18:22.146543+00:00",
+      "elapsed_seconds": 133.055763958,
+      "rss_kib": 3383024
+    },
+    {
+      "utc": "2026-10-09T02:18:23.171204+00:00",
+      "elapsed_seconds": 134.080904291,
+      "rss_kib": 3382128
+    },
+    {
+      "utc": "2026-10-09T02:18:24.192271+00:00",
+      "elapsed_seconds": 135.10111675,
+      "rss_kib": 3376256
+    },
+    {
+      "utc": "2026-10-09T02:18:25.223601+00:00",
+      "elapsed_seconds": 136.13350608300001,
+      "rss_kib": 3374032
+    },
+    {
+      "utc": "2026-10-09T02:18:26.262363+00:00",
+      "elapsed_seconds": 137.170668416,
+      "rss_kib": 3371744
+    },
+    {
+      "utc": "2026-10-09T02:18:27.298508+00:00",
+      "elapsed_seconds": 138.207199458,
+      "rss_kib": 3372816
+    },
+    {
+      "utc": "2026-10-09T02:18:28.326909+00:00",
+      "elapsed_seconds": 139.236722458,
+      "rss_kib": 3374320
+    },
+    {
+      "utc": "2026-10-09T02:18:29.343547+00:00",
+      "elapsed_seconds": 140.252923125,
+      "rss_kib": 3381760
+    },
+    {
+      "utc": "2026-10-09T02:18:30.377809+00:00",
+      "elapsed_seconds": 141.287073041,
+      "rss_kib": 3382656
+    }
+  ],
+  "engine_pid": 42793,
+  "exit_code": 0,
+  "timed_out": false,
+  "applied_controls_log": [],
+  "physical_window_log": [],
+  "window_occlusion_log": [],
+  "drawable_proof_log": [
+    "2026-10-09T02:16:15.992549Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=300 warmup_plus_five=1205 present_frames=300 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:16:20.817816Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=600 warmup_plus_five=1205 present_frames=600 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:16:26.484003Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=900 warmup_plus_five=1205 present_frames=900 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:16:30.891885Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=1205 present_frames=1200 missing_frames=0 measured_present_frames=0 measured_missing_frames=0",
+    "2026-10-09T02:16:34.488441Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1500 warmup_plus_five=1205 present_frames=1500 missing_frames=0 measured_present_frames=295 measured_missing_frames=0",
+    "2026-10-09T02:16:37.040366Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1800 warmup_plus_five=1205 present_frames=1800 missing_frames=0 measured_present_frames=595 measured_missing_frames=0",
+    "2026-10-09T02:16:40.818377Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=2100 warmup_plus_five=1205 present_frames=2100 missing_frames=0 measured_present_frames=895 measured_missing_frames=0",
+    "2026-10-09T02:16:46.024009Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=2400 warmup_plus_five=1205 present_frames=2400 missing_frames=0 measured_present_frames=1195 measured_missing_frames=0",
+    "2026-10-09T02:16:50.737355Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=2700 warmup_plus_five=1205 present_frames=2700 missing_frames=0 measured_present_frames=1495 measured_missing_frames=0",
+    "2026-10-09T02:16:56.080968Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3000 warmup_plus_five=1205 present_frames=3000 missing_frames=0 measured_present_frames=1795 measured_missing_frames=0",
+    "2026-10-09T02:17:01.070736Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3300 warmup_plus_five=1205 present_frames=3300 missing_frames=0 measured_present_frames=2095 measured_missing_frames=0",
+    "2026-10-09T02:17:05.061244Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3600 warmup_plus_five=1205 present_frames=3600 missing_frames=0 measured_present_frames=2395 measured_missing_frames=0",
+    "2026-10-09T02:17:07.719277Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3900 warmup_plus_five=1205 present_frames=3900 missing_frames=0 measured_present_frames=2695 measured_missing_frames=0",
+    "2026-10-09T02:17:11.002940Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=1205 present_frames=4200 missing_frames=0 measured_present_frames=2995 measured_missing_frames=0",
+    "2026-10-09T02:17:15.416527Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=4500 warmup_plus_five=1205 present_frames=4500 missing_frames=0 measured_present_frames=3295 measured_missing_frames=0",
+    "2026-10-09T02:17:20.672202Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=4800 warmup_plus_five=1205 present_frames=4800 missing_frames=0 measured_present_frames=3595 measured_missing_frames=0",
+    "2026-10-09T02:17:24.999616Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5100 warmup_plus_five=1205 present_frames=5100 missing_frames=0 measured_present_frames=3895 measured_missing_frames=0",
+    "2026-10-09T02:17:30.681487Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5400 warmup_plus_five=1205 present_frames=5400 missing_frames=0 measured_present_frames=4195 measured_missing_frames=0",
+    "2026-10-09T02:17:35.082563Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5700 warmup_plus_five=1205 present_frames=5700 missing_frames=0 measured_present_frames=4495 measured_missing_frames=0",
+    "2026-10-09T02:17:38.587110Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=6000 warmup_plus_five=1205 present_frames=6000 missing_frames=0 measured_present_frames=4795 measured_missing_frames=0",
+    "2026-10-09T02:17:41.133961Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=6300 warmup_plus_five=1205 present_frames=6300 missing_frames=0 measured_present_frames=5095 measured_missing_frames=0",
+    "2026-10-09T02:17:44.969888Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=6600 warmup_plus_five=1205 present_frames=6600 missing_frames=0 measured_present_frames=5395 measured_missing_frames=0",
+    "2026-10-09T02:17:50.253488Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=6900 warmup_plus_five=1205 present_frames=6900 missing_frames=0 measured_present_frames=5695 measured_missing_frames=0",
+    "2026-10-09T02:17:54.885852Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=7200 warmup_plus_five=1205 present_frames=7200 missing_frames=0 measured_present_frames=5995 measured_missing_frames=0",
+    "2026-10-09T02:18:00.269877Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=7500 warmup_plus_five=1205 present_frames=7500 missing_frames=0 measured_present_frames=6295 measured_missing_frames=0",
+    "2026-10-09T02:18:05.531525Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=7800 warmup_plus_five=1205 present_frames=7800 missing_frames=0 measured_present_frames=6595 measured_missing_frames=0",
+    "2026-10-09T02:18:09.495472Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=8100 warmup_plus_five=1205 present_frames=8100 missing_frames=0 measured_present_frames=6895 measured_missing_frames=0",
+    "2026-10-09T02:18:11.974634Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=8400 warmup_plus_five=1205 present_frames=8400 missing_frames=0 measured_present_frames=7195 measured_missing_frames=0",
+    "2026-10-09T02:18:15.459938Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=8700 warmup_plus_five=1205 present_frames=8700 missing_frames=0 measured_present_frames=7495 measured_missing_frames=0",
+    "2026-10-09T02:18:20.147168Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=9000 warmup_plus_five=1205 present_frames=9000 missing_frames=0 measured_present_frames=7795 measured_missing_frames=0",
+    "2026-10-09T02:18:25.359434Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=9300 warmup_plus_five=1205 present_frames=9300 missing_frames=0 measured_present_frames=8095 measured_missing_frames=0",
+    "2026-10-09T02:18:30.177914Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=9600 warmup_plus_five=1205 present_frames=9600 missing_frames=0 measured_present_frames=8395 measured_missing_frames=0",
+    "2026-10-09T02:18:31.102826Z  INFO engine::profiling: native profiling primary drawable proof final_summary=true render_frames=9636 warmup_plus_five=1205 present_frames=9635 missing_frames=1 measured_present_frames=8430 measured_missing_frames=1"
+  ],
+  "drawable_proof": {
+    "final_summary": true,
+    "render_frames": 9636,
+    "warmup_plus_five": 1205,
+    "present_frames": 9635,
+    "missing_frames": 1,
+    "measured_present_frames": 8430,
+    "measured_missing_frames": 1
+  },
+  "cpu_sample_capture_succeeded": false,
+  "samply_capture_succeeded": true,
+  "finished_utc": "2026-10-09T02:18:36.240984+00:00",
+  "peak_ps_rss_gib": 3.2263641357421875,
+  "rss_measurement": "macOS ps rss in KiB, one sample per second; peak includes loading and warmup; not Metal allocated memory",
+  "binary_unchanged": true
+}

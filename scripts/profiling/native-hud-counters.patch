@@ -1,0 +1,43 @@
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index e5f8401..ecd483d 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -32,6 +32,8 @@ use bevy::{
+     log::{Level, LogPlugin},
+     prelude::*,
+     render::diagnostic::RenderDiagnosticsPlugin,
++    render::RenderPlugin,
++    render::settings::{RenderCreation, WgpuFeatures, WgpuSettings},
+     render::occlusion_culling::OcclusionCulling,
+     render::render_asset::RenderAssetBytesPerFrame,
+     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+@@ -172,12 +174,29 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
+         app.insert_resource(WinitSettings::continuous());
+     }
+     let render_asset_budget = upload_budget(&config);
++    // Local measurement experiment: leave every rendering feature and CPU
++    // diagnostic enabled, but release native counter ownership for Metal HUD.
++    let mut native_diagnostic_settings = WgpuSettings::default();
++    if cfg!(target_os = "macos")
++        && std::env::var_os("MUDCRAB_NATIVE_GPU_DIAGNOSTICS").is_some()
++    {
++        let timestamp_features = WgpuFeatures::TIMESTAMP_QUERY
++            | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_PASSES
++            | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS;
++        native_diagnostic_settings.features.remove(timestamp_features);
++        native_diagnostic_settings.disabled_features = Some(timestamp_features);
++        eprintln!("native GPU diagnostic experiment: application timestamp queries omitted; CPU diagnostics and rendering retained");
++    }
+     app.insert_resource(config)
+         .insert_resource(origin)
+         .insert_resource(render_asset_budget)
+         .init_resource::<StreamingMetrics>()
+         .add_plugins(
+             DefaultPlugins
++                .set(RenderPlugin {
++                    render_creation: RenderCreation::Automatic(Box::new(native_diagnostic_settings)),
++                    ..default()
++                })
+                 .set(AssetPlugin {
+                     file_path: asset_path,
+                     ..default()
