@@ -143,8 +143,8 @@ def validate_png_scanlines(header, compressed):
         columns = max(0, (width - x + dx - 1) // dx)
         count = max(0, (height - y + dy - 1) // dy)
         if columns and count:
-            rows.append((1 + (columns * channels * depth + 7) // 8, count))
-    expected = sum(length * count for length, count in rows)
+            rows.append((1 + (columns * channels * depth + 7) // 8, count, columns))
+    expected = sum(length * count for length, count, _ in rows)
     if expected > 512 * 1024 * 1024:
         raise ValueError("PNG decoded image exceeds the validation limit")
     decoder = zlib.decompressobj()
@@ -155,11 +155,49 @@ def validate_png_scanlines(header, compressed):
     if len(data) != expected or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
         raise ValueError("PNG decompressed image length or stream ending is invalid")
     offset = 0
-    for length, count in rows:
+    # Palette indices need PLTE/tRNS decoding; structural validation still supports them.
+    visible = color == 3
+    bytes_per_pixel = max(1, (channels * depth + 7) // 8)
+    for length, count, columns in rows:
+        previous = bytearray(length - 1)
         for _ in range(count):
-            if data[offset] > 4:
+            filter_type = data[offset]
+            if filter_type > 4:
                 raise ValueError("PNG scanline filter is invalid")
+            row = bytearray(data[offset + 1:offset + length])
             offset += length
+            if visible:
+                continue
+            if filter_type and (any(row) or any(previous)):
+                for i in range(len(row)):
+                    left = row[i - bytes_per_pixel] if i >= bytes_per_pixel else 0
+                    up = previous[i]
+                    upper_left = previous[i - bytes_per_pixel] if i >= bytes_per_pixel else 0
+                    if filter_type == 1:
+                        predictor = left
+                    elif filter_type == 2:
+                        predictor = up
+                    elif filter_type == 3:
+                        predictor = (left + up) // 2
+                    else:
+                        estimate = left + up - upper_left
+                        distances = (abs(estimate - left), abs(estimate - up), abs(estimate - upper_left))
+                        predictor = (left, up, upper_left)[distances.index(min(distances))]
+                    row[i] = (row[i] + predictor) & 255
+            previous = row
+            if depth < 8:
+                mask = (1 << depth) - 1
+                visible = any((row[i * depth // 8] >> (8 - depth - i * depth % 8)) & mask for i in range(columns))
+            elif color in (0, 2):
+                visible = any(row)
+            else:
+                sample_bytes = depth // 8
+                stride = channels * sample_bytes
+                color_bytes = (channels - 1) * sample_bytes
+                visible = any(any(row[i:i + color_bytes]) and any(row[i + color_bytes:i + stride])
+                              for i in range(0, len(row), stride))
+    if not visible:
+        raise ValueError("PNG has no visible nonblack pixels")
 
 
 def recorded_option(manifest, option, fallback=None):

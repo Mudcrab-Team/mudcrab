@@ -40,6 +40,8 @@ Validation requires 25 resident cells, 2,029 ready model instances, 100 validate
 
 The validator checks the initial logged camera target and offset, PNG chunk CRCs, decompressed scanline lengths and filter bytes. It compares dimensions with a recorded physical surface size when available, otherwise with the metadata's requested-resolution fallback. The fallback does not independently prove physical surface size. The capture's final camera pose is not recorded; keep the graphics session free of camera input. Cell/model/LOD timeline events must complete by warmup. Surface and upload gauges record final state without historical timestamps, so the report states that limit.
 
+Truecolor and grayscale captures must contain a visible nonblack pixel; opaque alpha alone does not make a black image pass. Palette PNGs retain structural validation without this content check. Passing the check does not establish terrain or building coverage.
+
 Acceptance captures now record the primary window's physical pixel dimensions when the screenshot is queued, in `metadata.json` under `window.physical_resolution`. This keeps Retina captures distinct from the requested logical resolution. Runs without a capture retain the existing fallback.
 
 When retry logs exist, every accounting record must satisfy `tracked = resumed + canceled + pending`, and the last pending count must be zero. Missing retry logs are flagged for inspection; a startup that never reaches the retry path can still be valid.
