@@ -213,7 +213,7 @@ end-to-end GPU scaling factor. Global disk and GPU counters include other
 processes. Keep cache persistence, pruning and cleanup separate from package
 publication; label an event span when no explicit phase timer exists.
 
-## Correctness gates
+## Correctness gates for the measured revision
 
 - **Build, tests and lint: pass.** The final release converter builds; all 581
   standard tests pass under the quick profile. Clippy passes with warnings
@@ -292,3 +292,57 @@ Implementation references: [archive batches](../../crates/converter/src/archive/
 [terrain preparation and recipes](../../crates/converter/src/lod/terrain.rs),
 [atlas batching and quality tests](../../crates/converter/src/lod/albedo.rs), and
 [GPU encoder](../../crates/converter/src/texture_gpu/mod.rs).
+
+## PR-readiness addendum: GPU default and latest cache checks
+
+The follow-up adopts PR #167 at `2983e96f25dd488858feec1f5b0cd22058e20ca1`.
+New CLI runs and `PipelineConfig::new` use GPU LOD at quality 2 with the requested
+256 MiB batch setting, capped at 64 MiB per terrain slot. Ordinary textures keep
+their independent CPU default. Explicit CPU selection survives the printed
+resume command; omitted legacy serialized LOD encoder fields retain CPU behavior.
+
+Checked cached-GLB references and committed per-world refusal/totals notices are
+merged with GPU batching. A further KTX guard rejects impossible mip counts
+before shifting dimensions, with regressions for rejection and valid array,
+cubemap and volume layouts. The launcher report fixture includes both new counters,
+and the engine option scan excludes converter-only profiling tools while retaining
+its existing engine-script checks.
+
+The final code tree passes 1,149 workspace tests across 49 suites; 24 tests are
+ignored. Workspace formatting and all-target, all-feature Clippy pass. Clippy
+denies warnings except the existing macOS native-codec linker warning. The release
+converter builds on macOS 26.6.2/arm64 with Rust 1.98.1.
+
+Seven native CLI legs pass using nine synthetic LAND cells and six LOD chunks:
+
+| CLI leg | LOD hits | New GPU chunks | CPU fallback chunks |
+|---|---:|---:|---:|
+| Default cold, no encoder flags | 0 | 6 | 0 |
+| Default warm | 6 | 0 | 0 |
+| Explicit GPU cold | 0 | 6 | 0 |
+| Forced unavailable backend | 0 | 0 | 6 |
+| Healthy retry | 0 | 6 | 0 |
+| Retry warm | 6 | 0 | 0 |
+| `--no-lod` with unavailable backend | 0 | 0 | 0 |
+
+The GPU is Apple M1 Pro/Metal. Every leg passes the full ordinary-package check.
+LOD audits verify graph, geometry, bounds, source-cell coverage and three-mip sRGB
+UASTC layout. Default and explicit GPU payloads/proofs match exactly, as do both
+warm runs. Fallback omits all six GPU proofs and retries on the healthy run.
+Warm and disabled runs emit no GPU initialization notice; disabled output has no
+LOD payloads or indexed chunks. This is behavior validation, not a benchmark.
+
+Local performance acceptance is incomplete: three release CPU budgets pass, but
+the unchanged dummy-content file-generation budget fails twice at 66.923 ms and
+72.393 ms against its 50 ms limit. All 15 tracked dummy-content files match the
+PR #167 baseline; no local baseline performance run or causal attribution is
+claimed. The limit and file flushes are retained. Linux CI, the dependency audit
+and human code-owner approval remain merge gates. A PR stacked on
+`fix/lod-build-performance` needs manual CI dispatch or retargeting after #167
+merges because the workflow only triggers automatically for `main` and `develop`.
+
+The protected source manifest remains
+`ff5743feff7b2db3dc77fa2cac8b5741191e7e7c3e2069daddbde5f362ee7d09`.
+Current source/binary identities and validation receipts are in the
+[readiness receipt](lod-conversion-pr-readiness-20261009.json). The six full-pack
+measurements above remain pinned to their earlier binaries.
