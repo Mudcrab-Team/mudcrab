@@ -397,16 +397,58 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &mut report,
         );
     }
+    // Alias discovery and pruning need retained as well as repaired GLBs. Copy
+    // mutable artifacts so a preview cannot rewrite the published pack through links.
+    for entry in WalkDir::new(&published).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            let relative = entry.path().strip_prefix(&published)?;
+            let destination = checked_destination(&staged, &relative.to_string_lossy())?;
+            if !destination.exists() {
+                fs::create_dir_all(destination.parent().unwrap())?;
+                if relative
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("glb"))
+                    || matches!(
+                        relative.to_str(),
+                        Some(
+                            "skyrim_world.db"
+                                | "integration-report.json"
+                                | "conversion-manifest.json"
+                        )
+                    )
+                {
+                    fs::copy(entry.path(), &destination)?;
+                } else {
+                    link_or_copy(entry.path(), &destination)?;
+                }
+            }
+        }
+    }
     for (key, values) in collect_texture_semantics(&staged)? {
         semantics.entry(key).or_default().extend(values);
     }
     // Stage existing texture dependencies by link, and repair missing dependencies
     // from their winning DDS sources. Never prune a texture that actually exists in Data.
-    let meshes: Vec<_> = changed
-        .iter()
-        .filter(|path| path.ends_with(".glb"))
-        .cloned()
-        .collect();
+    let mut meshes = Vec::new();
+    for entry in WalkDir::new(&staged).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("glb"))
+        {
+            meshes.push(
+                entry
+                    .path()
+                    .strip_prefix(&staged)?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    meshes.sort();
     for mesh in &meshes {
         for dependency in MeshConverter::glb_texture_dependencies(&staged.join(mesh))? {
             let destination = resolve_asset_uri(&staged, &staged.join(mesh), &dependency.uri)?;
@@ -482,6 +524,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     for file in MeshConverter::prune_dangling_texture_uris_with_sources(&staged, &source_textures)?
     {
         if !file.removed_uris.is_empty() {
+            changed.insert(file.glb.clone());
             let references = manifest
                 .pruned_texture_references
                 .entry(file.glb.clone())
@@ -510,7 +553,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
                 let key = format!("{}.dds", base.strip_suffix(".ktx2").unwrap());
                 ensure!(
                     manifest.failures.contains_key(&key),
-                    "unresolved texture {} in repaired {mesh}",
+                    "unresolved texture {} in final {mesh}",
                     dependency.uri
                 );
             }
@@ -528,28 +571,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         entry.output_size = fs::metadata(staged.join(&entry.output))?.len();
         entry.output_hash = hash_file(&staged.join(&entry.output))?;
     }
-    // Integration needs the complete pack, not just repaired assets. Copy files
-    // rewritten in place so preview finalization cannot change the published pack.
-    for entry in WalkDir::new(&published).follow_links(false) {
-        let entry = entry?;
-        if entry.file_type().is_file() {
-            let relative = entry.path().strip_prefix(&published)?;
-            let destination = checked_destination(&staged, &relative.to_string_lossy())?;
-            if !destination.exists() {
-                fs::create_dir_all(destination.parent().unwrap())?;
-                if matches!(
-                    relative.to_str(),
-                    Some(
-                        "skyrim_world.db" | "integration-report.json" | "conversion-manifest.json"
-                    )
-                ) {
-                    fs::copy(entry.path(), &destination)?;
-                } else {
-                    link_or_copy(entry.path(), &destination)?;
-                }
-            }
-        }
-    }
+
     let integration_sources = sources
         .iter()
         .map(|(key, source)| (key.clone(), source.path.clone()))

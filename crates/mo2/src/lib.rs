@@ -27,6 +27,8 @@ pub struct Instance {
     pub mods_dir: PathBuf,
     pub profiles_dir: PathBuf,
     pub overwrite_dir: PathBuf,
+    // Classic Skyrim lists active plugins as bare names; SE/VR require stars.
+    classic_skyrim: bool,
 }
 
 /// Winning source paths indexed by lowercase Data-relative paths, and active plugin order.
@@ -146,6 +148,7 @@ impl Instance {
             mods_dir,
             profiles_dir,
             overwrite_dir,
+            classic_skyrim: game.eq_ignore_ascii_case("Skyrim"),
         })
     }
 
@@ -241,7 +244,7 @@ impl Instance {
         let mut active = BTreeSet::new();
         let mut active_order = Vec::new();
         for line in lines(&active_text) {
-            let enabled = line.starts_with('*');
+            let enabled = self.classic_skyrim || line.starts_with('*');
             let name = line.strip_prefix('*').unwrap_or(line).trim();
             plugin_name(name)?;
             if enabled {

@@ -100,6 +100,119 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     );
 }
 
+#[test]
+fn classic_skyrim_bare_plugins_are_active_with_and_without_loadorder() {
+    for game in ["Skyrim", "skyrim"] {
+        let (_dir, root) = fixture();
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[General]\ngameName={game}\n"),
+        );
+        write(
+            &root,
+            "profiles/Default/plugins.txt",
+            "# Active classic Skyrim plugins\nSkyrim.esm\nPatch.esp\nMod.esm\n",
+        );
+        write(&root, "Data/Patch.esp", "base loser");
+        write(&root, "mods/Low/Patch.esp", "low loser");
+        write(&root, "Data/Inactive.esm", "inactive");
+        write(&root, "mods/High/textures/example.dds", "winning asset");
+        let instance = Instance::open(&root).unwrap();
+        for with_loadorder in [true, false] {
+            if !with_loadorder {
+                fs::remove_file(root.join("profiles/Default/loadorder.txt")).unwrap();
+            }
+            let resolved = instance.resolve(&root.join("Data"), "Default").unwrap();
+            let expected = if with_loadorder {
+                ["skyrim.esm", "mod.esm", "patch.esp"]
+            } else {
+                ["skyrim.esm", "patch.esp", "mod.esm"]
+            };
+            assert_eq!(
+                resolved.plugins, expected,
+                "{game}, loadorder={with_loadorder}"
+            );
+            assert_eq!(
+                resolved.files["patch.esp"],
+                fs::canonicalize(root.join("mods/High/Patch.esp")).unwrap()
+            );
+            assert_eq!(
+                fs::read_to_string(&resolved.files["patch.esp"]).unwrap(),
+                "patch"
+            );
+            assert_eq!(
+                fs::read_to_string(&resolved.files["textures/example.dds"]).unwrap(),
+                "winning asset"
+            );
+            assert!(resolved.files.contains_key("inactive.esm"));
+        }
+    }
+}
+
+#[test]
+fn se_and_vr_bare_plugins_remain_inactive() {
+    for game in ["Skyrim Special Edition", "Skyrim VR"] {
+        let (_dir, root) = fixture();
+        write(
+            &root,
+            "ModOrganizer.ini",
+            &format!("[General]\ngameName={game}\n"),
+        );
+        write(
+            &root,
+            "profiles/Default/plugins.txt",
+            "Skyrim.esm\nPatch.esp\n*Mod.esm\nInactive.esm\n",
+        );
+        write(&root, "Data/Inactive.esm", "inactive");
+        write(&root, "mods/High/textures/example.dds", "winning asset");
+        let instance = Instance::open(&root).unwrap();
+        for with_loadorder in [true, false] {
+            if !with_loadorder {
+                fs::remove_file(root.join("profiles/Default/loadorder.txt")).unwrap();
+            }
+            let resolved = instance.resolve(&root.join("Data"), "Default").unwrap();
+            assert_eq!(resolved.plugins, ["skyrim.esm", "mod.esm"], "{game}");
+            assert_eq!(
+                fs::read_to_string(&resolved.files["patch.esp"]).unwrap(),
+                "patch"
+            );
+            assert_eq!(
+                fs::read_to_string(&resolved.files["textures/example.dds"]).unwrap(),
+                "winning asset"
+            );
+            assert!(resolved.files.contains_key("inactive.esm"));
+        }
+    }
+}
+
+#[test]
+fn classic_skyrim_bare_plugins_preserve_validation() {
+    let (_dir, root) = fixture();
+    write(&root, "ModOrganizer.ini", "[General]\ngameName=Skyrim\n");
+    let instance = Instance::open(&root).unwrap();
+    for (plugins, order, error) in [
+        (
+            "Patch.esp\nPATCH.ESP\n",
+            "Patch.esp\n",
+            "duplicate active plugin",
+        ),
+        ("../escape.esp\n", "Patch.esp\n", "unsafe"),
+        ("Missing.esp\n", "Missing.esp\n", "active plugin missing"),
+        ("Patch.esp\n", "Mod.esm\n", "absent from loadorder"),
+        (
+            "Patch.esp\n",
+            "Patch.esp\nPATCH.ESP\n",
+            "duplicate loadorder plugin",
+        ),
+    ] {
+        write(&root, "profiles/Default/plugins.txt", plugins);
+        write(&root, "profiles/Default/loadorder.txt", order);
+        let result = instance.resolve(&root.join("Data"), "Default").unwrap_err();
+        assert!(format!("{result:#}").contains(error), "{result:#}");
+    }
+}
+
 /// Verifies base-directory expansion, relative paths, case-insensitive lookup, and external mod paths.
 #[test]
 fn resolves_base_relative_and_external_configured_directories() {
