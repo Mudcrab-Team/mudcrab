@@ -125,7 +125,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
-    let asset_path = config.assets_dir.to_string_lossy().into_owned();
+    // Bevy resolves a relative asset root from the executable's directory outside `cargo run`.
+    // Use the same absolute directory the runtime database/cache were opened from.
+    let asset_path = std::path::absolute(&config.assets_dir)?
+        .to_string_lossy()
+        .into_owned();
     let benchmark_active =
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
     configure_benchmark_priority(benchmark_active)?;
@@ -200,6 +204,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
         .add_plugins((
             VercidiumRendererPlugin,
+            crate::visibility_optimization::VisibilityOptimizationPlugin,
+            crate::terrain_upload::TerrainUploadPlugin,
+            crate::mesh_preparation_retry::MeshPreparationRetryPlugin,
+            crate::mesh_residency_audit::MeshResidencyAuditPlugin,
             SkyPlugin,
             crate::nif_material::NifMaterialPlugin,
         ))

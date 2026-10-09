@@ -1,5 +1,16 @@
 use crate::{config::EngineConfig, render::RendererMetrics, streaming::StreamingMetrics};
-use bevy::{diagnostic::DiagnosticsStore, prelude::*};
+use bevy::{
+    diagnostic::DiagnosticsStore,
+    platform::time::Instant as DiagnosticInstant,
+    prelude::*,
+    render::{
+        Render, RenderApp, RenderSystems,
+        render_resource::WgpuFeatures,
+        renderer::{RenderAdapterInfo, RenderDevice},
+        view::window::{ExtractedWindows, prepare_windows},
+    },
+    window::PrimaryWindow,
+};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -16,7 +27,33 @@ pub struct ProfilingPlugin;
 impl Plugin for ProfilingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ProfilingState>()
-            .add_systems(Update, sample_scene_inventory);
+            .add_systems(Update, (sample_profile_metadata, sample_scene_inventory));
+        // Requested bundles also record whether each primary drawable was acquired. This keeps
+        // occluded or interrupted captures from being accepted as ordinary renderer timings.
+        let drawable_warmup = app
+            .world()
+            .get_resource::<EngineConfig>()
+            .and_then(|config| {
+                config
+                    .profile_output_dir
+                    .as_ref()
+                    .map(|_| config.benchmark_warmup_frames)
+            });
+        if let Some(warmup_frames) = drawable_warmup
+            && let Some(render_app) = app.get_sub_app_mut(RenderApp)
+        {
+            render_app
+                .insert_resource(ProfilePrimaryDrawableProof::new(warmup_frames))
+                .add_systems(
+                    Render,
+                    sample_primary_drawable
+                        .after(prepare_windows)
+                        .before(RenderSystems::Render),
+                );
+        }
+        if std::env::var("MUDCRAB_PROFILE_DRAW_COUNTS").is_ok_and(|value| value == "1") {
+            app.add_plugins(crate::indirect_metrics::IndirectDrawMetricsPlugin);
+        }
     }
 }
 
@@ -26,6 +63,13 @@ pub struct ProfilingState {
     frame: u64,
     cpu_spans_ms: BTreeMap<String, Vec<f64>>,
     render_metrics: BTreeMap<String, Vec<f64>>,
+    last_render_measurement: BTreeMap<String, DiagnosticInstant>,
+    rejected_render_measurements: BTreeMap<String, u64>,
+    render_capabilities: Option<RenderCapabilities>,
+    window: Option<WindowMetadata>,
+    draw_submission: Option<crate::indirect_metrics::DrawSubmissionReport>,
+    draw_submission_frames: Vec<crate::indirect_metrics::DrawSubmissionFrame>,
+    dropped_draw_submission_frames: u64,
     counters: BTreeMap<String, u64>,
     gauges: BTreeMap<String, f64>,
     timeline: Vec<TimelineEvent>,
@@ -39,6 +83,13 @@ impl Default for ProfilingState {
             frame: 0,
             cpu_spans_ms: BTreeMap::new(),
             render_metrics: BTreeMap::new(),
+            last_render_measurement: BTreeMap::new(),
+            rejected_render_measurements: BTreeMap::new(),
+            render_capabilities: None,
+            window: None,
+            draw_submission: None,
+            draw_submission_frames: Vec::new(),
+            dropped_draw_submission_frames: 0,
             counters: BTreeMap::new(),
             gauges: BTreeMap::new(),
             timeline: Vec::new(),
@@ -48,6 +99,24 @@ impl Default for ProfilingState {
 }
 
 impl ProfilingState {
+    pub(crate) fn set_draw_submission(
+        &mut self,
+        mut report: crate::indirect_metrics::DrawSubmissionReport,
+        frames: Vec<crate::indirect_metrics::DrawSubmissionFrame>,
+    ) {
+        let remaining = crate::indirect_metrics::MAX_DRAW_FRAME_SAMPLES
+            .saturating_sub(self.draw_submission_frames.len());
+        self.dropped_draw_submission_frames = self
+            .dropped_draw_submission_frames
+            .saturating_add(frames.len().saturating_sub(remaining) as u64);
+        report.dropped_frame_samples = report
+            .dropped_frame_samples
+            .saturating_add(self.dropped_draw_submission_frames);
+        self.draw_submission = Some(report);
+        self.draw_submission_frames
+            .extend(frames.into_iter().take(remaining));
+    }
+
     pub fn record_elapsed(&mut self, name: impl Into<String>, started: Instant) {
         self.record_ms(name, started.elapsed().as_secs_f64() * 1000.0);
     }
@@ -95,14 +164,37 @@ impl ProfilingState {
         self.frame = self.frame.saturating_add(1);
         for diagnostic in diagnostics.iter() {
             let path = diagnostic.path().as_str();
-            if path.starts_with("render/")
-                && let Some(value) = diagnostic.value()
-            {
-                push_bounded(
-                    self.render_metrics.entry(path.to_owned()).or_default(),
-                    value,
-                );
+            if !diagnostic.is_enabled || !path.starts_with("render/") {
+                continue;
             }
+            let last_sample = self.last_render_measurement.get(path).copied();
+            let Some(latest) = diagnostic.measurement() else {
+                continue;
+            };
+            if last_sample.is_some_and(|time| latest.time <= time) {
+                continue;
+            }
+            // Render diagnostics arrive asynchronously. A value can remain unchanged for
+            // several main frames, or several new measurements can arrive between samples.
+            for measurement in diagnostic
+                .measurements()
+                .filter(|measurement| last_sample.is_none_or(|time| measurement.time > time))
+            {
+                if measurement.value.is_finite() {
+                    push_bounded(
+                        self.render_metrics.entry(path.to_owned()).or_default(),
+                        measurement.value,
+                    );
+                } else {
+                    let rejected = self
+                        .rejected_render_measurements
+                        .entry(path.to_owned())
+                        .or_default();
+                    *rejected = rejected.saturating_add(1);
+                }
+            }
+            self.last_render_measurement
+                .insert(path.to_owned(), latest.time);
         }
         if self.frame.is_multiple_of(60)
             && let Some(process_memory_gib) = process_memory_gib
@@ -136,15 +228,12 @@ impl ProfilingState {
             .iter()
             .map(|(name, samples)| (name.clone(), summarize(samples)))
             .collect();
-        let gpu_supported = render.keys().any(|path| path.ends_with("/elapsed_gpu"));
-        let pipeline_statistics_supported = render.keys().any(|path| {
-            path.ends_with("/vertex_shader_invocations")
-                || path.ends_with("/compute_shader_invocations")
-        });
+        let mut gpu = gpu_profile(render.clone(), self.render_capabilities.clone());
+        gpu.rejected_nonfinite_measurements = self.rejected_render_measurements.clone();
         write_json(
             &root.join("metadata.json"),
             &Metadata {
-                format_version: 1,
+                format_version: 2,
                 engine_version: env!("CARGO_PKG_VERSION"),
                 bevy_version: "0.19",
                 generated_unix_ms: unix_ms(),
@@ -158,7 +247,11 @@ impl ProfilingState {
                 } else {
                     "release"
                 },
-                resolution: [1600, 900],
+                resolution: self
+                    .window
+                    .as_ref()
+                    .map(|window| window.physical_resolution),
+                window: self.window.clone(),
                 worldspace_id: config.worldspace_id,
                 start_grid: config.start_grid,
                 stream_radius: config.stream_radius,
@@ -175,15 +268,7 @@ impl ProfilingState {
                 gauges: self.gauges.clone(),
             },
         )?;
-        write_json(
-            &root.join("gpu-passes.json"),
-            &GpuProfile {
-                timestamp_queries_supported: gpu_supported,
-                pipeline_statistics_supported,
-                metrics: render.clone(),
-                unavailable: unavailable_render_metrics(&render),
-            },
-        )?;
+        write_json(&root.join("gpu-passes.json"), &gpu)?;
         write_json(
             &root.join("streaming.json"),
             &StreamingProfile {
@@ -192,6 +277,15 @@ impl ProfilingState {
             },
         )?;
         write_json(&root.join("renderer.json"), renderer)?;
+        if let Some(draw_submission) = &self.draw_submission {
+            write_json(
+                &root.join("draw-submission.json"),
+                &DrawSubmissionProfile {
+                    report: draw_submission,
+                    frames: &self.draw_submission_frames,
+                },
+            )?;
+        }
         write_json(
             &root.join("memory.json"),
             &MemoryProfile {
@@ -207,12 +301,54 @@ impl ProfilingState {
     }
 }
 
+fn sample_profile_metadata(
+    mut profiler: ResMut<ProfilingState>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    device: Option<Res<RenderDevice>>,
+    adapter: Option<Res<RenderAdapterInfo>>,
+) {
+    if let Ok(window) = windows.single() {
+        profiler.window = Some(WindowMetadata {
+            physical_resolution: [window.physical_width(), window.physical_height()],
+            logical_resolution: [window.width(), window.height()],
+            scale_factor: window.scale_factor(),
+        });
+    }
+    if let Some(device) = device
+        && (device.is_changed() || profiler.render_capabilities.is_none())
+    {
+        let features = device.features();
+        profiler.render_capabilities = Some(RenderCapabilities {
+            backend: adapter
+                .as_ref()
+                .map(|adapter| format!("{:?}", adapter.backend)),
+            timestamp_queries_supported: features.contains(WgpuFeatures::TIMESTAMP_QUERY),
+            timestamp_queries_inside_passes_supported: features
+                .contains(WgpuFeatures::TIMESTAMP_QUERY_INSIDE_PASSES),
+            timestamp_queries_inside_encoders_supported: features
+                .contains(WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+            pipeline_statistics_supported: features
+                .contains(WgpuFeatures::PIPELINE_STATISTICS_QUERY),
+            multi_draw_indirect_count_supported: features
+                .contains(WgpuFeatures::MULTI_DRAW_INDIRECT_COUNT),
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sample_scene_inventory(
     mut profiler: ResMut<ProfilingState>,
     mut frames: Local<u64>,
     meshes: Query<(), With<Mesh3d>>,
     terrain: Query<&ViewVisibility, With<crate::world::components::TerrainPatch>>,
+    lod_terrain_batches: Query<(), With<crate::streaming::lod::LodTerrainBatch>>,
+    structural_nodes: Query<
+        (),
+        (
+            With<crate::visibility_optimization::StructuralHierarchyNode>,
+            With<bevy::camera::visibility::NoCpuCulling>,
+        ),
+    >,
     water: Query<(), With<crate::world::components::WaterSurface>>,
     bounds: Query<(), With<crate::world::components::InstanceBounds>>,
     mesh_assets: Res<Assets<Mesh>>,
@@ -223,14 +359,22 @@ fn sample_scene_inventory(
         return;
     }
     let started = Instant::now();
-    profiler.set_gauge("scene/mesh_entities", meshes.iter().count() as f64);
-    profiler.set_gauge("scene/terrain_patches", terrain.iter().count() as f64);
+    profiler.set_gauge("scene/mesh_entities", meshes.iter().len() as f64);
+    profiler.set_gauge("scene/terrain_patches", terrain.iter().len() as f64);
+    profiler.set_gauge(
+        "scene/lod_terrain_batches",
+        lod_terrain_batches.iter().len() as f64,
+    );
+    profiler.set_gauge(
+        "scene/structural_nodes_no_cpu_culling",
+        structural_nodes.iter().len() as f64,
+    );
     profiler.set_gauge(
         "scene/visible_terrain_patches",
         terrain.iter().filter(|visible| visible.get()).count() as f64,
     );
-    profiler.set_gauge("scene/water_surfaces", water.iter().count() as f64);
-    profiler.set_gauge("scene/bounded_instances", bounds.iter().count() as f64);
+    profiler.set_gauge("scene/water_surfaces", water.iter().len() as f64);
+    profiler.set_gauge("scene/bounded_instances", bounds.iter().len() as f64);
     profiler.set_gauge("assets/meshes", mesh_assets.len() as f64);
     profiler.set_gauge("assets/images", images.len() as f64);
     profiler.record_elapsed("profiling/scene_inventory", started);
@@ -257,7 +401,8 @@ struct Metadata<'a> {
     dirty_worktree: bool,
     hardware_label: String,
     build_profile: &'a str,
-    resolution: [u32; 2],
+    resolution: Option<[u32; 2]>,
+    window: Option<WindowMetadata>,
     worldspace_id: u32,
     start_grid: (i32, i32),
     stream_radius: i32,
@@ -289,6 +434,7 @@ pub struct MetricSummary {
     pub p95: f64,
     pub p99: f64,
     pub worst: f64,
+    pub minimum: f64,
 }
 
 #[derive(Serialize)]
@@ -299,11 +445,132 @@ struct CpuProfile {
 }
 
 #[derive(Serialize)]
+struct DrawSubmissionProfile<'a> {
+    #[serde(flatten)]
+    report: &'a crate::indirect_metrics::DrawSubmissionReport,
+    frames: &'a [crate::indirect_metrics::DrawSubmissionFrame],
+}
+
+#[derive(Serialize)]
 struct GpuProfile {
     timestamp_queries_supported: bool,
     pipeline_statistics_supported: bool,
+    query_support_observed: bool,
+    timestamp_measurements_available: bool,
+    timestamp_measurement_status: TimestampMeasurementStatus,
+    timestamp_metrics: BTreeMap<String, TimestampMeasurementStatus>,
+    rejected_nonfinite_measurements: BTreeMap<String, u64>,
+    device: Option<RenderCapabilities>,
     metrics: BTreeMap<String, MetricSummary>,
     unavailable: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WindowMetadata {
+    physical_resolution: [u32; 2],
+    logical_resolution: [f32; 2],
+    scale_factor: f32,
+}
+
+/// Features enabled on the device used for the run, independent of diagnostic values.
+#[derive(Debug, Clone, Default, Serialize)]
+struct RenderCapabilities {
+    backend: Option<String>,
+    timestamp_queries_supported: bool,
+    timestamp_queries_inside_passes_supported: bool,
+    timestamp_queries_inside_encoders_supported: bool,
+    pipeline_statistics_supported: bool,
+    multi_draw_indirect_count_supported: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TimestampMeasurementStatus {
+    NotObserved,
+    AllZero,
+    PositiveValuesObserved,
+    MixedValuesObserved,
+    InvalidNegativeValues,
+}
+
+fn timestamp_status(summary: &MetricSummary) -> TimestampMeasurementStatus {
+    if summary.count == 0 {
+        TimestampMeasurementStatus::NotObserved
+    } else if summary.minimum < 0.0 {
+        TimestampMeasurementStatus::InvalidNegativeValues
+    } else if summary.worst > 0.0 {
+        TimestampMeasurementStatus::PositiveValuesObserved
+    } else {
+        TimestampMeasurementStatus::AllZero
+    }
+}
+
+fn gpu_profile(
+    metrics: BTreeMap<String, MetricSummary>,
+    capabilities: Option<RenderCapabilities>,
+) -> GpuProfile {
+    let timestamp_metrics: BTreeMap<_, _> = metrics
+        .iter()
+        .filter(|(path, _)| path.ends_with("/elapsed_gpu"))
+        .map(|(path, summary)| (path.clone(), timestamp_status(summary)))
+        .collect();
+    let timestamp_measurements_available = timestamp_metrics
+        .values()
+        .any(|status| *status == TimestampMeasurementStatus::PositiveValuesObserved);
+    let has_negative_values = timestamp_metrics
+        .values()
+        .any(|status| *status == TimestampMeasurementStatus::InvalidNegativeValues);
+    let timestamp_measurement_status = if timestamp_metrics.is_empty()
+        || timestamp_metrics
+            .values()
+            .all(|status| *status == TimestampMeasurementStatus::NotObserved)
+    {
+        TimestampMeasurementStatus::NotObserved
+    } else if timestamp_measurements_available
+        && timestamp_metrics
+            .values()
+            .any(|status| *status != TimestampMeasurementStatus::PositiveValuesObserved)
+    {
+        TimestampMeasurementStatus::MixedValuesObserved
+    } else if has_negative_values {
+        TimestampMeasurementStatus::InvalidNegativeValues
+    } else if timestamp_measurements_available {
+        TimestampMeasurementStatus::PositiveValuesObserved
+    } else {
+        TimestampMeasurementStatus::AllZero
+    };
+    let mut unavailable = unavailable_render_metrics(&metrics);
+    if !timestamp_measurements_available {
+        unavailable.insert(
+            "elapsed_gpu".to_owned(),
+            match timestamp_measurement_status {
+                TimestampMeasurementStatus::AllZero => {
+                    "all observed GPU timestamps are zero; pass timings are unavailable"
+                }
+                TimestampMeasurementStatus::InvalidNegativeValues => {
+                    "observed GPU elapsed times contain negative values"
+                }
+                _ => "no GPU elapsed measurements were observed",
+            }
+            .to_owned(),
+        );
+    }
+    GpuProfile {
+        timestamp_queries_supported: capabilities
+            .as_ref()
+            .is_some_and(|device| device.timestamp_queries_supported),
+        pipeline_statistics_supported: capabilities
+            .as_ref()
+            .is_some_and(|device| device.pipeline_statistics_supported),
+        query_support_observed: capabilities.is_some(),
+        timestamp_measurements_available,
+        timestamp_measurement_status,
+        timestamp_metrics,
+        rejected_nonfinite_measurements: BTreeMap::new(),
+        device: capabilities,
+        metrics,
+        unavailable,
+    }
 }
 
 #[derive(Serialize)]
@@ -319,7 +586,11 @@ struct MemoryProfile {
 }
 
 pub fn summarize(samples: &[f64]) -> MetricSummary {
-    let mut sorted = samples.to_vec();
+    let mut sorted: Vec<_> = samples
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
     sorted.sort_by(f64::total_cmp);
     let total = sorted.iter().sum::<f64>();
     MetricSummary {
@@ -330,6 +601,7 @@ pub fn summarize(samples: &[f64]) -> MetricSummary {
         p95: percentile(&sorted, 0.95),
         p99: percentile(&sorted, 0.99),
         worst: sorted.last().copied().unwrap_or_default(),
+        minimum: sorted.first().copied().unwrap_or_default(),
     }
 }
 
@@ -374,7 +646,10 @@ fn summary_markdown(
     top_cpu.sort_by(|left, right| right.1.total.total_cmp(&left.1.total));
     let mut top_gpu: Vec<_> = render
         .iter()
-        .filter(|(name, _)| name.ends_with("/elapsed_gpu"))
+        .filter(|(name, summary)| {
+            name.ends_with("/elapsed_gpu")
+                && timestamp_status(summary) == TimestampMeasurementStatus::PositiveValuesObserved
+        })
         .collect();
     top_gpu.sort_by(|left, right| right.1.mean.total_cmp(&left.1.mean));
     let mut output = format!(
@@ -398,6 +673,9 @@ fn summary_markdown(
         ));
     }
     output.push_str("\n## Top GPU passes\n\n| Pass | Mean ms | P95 ms |\n|---|---:|---:|\n");
+    if top_gpu.is_empty() {
+        output.push_str("\nGPU pass timings are unavailable; see gpu-passes.json for device support and measurement status.\n");
+    }
     for (name, value) in top_gpu.into_iter().take(10) {
         output.push_str(&format!(
             "| {name} | {:.3} | {:.3} |\n",
@@ -483,6 +761,201 @@ fn push_bounded(values: &mut Vec<f64>, value: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::diagnostic::{Diagnostic, DiagnosticMeasurement, DiagnosticPath};
+    use std::time::Duration;
+
+    #[test]
+    fn render_measurements_are_sampled_once_per_timestamp() {
+        let path = DiagnosticPath::new("render/test/elapsed_cpu");
+        let mut diagnostics = DiagnosticsStore::default();
+        diagnostics.add(Diagnostic::new(path.clone()));
+        let started = DiagnosticInstant::now();
+        diagnostics
+            .get_mut(&path)
+            .unwrap()
+            .add_measurement(DiagnosticMeasurement {
+                time: started,
+                value: 2.0,
+            });
+        let mut profiler = ProfilingState::default();
+        profiler.sample_frame(&diagnostics, None);
+        profiler.sample_frame(&diagnostics, None);
+        assert_eq!(profiler.render_metrics[path.as_str()], [2.0]);
+
+        // Identical values are distinct observations when their timestamps differ.
+        for offset in [1, 2] {
+            diagnostics
+                .get_mut(&path)
+                .unwrap()
+                .add_measurement(DiagnosticMeasurement {
+                    time: started + Duration::from_millis(offset),
+                    value: 2.0,
+                });
+        }
+        profiler.sample_frame(&diagnostics, None);
+        profiler.sample_frame(&diagnostics, None);
+        assert_eq!(profiler.render_metrics[path.as_str()], [2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn sampling_collects_all_unseen_history_and_skips_disabled_diagnostics() {
+        let path = DiagnosticPath::new("render/test/elapsed_cpu");
+        let disabled_path = DiagnosticPath::new("render/disabled/elapsed_cpu");
+        let mut diagnostic = Diagnostic::new(path.clone());
+        let started = DiagnosticInstant::now();
+        for offset in [0, 1, 2] {
+            diagnostic.add_measurement(DiagnosticMeasurement {
+                time: started + Duration::from_millis(offset),
+                value: offset as f64,
+            });
+        }
+        let mut disabled = Diagnostic::new(disabled_path.clone());
+        disabled.add_measurement(DiagnosticMeasurement {
+            time: started,
+            value: 100.0,
+        });
+        disabled.is_enabled = false;
+        let mut diagnostics = DiagnosticsStore::default();
+        diagnostics.add(diagnostic);
+        diagnostics.add(disabled);
+        let mut profiler = ProfilingState::default();
+        profiler.sample_frame(&diagnostics, None);
+        assert_eq!(profiler.render_metrics[path.as_str()], [0.0, 1.0, 2.0]);
+        assert!(!profiler.render_metrics.contains_key(disabled_path.as_str()));
+    }
+
+    #[test]
+    fn all_zero_gpu_timings_are_unavailable_even_when_queries_are_supported() {
+        let gpu = gpu_profile(
+            BTreeMap::from([("render/main/elapsed_gpu".into(), summarize(&[0.0; 3]))]),
+            Some(RenderCapabilities {
+                timestamp_queries_supported: true,
+                ..Default::default()
+            }),
+        );
+        assert!(gpu.timestamp_queries_supported);
+        assert!(gpu.query_support_observed);
+        assert!(!gpu.timestamp_measurements_available);
+        assert_eq!(
+            gpu.timestamp_measurement_status,
+            TimestampMeasurementStatus::AllZero
+        );
+        assert_eq!(gpu.metrics["render/main/elapsed_gpu"].count, 3);
+        assert!(gpu.unavailable["elapsed_gpu"].contains("zero"));
+    }
+
+    #[test]
+    fn positive_gpu_diagnostics_do_not_prove_device_query_support() {
+        let gpu = gpu_profile(
+            BTreeMap::from([("render/main/elapsed_gpu".into(), summarize(&[1.0, 2.0]))]),
+            None,
+        );
+        assert!(!gpu.timestamp_queries_supported);
+        assert!(!gpu.query_support_observed);
+        assert!(gpu.timestamp_measurements_available);
+        assert_eq!(
+            gpu.timestamp_measurement_status,
+            TimestampMeasurementStatus::PositiveValuesObserved
+        );
+        assert!(!gpu.unavailable.contains_key("elapsed_gpu"));
+    }
+
+    #[test]
+    fn supported_queries_without_measurements_remain_unavailable() {
+        let gpu = gpu_profile(
+            BTreeMap::new(),
+            Some(RenderCapabilities {
+                timestamp_queries_supported: true,
+                ..Default::default()
+            }),
+        );
+        assert!(gpu.timestamp_queries_supported);
+        assert!(!gpu.timestamp_measurements_available);
+        assert_eq!(
+            gpu.timestamp_measurement_status,
+            TimestampMeasurementStatus::NotObserved
+        );
+    }
+
+    #[test]
+    fn negative_elapsed_values_are_marked_invalid() {
+        let summary = summarize(&[-1.0, 2.0, 3.0]);
+        assert_eq!(
+            timestamp_status(&summary),
+            TimestampMeasurementStatus::InvalidNegativeValues
+        );
+    }
+
+    #[test]
+    fn empty_gpu_summaries_are_unobserved_and_mixed_results_keep_invalid_status() {
+        let empty = gpu_profile(
+            BTreeMap::from([("render/empty/elapsed_gpu".into(), summarize(&[]))]),
+            None,
+        );
+        assert_eq!(
+            empty.timestamp_measurement_status,
+            TimestampMeasurementStatus::NotObserved
+        );
+        let mixed = gpu_profile(
+            BTreeMap::from([
+                ("render/valid/elapsed_gpu".into(), summarize(&[1.0])),
+                (
+                    "render/invalid/elapsed_gpu".into(),
+                    summarize(&[-1.0, 2.0, 3.0]),
+                ),
+            ]),
+            None,
+        );
+        assert!(mixed.timestamp_measurements_available);
+        assert_eq!(
+            mixed.timestamp_measurement_status,
+            TimestampMeasurementStatus::MixedValuesObserved
+        );
+        assert_eq!(
+            mixed.timestamp_metrics["render/invalid/elapsed_gpu"],
+            TimestampMeasurementStatus::InvalidNegativeValues
+        );
+    }
+
+    #[test]
+    fn nonfinite_render_measurements_are_rejected_once() {
+        let path = DiagnosticPath::new("render/test/elapsed_gpu");
+        let mut diagnostic = Diagnostic::new(path.clone());
+        diagnostic.add_measurement(DiagnosticMeasurement {
+            time: DiagnosticInstant::now(),
+            value: f64::NAN,
+        });
+        let mut diagnostics = DiagnosticsStore::default();
+        diagnostics.add(diagnostic);
+        let mut profiler = ProfilingState::default();
+        profiler.sample_frame(&diagnostics, None);
+        profiler.sample_frame(&diagnostics, None);
+        assert!(!profiler.render_metrics.contains_key(path.as_str()));
+        assert_eq!(profiler.rejected_render_measurements[path.as_str()], 1);
+        assert_eq!(summarize(&[f64::NAN, f64::INFINITY, 2.0]).count, 1);
+    }
+
+    #[test]
+    fn metadata_observes_physical_and_logical_window_dimensions() {
+        let mut app = App::new();
+        app.init_resource::<ProfilingState>()
+            .add_systems(Update, sample_profile_metadata);
+        app.world_mut().spawn((
+            Window {
+                resolution: bevy::window::WindowResolution::new(3200, 1800)
+                    .with_scale_factor_override(2.0),
+                ..Default::default()
+            },
+            PrimaryWindow,
+        ));
+        app.update();
+        let profiler = app.world().resource::<ProfilingState>();
+        let window = profiler.window.as_ref().unwrap();
+        assert_eq!(window.physical_resolution, [3200, 1800]);
+        assert_eq!(window.logical_resolution, [1600.0, 900.0]);
+        assert_eq!(window.scale_factor, 2.0);
+        assert!(profiler.render_capabilities.is_none());
+    }
 
     #[test]
     fn summarizes_percentiles_and_worst_value() {
@@ -547,9 +1020,84 @@ mod tests {
             assert!(directory.path().join(name).is_file(), "missing {name}");
         }
         let summary = fs::read_to_string(directory.path().join("summary.md")).unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.path().join("metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["format_version"], 2);
+        assert!(metadata["resolution"].is_null());
+        assert!(summary.contains("GPU pass timings are unavailable"));
         assert!(
             summary.contains("Terrain seam points welded: 0"),
             "the summary must report the welded terrain seam points"
         );
+    }
+}
+
+// Samples acquisition before presentation consumes the swapchain texture.
+#[derive(Resource)]
+struct ProfilePrimaryDrawableProof {
+    frames: u64,
+    warmup_frames: u64,
+    present_frames: u64,
+    missing_frames: u64,
+    measured_present_frames: u64,
+    measured_missing_frames: u64,
+}
+
+impl ProfilePrimaryDrawableProof {
+    fn new(warmup_frames: u32) -> Self {
+        Self {
+            frames: 0,
+            warmup_frames: u64::from(warmup_frames).saturating_add(5),
+            present_frames: 0,
+            missing_frames: 0,
+            measured_present_frames: 0,
+            measured_missing_frames: 0,
+        }
+    }
+
+    fn log(&self, final_summary: bool) {
+        info!(
+            final_summary,
+            render_frames = self.frames,
+            warmup_plus_five = self.warmup_frames,
+            present_frames = self.present_frames,
+            missing_frames = self.missing_frames,
+            measured_present_frames = self.measured_present_frames,
+            measured_missing_frames = self.measured_missing_frames,
+            "native profiling primary drawable proof"
+        );
+    }
+}
+
+impl Drop for ProfilePrimaryDrawableProof {
+    fn drop(&mut self) {
+        self.log(true);
+    }
+}
+
+fn sample_primary_drawable(
+    windows: Res<ExtractedWindows>,
+    mut proof: ResMut<ProfilePrimaryDrawableProof>,
+) {
+    let present = windows
+        .primary
+        .and_then(|primary| windows.get(&primary))
+        .is_some_and(|window| window.swap_chain_texture.is_some());
+    proof.frames = proof.frames.saturating_add(1);
+    if present {
+        proof.present_frames = proof.present_frames.saturating_add(1);
+    } else {
+        proof.missing_frames = proof.missing_frames.saturating_add(1);
+    }
+    if proof.frames > proof.warmup_frames {
+        if present {
+            proof.measured_present_frames = proof.measured_present_frames.saturating_add(1);
+        } else {
+            proof.measured_missing_frames = proof.measured_missing_frames.saturating_add(1);
+        }
+    }
+    if proof.frames.is_multiple_of(300) {
+        proof.log(false);
     }
 }

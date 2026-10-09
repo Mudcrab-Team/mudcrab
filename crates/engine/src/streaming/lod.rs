@@ -34,6 +34,11 @@ const LOD_CHUNK_MAX_RETRIES: u8 = 3;
 const LOD_CHUNK_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 const LOD_CHUNK_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
+#[path = "terrain_batching.rs"]
+mod terrain_batching;
+
+pub(crate) use terrain_batching::LodTerrainBatch;
+
 /// A far plane that keeps every cell within `reach_cells` of the camera's cell.
 fn lod_camera_far(reach_cells: i32) -> f32 {
     CELL_SIZE * (reach_cells as f32 + 0.5) * std::f32::consts::SQRT_2
@@ -51,8 +56,19 @@ pub(super) struct LodStreaming {
     queued_retry_chunks: HashSet<ChunkKey>,
     build_identity: Option<String>,
     pub(super) visibility_dirty: bool,
+    submission_dirty: bool,
+    // Exact generational source IDs replaced after the previous selector pass. Both removal
+    // streams consume this set once on the next pass, even if one stream has no matching event.
+    replaced_source_quadrants: HashSet<Entity>,
+    visibility_revision: u64,
+    terrain_batch_commit_used: bool,
     visibility_camera_grid: Option<IVec2>,
     visibility_stream_radius: Option<i32>,
+    terrain_batch_prepared_chunks: u64,
+    terrain_batch_activated_chunks: u64,
+    terrain_batch_fallback_chunks: u64,
+    terrain_batch_pending_cpu_chunks: usize,
+    terrain_batch_completion_report: Option<(u64, u64, u64)>,
 }
 
 impl LodStreaming {
@@ -154,7 +170,7 @@ impl LodChunkStatus {
 }
 
 #[derive(Component)]
-pub(super) struct LodChunkRoot {
+pub(crate) struct LodChunkRoot {
     key: ChunkKey,
     generation: u64,
     origin: LodOrigin,
@@ -643,9 +659,140 @@ pub(super) fn track_lod_readiness(
         profiler.increment("lod/terrain_patches_ready", patches.len() as u64);
         profiler.record_elapsed("lod/chunk_ready", pending.started);
         profiler.event(format!("{:?}", root.key), "ready", None);
+        commands
+            .entity(entity)
+            .insert(terrain_batching::PendingLodTerrainBatching {
+                source: pending.asset.clone(),
+                patches,
+            });
     }
     update_counts(&streaming, &mut metrics, &mut profiler);
     profiler.record_elapsed("lod/readiness", started);
+}
+
+/// Batching shares the streaming commit budget. Until its turn, a ready chunk keeps drawing its
+/// original quadrant meshes. One chunk is the smallest atomic conversion and can exceed the time
+/// allowance; its actual work is charged and reported before the frame's budget is finalized.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn batch_ready_lod_chunks(
+    mut commands: Commands,
+    config: Res<EngineConfig>,
+    mut budget: ResMut<StreamingCommitBudget>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    preparation: terrain_batching::LodBatchPreparation,
+    activation: terrain_batching::LodBatchActivation,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    mesh_handles: Query<&Mesh3d>,
+    pending: Query<(
+        Entity,
+        &LodChunkRoot,
+        &terrain_batching::PendingLodTerrainBatching,
+    )>,
+    mut streaming: ResMut<LodStreaming>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    streaming.terrain_batch_commit_used = false;
+    let pending_cpu = pending.iter().len();
+    let pending_gpu = activation.pending_count();
+    record_terrain_batch_progress(&mut streaming, &mut profiler, pending_cpu, pending_gpu);
+    if !preparation.has_render_backend() {
+        for (entity, _, _) in &pending {
+            commands
+                .entity(entity)
+                .remove::<terrain_batching::PendingLodTerrainBatching>();
+        }
+        return;
+    }
+    if !terrain_batch_budget_available(&budget, config.max_commit_micros_per_frame) {
+        return;
+    }
+    // The generation and key ordering gives a stable oldest-first cadence for arrived chunks.
+    let Some((entity, root, queued)) = pending
+        .iter()
+        .min_by_key(|(_, root, _)| (root.generation, root.key))
+    else {
+        return;
+    };
+    let started = Instant::now();
+    match preparation.prepare(
+        entity,
+        &queued.patches,
+        &children,
+        &names,
+        &mesh_handles,
+        &meshes,
+    ) {
+        Ok(batches) => {
+            streaming.terrain_batch_prepared_chunks += 1;
+            profiler.increment("lod/terrain_batch_chunks_prepared", 1);
+            profiler.increment("lod/terrain_batches_created", batches.len() as u64);
+            terrain_batching::install(
+                entity,
+                queued.source.clone(),
+                batches,
+                &children,
+                &mut commands,
+                &mut meshes,
+                preparation.upload_readiness(),
+            );
+            streaming.submission_dirty = true;
+        }
+        Err(reason) => {
+            streaming.terrain_batch_fallback_chunks += 1;
+            debug!(?root.key, %reason, "terrain LOD keeps its original scene hierarchy");
+            profiler.increment("lod/terrain_batch_fallback_chunks", 1);
+        }
+    }
+    commands
+        .entity(entity)
+        .remove::<terrain_batching::PendingLodTerrainBatching>();
+    budget.remaining -= 1;
+    budget.commits = budget.commits.saturating_add(1);
+    streaming.terrain_batch_commit_used = true;
+    profiler.increment("lod/terrain_batch_chunks_committed", 1);
+    profiler.record_elapsed("lod/terrain_batch_commit", started);
+}
+
+fn record_terrain_batch_progress(
+    streaming: &mut LodStreaming,
+    profiler: &mut ProfilingState,
+    pending_cpu: usize,
+    pending_gpu: usize,
+) {
+    streaming.terrain_batch_pending_cpu_chunks = pending_cpu;
+    profiler.set_gauge("lod/pending_terrain_batch_chunks", pending_cpu as f64);
+    profiler.set_gauge(
+        "lod/pending_initial_terrain_upload_chunks",
+        pending_gpu as f64,
+    );
+    let report = (
+        streaming.terrain_batch_prepared_chunks,
+        streaming.terrain_batch_activated_chunks,
+        streaming.terrain_batch_fallback_chunks,
+    );
+    if pending_cpu == 0
+        && pending_gpu == 0
+        && report.0 != 0
+        && streaming.terrain_batch_completion_report != Some(report)
+    {
+        streaming.terrain_batch_completion_report = Some(report);
+        info!(
+            prepared_chunks = report.0,
+            activated_chunks = report.1,
+            fallback_chunks = report.2,
+            "terrain LOD batching queue drained; current initial replacements are GPU-ready"
+        );
+        profiler.event(
+            "terrain LOD batching",
+            "initial_uploads_drained",
+            Some(report.1 as f64),
+        );
+    }
+}
+
+fn terrain_batch_budget_available(budget: &StreamingCommitBudget, max_micros: u64) -> bool {
+    budget.remaining != 0 && budget.frame_started.elapsed().as_micros() < u128::from(max_micros)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -665,86 +812,162 @@ pub(super) fn update_terrain_lod_visibility(
         ),
         Without<super::TerrainPatch>,
     >,
+    mut batches: terrain_batching::LodBatchVisibility,
+    mut budget: Option<ResMut<StreamingCommitBudget>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
     let started = Instant::now();
+    let replaced_sources = std::mem::take(&mut streaming.p1().replaced_source_quadrants);
+    // Drain both readers completely before expiring the transfer set. Coverage/readiness removed
+    // for any other entity is a real semantic invalidation; absent events cannot leak tracking.
+    let coverage_removed = removed_coverage
+        .read()
+        .filter(|entity| !replaced_sources.contains(entity))
+        .count()
+        != 0;
+    let readiness_removed = removed_readiness
+        .read()
+        .filter(|entity| !replaced_sources.contains(entity))
+        .count()
+        != 0;
+    let batches_removed = batches.removed();
     let Ok(camera) = camera.single() else {
+        if coverage_removed || readiness_removed || batches_removed {
+            streaming.p1().visibility_dirty = true;
+        }
         return;
     };
     let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
-    let coverage_removed = removed_coverage.read().count() != 0;
-    let readiness_removed = removed_readiness.read().count() != 0;
+    let upload_completed = batches.upload_completed();
     let refresh = {
         let state = streaming.p0();
         state.visibility_dirty
             || coverage_removed
             || readiness_removed
+            || batches_removed
             || state.visibility_camera_grid != Some(camera_grid)
             || state.visibility_stream_radius != Some(config.stream_radius)
     };
-    if !refresh {
-        return;
-    }
-    {
+    let submission_dirty = streaming.p0().submission_dirty;
+    streaming.p1().submission_dirty = false;
+    if refresh {
         let mut state = streaming.p1();
         state.visibility_dirty = false;
         state.visibility_camera_grid = Some(camera_grid);
         state.visibility_stream_radius = Some(config.stream_radius);
+        state.visibility_revision = state.visibility_revision.wrapping_add(1);
+    }
+    if refresh {
+        let full_ready: HashSet<_> = full_detail
+            .iter()
+            .map(|coverage| (coverage.grid, coverage.quadrant))
+            .collect();
+        // The three legal tier discriminants (4, 8, 16) are distinct bits. A byte records
+        // the same ready set without allocating a separate hash table for each quadrant.
+        let mut available = HashMap::<(IVec2, u8), u8>::new();
+        let mut ready_patches = 0usize;
+        for (coverage, ready, _) in &mut lod_patches {
+            if let (Some(tier), Some(_)) = (coverage.tier, ready) {
+                *available
+                    .entry((coverage.grid, coverage.quadrant))
+                    .or_default() |= tier as u8;
+                ready_patches += 1;
+            }
+        }
+        for coverage in batches.coverage() {
+            if let Some(tier) = coverage.tier {
+                *available
+                    .entry((coverage.grid, coverage.quadrant))
+                    .or_default() |= tier as u8;
+                ready_patches += 1;
+            }
+        }
+        let selected_tiers: HashMap<_, _> = available
+            .iter()
+            .map(|(&(grid, quadrant), candidates)| {
+                let distance = chebyshev_grid_distance(grid, camera_grid);
+                (
+                    (grid, quadrant),
+                    select_terrain_lod_tier(
+                        distance,
+                        full_ready.contains(&(grid, quadrant)),
+                        *candidates,
+                        &config.terrain_lod,
+                    ),
+                )
+            })
+            .collect();
+        let mut visible_patches = 0usize;
+        for (coverage, ready, mut visibility) in &mut lod_patches {
+            let selected = coverage.tier.is_some_and(|tier| {
+                ready.is_some()
+                    && selected_tiers.get(&(coverage.grid, coverage.quadrant)) == Some(&Some(tier))
+            });
+            let next = if selected {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if selected {
+                visible_patches += 1;
+            }
+            if *visibility != next {
+                *visibility = next;
+            }
+        }
+        let (batched_quadrants, _, changed_batches) = batches.update(&selected_tiers);
+        visible_patches += batched_quadrants;
+        profiler.increment("lod/terrain_batches_updated", changed_batches as u64);
+        profiler.increment("lod/selection_refreshes", 1);
+        metrics.visible_lod_terrain_patches = visible_patches;
+        profiler.set_gauge("lod/ready_terrain_patches", ready_patches as f64);
+        profiler.set_gauge("lod/visible_terrain_patches", visible_patches as f64);
+        profiler.record_elapsed("lod/visibility", started);
+    } else if upload_completed {
+        let upload_started = Instant::now();
+        batches.finish_uploads();
+        profiler.record_elapsed("lod/terrain_batch_upload_activation", upload_started);
     }
 
-    let full_ready: HashSet<_> = full_detail
-        .iter()
-        .map(|coverage| (coverage.grid, coverage.quadrant))
-        .collect();
-    let mut available = HashMap::<(IVec2, u8), HashSet<LodTier>>::new();
-    let mut ready_patches = 0usize;
-    for (coverage, ready, _) in &mut lod_patches {
-        if let (Some(tier), Some(_)) = (coverage.tier, ready) {
-            available
-                .entry((coverage.grid, coverage.quadrant))
-                .or_default()
-                .insert(tier);
-            ready_patches += 1;
+    // Initial hierarchy transfer is a shared-budget commit AFTER current semantic masks have
+    // superseded any stale immutable IDs. CPU preparation and transfer share one slot per frame.
+    let mut activated = false;
+    if let Some(budget) = budget.as_deref_mut() {
+        let mut state = streaming.p1();
+        if !state.terrain_batch_commit_used
+            && terrain_batch_budget_available(budget, config.max_commit_micros_per_frame)
+        {
+            let activation_started = Instant::now();
+            if batches.finalize_one(&mut state.replaced_source_quadrants) {
+                state.terrain_batch_commit_used = true;
+                state.terrain_batch_activated_chunks += 1;
+                budget.remaining -= 1;
+                budget.commits = budget.commits.saturating_add(1);
+                profiler.increment("lod/terrain_batch_chunks_activated", 1);
+                profiler.record_elapsed("lod/terrain_batch_activation", activation_started);
+                activated = true;
+            } else {
+                profiler.record_elapsed("lod/terrain_batch_gpu_poll", activation_started);
+            }
+            let pending_gpu = batches.pending_count();
+            let pending_cpu = state.terrain_batch_pending_cpu_chunks;
+            record_terrain_batch_progress(&mut state, &mut profiler, pending_cpu, pending_gpu);
         }
     }
-    let selected_tiers: HashMap<_, _> = available
-        .iter()
-        .map(|(&(grid, quadrant), candidates)| {
-            let distance = chebyshev_grid_distance(grid, camera_grid);
-            (
-                (grid, quadrant),
-                select_terrain_lod_tier(
-                    distance,
-                    full_ready.contains(&(grid, quadrant)),
-                    candidates,
-                    &config.terrain_lod,
-                ),
-            )
-        })
-        .collect();
-    let mut visible_patches = 0usize;
-    for (coverage, ready, mut visibility) in &mut lod_patches {
-        let selected = coverage.tier.is_some_and(|tier| {
-            ready.is_some()
-                && selected_tiers.get(&(coverage.grid, coverage.quadrant)) == Some(&Some(tier))
-        });
-        let next = if selected {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if selected {
-            visible_patches += 1;
-        }
-        if *visibility != next {
-            *visibility = next;
-        }
+    if refresh || submission_dirty || upload_completed || activated {
+        let inventory_started = Instant::now();
+        let (retained_quadrants, generated_batches, batched_quadrants, visible_batches) =
+            batches.counts();
+        profiler.set_gauge("lod/batched_terrain_quadrants", retained_quadrants as f64);
+        profiler.set_gauge("lod/resident_terrain_batches", generated_batches as f64);
+        profiler.set_gauge("lod/visible_terrain_batches", visible_batches as f64);
+        profiler.set_gauge(
+            "lod/batched_selected_triangles",
+            (batched_quadrants * TERRAIN_QUADRANT_INDEX_COUNT / 3) as f64,
+        );
+        profiler.record_elapsed("lod/terrain_batch_inventory", inventory_started);
     }
-    metrics.visible_lod_terrain_patches = visible_patches;
-    profiler.set_gauge("lod/ready_terrain_patches", ready_patches as f64);
-    profiler.set_gauge("lod/visible_terrain_patches", visible_patches as f64);
-    profiler.record_elapsed("lod/visibility", started);
 }
 
 fn fail_chunk(
@@ -967,15 +1190,15 @@ fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
 fn select_terrain_lod_tier(
     grid_distance: i32,
     full_detail_ready: bool,
-    available: &HashSet<LodTier>,
+    available: u8,
     distances: &TerrainLodDistances,
 ) -> Option<LodTier> {
     if full_detail_ready {
         return None;
     }
-    LodTier::ALL
-        .into_iter()
-        .find(|tier| grid_distance <= distances.reach_cells(*tier) && available.contains(tier))
+    LodTier::ALL.into_iter().find(|tier| {
+        grid_distance <= distances.reach_cells(*tier) && available & (*tier as u8) != 0
+    })
 }
 
 fn chebyshev_grid_distance(left: IVec2, right: IVec2) -> i32 {
@@ -1227,6 +1450,150 @@ mod tests {
         query_unload_radius(side_reach().reach_cells(tier))
     }
 
+    fn tier_mask(tiers: impl IntoIterator<Item = LodTier>) -> u8 {
+        tiers.into_iter().fold(0, |mask, tier| mask | tier as u8)
+    }
+
+    /// The pre-bitmask selection rule is the oracle for every legal ready set.
+    fn reference_tier_selection(
+        distance: i32,
+        full_ready: bool,
+        available: &HashSet<LodTier>,
+        distances: &TerrainLodDistances,
+    ) -> Option<LodTier> {
+        if full_ready {
+            None
+        } else {
+            LodTier::ALL
+                .into_iter()
+                .find(|tier| distance <= distances.reach_cells(*tier) && available.contains(tier))
+        }
+    }
+
+    #[test]
+    fn ready_tier_bitmask_matches_all_subsets_and_reach_boundaries() {
+        let configurations = [
+            side_reach(),
+            TerrainLodDistances::default(),
+            TerrainLodDistances {
+                block_level0_distance: 20.0 * CELL_SIZE,
+                block_level1_distance: 5.0 * CELL_SIZE,
+                block_maximum_distance: 10.0 * CELL_SIZE,
+                split_distance_mult: 1.0,
+            },
+        ];
+        for subset in 0u8..8 {
+            let reference: HashSet<_> = LodTier::ALL
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, tier)| (subset & (1 << index) != 0).then_some(tier))
+                .collect();
+            let available = tier_mask(reference.iter().copied());
+            assert_eq!(
+                available,
+                tier_mask(reference.iter().copied().chain(reference.iter().copied())),
+                "duplicate source coverage must not change the ready set"
+            );
+            for distances in &configurations {
+                let mut boundaries = vec![0, i32::MAX];
+                for tier in LodTier::ALL {
+                    let reach = distances.reach_cells(tier);
+                    boundaries.extend([reach.saturating_sub(1), reach, reach.saturating_add(1)]);
+                }
+                for distance in boundaries {
+                    for full_ready in [false, true] {
+                        assert_eq!(
+                            select_terrain_lod_tier(distance, full_ready, available, distances),
+                            reference_tier_selection(distance, full_ready, &reference, distances),
+                            "subset {subset:03b}, distance {distance}, full ready {full_ready}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ready_tier_bitmask_preserves_negative_rebased_quadrant_coverage() {
+        let distances = side_reach();
+        let center = IVec2::new(-32, -16);
+        for subset in 0u8..8 {
+            let reference: HashSet<_> = LodTier::ALL
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, tier)| (subset & (1 << index) != 0).then_some(tier))
+                .collect();
+            let mut world = World::new();
+            world.insert_resource(EngineConfig {
+                terrain_lod: distances,
+                ..default()
+            });
+            world.insert_resource(RenderOrigin(center));
+            world.insert_resource(StreamingMetrics::default());
+            world.insert_resource(ProfilingState::default());
+            world.insert_resource(LodStreaming::default());
+            world.spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ));
+            let mut patches = Vec::new();
+            let mut expected_visible = 0;
+            for (index, distance) in [0, 4, 5, 8, 9, 16, 17].into_iter().enumerate() {
+                let grid = center + IVec2::new(distance, 0);
+                let quadrant = (index % 4) as u8;
+                let full_ready = index % 2 == 0;
+                if full_ready {
+                    world.spawn((
+                        super::super::TerrainPatch,
+                        TerrainCoverage {
+                            grid,
+                            quadrant,
+                            tier: None,
+                        },
+                        TerrainSurfaceReady,
+                    ));
+                }
+                let expected =
+                    reference_tier_selection(distance, full_ready, &reference, &distances);
+                expected_visible += usize::from(expected.is_some());
+                for tier in LodTier::ALL {
+                    let mut entity = world.spawn((
+                        TerrainCoverage {
+                            grid,
+                            quadrant,
+                            tier: Some(tier),
+                        },
+                        Visibility::Inherited,
+                    ));
+                    if reference.contains(&tier) {
+                        entity.insert(TerrainSurfaceReady);
+                    }
+                    patches.push((entity.id(), expected == Some(tier)));
+                }
+            }
+            world
+                .run_system_once(update_terrain_lod_visibility)
+                .unwrap();
+            for (entity, selected) in patches {
+                assert_eq!(
+                    *world.get::<Visibility>(entity).unwrap(),
+                    if selected {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    },
+                    "subset {subset:03b} changed rebased negative-grid coverage"
+                );
+            }
+            assert_eq!(
+                world
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                expected_visible
+            );
+        }
+    }
+
     /// `SkyrimPrefs.ini` distances move each tier's reach, not the chunk sizes.
     /// The defaults are Skyrim's own, so level 4 reaches 12 cells, not 4.
     #[test]
@@ -1238,23 +1605,20 @@ mod tests {
         );
         let short = side_reach();
         assert_eq!(LodTier::ALL.map(|tier| short.reach_cells(tier)), [4, 8, 16]);
-        let available = HashSet::from(LodTier::ALL);
+        let available = tier_mask(LodTier::ALL);
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &skyrim),
+            select_terrain_lod_tier(12, false, available, &skyrim),
             Some(LodTier::Tier4)
         );
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &short),
+            select_terrain_lod_tier(12, false, available, &short),
             Some(LodTier::Tier16)
         );
         assert_eq!(
-            select_terrain_lod_tier(91, false, &available, &skyrim),
+            select_terrain_lod_tier(91, false, available, &skyrim),
             Some(LodTier::Tier16)
         );
-        assert_eq!(
-            select_terrain_lod_tier(92, false, &available, &skyrim),
-            None
-        );
+        assert_eq!(select_terrain_lod_tier(92, false, available, &skyrim), None);
         assert_eq!(query_unload_radius(skyrim.reach_cells(LodTier::Tier4)), 14);
         assert!(lod_camera_far(skyrim.max_reach_cells()) > lod_camera_far(16));
         let unbounded = TerrainLodDistances {
@@ -1599,37 +1963,31 @@ mod tests {
     #[test]
     fn tier_handoff_is_per_quadrant_and_falls_back_to_ready_coarser_data() {
         let defaults = side_reach();
-        let available = HashSet::from([LodTier::Tier4, LodTier::Tier8, LodTier::Tier16]);
+        let available = tier_mask(LodTier::ALL);
         assert_eq!(
-            select_terrain_lod_tier(2, false, &available, &defaults),
+            select_terrain_lod_tier(2, false, available, &defaults),
             Some(LodTier::Tier4)
         );
         assert_eq!(
-            select_terrain_lod_tier(6, false, &available, &defaults),
+            select_terrain_lod_tier(6, false, available, &defaults),
             Some(LodTier::Tier8)
         );
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &defaults),
+            select_terrain_lod_tier(12, false, available, &defaults),
             Some(LodTier::Tier16)
         );
-        assert_eq!(
-            select_terrain_lod_tier(2, true, &available, &defaults),
-            None
-        );
+        assert_eq!(select_terrain_lod_tier(2, true, available, &defaults), None);
 
-        let coarse_only = HashSet::from([LodTier::Tier16]);
+        let coarse_only = tier_mask([LodTier::Tier16]);
         assert_eq!(
-            select_terrain_lod_tier(2, false, &coarse_only, &defaults),
+            select_terrain_lod_tier(2, false, coarse_only, &defaults),
             Some(LodTier::Tier16)
         );
         assert_eq!(
-            select_terrain_lod_tier(17, false, &coarse_only, &defaults),
+            select_terrain_lod_tier(17, false, coarse_only, &defaults),
             None
         );
-        assert_eq!(
-            select_terrain_lod_tier(2, false, &HashSet::new(), &defaults),
-            None
-        );
+        assert_eq!(select_terrain_lod_tier(2, false, 0, &defaults), None);
     }
 
     #[test]

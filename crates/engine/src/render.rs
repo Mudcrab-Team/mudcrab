@@ -772,7 +772,9 @@ fn update_water_reflection_camera(
     // Keep both views in the same domain, including explicit diagnostic exposure changes.
     let ev100 = exposure.map_or(DEFAULT_SCENE_EV100, |value| value.ev100);
     if let Some(mut reflection_exposure) = reflection_exposure {
-        reflection_exposure.ev100 = ev100;
+        if reflection_exposure.ev100 != ev100 {
+            reflection_exposure.ev100 = ev100;
+        }
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
     }
@@ -796,13 +798,17 @@ fn update_water_reflection_camera(
         );
     }
     let Some(surface) = mirror_surface else {
-        camera.is_active = false;
+        if camera.is_active {
+            camera.is_active = false;
+        }
         return;
     };
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
-    *reflection = reflected_camera_transform(main, surface.translation().y);
-    camera.is_active = surface_in_view;
+    reflection.set_if_neq(reflected_camera_transform(main, surface.translation().y));
+    if camera.is_active != surface_in_view {
+        camera.is_active = surface_in_view;
+    }
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
 
@@ -1025,6 +1031,63 @@ mod tests {
                 .ev100,
             9.7
         );
+    }
+
+    #[test]
+    fn stationary_reflection_does_not_mark_camera_state_changed() {
+        #[derive(Resource, Default)]
+        struct Changes {
+            transform: bool,
+            camera: bool,
+            exposure: bool,
+        }
+
+        type ReflectionChanges<'w> = (Ref<'w, Transform>, Ref<'w, Camera>, Ref<'w, Exposure>);
+
+        fn observe_changes(
+            reflection: Query<ReflectionChanges<'_>, With<WaterReflectionCamera>>,
+            mut changes: ResMut<Changes>,
+        ) {
+            let (transform, camera, exposure) = reflection.single().unwrap();
+            *changes = Changes {
+                transform: transform.is_changed(),
+                camera: camera.is_changed(),
+                exposure: exposure.is_changed(),
+            };
+        }
+
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness
+            .app
+            .init_resource::<Changes>()
+            .add_systems(Last, observe_changes);
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), Vec3::new(200.0, 0.0, 200.0));
+        assert!(harness.frame().active);
+        assert!(harness.frame().active);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
+
+        harness.aim(Transform::from_xyz(0.0, 160.0, 0.0));
+        let frame = harness.frame();
+        assert_eq!(frame.transform.translation.y, -80.0);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(changes.transform && !changes.camera && !changes.exposure);
+
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .insert(Exposure { ev100: 7.0 });
+        harness.frame();
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && changes.exposure);
+
+        harness.aim(Transform::from_xyz(0.0, 160.0, 0.0).looking_to(Vec3::Z, Vec3::Y));
+        assert!(!harness.frame().active);
+        assert!(harness.app.world().resource::<Changes>().camera);
+        assert!(!harness.frame().active);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
     }
 
     #[test]

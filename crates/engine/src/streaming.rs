@@ -90,11 +90,12 @@ impl Plugin for StreamingPlugin {
                     collect_cells,
                     lod::collect_lod_chunks,
                     arm_pending_models,
-                    finish_streaming_commit_budget,
                     track_asset_readiness,
                     track_surface_readiness,
                     lod::track_lod_readiness,
+                    lod::batch_ready_lod_chunks,
                     lod::update_terrain_lod_visibility,
+                    finish_streaming_commit_budget,
                     update_render_origin,
                     validate_streaming_lifecycle,
                 )
