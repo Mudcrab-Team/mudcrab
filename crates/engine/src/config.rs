@@ -900,10 +900,9 @@ mod tests {
     /// it instead of keeping a second list of option names in step by hand.
     const CONFIG_SOURCE: &str = include_str!("config.rs");
 
-    /// Cargo, Git, `world-inspect`, dynamic-loader and audit-tool flags the
-    /// scripts also spell on a command line. Every other `--flag` in those
-    /// scripts goes to the engine. None of the audit tools starts the engine,
-    /// so their own options must not be mistaken for engine options.
+    /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
+    /// audit tools and launch wrappers. Wrappers also contain engine invocations,
+    /// so every other scanned `--flag` must be accepted by the engine parser.
     const NON_ENGINE_FLAGS: &[&str] = &[
         "--all",                 // cargo fmt
         "--all-targets",         // cargo test, cargo clippy
@@ -915,7 +914,7 @@ mod tests {
         "--ignore-submodules",   // git diff
         "--quiet",               // git diff
         "--short",               // git rev-parse
-        "--output",              // world-inspect
+        "--output",              // world-inspect, repeat-terrain-startup.py
         "--radius",              // world-inspect
         "--library-path",        // ld-linux
         "--meshes",              // audit-collision.py
@@ -937,6 +936,14 @@ mod tests {
         "--io-jobs",             // converter
         "--binary",              // git diff
         "--porcelain",           // git status
+        "--engine",              // repeat-terrain-startup.py
+        "--repeats",             // repeat-terrain-startup.py
+        "--upload-budgets",      // repeat-terrain-startup.py
+        "--warmup",              // repeat-terrain-startup.py
+        "--duration",            // repeat-terrain-startup.py
+        "--timeout",             // repeat-terrain-startup.py
+        "--launch-prefix",       // repeat-terrain-startup.py
+        "--commit",              // repeat-terrain-startup.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
