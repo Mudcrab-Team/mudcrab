@@ -139,6 +139,7 @@ fn sample_streaming_trace(
     mut previous_camera: Local<Option<PreviousCamera>>,
     mut pending_ids: Local<Vec<bevy::asset::AssetId<WorldAsset>>>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<crate::streaming::runtime::StreamingRuntime>>,
 ) {
     let camera = match cameras.single() {
         Ok((entity, transform)) => Some(observe_camera(
@@ -179,6 +180,9 @@ fn sample_streaming_trace(
             &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
         ),
         gpu: bridge.as_ref().and_then(|bridge| bridge.latest()),
+        adaptive: runtime
+            .as_ref()
+            .and_then(|runtime| runtime.snapshot.clone()),
     };
     if let Some(trace) = profiler.trace.as_mut() {
         if let Some(server) = server {

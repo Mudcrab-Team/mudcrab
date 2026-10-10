@@ -216,6 +216,23 @@ pub(super) fn mark_lod_world_instance_ready(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn scene_pending(world: &World, entity: Entity) -> bool {
+    world.get::<PendingLodChunk>(entity).is_some()
+}
+
+#[cfg(test)]
+pub(super) fn pending_fixture(metadata: LodChunkMetadata) -> PendingLodChunk {
+    PendingLodChunk {
+        metadata,
+        asset: None,
+        scene_spawned: false,
+        hash_task: None,
+        hash_verified: false,
+        started: Instant::now(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_lod_chunks(
     mut commands: Commands,
     config: Res<EngineConfig>,
@@ -226,6 +243,7 @@ pub(super) fn plan_lod_chunks(
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
 ) {
     let started = Instant::now();
     let Ok(camera) = camera.single() else {
@@ -262,6 +280,12 @@ pub(super) fn plan_lod_chunks(
     }
     let generation = streaming.generation;
     for tier in LodTier::ALL {
+        if runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.cell_requests_allowed())
+        {
+            break;
+        }
         if !streaming.query_ready(tier, Instant::now()) {
             continue;
         }
@@ -317,7 +341,12 @@ pub(super) fn plan_lod_chunks(
     enqueue_due_lod_retries(&mut streaming, Instant::now());
     budget.reserve_for_lod(
         streaming.has_queued_chunks(),
-        config.max_cell_commits_per_frame,
+        runtime
+            .as_ref()
+            .and_then(|runtime| runtime.decision)
+            .map_or(config.max_cell_commits_per_frame, |decision| {
+                decision.budgets.max_cell_commits
+            }),
     );
     update_counts(&streaming, &mut metrics, &mut profiler);
     profiler.record_elapsed("lod/plan", started);
@@ -336,6 +365,7 @@ pub(super) fn collect_lod_chunks(
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
 ) {
     let started = Instant::now();
     for _ in 0..LOD_RESPONSE_SCAN_LIMIT {
@@ -410,6 +440,9 @@ pub(super) fn collect_lod_chunks(
             });
     }
     while budget.remaining > 0 {
+        if budget.elapsed_limit_reached(runtime.as_deref()) {
+            break;
+        }
         let Some((generation, metadata, retry_attempt)) = streaming.pending_chunks.pop_front()
         else {
             break;

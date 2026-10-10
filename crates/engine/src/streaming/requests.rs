@@ -4,6 +4,7 @@ use super::{
     CellStatus, PendingModel, RenderOrigin, StreamingWorld,
     admission::{SceneAdmission, SceneDemand, SceneJobStatus, SceneKey},
     priority::{self, DemandPriority, PriorityView},
+    runtime::StreamingRuntime,
 };
 use crate::{
     config::EngineConfig,
@@ -21,7 +22,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, time::Instant};
 
 pub(super) fn enabled(config: &EngineConfig) -> bool {
-    config.prioritize_streaming || config.max_scene_loads != 0
+    config.prioritize_streaming
+        || config.max_scene_loads != 0
+        || config.streaming_controls_enabled()
 }
 
 /// Remains on the placement until its owner despawns, so resource ownership includes
@@ -43,7 +46,7 @@ pub(super) struct SceneRequest {
 }
 
 #[derive(Component)]
-struct SceneRequestKey(SceneKey);
+pub(super) struct SceneRequestKey(pub SceneKey);
 
 #[derive(Resource)]
 pub(super) struct SceneSchedulingState {
@@ -51,6 +54,8 @@ pub(super) struct SceneSchedulingState {
     reconciled_subscribers: std::collections::HashSet<Entity>,
     pub dispatch_choices: u64,
     pub activation_choices: u64,
+    reservation_retries: BTreeMap<SceneKey, u64>,
+    reservation_attempts: u64,
 }
 
 impl FromWorld for SceneSchedulingState {
@@ -76,6 +81,8 @@ impl FromWorld for SceneSchedulingState {
             ),
             dispatch_choices: 0,
             activation_choices: 0,
+            reservation_retries: default(),
+            reservation_attempts: 0,
         }
     }
 }
@@ -138,8 +145,16 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         return;
     }
     let started = Instant::now();
-    let cap = config.max_scene_loads;
+    let configured_cap = config.max_scene_loads;
     let prioritize = config.prioritize_streaming;
+    let physics = config.interactive_world_physics();
+    let control = world
+        .get_resource::<StreamingRuntime>()
+        .and_then(|runtime| runtime.decision);
+    let cap = control.map_or(configured_cap, |decision| decision.budgets.max_scene_jobs);
+    let ordinary_intake = control.is_none_or(|decision| decision.allow_scene_intake && cap != 0);
+    let mandatory_jobs = control.map_or(0, |decision| decision.mandatory_scene_jobs);
+    let admission_micros = control.map(|decision| decision.budgets.max_admission_micros);
     let pack_identity = world
         .resource::<SceneSchedulingState>()
         .pack_identity
@@ -211,7 +226,7 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         }
         world.entity_mut(entity).insert(SceneRequestKey(key));
     }
-    let view = if prioritize {
+    let view = if prioritize || mandatory_jobs != 0 {
         priority_view(world)
     } else {
         None
@@ -234,11 +249,16 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         })
         .collect();
     let mut priorities: BTreeMap<SceneKey, Vec<DemandPriority>> = BTreeMap::new();
+    let mut placement_costs: BTreeMap<SceneKey, Vec<(Entity, bool)>> = BTreeMap::new();
     for demand in &demands {
         let request = world.get::<SceneRequest>(demand.subscriber).unwrap();
         if request.handle.is_some() {
             continue;
         }
+        placement_costs
+            .entry(demand.key.clone())
+            .or_default()
+            .push((demand.subscriber, physics && request.collision_candidate));
         let priority = DemandPriority::new(
             view,
             request.center,
@@ -255,6 +275,14 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
     world
         .resource_mut::<SceneAdmission>()
         .reconcile_demands(demands.iter().cloned());
+    // These handles are already owned by the loader. Adoption accounts for them
+    // even when a newly enabled reservation cannot fit the ordinary allowance.
+    let tracked = world.resource::<SceneAdmission>().tracked_jobs();
+    if let Some(mut runtime) = world.get_resource_mut::<StreamingRuntime>() {
+        for (key, id) in tracked {
+            runtime.adopt_scene(&key, id);
+        }
+    }
     let jobs = world.resource::<SceneAdmission>().jobs();
     for (key, handle) in jobs {
         let status = job_status(&server, &handle);
@@ -287,38 +315,129 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
             priority::shared_scene_priority(priorities.remove(&key)?)
                 .map(|priority| (key, priority))
         })
+        .filter(|(_, rank)| {
+            ordinary_intake || (mandatory_jobs != 0 && rank.is_protected_collision())
+        })
         .collect();
     let mut choices = world.resource::<SceneSchedulingState>().dispatch_choices;
-    let slots = world
-        .resource::<SceneAdmission>()
-        .available_slots(cap)
-        .min(queued.len());
-    let selected: Vec<_> = if prioritize {
-        priority::ordered_choices(
-            &queued.iter().map(|(_, rank)| *rank).collect::<Vec<_>>(),
-            choices,
-            slots,
-        )
+    let slots = if ordinary_intake {
+        // Controlled zero means paused; legacy zero remains unlimited only when
+        // no controller decision exists.
+        world.resource::<SceneAdmission>().available_slots(cap)
     } else {
-        // queued_keys already orders by subscriber age, with deterministic key ties.
-        (0..slots).collect()
-    };
-    for index in selected {
-        let key = &queued[index].0;
-        let handle = server.load(GltfAssetLabel::Scene(0).from_asset(key.canonical_path.clone()));
-        if world
-            .resource_mut::<SceneAdmission>()
-            .dispatch(key, handle.clone())
+        let hard_cap = if configured_cap == 0 {
+            128
+        } else {
+            configured_cap
+        };
+        mandatory_jobs
+            .min(hard_cap.saturating_sub(world.resource::<SceneAdmission>().active_jobs()))
+    }
+    .min(queued.len());
+    let mut normal: Vec<_> = (0..queued.len()).collect();
+    let mut aged = normal.clone();
+    let mut retries = std::mem::take(
+        &mut world
+            .resource_mut::<SceneSchedulingState>()
+            .reservation_retries,
+    );
+    let queued_keys: std::collections::HashSet<_> = queued.iter().map(|(key, _)| key).collect();
+    retries.retain(|key, _| queued_keys.contains(key));
+    // Denied candidates rotate behind work not yet attempted, preventing an
+    // unaffordable prefix from consuming every bounded scan forever.
+    normal.sort_unstable_by(|&left, &right| {
+        retries
+            .get(&queued[left].0)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&retries.get(&queued[right].0).copied().unwrap_or(0))
+            .then_with(|| {
+                if prioritize {
+                    queued[left].1.compare(&queued[right].1)
+                } else {
+                    left.cmp(&right)
+                }
+            })
+            .then_with(|| left.cmp(&right))
+    });
+    aged.sort_unstable_by(|&left, &right| {
+        retries
+            .get(&queued[left].0)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&retries.get(&queued[right].0).copied().unwrap_or(0))
+            .then_with(|| queued[left].1.compare_age(&queued[right].1))
+            .then_with(|| left.cmp(&right))
+    });
+    let mut normal_cursor = 0;
+    let mut aged_cursor = 0;
+    let mut used = vec![false; queued.len()];
+    let mut attempts = 0;
+    let mut dispatched = 0;
+    let mut retry_sequence = world
+        .resource::<SceneSchedulingState>()
+        .reservation_attempts;
+    while dispatched < slots && attempts < queued.len() {
+        let (order, cursor) = if prioritize
+            && choices % priority::AGED_SERVICE_INTERVAL == priority::AGED_SERVICE_INTERVAL - 1
         {
-            choices = choices.saturating_add(1);
-            let mut profiler = world.resource_mut::<ProfilingState>();
-            profiler.observe_scene(handle.id(), &server);
-            profiler.event(&key.canonical_path, "scene_dispatched", None);
+            (&aged, &mut aged_cursor)
+        } else {
+            (&normal, &mut normal_cursor)
+        };
+        while *cursor < order.len() && used[order[*cursor]] {
+            *cursor += 1;
+        }
+        if *cursor == order.len() {
+            break;
+        }
+        let index = order[*cursor];
+        *cursor += 1;
+        used[index] = true;
+        attempts += 1;
+        let key = &queued[index].0;
+        let reserved = world
+            .get_resource_mut::<StreamingRuntime>()
+            .is_none_or(|mut runtime| {
+                runtime.reserve_scene_with_placements(key, &placement_costs[key])
+            });
+        if !reserved {
+            retry_sequence = retry_sequence.saturating_add(1);
+            retries.insert(key.clone(), retry_sequence);
+        } else {
+            let handle =
+                server.load(GltfAssetLabel::Scene(0).from_asset(key.canonical_path.clone()));
+            if let Some(mut runtime) = world.get_resource_mut::<StreamingRuntime>() {
+                runtime.bind_scene(key, handle.id());
+            }
+            if world
+                .resource_mut::<SceneAdmission>()
+                .dispatch(key, handle.clone())
+            {
+                dispatched += 1;
+                retries.remove(key);
+                choices = choices.saturating_add(1);
+                let mut profiler = world.resource_mut::<ProfilingState>();
+                profiler.observe_scene(handle.id(), &server);
+                profiler.event(&key.canonical_path, "scene_dispatched", None);
+            }
+        }
+        if control.is_some()
+            && (attempts >= 128
+                || admission_micros
+                    .is_some_and(|micros| started.elapsed().as_micros() >= u128::from(micros)))
+        {
+            // At least one candidate gets a chance after reconciliation. A
+            // refused reservation is never converted into a loader request.
+            break;
         }
     }
-    world
-        .resource_mut::<SceneSchedulingState>()
-        .dispatch_choices = choices;
+    {
+        let mut scheduling = world.resource_mut::<SceneSchedulingState>();
+        scheduling.dispatch_choices = choices;
+        scheduling.reservation_retries = retries;
+        scheduling.reservation_attempts = retry_sequence;
+    }
     // Fan out the same strong handle, including failure, without a new AssetServer::load.
     for demand in demands {
         if world
@@ -332,6 +451,19 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         let Some(handle) = world.resource::<SceneAdmission>().handle(&demand.key) else {
             continue;
         };
+        let collision = physics
+            && world
+                .get::<SceneRequest>(demand.subscriber)
+                .unwrap()
+                .collision_candidate;
+        if !world
+            .get_resource_mut::<StreamingRuntime>()
+            .is_none_or(|mut runtime| {
+                runtime.reserve_scene_placement(&demand.key, demand.subscriber, collision)
+            })
+        {
+            continue;
+        }
         let mut request = world.get_mut::<SceneRequest>(demand.subscriber).unwrap();
         request.handle = Some(handle.clone());
         let sequence = request.sequence;
@@ -372,7 +504,11 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         "admission/cleanup_waiting_jobs",
         cleanup_waiting.len() as f64,
     );
-    profiler.set_gauge("admission/configured_job_limit", cap as f64);
+    profiler.set_gauge("admission/configured_job_limit", configured_cap as f64);
+    if control.is_some() {
+        profiler.set_gauge("admission/effective_job_limit", cap as f64);
+        profiler.set_gauge("admission/reservation_attempts_this_frame", attempts as f64);
+    }
     profiler.record_elapsed("streaming/admit_scenes", started);
 }
 
@@ -393,6 +529,24 @@ mod tests {
         gate: Arc<AtomicBool>,
         dependency: bool,
     }
+
+    struct TestLoaderGate(Arc<AtomicBool>);
+
+    impl std::ops::Deref for TestLoaderGate {
+        type Target = AtomicBool;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for TestLoaderGate {
+        fn drop(&mut self) {
+            // A fixture must not leave a closed gate consuming the shared IO
+            // pool after its App is dropped or an assertion unwinds.
+            self.0.store(true, Ordering::Release);
+        }
+    }
     impl AssetLoader for TestSceneLoader {
         type Asset = WorldAsset;
         type Settings = ();
@@ -408,7 +562,7 @@ mod tests {
                 if Instant::now() > deadline {
                     return Err(std::io::Error::other("test gate timed out"));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                bevy::tasks::futures_lite::future::yield_now().await;
             }
             let mut labeled = context.begin_labeled_asset();
             let mut scene = World::new();
@@ -450,7 +604,7 @@ mod tests {
     fn fixture(
         gated: bool,
         dependency: bool,
-    ) -> (App, tempfile::TempDir, Arc<AtomicBool>, Arc<AtomicBool>) {
+    ) -> (App, tempfile::TempDir, TestLoaderGate, Arc<AtomicBool>) {
         let dir = tempfile::tempdir().unwrap();
         for name in ["a.glb", "b.glb", "dependency.mesh"] {
             std::fs::write(dir.path().join(name), []).unwrap();
@@ -485,7 +639,7 @@ mod tests {
         .init_resource::<SceneSchedulingState>()
         .init_resource::<ProfilingState>()
         .add_systems(Update, dispatch_scene_requests);
-        (app, dir, gate, broken)
+        (app, dir, TestLoaderGate(gate), broken)
     }
 
     fn spawn_request(app: &mut App, path: &str, sequence: u64) -> Entity {
@@ -517,6 +671,464 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         panic!("asset fixture did not settle within bounded updates");
+    }
+
+    fn attach_control(app: &mut App, paused: bool, collision: bool, memory_mib: usize) {
+        use super::super::control::{
+            ControllerInput, ControllerSettings, ControllerState, DownstreamBacklog, StageBudgets,
+        };
+        {
+            let mut config = app.world_mut().resource_mut::<EngineConfig>();
+            config.max_streaming_backlog = 256;
+            config.streaming_memory_mib = memory_mib;
+        }
+        app.init_resource::<StreamingRuntime>();
+        let decision = ControllerState::default().tick(
+            &ControllerSettings::default(),
+            ControllerInput {
+                delta_seconds: 0.05,
+                frame_ms: Some(8.0),
+                gpu_frame_ms: None,
+                streaming_work_ms: 0.5,
+                camera_moving: false,
+                camera_turning: false,
+                camera_discontinuity: false,
+                useful_nearby_ready: false,
+                demand_settled: false,
+                backlog: DownstreamBacklog {
+                    ready_placements: if paused { 256 } else { 0 },
+                    ..default()
+                },
+                active_scene_jobs: app.world().resource::<SceneAdmission>().active_jobs(),
+                hard_limits: StageBudgets {
+                    max_scene_jobs: 1,
+                    ..default()
+                },
+                memory_blocked: false,
+                mandatory_collision_pending: collision,
+            },
+        );
+        app.world_mut().resource_mut::<StreamingRuntime>().decision = Some(decision);
+    }
+
+    fn write_cost_catalog(app: &mut App, dir: &tempfile::TempDir, scenes: &[(&str, u64, u64)]) {
+        use shared::streaming_costs::{
+            ByteEstimate, ResourceCost, ResourceKind, SceneCost, StreamingCostCatalog,
+        };
+        let manifest = b"{}";
+        std::fs::write(dir.path().join("conversion-manifest.json"), manifest).unwrap();
+        let mut catalog = StreamingCostCatalog::empty(format!("{:x}", Sha256::digest(manifest)));
+        for &(path, geometry_bytes, placement_bytes) in scenes {
+            catalog.resources.insert(
+                path.into(),
+                ResourceCost::new(
+                    ResourceKind::SceneGeometry,
+                    ByteEstimate::conservative(geometry_bytes, 0, "fixture geometry"),
+                ),
+            );
+            catalog.scenes.insert(
+                path.into(),
+                SceneCost {
+                    resource_keys: vec![path.into()],
+                    per_placement_collision: ByteEstimate::conservative(
+                        0,
+                        0,
+                        "fixture collision absent",
+                    ),
+                    per_placement_ecs: ByteEstimate::conservative(
+                        placement_bytes,
+                        0,
+                        "fixture placement",
+                    ),
+                },
+            );
+        }
+        std::fs::write(
+            dir.path().join("streaming-costs.json"),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        let scheduling = SceneSchedulingState::from_world(app.world_mut());
+        app.insert_resource(scheduling);
+    }
+
+    #[test]
+    fn scene_that_fits_without_placement_space_never_starts_loading() {
+        let (mut app, dir, _, _) = fixture(true, false);
+        write_cost_catalog(&mut app, &dir, &[("a.glb", 1024 * 1024, 1024)]);
+        let request = spawn_request(&mut app, "a.glb", 1);
+        attach_control(&mut app, false, false, 1);
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(request)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            0
+        );
+        assert!(
+            app.world()
+                .resource::<AssetServer>()
+                .get_path_ids("a.glb")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn shared_scene_reserves_the_cost_of_every_placement_before_loading() {
+        let (mut app, dir, _, _) = fixture(true, false);
+        write_cost_catalog(&mut app, &dir, &[("a.glb", 512 * 1024, 256 * 1024)]);
+        let first = spawn_request(&mut app, "a.glb", 1);
+        let second = spawn_request(&mut app, "a.glb", 2);
+        let third = spawn_request(&mut app, "a.glb", 3);
+        attach_control(&mut app, false, false, 1);
+        app.update();
+        for entity in [first, second, third] {
+            assert!(
+                app.world()
+                    .get::<SceneRequest>(entity)
+                    .unwrap()
+                    .handle
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            0
+        );
+        app.world_mut().despawn(third);
+        app.update();
+        let first_id = app
+            .world()
+            .get::<SceneRequest>(first)
+            .unwrap()
+            .handle
+            .as_ref()
+            .unwrap()
+            .id();
+        assert_eq!(
+            app.world()
+                .get::<SceneRequest>(second)
+                .unwrap()
+                .handle
+                .as_ref()
+                .unwrap()
+                .id(),
+            first_id
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            1
+        );
+    }
+
+    #[test]
+    fn late_subscriber_without_placement_space_does_not_receive_a_shared_handle() {
+        let (mut app, dir, _, _) = fixture(true, false);
+        write_cost_catalog(&mut app, &dir, &[("a.glb", 768 * 1024, 256 * 1024)]);
+        let first = spawn_request(&mut app, "a.glb", 1);
+        attach_control(&mut app, false, false, 1);
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(first)
+                .unwrap()
+                .handle
+                .is_some()
+        );
+        let late = spawn_request(&mut app, "a.glb", 2);
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(late)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert!(app.world().get::<PendingModel>(late).is_none());
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            1
+        );
+    }
+
+    #[test]
+    fn paused_zero_never_becomes_unlimited_loader_intake() {
+        let (mut app, _dir, _, _) = fixture(true, false);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .max_scene_loads = 0;
+        let first = spawn_request(&mut app, "a.glb", 1);
+        let second = spawn_request(&mut app, "b.glb", 2);
+        attach_control(&mut app, true, false, 0);
+        app.update();
+        let stats = app.world().resource::<SceneAdmission>().stats();
+        assert_eq!(stats.queued_jobs, 2);
+        assert_eq!(stats.active_jobs, 0);
+        assert_eq!(stats.dispatched_total, 0);
+        for entity in [first, second] {
+            assert!(
+                app.world()
+                    .get::<SceneRequest>(entity)
+                    .unwrap()
+                    .handle
+                    .is_none()
+            );
+        }
+        assert!(
+            app.world()
+                .resource::<AssetServer>()
+                .get_path_ids("a.glb")
+                .is_empty()
+        );
+        assert!(
+            app.world()
+                .resource::<AssetServer>()
+                .get_path_ids("b.glb")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn controlled_finite_cap_overrides_a_legacy_unlimited_configuration() {
+        let (mut app, _dir, _, _) = fixture(true, false);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .max_scene_loads = 0;
+        let first = spawn_request(&mut app, "a.glb", 1);
+        let second = spawn_request(&mut app, "b.glb", 2);
+        attach_control(&mut app, false, false, 0);
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(first)
+                .unwrap()
+                .handle
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<SceneRequest>(second)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert_eq!(app.world().resource::<SceneAdmission>().active_jobs(), 1);
+    }
+
+    #[test]
+    fn paused_intake_still_polls_adopted_orphan_jobs_until_completion() {
+        let (mut app, _dir, gate, _) = fixture(true, false);
+        let first = spawn_request(&mut app, "a.glb", 1);
+        let second = spawn_request(&mut app, "b.glb", 2);
+        app.update();
+        assert_eq!(app.world().resource::<SceneAdmission>().active_jobs(), 1);
+        attach_control(&mut app, true, false, 0);
+        app.world_mut().despawn(first);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .orphan_active_jobs,
+            1
+        );
+        gate.store(true, Ordering::Release);
+        pump_until(&mut app, |world| {
+            world.resource::<SceneAdmission>().active_jobs() == 0
+        });
+        assert!(
+            app.world()
+                .get::<SceneRequest>(second)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            1
+        );
+    }
+
+    #[test]
+    fn refused_memory_reservations_never_trigger_asset_loads_or_fairness_choices() {
+        let (mut app, _dir, _, _) = fixture(true, false);
+        let first = spawn_request(&mut app, "a.glb", 1);
+        attach_control(&mut app, false, false, 1);
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(first)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .resource::<AssetServer>()
+                .get_path_ids("a.glb")
+                .is_empty()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            0
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneSchedulingState>()
+                .dispatch_choices,
+            0
+        );
+    }
+
+    #[test]
+    fn paused_collision_service_loads_only_actual_nearby_collision_demand() {
+        let (mut app, _dir, _, _) = fixture(true, false);
+        app.world_mut()
+            .spawn((StreamingCamera, Transform::default()));
+        let ordinary = spawn_request(&mut app, "a.glb", 1);
+        let protected = spawn_request(&mut app, "b.glb", 2);
+        {
+            let mut request = app.world_mut().get_mut::<SceneRequest>(protected).unwrap();
+            request.collision_candidate = true;
+            // Behind the camera, but inside the collision protection distance.
+            request.center = DVec3::new(0.0, 0.0, 100.0);
+        }
+        attach_control(&mut app, true, true, 0);
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(ordinary)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<SceneRequest>(protected)
+                .unwrap()
+                .handle
+                .is_some()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneAdmission>()
+                .stats()
+                .dispatched_total,
+            1
+        );
+    }
+
+    #[test]
+    fn bounded_reservation_scan_rotates_past_unaffordable_jobs() {
+        use shared::streaming_costs::{
+            ByteEstimate, ResourceCost, ResourceKind, SceneCost, StreamingCostCatalog,
+        };
+        let (mut app, dir, _, _) = fixture(true, false);
+        let manifest = b"{}";
+        std::fs::write(dir.path().join("conversion-manifest.json"), manifest).unwrap();
+        let mut catalog = StreamingCostCatalog::empty(format!("{:x}", Sha256::digest(manifest)));
+        for (path, bytes) in [("a.glb", 2 * 1024 * 1024), ("b.glb", 1024)] {
+            catalog.resources.insert(
+                path.into(),
+                ResourceCost::new(
+                    ResourceKind::SceneGeometry,
+                    ByteEstimate::conservative(bytes, 0, "fixture allocation"),
+                ),
+            );
+            catalog.scenes.insert(
+                path.into(),
+                SceneCost {
+                    resource_keys: vec![path.into()],
+                    per_placement_collision: ByteEstimate::conservative(
+                        0,
+                        0,
+                        "fixture collision absent",
+                    ),
+                    per_placement_ecs: ByteEstimate::conservative(1024, 0, "fixture placement"),
+                },
+            );
+        }
+        std::fs::write(
+            dir.path().join("streaming-costs.json"),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        let expensive = spawn_request(&mut app, "a.glb", 1);
+        let affordable = spawn_request(&mut app, "b.glb", 2);
+        attach_control(&mut app, false, false, 1);
+        // A zero time allowance still lets one candidate attempt make progress.
+        app.world_mut()
+            .resource_mut::<StreamingRuntime>()
+            .decision
+            .as_mut()
+            .unwrap()
+            .budgets
+            .max_admission_micros = 0;
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(expensive)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<SceneRequest>(affordable)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        app.update();
+        assert!(
+            app.world()
+                .get::<SceneRequest>(expensive)
+                .unwrap()
+                .handle
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<SceneRequest>(affordable)
+                .unwrap()
+                .handle
+                .is_some()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<SceneSchedulingState>()
+                .dispatch_choices,
+            1
+        );
+        assert!(
+            app.world()
+                .resource::<AssetServer>()
+                .get_path_ids("a.glb")
+                .is_empty()
+        );
     }
 
     #[test]
