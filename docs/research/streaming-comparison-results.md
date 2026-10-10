@@ -90,7 +90,19 @@ Independent validation covered all 110,799 trace frames: matching binary/input i
 
 ## Reproduce and inspect
 
-The immutable native binary is `/private/tmp/mudcrab-streaming-comparison-build-20261010/engine`, SHA-256 `f79b1db0eb14e25155c9812759c705b03366cf822e4dd9a3281212de327227a7`. Its receipt records base commit `5ac1bc92b7018f8f627c1ff8c4d2d27a5e24d697`, source overlays and the native sampler patch. Raw logs, reports, full traces, RSS, host snapshots, the frozen protocol/runner and the preserved original manifest are in `/private/tmp/mudcrab-streaming-comparison-main-20261010`. A verified copy of the main and smoke artifacts, native build sources and binary, cost catalog and thermal-probe source is saved locally at `target/streaming-comparison/evidence-20261010.tar.gz`. The archive is ignored by Git; its SHA-256 is `9c0592b34fb0e17836de12dbc0b2bbaba107562d6d465eeaaa0058ba64dd9e59`. The report, selected CSV and interactive results are versioned separately.
+The measured native binary has SHA-256 `f79b1db0eb14e25155c9812759c705b03366cf822e4dd9a3281212de327227a7`. Its receipt records base commit `5ac1bc92b7018f8f627c1ff8c4d2d27a5e24d697`, source overlays and the native sampler patch. Raw logs, reports, full traces, RSS, host snapshots, the frozen protocol/runner and the preserved original manifest remain in `/private/tmp/mudcrab-streaming-comparison-main-20261010`. A verified copy of the main and smoke artifacts, native build sources and binary, cost catalog and thermal-probe source is saved locally at `target/streaming-comparison/evidence-20261010.tar.gz`. The archive is ignored by Git; its SHA-256 is `9c0592b34fb0e17836de12dbc0b2bbaba107562d6d465eeaaa0058ba64dd9e59`. The report, selected CSV and interactive results are versioned separately.
+
+Build cleanup removes the temporary compiler caches, staged app copies and `/private/tmp/mudcrab-streaming-comparison-build-20261010`; it preserves the installed app and evidence archive. To restore the measured binary, extract that archive member into its original directory. The retained run manifests use absolute paths. If the raw bundles, cost catalog or probe source are also absent, restore their corresponding members first.
+
+```sh
+tar -xzf target/streaming-comparison/evidence-20261010.tar.gz \
+  -C /private/tmp mudcrab-streaming-comparison-build-20261010
+
+swiftc /private/tmp/mudcrab-thermal-state.swift \
+  -o /private/tmp/mudcrab-thermal-state
+```
+
+The archive includes the thermal probe's source, not its compiled executable. The results describe the archived binary; subsequent parent integrations and documentation changes are checked separately and were not benchmarked again.
 
 To repeat on this Mac, use a new output directory and the matching pack/catalog:
 
