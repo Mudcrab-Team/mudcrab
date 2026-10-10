@@ -24,6 +24,9 @@
 //! `crates/converter/tests/snapshots/` and rename it to `*.snap` once it holds
 //! what the converter is meant to produce.
 
+mod common;
+
+use common::cpu_lod_config;
 use dummy_content::{esm, layout};
 use insta::assert_json_snapshot;
 use rusqlite::{Connection, types::Value as SqlValue};
@@ -152,7 +155,7 @@ async fn convert_generated_data() -> (tempfile::TempDir, PathBuf, converter::Pip
     layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
 
     let output = directory.path().join("modern");
-    let config = converter::PipelineConfig::new(&data, &output);
+    let config = cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = converter::AssetPipeline::run_async(config, tx)
@@ -259,6 +262,7 @@ async fn pipeline_report_matches_snapshot() {
         ".archive_timings.*.cache_link_seconds" => "[seconds]",
         ".archive_timings.*.sync_seconds" => "[seconds]",
         ".archive_timings.*.sync_worker_seconds" => "[seconds]",
+        ".archive_timings.*.checkpoint_sync_worker_seconds" => "[seconds]",
         // The identity includes the executable and platform. Keep its shape
         // checked above while retaining the cache outcome and work counters.
         ".database_cache_key" => "[database_cache_key]",

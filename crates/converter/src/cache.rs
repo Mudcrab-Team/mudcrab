@@ -6,6 +6,8 @@ use std::{
     fs,
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex},
+    time::SystemTime,
 };
 
 // Combined native-BC, lighting, LOD, TXST and XESP producer. Earlier numeric identities
@@ -178,11 +180,14 @@ pub enum IngestionSelection {
     All,
     /// Runtime mesh/texture/script inputs, LOD settings, and English string banks.
     RuntimeEnglishV1,
+    ConverterInputsV1,
 }
 
 impl IngestionSelection {
     pub fn can_satisfy(self, requested: Self) -> bool {
-        self == Self::All || self == requested
+        self == Self::All
+            || self == requested
+            || (self == Self::ConverterInputsV1 && requested == Self::RuntimeEnglishV1)
     }
 }
 
@@ -191,7 +196,71 @@ pub struct IngestionCacheEntry {
     pub source_hash: String,
     #[serde(default)]
     pub selection: IngestionSelection,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recipe: String,
     pub files: Vec<IngestedFile>,
+}
+
+const INGESTION_JOURNAL_FILE: &str = ".ingestion-archives.jsonl";
+
+#[derive(Serialize, Deserialize)]
+struct IngestionJournalLine {
+    archive: String,
+    entry: IngestionCacheEntry,
+}
+
+/// Completed archive inventories. Sealed batch packs carry the durable bytes;
+/// this journal avoids decoding completed archives when resuming a staging run.
+pub(crate) struct IngestionJournal(fs::File);
+
+impl IngestionJournal {
+    pub(crate) fn open(staging: &Path) -> Result<Self> {
+        let path = staging.join(INGESTION_JOURNAL_FILE);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+        let length = file.metadata()?.len();
+        if length > 0 {
+            let mut last = [0_u8];
+            file.seek(SeekFrom::Start(length - 1))?;
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                file.write_all(b"\n")?;
+            }
+        }
+        Ok(Self(file))
+    }
+
+    pub(crate) fn record(&mut self, archive: &str, entry: &IngestionCacheEntry) -> Result<()> {
+        let mut bytes = serde_json::to_vec(&IngestionJournalLine {
+            archive: archive.to_owned(),
+            entry: entry.clone(),
+        })?;
+        bytes.push(b'\n');
+        self.0.write_all(&bytes)?;
+        self.0.sync_all()?;
+        Ok(())
+    }
+
+    pub(crate) fn load(staging: &Path) -> Result<BTreeMap<String, IngestionCacheEntry>> {
+        let path = staging.join(INGESTION_JOURNAL_FILE);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut entries = BTreeMap::new();
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if let Ok(record) = serde_json::from_slice::<IngestionJournalLine>(line) {
+                entries.insert(record.archive, record.entry);
+            }
+        }
+        Ok(entries)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -380,29 +449,177 @@ fn link_or_copy_with(
 /// How many spill copies of one blob `link_or_copy_spilling` makes before it gives up and copies.
 const MAX_SPILLS: u32 = 64;
 
-/// Like [`link_or_copy`], for a blob that many paths share.
-///
-/// A file can carry only so many names (1,024 on NTFS), and some game content is stored under
-/// thousands of paths (terrain and face textures), more again during a reconversion, while the
-/// previous output still holds its own names. When the blob is full, the destination is linked to
-/// a spill copy beside it (`<blob>.1`, `<blob>.2`, ...), made once and shared by the next thousand
-/// or so paths, instead of each path becoming its own copy. `blob` must be a file this run owns:
-/// the spill copies are written beside it.
-pub(crate) fn link_or_copy_spilling(blob: &Path, to: &Path) -> std::io::Result<()> {
-    link_or_copy_spilling_with(blob, to, |from, to| fs::hard_link(from, to))
+/// Verification and spill cursors belong to one extraction. Only blobs that
+/// reach the filesystem's link limit enter this bounded cache. A state retains
+/// the base and active spill handles; saturated prior spills are discarded.
+#[derive(Default)]
+pub(crate) struct SpillCache {
+    states: Mutex<BTreeMap<PathBuf, Arc<Mutex<SpillState>>>>,
+    available: Condvar,
 }
 
-/// Shares a blob while allowing its owner to verify and flush separate physical copies.
-/// `spill` is true for a reusable spill name and false for a destination-only fallback.
+const MAX_SPILL_STATES: usize = 128;
+
+#[derive(Default)]
+struct SpillState {
+    base: Option<(SpillProof, String)>,
+    active: Option<SpillProof>,
+    cursor: u32,
+}
+
+struct SpillLease<'a> {
+    cache: &'a SpillCache,
+    state: Option<Arc<Mutex<SpillState>>>,
+}
+
+impl SpillCache {
+    fn lease(&self, blob: &Path) -> SpillLease<'_> {
+        let mut states = self.states.lock().unwrap();
+        let state = loop {
+            if let Some(state) = states.get(blob) {
+                break Arc::clone(state);
+            }
+            if states.len() >= MAX_SPILL_STATES {
+                let idle = states
+                    .iter()
+                    .find(|(_, state)| Arc::strong_count(state) == 1)
+                    .map(|(path, _)| path.clone());
+                if let Some(idle) = idle {
+                    states.remove(&idle);
+                } else {
+                    states = self.available.wait(states).unwrap();
+                    continue;
+                }
+            }
+            let state = Arc::new(Mutex::new(SpillState::default()));
+            states.insert(blob.to_owned(), Arc::clone(&state));
+            break state;
+        };
+        SpillLease {
+            cache: self,
+            state: Some(state),
+        }
+    }
+}
+
+impl Drop for SpillLease<'_> {
+    fn drop(&mut self) {
+        // Pair the state-release notification with the lease predicate's mutex.
+        let _states = self.cache.states.lock().unwrap();
+        drop(self.state.take());
+        self.cache.available.notify_all();
+    }
+}
+
+struct SpillProof {
+    handle: same_file::Handle,
+    length: u64,
+    modified: Option<SystemTime>,
+}
+
+impl SpillProof {
+    fn open(path: &Path) -> std::io::Result<Self> {
+        let handle = same_file::Handle::from_path(path)?;
+        let metadata = handle.as_file().metadata()?;
+        Ok(Self {
+            handle,
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.handle == other.handle
+            && self.length == other.length
+            // Unsupported modification metadata requires hashing again.
+            && self.modified.is_some()
+            && self.modified == other.modified
+    }
+
+    fn hash(
+        &self,
+        hash: &impl Fn(&fs::File) -> std::io::Result<String>,
+    ) -> std::io::Result<String> {
+        let digest = hash(self.handle.as_file())?;
+        let after = self.handle.as_file().metadata()?;
+        if after.len() != self.length || after.modified().ok() != self.modified {
+            return Err(std::io::Error::other("cache file changed while hashing"));
+        }
+        Ok(digest)
+    }
+
+    fn verify_link(&self, destination: &Path) -> std::io::Result<()> {
+        let result = (|| {
+            let linked = Self::open(destination)?;
+            if self.handle != linked.handle
+                || self.length != linked.length
+                || self.modified != linked.modified
+            {
+                return Err(std::io::Error::other("cache file changed before linking"));
+            }
+            Ok(())
+        })();
+        result.map_err(|error| discard_unverified(destination, error))
+    }
+}
+
+/// Link through verified spill instances, avoiding repeated reads and scans.
+/// Owned cache inodes stay immutable during extraction; writers replace paths.
+/// Replacement or observable size/mtime changes invalidate saved proofs, and
+/// fresh extractions rehash restored spills. Different blobs have separate locks.
+pub(crate) fn link_or_copy_spilling(
+    blob: &Path,
+    to: &Path,
+    cache: &SpillCache,
+) -> std::io::Result<()> {
+    link_or_copy_spilling_with(
+        blob,
+        to,
+        cache,
+        &|from, to| fs::hard_link(from, to),
+        &hash_open_file,
+    )
+}
+
+fn link_or_copy_spilling_with(
+    blob: &Path,
+    to: &Path,
+    cache: &SpillCache,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+    hash: &impl Fn(&fs::File) -> std::io::Result<String>,
+) -> std::io::Result<()> {
+    link_or_copy_spilling_impl(blob, to, cache, link, hash, &mut |from, to, spill| {
+        if !spill {
+            return fs::copy(from, to).map(|_| ());
+        }
+        let temporary = tempfile::NamedTempFile::new_in(to.parent().unwrap())?;
+        fs::copy(from, temporary.path())?;
+        temporary.persist(to).map_err(|error| error.error)?;
+        Ok(())
+    })
+}
+
 pub(crate) fn link_or_copy_spilling_with_copy_and_link(
     blob: &Path,
     to: &Path,
-    link: fn(&Path, &Path) -> std::io::Result<()>,
+    cache: &SpillCache,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
     mut copy: impl FnMut(&Path, &Path, bool) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
+    link_or_copy_spilling_impl(blob, to, cache, link, &hash_open_file, &mut copy)
+}
+
+fn link_or_copy_spilling_impl(
+    blob: &Path,
+    to: &Path,
+    cache: &SpillCache,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+    hash: &impl Fn(&fs::File) -> std::io::Result<String>,
+    copy: &mut impl FnMut(&Path, &Path, bool) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     match fs::symlink_metadata(to) {
-        Ok(_) => {
-            if same_path(blob, to) {
+        Ok(metadata) => {
+            if metadata.is_file() && same_path(blob, to) {
                 return Ok(());
             }
             fs::remove_file(to)?;
@@ -415,40 +632,81 @@ pub(crate) fn link_or_copy_spilling_with_copy_and_link(
         Err(error) if !is_too_many_links(&error) => return copy(blob, to, false),
         Err(_) => {}
     }
-    for index in 1..=MAX_SPILLS {
+    let lease = cache.lease(blob);
+    let mut state = lease.state.as_ref().unwrap().lock().unwrap();
+    let base = SpillProof::open(blob)?;
+    if !state
+        .base
+        .as_ref()
+        .is_some_and(|(proof, _)| proof.matches(&base))
+    {
+        let digest = base.hash(hash)?;
+        state.base = Some((base, digest));
+        state.cursor = 1;
+        state.active = None;
+    }
+    while state.cursor <= MAX_SPILLS {
         let mut name = blob.as_os_str().to_owned();
-        name.push(format!(".{index}"));
-        let spill = std::path::PathBuf::from(name);
-        copy(blob, &spill, true)?;
+        name.push(format!(".{}", state.cursor));
+        let spill = PathBuf::from(name);
+        let candidate = SpillProof::open(&spill).ok();
+        let unchanged = candidate.as_ref().is_some_and(|candidate| {
+            state
+                .active
+                .as_ref()
+                .is_some_and(|proof| proof.matches(candidate))
+        });
+        if !unchanged {
+            let expected = &state.base.as_ref().unwrap().1;
+            let valid = candidate.as_ref().is_some_and(|candidate| {
+                candidate.hash(hash).is_ok_and(|digest| &digest == expected)
+            });
+            if valid {
+                state.active = candidate;
+            } else {
+                // The callback atomically replaces the logical spill path and records
+                // that physical file's durability, rather than a disposable temporary name.
+                copy(blob, &spill, true)?;
+                let proof = SpillProof::open(&spill)?;
+                if &proof.hash(hash)? != expected {
+                    return Err(discard_unverified(
+                        &spill,
+                        std::io::Error::other("cache file changed before spill copy"),
+                    ));
+                }
+                state.active = Some(proof);
+            }
+        }
         match link(&spill, to) {
-            Ok(()) => return Ok(()),
-            Err(error) if is_too_many_links(&error) => continue,
+            Ok(()) => return state.active.as_ref().unwrap().verify_link(to),
+            Err(error) if is_too_many_links(&error) => {
+                state.cursor += 1;
+                state.active = None;
+            }
             Err(_) => break,
         }
     }
-    copy(blob, to, false)
+    // Beyond the bounded spill count, verify this derived copy before use.
+    let result = (|| {
+        copy(blob, to, false)?;
+        let copied = SpillProof::open(to)?;
+        if copied.hash(hash)? != state.base.as_ref().unwrap().1 {
+            return Err(std::io::Error::other("cache file changed before copying"));
+        }
+        Ok(())
+    })();
+    result.map_err(|error| discard_unverified(to, error))
 }
 
-fn link_or_copy_spilling_with(
-    blob: &Path,
-    to: &Path,
-    link: fn(&Path, &Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    link_or_copy_spilling_with_copy_and_link(blob, to, link, |source, destination, spill| {
-        if spill && destination.is_file() {
-            return Ok(());
-        }
-        if !spill {
-            return fs::copy(source, destination).map(|_| ());
-        }
-        // Unique temporary names also make interrupted spill creation safe to retry.
-        let temporary = tempfile::NamedTempFile::new_in(destination.parent().unwrap())?;
-        fs::copy(source, temporary.path())?;
-        temporary
-            .persist(destination)
-            .map_err(|error| error.error)?;
-        Ok(())
-    })
+fn discard_unverified(path: &Path, error: std::io::Error) -> std::io::Error {
+    match fs::remove_file(path) {
+        Ok(()) => error,
+        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
+        Err(cleanup) => std::io::Error::other(format!(
+            "{error}; failed to remove unverified destination {}: {cleanup}",
+            path.display()
+        )),
+    }
 }
 
 /// A link refused because the file already has as many names as the filesystem allows.
@@ -498,13 +756,16 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
 pub fn hash_file(path: &Path) -> Result<String> {
     let file = fs::File::open(path)
         .wrap_err_with(|| format!("failed to open {} for hashing", path.display()))?;
+    hash_open_file(&file).wrap_err_with(|| format!("failed to hash {}", path.display()))
+}
+
+fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = reader
-            .read(&mut buffer)
-            .wrap_err_with(|| format!("failed to hash {}", path.display()))?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
@@ -520,6 +781,364 @@ pub fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_spill_creation_uses_unique_temporary_files() {
+        let barrier = std::sync::Barrier::new(4);
+        let full_blob = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from.file_name().is_some_and(|name| name == "parallel_blob") {
+                barrier.wait();
+                Err(std::io::ErrorKind::TooManyLinks.into())
+            } else {
+                fs::hard_link(from, to)
+            }
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("parallel_blob");
+        fs::write(&blob, b"immutable bytes").unwrap();
+        let cache = SpillCache::default();
+        std::thread::scope(|scope| {
+            for index in 0..4 {
+                let blob = &blob;
+                let cache = &cache;
+                let full_blob = &full_blob;
+                let destination = directory.path().join(format!("asset{index}"));
+                scope.spawn(move || {
+                    link_or_copy_spilling_with(
+                        blob,
+                        &destination,
+                        cache,
+                        full_blob,
+                        &hash_open_file,
+                    )
+                    .unwrap();
+                    assert_eq!(fs::read(destination).unwrap(), b"immutable bytes");
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn corrupt_derived_spills_are_replaced_before_reuse() {
+        fn full_blob(from: &Path, to: &Path) -> std::io::Result<()> {
+            if from.file_name().is_some_and(|name| name == "blob") {
+                Err(std::io::ErrorKind::TooManyLinks.into())
+            } else {
+                fs::hard_link(from, to)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"valid bytes").unwrap();
+        fs::write(directory.path().join("blob.1"), b"wrong bytes").unwrap();
+        let destination = directory.path().join("asset");
+        link_or_copy_spilling_with(
+            &blob,
+            &destination,
+            &SpillCache::default(),
+            &full_blob,
+            &hash_open_file,
+        )
+        .unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"valid bytes");
+    }
+
+    fn full_base(from: &Path, to: &Path) -> std::io::Result<()> {
+        if from.file_name().is_some_and(|name| name == "blob") {
+            Err(std::io::ErrorKind::TooManyLinks.into())
+        } else {
+            fs::hard_link(from, to)
+        }
+    }
+
+    #[test]
+    fn spill_verification_reads_and_link_attempts_grow_linearly() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for count in [8, 16, 32] {
+            let directory = tempfile::tempdir().unwrap();
+            let blob = directory.path().join("blob");
+            fs::write(&blob, [0x5a; 4096]).unwrap();
+            let cache = SpillCache::default();
+            let links = Mutex::new(BTreeMap::<PathBuf, usize>::new());
+            let attempts = AtomicUsize::new(0);
+            let reads = AtomicUsize::new(0);
+            let link = |from: &Path, to: &Path| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                let mut links = links.lock().unwrap();
+                let used = links.entry(from.to_owned()).or_default();
+                if *used >= 2 {
+                    return Err(std::io::ErrorKind::TooManyLinks.into());
+                }
+                fs::hard_link(from, to)?;
+                *used += 1;
+                Ok(())
+            };
+            let hash = |file: &fs::File| {
+                reads.fetch_add(1, Ordering::Relaxed);
+                hash_open_file(file)
+            };
+            for index in 0..count {
+                let destination = directory.path().join(format!("asset{index}"));
+                link_or_copy_spilling_with(&blob, &destination, &cache, &link, &hash).unwrap();
+                assert_eq!(fs::read(destination).unwrap(), [0x5a; 4096]);
+            }
+            // One base hash and one per new spill. With the previous scan,
+            // the same cases read 15, 63 and 255 full files.
+            assert_eq!(reads.load(Ordering::Relaxed), count / 2);
+            assert!(attempts.load(Ordering::Relaxed) < count * 3);
+        }
+    }
+
+    #[test]
+    fn cached_spill_revalidates_corruption_and_same_metadata_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        let spill = directory.path().join("blob.1");
+        fs::write(&blob, b"valid bytes").unwrap();
+        let cache = SpillCache::default();
+        let restore = |index| {
+            let destination = directory.path().join(format!("asset{index}"));
+            link_or_copy_spilling_with(&blob, &destination, &cache, &full_base, &hash_open_file)
+                .unwrap();
+            assert_eq!(fs::read(destination).unwrap(), b"valid bytes");
+        };
+        restore(0);
+        fs::write(&spill, b"wrong bytes").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&spill)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        restore(1);
+        let modified = fs::metadata(&spill).unwrap().modified().unwrap();
+        let replacement = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        fs::write(replacement.path(), b"wrong bytes").unwrap();
+        replacement
+            .as_file()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        replacement.persist(&spill).unwrap();
+        assert_eq!(fs::metadata(&spill).unwrap().modified().unwrap(), modified);
+        restore(2);
+        // A new extraction must verify a restored spill even if the previous
+        // extraction already trusted the path.
+        let fresh = SpillCache::default();
+        fs::write(&spill, b"wrong bytes").unwrap();
+        let destination = directory.path().join("fresh");
+        link_or_copy_spilling_with(&blob, &destination, &fresh, &full_base, &hash_open_file)
+            .unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"valid bytes");
+    }
+
+    #[test]
+    fn replacement_during_link_cannot_publish_unverified_spill_bytes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"valid bytes").unwrap();
+        let cache = SpillCache::default();
+        let replace = AtomicBool::new(true);
+        let link = |from: &Path, to: &Path| {
+            if from == blob {
+                return Err(std::io::ErrorKind::TooManyLinks.into());
+            }
+            if replace.swap(false, Ordering::Relaxed) {
+                let modified = fs::metadata(from)?.modified()?;
+                let replacement = tempfile::NamedTempFile::new_in(directory.path())?;
+                fs::write(replacement.path(), b"wrong bytes")?;
+                replacement
+                    .as_file()
+                    .set_times(fs::FileTimes::new().set_modified(modified))?;
+                replacement.persist(from).map_err(|error| error.error)?;
+            }
+            fs::hard_link(from, to)
+        };
+        let destination = directory.path().join("asset");
+        assert!(
+            link_or_copy_spilling_with(&blob, &destination, &cache, &link, &hash_open_file)
+                .is_err()
+        );
+        assert!(!destination.exists());
+        link_or_copy_spilling_with(&blob, &destination, &cache, &link, &hash_open_file).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"valid bytes");
+    }
+
+    #[test]
+    fn failed_final_copy_verification_removes_only_the_new_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"valid bytes").unwrap();
+        let cache = SpillCache::default();
+        let verified = directory.path().join("verified");
+        link_or_copy_spilling_with(&blob, &verified, &cache, &full_base, &hash_open_file).unwrap();
+        {
+            let states = cache.states.lock().unwrap();
+            let mut state = states[&blob].lock().unwrap();
+            state.cursor = MAX_SPILLS + 1;
+            state.active = None;
+        }
+        let destination = directory.path().join("new");
+        let fail_hash = |_: &fs::File| Err(std::io::Error::other("injected verification failure"));
+        let error = link_or_copy_spilling_with(&blob, &destination, &cache, &full_base, &fail_hash)
+            .unwrap_err();
+        assert!(error.to_string().contains("injected verification failure"));
+        assert!(!destination.exists());
+        assert_eq!(fs::read(verified).unwrap(), b"valid bytes");
+    }
+
+    #[test]
+    fn base_replacement_resets_the_spill_cursor_and_keeps_previous_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob = directory.path().join("blob");
+        fs::write(&blob, b"first bytes").unwrap();
+        let cache = SpillCache::default();
+        let link = |from: &Path, to: &Path| {
+            if from == blob || (from.ends_with("blob.1") && to.ends_with("second")) {
+                Err(std::io::ErrorKind::TooManyLinks.into())
+            } else {
+                fs::hard_link(from, to)
+            }
+        };
+        let first = directory.path().join("first");
+        link_or_copy_spilling_with(&blob, &first, &cache, &link, &hash_open_file).unwrap();
+        link_or_copy_spilling_with(
+            &blob,
+            &directory.path().join("second"),
+            &cache,
+            &link,
+            &hash_open_file,
+        )
+        .unwrap();
+        let replacement = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        fs::write(replacement.path(), b"later bytes").unwrap();
+        replacement.persist(&blob).unwrap();
+        let later = directory.path().join("later");
+        link_or_copy_spilling_with(&blob, &later, &cache, &link, &hash_open_file).unwrap();
+        assert_eq!(fs::read(later).unwrap(), b"later bytes");
+        assert_eq!(fs::read(first).unwrap(), b"first bytes");
+        assert_eq!(
+            cache.states.lock().unwrap()[&blob].lock().unwrap().cursor,
+            1
+        );
+    }
+
+    #[test]
+    fn a_full_spill_cache_wakes_a_waiter_after_a_lease_is_released() {
+        let cache = SpillCache::default();
+        std::thread::scope(|scope| {
+            let mut leases = (0..MAX_SPILL_STATES)
+                .map(|index| cache.lease(Path::new(&format!("blob{index}"))))
+                .collect::<Vec<_>>();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let cache = &cache;
+            scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                let _lease = cache.lease(Path::new("extra"));
+                done_tx.send(()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            assert!(matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            drop(leases.pop());
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            assert_eq!(cache.states.lock().unwrap().len(), MAX_SPILL_STATES);
+        });
+    }
+
+    #[test]
+    fn spill_cache_evicts_idle_states_and_releases_their_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = SpillCache::default();
+        for index in 0..MAX_SPILL_STATES + 2 {
+            let blob = directory.path().join(format!("blob{index}"));
+            fs::write(&blob, b"bytes").unwrap();
+            let link = |from: &Path, to: &Path| {
+                if from == blob {
+                    Err(std::io::ErrorKind::TooManyLinks.into())
+                } else {
+                    fs::hard_link(from, to)
+                }
+            };
+            link_or_copy_spilling_with(
+                &blob,
+                &directory.path().join(format!("asset{index}")),
+                &cache,
+                &link,
+                &hash_open_file,
+            )
+            .unwrap();
+        }
+        let states = cache.states.lock().unwrap();
+        assert_eq!(states.len(), MAX_SPILL_STATES);
+        assert!(!states.contains_key(&directory.path().join("blob0")));
+        assert!(states.values().all(|state| Arc::strong_count(state) == 1));
+    }
+
+    #[test]
+    fn ingestion_journal_resumes_completed_inventories_and_drops_partial_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let entry = IngestionCacheEntry {
+            source_hash: "ab".repeat(32),
+            selection: IngestionSelection::ConverterInputsV1,
+            recipe: "converter-inputs-v1".to_owned(),
+            files: vec![IngestedFile {
+                path: "lodsettings/tamriel.lod".to_owned(),
+                size: 4,
+                hash: "cd".repeat(32),
+            }],
+        };
+        let mut journal = IngestionJournal::open(directory.path()).unwrap();
+        journal.record("base.bsa", &entry).unwrap();
+        drop(journal);
+        let path = directory.path().join(INGESTION_JOURNAL_FILE);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"archive\":\"truncated")
+            .unwrap();
+        assert_eq!(
+            IngestionJournal::load(directory.path()).unwrap()["base.bsa"],
+            entry
+        );
+        let mut journal = IngestionJournal::open(directory.path()).unwrap();
+        journal.record("dlc.bsa", &entry).unwrap();
+        let loaded = IngestionJournal::load(directory.path()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded["dlc.bsa"], entry);
+    }
+
+    #[test]
+    fn both_prior_cache_contracts_limit_coverage_and_unknown_recipes_miss() {
+        let pack_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
+            "source_hash": "source", "recipe": "converter-inputs-v1", "files": []
+        }))
+        .unwrap();
+        assert!(pack_entry.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(pack_entry.covers(IngestionSelection::ConverterInputsV1));
+        assert!(!pack_entry.covers(IngestionSelection::All));
+        let raw_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
+            "source_hash": "source", "selection": "runtime_english_v1", "files": []
+        }))
+        .unwrap();
+        assert!(raw_entry.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(!raw_entry.covers(IngestionSelection::All));
+        assert!(!raw_entry.covers(IngestionSelection::ConverterInputsV1));
+        let mut conflicting = raw_entry.clone();
+        conflicting.recipe = "all-v1".into();
+        assert!(!conflicting.covers(IngestionSelection::All));
+        conflicting.recipe = "unknown-v99".into();
+        assert!(!conflicting.covers(IngestionSelection::RuntimeEnglishV1));
+        let roundtrip: IngestionCacheEntry =
+            serde_json::from_slice(&serde_json::to_vec(&pack_entry).unwrap()).unwrap();
+        assert_eq!(roundtrip, pack_entry);
+    }
 
     #[test]
     fn older_ingestion_entries_prove_all_files_and_coverage_is_directional() {
@@ -798,7 +1417,15 @@ mod tests {
         type Restore = fn(&Path, &Path) -> std::io::Result<()>;
         let restores: [Restore; 2] = [
             |from, to| link_or_copy_with(from, to, force_copy),
-            |from, to| link_or_copy_spilling_with(from, to, force_copy),
+            |from, to| {
+                link_or_copy_spilling_with(
+                    from,
+                    to,
+                    &SpillCache::default(),
+                    &force_copy,
+                    &hash_open_file,
+                )
+            },
         ];
         for restore in restores {
             for target_exists in [false, true] {
@@ -843,8 +1470,9 @@ mod tests {
         let first = directory.path().join("first.dds");
         let second = directory.path().join("second.dds");
 
-        link_or_copy_spilling_with(&blob, &first, blob_is_full).unwrap();
-        link_or_copy_spilling_with(&blob, &second, blob_is_full).unwrap();
+        let cache = SpillCache::default();
+        link_or_copy_spilling_with(&blob, &first, &cache, &blob_is_full, &hash_open_file).unwrap();
+        link_or_copy_spilling_with(&blob, &second, &cache, &blob_is_full, &hash_open_file).unwrap();
 
         // Both paths name the one spill copy: a write through one shows in the other, and the
         // blob itself is untouched.
@@ -868,9 +1496,13 @@ mod tests {
         fs::write(&blob, b"archive bytes").unwrap();
         let vfs = directory.path().join("rock.dds");
 
-        link_or_copy_spilling_with(&blob, &vfs, |_, _| {
-            Err(std::io::Error::other("cross-volume"))
-        })
+        link_or_copy_spilling_with(
+            &blob,
+            &vfs,
+            &SpillCache::default(),
+            &|_, _| Err(std::io::Error::other("cross-volume")),
+            &hash_open_file,
+        )
         .unwrap();
 
         assert_eq!(fs::read(&vfs).unwrap(), b"archive bytes");

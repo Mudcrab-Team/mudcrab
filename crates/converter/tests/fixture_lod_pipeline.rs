@@ -1,5 +1,8 @@
 //! Skyrim sidecars through archive ingestion, loose overrides, and LOD compilation.
 
+mod common;
+
+use common::cpu_lod_config;
 use dummy_content::{Entry, bsa, layout};
 use std::{fs, path::Path};
 
@@ -23,7 +26,7 @@ fn generate_data(root: &Path) {
 }
 
 async fn convert(data: &Path, output: &Path) -> converter::pipeline::PipelineReport {
-    convert_config(converter::PipelineConfig::new(data, output)).await
+    convert_config(cpu_lod_config(data, output)).await
 }
 
 async fn convert_config(config: converter::PipelineConfig) -> converter::PipelineReport {
@@ -34,6 +37,54 @@ async fn convert_config(config: converter::PipelineConfig) -> converter::Pipelin
         .unwrap();
     drain.await.unwrap();
     report
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated native GPU; run explicitly with hardware quality tests"]
+async fn gpu_atlases_have_separate_reuse_proof_and_preserve_the_terrain_contract() {
+    use converter::TextureEncoder;
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("assets");
+    generate_data(&data);
+    let mut config = cpu_lod_config(&data, &output);
+    config.cpu_jobs = 2;
+    let cpu = convert_config(config.clone()).await;
+    assert!(cpu.complete && cpu.lod_chunks > 0);
+    let cpu_chunks = indexed_chunks(&output);
+    config.lod_texture_encoder = TextureEncoder::Gpu {
+        quality: 2,
+        batch_mb: 16,
+    };
+    let gpu = convert_config(config.clone()).await;
+    assert!(gpu.complete, "{:?}", gpu.warnings);
+    assert_eq!(gpu.lod_chunks, cpu.lod_chunks);
+    assert_eq!(
+        gpu.lod_cache_hits, 0,
+        "CPU payloads must miss the GPU recipe"
+    );
+    assert_eq!(gpu.lod_gpu_chunks, gpu.lod_chunks);
+    assert_eq!(gpu.lod_cpu_fallback_chunks, 0);
+    shared::world_assets::validate_lod_build_contract(
+        &output,
+        shared::LOD_CONVERTER_SCHEMA_VERSION,
+    )
+    .unwrap();
+    let gpu_chunks = indexed_chunks(&output);
+    let warm = convert_config(config.clone()).await;
+    assert!(warm.complete);
+    assert_eq!(warm.lod_cache_hits, warm.lod_chunks);
+    assert_eq!(indexed_chunks(&output), gpu_chunks);
+    config.lod_texture_encoder = TextureEncoder::Gpu {
+        quality: 3,
+        batch_mb: 16,
+    };
+    let changed = convert_config(config.clone()).await;
+    assert_eq!(changed.lod_cache_hits, 0, "quality changes must miss");
+    config.lod_texture_encoder = TextureEncoder::Cpu;
+    let back_to_cpu = convert_config(config).await;
+    assert_eq!(back_to_cpu.lod_cache_hits, 0);
+    assert_eq!(indexed_chunks(&output), cpu_chunks);
 }
 
 #[tokio::test]
@@ -58,7 +109,7 @@ async fn no_lod_replaces_generated_lod_without_reconverting_ordinary_assets() {
         })
         .collect();
 
-    let mut config = converter::PipelineConfig::new(&data, &output);
+    let mut config = cpu_lod_config(&data, &output);
     config.no_lod = true;
     let disabled = convert_config(config).await;
     assert!(disabled.complete);
@@ -106,7 +157,7 @@ async fn metadata_no_lod_omits_chunks_and_preserves_the_source_package() {
     let enabled = convert(&data, &source).await;
     assert!(enabled.lod_chunks > 0);
     let source_manifest = fs::read(source.join("lod-manifest.json")).unwrap();
-    let mut config = converter::PipelineConfig::new(&data, &output);
+    let mut config = cpu_lod_config(&data, &output);
     config.no_lod = true;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -141,7 +192,7 @@ async fn v115_resumed_no_lod_discards_staged_lod_outputs() {
     assert!(convert(&data, &output).await.lod_chunks > 0);
     let staging = directory.path().join("assets.staging-lod-retry");
     fs::rename(&output, &staging).unwrap();
-    let mut config = converter::PipelineConfig::new(&data, &output);
+    let mut config = cpu_lod_config(&data, &output);
     config.no_lod = true;
     config.resume_staging = Some(staging);
     let report = convert_config(config).await;
@@ -253,7 +304,7 @@ async fn resumed_lod_with_changed_origin_matches_a_clean_build() {
     let staging = output.with_extension("staging-lod-retry");
     fs::rename(&output, &staging).unwrap();
 
-    let mut resumed = converter::PipelineConfig::new(&data, &output);
+    let mut resumed = cpu_lod_config(&data, &output);
     resumed.resume_staging = Some(staging);
     resumed
         .lod_origins
@@ -287,7 +338,7 @@ async fn resumed_lod_drops_removed_sidecars_and_the_previous_manifest() {
     fs::rename(&output, &staging).unwrap();
     fs::remove_file(data.join("Skyrim - Misc.bsa")).unwrap();
 
-    let mut config = converter::PipelineConfig::new(&data, &output);
+    let mut config = cpu_lod_config(&data, &output);
     config.resume_staging = Some(staging);
     let report = convert_config(config).await;
     assert!(report.complete);
@@ -315,7 +366,7 @@ async fn resumed_conversion_drops_removed_textures_and_stale_provenance() {
         fs::write(staging.join(sidecar), b"obsolete provenance").unwrap();
     }
     fs::remove_file(data.join(layout::GENERATED_DIFFUSE_PATH)).unwrap();
-    let mut resumed = converter::PipelineConfig::new(&data, &output);
+    let mut resumed = cpu_lod_config(&data, &output);
     resumed.resume_staging = Some(staging);
     assert!(convert_config(resumed).await.complete);
     let clean = directory.path().join("clean");
@@ -423,4 +474,251 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
         shared::WORLD_DATABASE_SCHEMA_VERSION
     );
     assert_eq!(manifest["chunks"], report.lod_chunks);
+}
+
+#[tokio::test]
+async fn v171_lod_reuse_is_incremental_and_rejects_damaged_or_unproven_payloads() {
+    use dummy_content::esm;
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("assets");
+    generate_data(&data);
+    let cells = [
+        esm::Cell {
+            grid_x: 0,
+            grid_y: 0,
+        },
+        esm::Cell {
+            grid_x: 64,
+            grid_y: 0,
+        },
+    ];
+    let plugin = esm::plugin(&esm::Plugin {
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        cells: &cells,
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    })
+    .unwrap();
+    fs::write(data.join("Skyrim.esm"), &plugin).unwrap();
+    let config = || {
+        let mut config = cpu_lod_config(&data, &output);
+        config.cpu_jobs = 2;
+        config
+    };
+    let cold = convert_config(config()).await;
+    assert!(cold.complete);
+    assert_eq!(cold.lod_chunks, 6);
+    assert_eq!(cold.lod_cache_hits, 0);
+    assert!(
+        !cold
+            .notices
+            .iter()
+            .any(|notice| { notice.contains("Previous terrain LOD package refused") })
+    );
+    let manifest_path = output.join("lod-manifest.json");
+    let original_manifest = fs::read(&manifest_path).unwrap();
+    let original: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+    let paths: Vec<_> = original["chunk_inputs"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let payloads: Vec<_> = paths
+        .iter()
+        .map(|path| fs::read(output.join(path)).unwrap())
+        .collect();
+    let warm = convert_config(config()).await;
+    assert!(warm.complete);
+    assert_eq!(warm.converted, 0);
+    assert_eq!(warm.lod_cache_hits, cold.lod_chunks);
+    assert_eq!(fs::read(&manifest_path).unwrap(), original_manifest);
+    for (path, bytes) in paths.iter().zip(&payloads) {
+        assert_eq!(fs::read(output.join(path)).unwrap(), *bytes);
+    }
+
+    let derived = directory.path().join("derived");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let metadata = converter::AssetPipeline::rebuild_metadata_async(
+        cpu_lod_config(&data, &derived),
+        &output,
+        tx,
+    )
+    .await
+    .unwrap();
+    drain.await.unwrap();
+    assert_eq!(metadata.lod_cache_hits, cold.lod_chunks);
+    assert_eq!(fs::read(&manifest_path).unwrap(), original_manifest);
+
+    // Only the damaged payload rebuilds; input proof cannot hide corruption.
+    fs::write(output.join(&paths[0]), b"broken GLB").unwrap();
+    let repaired = convert_config(config()).await;
+    assert!(repaired.complete);
+    assert_eq!(repaired.lod_cache_hits, cold.lod_chunks - 1);
+    assert_eq!(fs::read(output.join(&paths[0])).unwrap(), payloads[0]);
+
+    // A prior producer may have recorded matching hashes for malformed bytes. Node and
+    // mesh references must fail validation rather than panic, and only that chunk rebuilds.
+    for bad_mesh in [false, true] {
+        let bytes = &payloads[0];
+        let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
+        let nodes = json["nodes"].as_array_mut().unwrap();
+        let cell_index = nodes
+            .iter()
+            .position(|node| {
+                node["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("cell_"))
+            })
+            .unwrap();
+        let group_index = nodes[cell_index]["children"][0].as_u64().unwrap() as usize;
+        let quadrant_index = nodes[group_index]["children"][0].as_u64().unwrap() as usize;
+        // Exercise forward references: the old one-pass validation checks the source cell
+        // before the terrain group's children or the quadrant's mesh.
+        assert!(cell_index < group_index && cell_index < quadrant_index);
+        if bad_mesh {
+            nodes[quadrant_index]["mesh"] = serde_json::json!(u32::MAX);
+        } else {
+            nodes[group_index]["children"][0] = serde_json::json!(u32::MAX);
+        }
+        let mut json_bytes = serde_json::to_vec(&json).unwrap();
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
+        let mut malformed = bytes[..12].to_vec();
+        malformed.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        malformed.extend_from_slice(b"JSON");
+        malformed.extend_from_slice(&json_bytes);
+        malformed.extend_from_slice(&bytes[20 + json_length..]);
+        let total = malformed.len() as u32;
+        malformed[8..12].copy_from_slice(&total.to_le_bytes());
+        fs::write(output.join(&paths[0]), &malformed).unwrap();
+        let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        db.execute(
+            "UPDATE lod_chunks SET content_hash=?1 WHERE payload_path=?2",
+            rusqlite::params![converter::cache::hash_bytes(&malformed), paths[0]],
+        )
+        .unwrap();
+        drop(db);
+        let repaired = convert_config(config()).await;
+        assert!(repaired.complete);
+        assert_eq!(repaired.lod_cache_hits, cold.lod_chunks - 1);
+        assert_eq!(repaired.lod_chunks, cold.lod_chunks);
+        assert_eq!(fs::read(output.join(&paths[0])).unwrap(), payloads[0]);
+        assert!(
+            repaired.notices.iter().any(|notice| {
+                notice.contains("1 cached chunks refused")
+                    && notice.contains(if bad_mesh {
+                        "missing mesh"
+                    } else {
+                        "missing node"
+                    })
+            }),
+            "{:?}",
+            repaired.notices
+        );
+        assert!(repaired.notices.iter().any(|notice| {
+            notice == "Terrain LOD GeneratedWorld: 5 reused, 1 rebuilt, 6 total chunks"
+        }));
+        for (path, bytes) in paths.iter().zip(&payloads) {
+            assert_eq!(fs::read(output.join(path)).unwrap(), *bytes);
+        }
+    }
+
+    // A prior package with a deleted manifest reports why all chunks rebuilt. A missing
+    // manifest is not treated as a fresh output when the prior package's other files remain.
+    fs::remove_file(&manifest_path).unwrap();
+    let rebuilt = convert_config(config()).await;
+    assert!(rebuilt.complete);
+    assert_eq!(rebuilt.lod_cache_hits, 0);
+    assert_eq!(rebuilt.lod_chunks, cold.lod_chunks);
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice.contains("Previous terrain LOD package refused")
+            && notice.contains("lod-manifest.json")
+    }));
+
+    // A same-numbered legacy manifest has no explicit current compiler proof.
+    let mut unproven = original.clone();
+    unproven.as_object_mut().unwrap().remove("compiler_version");
+    fs::write(&manifest_path, serde_json::to_vec(&unproven).unwrap()).unwrap();
+    let rebuilt = convert_config(config()).await;
+    assert_eq!(rebuilt.lod_cache_hits, 0);
+    assert_eq!(rebuilt.lod_chunks, cold.lod_chunks);
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice.contains("Previous terrain LOD package refused")
+            && notice.contains("LOD compiler identity changed")
+    }));
+    assert!(rebuilt.notices.iter().any(|notice| {
+        notice == "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+    }));
+
+    // Editing one LAND height affects its three tiers, leaving the other cell reusable.
+    let mut changed_plugin = plugin.clone();
+    let height = changed_plugin
+        .windows(4)
+        .position(|bytes| bytes == b"VHGT")
+        .unwrap()
+        + 6;
+    changed_plugin[height..height + 4].copy_from_slice(&16.0f32.to_le_bytes());
+    fs::write(data.join("Skyrim.esm"), changed_plugin).unwrap();
+    let changed = convert_config(config()).await;
+    assert!(changed.complete);
+    assert_eq!(changed.lod_chunks, cold.lod_chunks);
+    assert_eq!(changed.lod_cache_hits, 3);
+
+    // An origin change invalidates placement and layout even with identical source cells.
+    let mut moved_config = config();
+    moved_config
+        .lod_origins
+        .insert(layout::GENERATED_WORLDSPACE.to_owned(), [0, 0]);
+    let moved = convert_config(moved_config).await;
+    assert_eq!(moved.lod_cache_hits, 0);
+    assert_eq!(moved.lod_chunks, cold.lod_chunks);
+
+    let diffuse = data.join(layout::GENERATED_DIFFUSE_PATH);
+    let mut dds = ddsfile::Dds::read(std::io::Cursor::new(fs::read(&diffuse).unwrap())).unwrap();
+    dds.data[0] ^= 0xff;
+    let mut bytes = Vec::new();
+    dds.write(&mut bytes).unwrap();
+    fs::write(diffuse, bytes).unwrap();
+    let mut material_config = config();
+    material_config
+        .lod_origins
+        .insert(layout::GENERATED_WORLDSPACE.to_owned(), [0, 0]);
+    let material = convert_config(material_config).await;
+    assert!(material.complete);
+    assert_eq!(material.lod_chunks, cold.lod_chunks);
+    assert_eq!(material.lod_cache_hits, 0);
+
+    fs::write(
+        data.join("Skyrim.esm"),
+        esm::plugin(&esm::Plugin {
+            author: layout::GENERATED_AUTHOR,
+            worldspace: layout::GENERATED_WORLDSPACE,
+            cells: &cells[1..],
+            model_path: layout::GENERATED_MODEL_PATH,
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let removed = convert_config(config()).await;
+    assert!(removed.complete);
+    assert_eq!(removed.lod_chunks, 3);
+    let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    let source_cells: Vec<String> = database
+        .prepare("SELECT source_cells FROM lod_chunks")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(source_cells, ["64,0", "64,0", "64,0"]);
 }

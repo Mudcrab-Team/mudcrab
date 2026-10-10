@@ -1,6 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 215
+assertion_line: 218
 expression: manifest
 ---
 {
@@ -13,6 +13,7 @@ expression: manifest
           "size": 721
         }
       ],
+      "recipe": "runtime-english-v1",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
@@ -29,6 +30,7 @@ expression: manifest
           "size": 131
         }
       ],
+      "recipe": "runtime-english-v1",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
@@ -38,11 +40,6 @@ expression: manifest
           "hash": "[hash]",
           "path": "textures/generated_color.dds",
           "size": 2892
-        },
-        {
-          "hash": "[hash]",
-          "path": "textures/generated_normal.dds",
-          "size": 5636
         },
         {
           "hash": "[hash]",
@@ -56,10 +53,16 @@ expression: manifest
         },
         {
           "hash": "[hash]",
+          "path": "textures/generated_normal.dds",
+          "size": 5636
+        },
+        {
+          "hash": "[hash]",
           "path": "textures/generated_volume.dds",
           "size": 2876
         }
       ],
+      "recipe": "runtime-english-v1",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     }

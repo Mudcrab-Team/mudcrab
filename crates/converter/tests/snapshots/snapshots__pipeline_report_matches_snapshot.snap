@@ -1,6 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 233
+assertion_line: 254
 expression: report
 ---
 {
@@ -8,6 +8,8 @@ expression: report
     "skyrim - meshes.bsa": {
       "cache_link_seconds": "[seconds]",
       "cache_restore_seconds": "[seconds]",
+      "checkpoint_sync_calls": 1,
+      "checkpoint_sync_worker_seconds": "[seconds]",
       "extraction_seconds": "[seconds]",
       "payload_bytes_written": 721,
       "payload_reuses": 0,
@@ -17,7 +19,7 @@ expression: report
       "selected_bytes": 721,
       "selected_files": 1,
       "source_hash_seconds": "[seconds]",
-      "sync_calls": 1,
+      "sync_calls": 0,
       "sync_seconds": "[seconds]",
       "sync_worker_seconds": "[seconds]",
       "unique_payloads": 1
@@ -25,6 +27,8 @@ expression: report
     "skyrim - misc.bsa": {
       "cache_link_seconds": "[seconds]",
       "cache_restore_seconds": "[seconds]",
+      "checkpoint_sync_calls": 1,
+      "checkpoint_sync_worker_seconds": "[seconds]",
       "extraction_seconds": "[seconds]",
       "payload_bytes_written": 265,
       "payload_reuses": 0,
@@ -34,7 +38,7 @@ expression: report
       "selected_bytes": 265,
       "selected_files": 2,
       "source_hash_seconds": "[seconds]",
-      "sync_calls": 2,
+      "sync_calls": 0,
       "sync_seconds": "[seconds]",
       "sync_worker_seconds": "[seconds]",
       "unique_payloads": 2
@@ -42,6 +46,8 @@ expression: report
     "skyrim - textures.ba2": {
       "cache_link_seconds": "[seconds]",
       "cache_restore_seconds": "[seconds]",
+      "checkpoint_sync_calls": 1,
+      "checkpoint_sync_worker_seconds": "[seconds]",
       "extraction_seconds": "[seconds]",
       "payload_bytes_written": 21316,
       "payload_reuses": 0,
@@ -51,7 +57,7 @@ expression: report
       "selected_bytes": 21316,
       "selected_files": 5,
       "source_hash_seconds": "[seconds]",
-      "sync_calls": 5,
+      "sync_calls": 0,
       "sync_seconds": "[seconds]",
       "sync_worker_seconds": "[seconds]",
       "unique_payloads": 5
@@ -115,10 +121,15 @@ expression: report
     "unbounded_model_count": 0,
     "waters_with_flow_normal": 0
   },
+  "lod_cache_hits": 0,
   "lod_chunks": 6,
+  "lod_cpu_fallback_chunks": 0,
   "lod_elapsed_ms": "[lod_elapsed_ms]",
+  "lod_gpu_chunks": 0,
   "lod_warnings": [],
-  "notices": [],
+  "notices": [
+    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+  ],
   "phase_elapsed_ms": {
     "archive_ingestion_and_loose_overlay": "[elapsed_ms]",
     "artifact_validation": "[elapsed_ms]",

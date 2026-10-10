@@ -1,8 +1,14 @@
 //! What a conversion prints when progress does not go to a terminal: one plain line per stage and
 //! every few seconds, rather than one line per event.
 
-use converter::progress::ProgressRenderer;
-use std::{fs, process::Command, time::Instant};
+mod common;
+
+use converter::progress::{ProgressRenderer, ProgressStage};
+use std::{
+    fs,
+    process::Command,
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc;
 
 /// Both successful and incomplete CLI runs print advisories without counting them as failures.
@@ -22,6 +28,7 @@ fn notices_are_printed_on_complete_and_incomplete_runs() {
         let run = Command::new(env!("CARGO_BIN_EXE_converter"))
             .arg(&data)
             .arg(&output)
+            .args(["--lod-encoder", "cpu"])
             .arg("--report-json")
             .arg(&report_path)
             .output()
@@ -66,6 +73,81 @@ fn fixture_data(directory: &std::path::Path) -> std::path::PathBuf {
     data
 }
 
+/// Actual cold and warm batches retain world counts while the default terminal shows chunks.
+#[tokio::test]
+async fn terrain_lod_batches_are_visible_in_the_default_terminal() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = fixture_data(directory.path());
+    let output = directory.path().join("modern");
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.cpu_jobs = 2;
+
+    for reused in [false, true] {
+        let (tx, mut rx) = mpsc::channel(64);
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+        let report = converter::AssetPipeline::run_async(config.clone(), tx)
+            .await
+            .unwrap();
+        let events = collector.await.unwrap();
+        assert!(report.complete);
+        assert_eq!(report.lod_chunks, 6);
+        assert_eq!(report.lod_cache_hits, if reused { 6 } else { 0 });
+
+        let lod: Vec<_> = events
+            .iter()
+            .filter(|event| event.stage == ProgressStage::LodChunks && !event.notice)
+            .collect();
+        let batches: Vec<_> = lod
+            .iter()
+            .filter(|event| event.message.starts_with("Terrain LOD GeneratedWorld:"))
+            .collect();
+        assert_eq!(batches.len(), 3);
+        let mut renderer = ProgressRenderer::new(true, false);
+        for (index, event) in batches.iter().enumerate() {
+            let chunks = (index + 1) * 2;
+            let message = format!(
+                "Terrain LOD GeneratedWorld: {chunks}/6 chunks ({} reused)",
+                if reused { chunks } else { 0 }
+            );
+            assert_eq!(event.message, message);
+            assert_eq!((event.completed, event.total), (0, 1));
+            assert_eq!(event.stage_fraction, None);
+            assert_eq!(event.progress_fraction(), 0.0);
+            let line = renderer
+                .update(event, Duration::from_secs(index as u64))
+                .unwrap();
+            assert!(line.starts_with('\r') && !line.ends_with('\n'));
+            assert!(line.contains(&message), "{line:?}");
+        }
+        let completed = lod.last().unwrap();
+        assert_eq!((completed.completed, completed.total), (1, 1));
+        assert_eq!(completed.progress_fraction(), 1.0);
+        assert_eq!(completed.overall(), batches[0].overall());
+        let totals = format!(
+            "Terrain LOD GeneratedWorld: {} reused, {} rebuilt, 6 total chunks",
+            if reused { 6 } else { 0 },
+            if reused { 0 } else { 6 }
+        );
+        let notices: Vec<_> = events
+            .iter()
+            .filter(|event| event.notice && event.message == totals)
+            .collect();
+        assert_eq!(notices.len(), 1);
+        let notice = renderer.update(notices[0], Duration::from_secs(3)).unwrap();
+        assert!(notice.starts_with('\n') && notice.ends_with('\n'));
+        assert!(notice.contains(&totals), "{notice:?}");
+        let final_line = renderer.update(completed, Duration::from_secs(4)).unwrap();
+        assert!(final_line.contains("100%"), "{final_line:?}");
+        assert!(!final_line.contains("/6 chunks"), "{final_line:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_piped_run_prints_far_fewer_lines_than_events() {
     let directory = tempfile::tempdir().unwrap();
@@ -90,10 +172,9 @@ async fn a_piped_run_prints_far_fewer_lines_than_events() {
         (events, printed)
     });
 
-    let report =
-        converter::AssetPipeline::run_async(converter::PipelineConfig::new(&data, &output), tx)
-            .await
-            .unwrap();
+    let report = converter::AssetPipeline::run_async(common::cpu_lod_config(&data, &output), tx)
+        .await
+        .unwrap();
     let (events, printed) = collector.await.unwrap();
     assert!(report.complete);
 
@@ -125,6 +206,7 @@ fn the_converter_binary_prints_a_few_status_lines_and_a_summary() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .args(["--lod-encoder", "cpu"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -143,9 +225,24 @@ fn the_converter_binary_prints_a_few_status_lines_and_a_summary() {
         "a piped fixture run printed {} status lines:\n{stderr}",
         lines.len()
     );
+    let lod_totals = "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks";
     assert!(
-        lines.iter().all(|line| line.contains(" elapsed")),
+        lines
+            .iter()
+            .all(|line| line.contains(" elapsed") || line.ends_with(lod_totals)),
         "{stderr}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.ends_with(lod_totals))
+            .count(),
+        1,
+        "one final per-world totals notice:\n{stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("  note: {lod_totals}")),
+        "{stdout}"
     );
     assert!(stdout.contains("Conversion complete in"), "{stdout}");
     assert!(stdout.contains("converted"), "{stdout}");
@@ -169,6 +266,7 @@ fn a_failed_run_prints_what_went_wrong_and_the_command_that_resumes_it() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .args(["--lod-encoder", "cpu"])
         .arg("--fail-fast")
         .output()
         .unwrap();
@@ -213,6 +311,7 @@ fn an_incomplete_run_does_not_call_itself_complete() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .args(["--lod-encoder", "cpu"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);

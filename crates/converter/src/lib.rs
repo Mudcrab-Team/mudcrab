@@ -19,6 +19,7 @@ pub mod records;
 pub mod script;
 pub mod texture;
 pub mod texture_gpu;
+mod texture_ktx2;
 
 #[cfg(test)]
 mod test_strategies;

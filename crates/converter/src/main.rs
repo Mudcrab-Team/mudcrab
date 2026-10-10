@@ -33,6 +33,7 @@ struct Cli {
     extract_all_archive_files: bool,
     texture_encoder: TextureEncoder,
     record_reader: RecordReader,
+    lod_texture_encoder: TextureEncoder,
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
@@ -167,6 +168,7 @@ async fn main() -> Result<()> {
     config.verify_cache = cli.verify_cache;
     config.no_lod = cli.no_lod;
     config.texture_encoder = cli.texture_encoder;
+    config.lod_texture_encoder = cli.lod_texture_encoder;
     config.ingestion_sync = cli.ingestion_sync;
     config.extract_all_archive_files = cli.extract_all_archive_files;
     if let Some(cpu_jobs) = cli.cpu_jobs {
@@ -453,6 +455,16 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
             " --texture-encoder gpu --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
         ));
     }
+    if let TextureEncoder::Gpu { quality, batch_mb } = cli.lod_texture_encoder {
+        command.push_str(" --lod-encoder gpu");
+        if !matches!(cli.texture_encoder, TextureEncoder::Gpu { .. }) {
+            command.push_str(&format!(
+                " --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
+            ));
+        }
+    } else {
+        command.push_str(" --lod-encoder cpu");
+    }
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
@@ -463,7 +475,7 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
         command.push_str(" --extract-all-archive-files");
     }
     match cli.ingestion_sync {
-        IngestionSync::PerFile => {}
+        IngestionSync::PerFile => command.push_str(" --ingestion-sync per-file"),
         IngestionSync::Archive => command.push_str(" --ingestion-sync archive"),
         IngestionSync::None => command.push_str(" --ingestion-sync none"),
     }
@@ -673,10 +685,11 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut reuse_assets = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
-    let mut ingestion_sync = IngestionSync::PerFile;
+    let mut ingestion_sync = IngestionSync::Archive;
     let mut extract_all_archive_files = false;
     let mut use_gpu = false;
     let mut record_reader = RecordReader::Legacy;
+    let mut use_lod_gpu = true;
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
     let mut fail_fast = false;
@@ -714,6 +727,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     Some("cpu") => false,
                     Some("gpu") => true,
                     _ => bail!("--texture-encoder must be cpu or gpu"),
+                };
+            }
+            Some("--lod-encoder") => {
+                use_lod_gpu = match next_value(&mut args, "--lod-encoder")?.to_str() {
+                    Some("cpu") => false,
+                    Some("gpu") => true,
+                    _ => bail!("--lod-encoder must be cpu or gpu"),
                 };
             }
             Some("--record-reader") => {
@@ -757,18 +777,26 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     if positional.is_empty() || positional.len() > 2 {
         bail!(usage());
     }
+    let gpu_encoder = TextureEncoder::Gpu {
+        quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
+        batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
+    };
+    if !use_gpu && !use_lod_gpu && (gpu_quality.is_some() || gpu_batch_mb.is_some()) {
+        bail!(
+            "--gpu-quality and --gpu-batch-mb require --texture-encoder gpu or --lod-encoder gpu"
+        );
+    }
     if ingestion_sync == IngestionSync::None && !verify_cache {
         bail!("--ingestion-sync none requires verified cache reuse; omit --no-verify-cache");
     }
     let texture_encoder = if use_gpu {
-        TextureEncoder::Gpu {
-            quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
-            batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
-        }
+        gpu_encoder
     } else {
-        if gpu_quality.is_some() || gpu_batch_mb.is_some() {
-            bail!("--gpu-quality and --gpu-batch-mb require --texture-encoder gpu");
-        }
+        TextureEncoder::Cpu
+    };
+    let lod_texture_encoder = if use_lod_gpu {
+        gpu_encoder
+    } else {
         TextureEncoder::Cpu
     };
     Ok(Cli {
@@ -785,6 +813,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         extract_all_archive_files,
         texture_encoder,
         record_reader,
+        lod_texture_encoder,
         fail_fast,
         invalidate_cache,
         verify_cache,
@@ -827,7 +856,7 @@ fn parse_u64(value: OsString, option: &str) -> Result<u64> {
 /// The help text printed for `--help` and after a usage error.
 fn usage() -> &'static str {
     "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
-                 [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
+                 [--texture-encoder cpu|gpu] [--lod-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
                  [--record-reader legacy|inhouse]
@@ -838,9 +867,9 @@ Converts a Skyrim Data directory into runtime assets.
 
 Archive ingestion extracts the formats used by conversion and English string banks.
 --extract-all-archive-files retains every archive entry for compatibility and comparisons.
---ingestion-sync defaults to per-file. archive syncs every extracted file in parallel after
-each archive; none skips those syncs for regenerable ingestion bytes and requires cache
-verification. These options do not change runtime package publication.
+--ingestion-sync defaults to archive: sealed packs provide batch durability. per-file also
+flushes each unique derived payload; none skips extraction flushes for regenerable bytes
+and requires verified reuse. Runtime package publication keeps its durability contract.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1091,6 +1120,7 @@ mod tests {
             extract_all_archive_files: false,
             texture_encoder: TextureEncoder::Cpu,
             record_reader: RecordReader::Legacy,
+            lod_texture_encoder: TextureEncoder::Cpu,
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
@@ -1100,18 +1130,18 @@ mod tests {
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
             resume_command("converter.exe", &cli, staging),
-            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu --ingestion-sync per-file"
         );
         // A renamed binary is named as it is, quoted when its name has a space.
         assert_eq!(
             resume_command("mudcrab converter", &cli, staging),
-            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu --ingestion-sync per-file"
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
-        assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        assert!(resume_command("converter", &no_lod, staging).contains(" --no-lod"));
         let inhouse = parse_cli(vec![
             "Data".into(),
             "--record-reader".into(),
@@ -1120,7 +1150,7 @@ mod tests {
         .unwrap();
         assert_eq!(inhouse.record_reader, RecordReader::Inhouse);
         assert!(
-            resume_command("converter", &inhouse, staging).ends_with(" --record-reader inhouse")
+            resume_command("converter", &inhouse, staging).contains(" --record-reader inhouse")
         );
         assert!(
             parse_cli(vec![
@@ -1139,19 +1169,19 @@ mod tests {
             },
             ..cli
         };
-        assert!(
-            resume_command("converter.exe", &gpu, staging)
-                .ends_with(" --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256")
-        );
+        assert!(resume_command("converter.exe", &gpu, staging).ends_with(
+            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --lod-encoder cpu --ingestion-sync per-file"
+        ));
     }
 
     #[test]
     fn parses_and_preserves_ingestion_options_on_resume() {
         let staging = Path::new("assets.staging");
         let defaults = parse_cli(vec!["Data".into()]).unwrap();
-        assert_eq!(defaults.ingestion_sync, IngestionSync::PerFile);
+        assert_eq!(defaults.ingestion_sync, IngestionSync::Archive);
         assert!(!defaults.extract_all_archive_files);
         for (value, policy) in [
+            ("per-file", IngestionSync::PerFile),
             ("archive", IngestionSync::Archive),
             ("none", IngestionSync::None),
         ] {
@@ -1329,6 +1359,80 @@ mod tests {
         );
     }
 
+    /// LOD defaults to GPU independently of ordinary textures, and explicit CPU survives resume.
+    #[test]
+    fn defaults_to_gpu_lod_and_preserves_explicit_cpu_on_resume() {
+        let cli = parse_cli(vec!["Data".into()]).unwrap();
+        assert_eq!(cli.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            cli.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: converter::texture_gpu::DEFAULT_QUALITY,
+                batch_mb: converter::texture_gpu::DEFAULT_BATCH_MB,
+            }
+        );
+        let tuned = parse_cli(
+            ["Data", "--gpu-quality", "3", "--gpu-batch-mb", "128"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(tuned.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            tuned.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: 3,
+                batch_mb: 128
+            }
+        );
+        let cpu = parse_cli(
+            ["Data", "output", "--lod-encoder", "cpu"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(cpu.lod_texture_encoder, TextureEncoder::Cpu);
+        assert!(
+            resume_command("converter", &cpu, Path::new("staging")).contains(" --lod-encoder cpu")
+        );
+        let resumed = parse_cli(
+            [
+                "Data",
+                "output",
+                "--resume-staging",
+                "staging",
+                "--lod-encoder",
+                "cpu",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(resumed.lod_texture_encoder, cpu.lod_texture_encoder);
+        for option in ["--gpu-quality", "--gpu-batch-mb"] {
+            assert!(
+                parse_cli(
+                    [
+                        "Data",
+                        "--texture-encoder",
+                        "cpu",
+                        "--lod-encoder",
+                        "cpu",
+                        option,
+                        "2"
+                    ]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                )
+                .is_err()
+            );
+        }
+    }
+
     /// The GPU encoder flags reach the parsed configuration.
     #[test]
     fn parses_gpu_texture_options() {
@@ -1356,13 +1460,32 @@ mod tests {
         );
         // GPU settings without the GPU encoder are a mistake, not a no-op.
         let error = parse_cli(
-            ["Data", "--gpu-quality", "3"]
+            ["Data", "--lod-encoder", "cpu", "--gpu-quality", "3"]
                 .into_iter()
                 .map(OsString::from)
                 .collect(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("--texture-encoder gpu"));
+        let lod = parse_cli(
+            ["Data", "--lod-encoder", "gpu", "--gpu-quality", "3"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(lod.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            lod.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: 3,
+                batch_mb: 256
+            }
+        );
+        assert!(
+            resume_command("converter", &lod, Path::new("staging"))
+                .contains(" --lod-encoder gpu --gpu-quality 3 --gpu-batch-mb 256")
+        );
     }
 
     #[test]
