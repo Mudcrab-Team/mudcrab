@@ -47,6 +47,27 @@ The published repair checkpoints are [`01fb67f`](https://github.com/Mudcrab-Team
 
 An [interactive snapshot](pending-state.html) provides PR search, draft/base filters and hotspot details. Remediation comment receipts are recorded in [published comments](published-comments.json).
 
+## Published remediation comments
+
+All 14 comments identify the captured PR head, link the integration repairs and keep fixture results separate from native/retail acceptance. Their exact bodies and authors are in the [receipt file](published-comments.json).
+
+| PR comment | Publication check |
+| --- | --- |
+| [#124](https://github.com/Mudcrab-Team/mudcrab/pull/124#issuecomment-6097438576) | Published and exact body verified through GitHub readback |
+| [#128](https://github.com/Mudcrab-Team/mudcrab/pull/128#issuecomment-6097438975) | Published and exact body verified through GitHub readback |
+| [#154](https://github.com/Mudcrab-Team/mudcrab/pull/154#issuecomment-6097439376) | Published and exact body verified through GitHub readback |
+| [#163](https://github.com/Mudcrab-Team/mudcrab/pull/163#issuecomment-6097439710) | Published and exact body verified through GitHub readback |
+| [#167](https://github.com/Mudcrab-Team/mudcrab/pull/167#issuecomment-6097440034) | Published and exact body verified through GitHub readback |
+| [#198](https://github.com/Mudcrab-Team/mudcrab/pull/198#issuecomment-6097440351) | Published and exact body verified through GitHub readback |
+| [#200](https://github.com/Mudcrab-Team/mudcrab/pull/200#issuecomment-6097440725) | Published and exact body verified through GitHub readback |
+| [#204](https://github.com/Mudcrab-Team/mudcrab/pull/204#issuecomment-6097441075) | Published and exact body verified through GitHub readback |
+| [#207](https://github.com/Mudcrab-Team/mudcrab/pull/207#issuecomment-6097441416) | Published and exact body verified through GitHub readback |
+| [#208](https://github.com/Mudcrab-Team/mudcrab/pull/208#issuecomment-6097441767) | Published and exact body verified through GitHub readback |
+| [#209](https://github.com/Mudcrab-Team/mudcrab/pull/209#issuecomment-6097442186) | Published and exact body verified through GitHub readback |
+| [#211](https://github.com/Mudcrab-Team/mudcrab/pull/211#issuecomment-6097442584) | Published and exact body verified through GitHub readback |
+| [#212](https://github.com/Mudcrab-Team/mudcrab/pull/212#issuecomment-6097442911) | Published and exact body verified through GitHub readback |
+| [#213](https://github.com/Mudcrab-Team/mudcrab/pull/213#issuecomment-6097443633) | Published and exact body verified through GitHub readback |
+
 ## Future merge risks
 
 The audit distinguishes independent changes from inherited stack overlap: an ancestor/descendant PR pair is excluded from the independent count. At the validated checkpoint, 53 paths had independent overlap among 177 shared paths. The hottest paths were:

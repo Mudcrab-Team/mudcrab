@@ -1,4 +1,133 @@
 {
-  "status": "publication_pending",
-  "comments": []
+  "status": "posted_and_read_back",
+  "integration_branch": "t3/merge-pending-prs",
+  "validated_code_head": "864cda965740dbd19f252b76a7441b93698bf49c",
+  "comments": [
+    {
+      "pr": 124,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/124#issuecomment-6097438576",
+      "comment_id": 6097438576,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:02Z",
+      "captured_head_sha": "b5ff86fe54acf4fae499c1ca29a75684d260205f",
+      "body": "> Written with an AI assistant (Codex).\n\nThe all-open-PR integration exposed a conflict with #128: coe/coc used the startup worldspace and left ActiveSpace.interior unchanged. The integration repair selects the active worldspace, rejects teleports during a door crossing, unloads an interior, and updates the camera before the streaming planner runs. New tests cover interior exits, same-grid worldspace changes, and failed landings that must preserve the current space. Future cell transitions should use the same ActiveSpace contract; a TeleportPlayer message alone is insufficient.\n\nCaptured head `b5ff86fe54acf4fae499c1ca29a75684d260205f`; repairs are in [e55a12a](https://github.com/Mudcrab-Team/mudcrab/commit/e55a12a) on the [integration branch](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs). Combined workspace test evidence and remaining native/retail gates are in the [report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 128,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/128#issuecomment-6097438975",
+      "comment_id": 6097438975,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:04Z",
+      "captured_head_sha": "386267dc6569154036d6c45ebb04a91dc7c9e5aa",
+      "body": "> Written with an AI assistant (Codex).\n\nIntegrating #122/#124/#206/#210/#211 exposed additional users of exterior-only camera state. The integration repair gives priority admission, activation, traces, pacing and the adaptive controller shared ActiveSpace coordinate/identity rules. Interior positions no longer add RenderOrigin; traces identify the interior; same-grid worldspace or interior changes reset controller history. The controller also preserves unlimited uploads throughout a black-screen landing and restores the latest adaptive limit. Combined headless regressions cover these transitions. New camera consumers should use the shared helpers rather than EngineConfig.worldspace_id plus RenderOrigin.\n\nCaptured head `386267dc6569154036d6c45ebb04a91dc7c9e5aa`; repairs are in [e55a12a](https://github.com/Mudcrab-Team/mudcrab/commit/e55a12a) on the [integration branch](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs). Combined workspace test evidence and remaining native/retail gates are in the [report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 154,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/154#issuecomment-6097439376",
+      "comment_id": 6097439376,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:07Z",
+      "captured_head_sha": "2d78fc69ddea279229f1aa2b03785945e5a9a40d",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nReviewed captured head `2d78fc69ddea279229f1aa2b03785945e5a9a40d`.\n\nCombining this head with #190 and localization exposed two failures: cold MO2 conversion tried to discover optional output folders before they existed, and string banks from another mod or overwrite bypassed the virtual winner map. [62af074](https://github.com/Mudcrab-Team/mudcrab/commit/62af074) guards those folders and stages winning banks before both readers and database-cache lookup.\n\nPassing evidence: `mo2_profile` (7 tests) and the new `localization_integration` (2 tests). Those two tests cover both readers, PerFile/Archive ingestion, high-mod and overwrite winners, table edits, missing banks and language changes; edits to a losing mod remain cache hits.\n\nFor rebases, keep MO2 bank discovery and reader/cache roots behind the shared `StringsSource` boundary.\n\nCombined validation and acceptance limits: [integration report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 163,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/163#issuecomment-6097439710",
+      "comment_id": 6097439710,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:09Z",
+      "captured_head_sha": "ff066139ff648556f67be4e606601b0b6c266946",
+      "body": "> Written with an AI assistant (Codex).\n\nThe all-PR integration exposed schema explorer drift: its current-source hashes and numeric anchors still described world 7, four-byte XESP flags, and the legacy ARMO fallback. The integrated contracts are world 9, a flag value widened from XESP byte 4 with bytes 5-7 retained separately, and MOD4 as the in-house ARMO fallback. The local repair refreshes current integration evidence while preserving the historical native ledger/MCP pins. Project anchors now resolve unique source text and fail on missing or ambiguous snippets. CI previously filtered this suite to Python edits; it now checks annotation/template/evidence edits and owning Rust sources, so a later semantic change cannot silently bypass source drift checks. Native/runtime and full-corpus qualification remain separate. Builder --check and all 26 integrated research regressions pass on macOS/Python 3.11; source evidence is pinned to the immutable integration checkpoint f3a6a5c2d43b7d25282889e433e14d93a7f414eb.\n\nCaptured head `ff066139ff648556f67be4e606601b0b6c266946`. Repair: [ca8ca80](https://github.com/Mudcrab-Team/mudcrab/commit/ca8ca80); [combined evidence](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 167,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/167#issuecomment-6097440034",
+      "comment_id": 6097440034,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:11Z",
+      "captured_head_sha": "2983e96f25dd488858feec1f5b0cd22058e20ca1",
+      "body": "> Written with an AI assistant (Codex).\n\nIntegrating collision and TXST/XESP requires producer 27/world 9 as the combined output contract. capture-riverwood-lod.sh still accepted 25/7, which rejected combined packages while allowing packages without current contracts. The local repair requires 27/9 and rejects older retained_mesh_schema_version even when the outer metadata-only manifest is current. This keeps metadata-only compatibility separate from the current visual/collision capture gate. The positive fixture reads shared Rust constants so a future producer bump exposes wrapper drift. Preflight also resolves missing output paths with Python instead of GNU-only realpath -m, with nested-output and parent-symlink fixtures. All 177 integrated script tests passed on macOS/Python 3.11; no native capture was run.\n\nCaptured head `2983e96f25dd488858feec1f5b0cd22058e20ca1`. Repair: [01fb67f](https://github.com/Mudcrab-Team/mudcrab/commit/01fb67f); [combined evidence](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 198,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/198#issuecomment-6097440351",
+      "comment_id": 6097440351,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:13Z",
+      "captured_head_sha": "f319a96346c7513b41fc11dba88dedb3cc185d38",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nReviewed captured head `f319a96346c7513b41fc11dba88dedb3cc185d38`.\n\nThe combined reader/cache pipeline needed three repairs: the in-house adapter's resolved text was being interpreted as IDs again; archive filtering retained English banks only; and bank casing could break overlay precedence. [62af074](https://github.com/Mudcrab-Team/mudcrab/commit/62af074) uses text-only export after in-house adaptation, retains all languages, canonicalizes archived bank paths and searches every matching loose directory, rejecting same-root aliases.\n\nPassing evidence: `localized_strings`, `string_bank_casing_preserves_later_archive_precedence` (BSA and BA2), and both new `localization_integration` tests covering Legacy/Inhouse and PerFile/Archive cold/warm conversions, table edits and language switches. The coexisting-directory test remains a Linux-specific gate.\n\nFor rebases, preserve the same selected-language lookup for readers and cache identity, plus canonicalization before archive overlays.\n\nCombined validation and acceptance limits: [integration report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 200,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/200#issuecomment-6097440725",
+      "comment_id": 6097440725,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:15Z",
+      "captured_head_sha": "28dce5aecdf095407ae10f12843550e4af7902c8",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nAt captured head `28dce5aecdf095407ae10f12843550e4af7902c8`, the union with #211 exposes an ownership gap: LOD batching retains its source quadrants and creates additional mesh buffers outside the admission ledger. [e55a12a](https://github.com/Mudcrab-Team/mudcrab/commit/e55a12a) keeps the original meshes whenever priority/admission/pipeline controls are enabled; default batching remains available with Bevy's ordinary upload budget. A regression covers this guard.\n\nBefore enabling both systems together, reserve and release the retained source assets plus generated vertex/index buffers through the same ledger, including rebuild, cancellation and retirement paths. Combined workspace checks passed; native performance qualification remains open. [Integration report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 204,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/204#issuecomment-6097441075",
+      "comment_id": 6097441075,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:17Z",
+      "captured_head_sha": "7dcf13440641b8695e55ff7b0b7f3aa1b6781cf5",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nReviewed captured head `7dcf13440641b8695e55ff7b0b7f3aa1b6781cf5`.\n\nThe union with #126 invalidates the earlier assumption that producer-24 meshes can be normal cache hits. [62af074](https://github.com/Mudcrab-Team/mudcrab/commit/62af074) uses combined producer 27 and rebuilds older meshes. Explicit metadata migration still accepts proven producer 26, verifies its original adapter-4/English settings hash and retains that identity with the asset bytes; regenerated metadata records the configured-language adapter.\n\nPassing evidence: `reader26_metadata_preserves_recorded_identity_without_normal_mesh_reuse`, `metadata_rebuild_preserves_retained_mesh_cache_contract`, and `older_cached_meshes_rebuild_body_dynamics_and_current_meshes_reuse`. Both new localization integration tests also pass for Legacy/Inhouse and PerFile/Archive.\n\nFor rebases, keep normal cache eligibility separate from metadata retention and preserve the recorded producer hash/identity across repeated migrations.\n\nCombined validation and acceptance limits: [integration report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 207,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/207#issuecomment-6097441416",
+      "comment_id": 6097441416,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:19Z",
+      "captured_head_sha": "ccfcb2051e2f40c09772d549fd80ed6fd30ee721",
+      "body": "> Written with an AI assistant (Codex).\n\nThe native_profiling CI job runs only Ubuntu and its change filter omits metal_trace.m. Consequently the Objective-C observer compilation/configuration tests are skipped in CI and a source-only observer change cannot trigger the job. The local integration repair includes all scripts/profiling paths and runs the suite on Ubuntu and macOS. All 14 tests at the captured PR head passed locally on macOS, including clang compilation/loading and rejected integer configuration. This is observer configuration validation, not a renderer capture or performance claim.\n\nCaptured head `ccfcb2051e2f40c09772d549fd80ed6fd30ee721`. Repair: [01fb67f](https://github.com/Mudcrab-Team/mudcrab/commit/01fb67f); [combined evidence](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 208,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/208#issuecomment-6097441767",
+      "comment_id": 6097441767,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:21Z",
+      "captured_head_sha": "119f8995012c8f8e3596f7797e52b3dd0370baaa",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nReviewed captured head `119f8995012c8f8e3596f7797e52b3dd0370baaa`.\n\nThe union with #209/#213 uses one bounded pack backend. New CLI/config runs default to Archive; PerFile additionally flushes each derived physical payload, and old serialized configs keep their PerFile default. Inventories constrain reuse with both typed selection and recognized recipe. [62af074](https://github.com/Mudcrab-Team/mudcrab/commit/62af074) adds all-language/canonical-path v2 recipes and verified v1 directory restore; the [#213 merge](https://github.com/Mudcrab-Team/mudcrab/commit/f3a6a5c2d43b7d25282889e433e14d93a7f414eb) preserves these repairs with pack-format2 deduplication and recovery.\n\nPassing regressions cover bounded cold/warm writers, pack-only v1 restore, interruption and both readers' localized/MO2 cache reuse. For rebases, update recipe production, directory acceptance and restore validation together. These fixture results do not establish retail performance or power-loss recovery.\n\nCombined validation and acceptance limits: [integration report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 209,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/209#issuecomment-6097442186",
+      "comment_id": 6097442186,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:24Z",
+      "captured_head_sha": "a19b95be0af9b9984fb8fe64c1ff08a662dcbfd4",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nReviewed captured head `a19b95be0af9b9984fb8fe64c1ff08a662dcbfd4`.\n\nThe base database cache skipped Legacy localization and hardcoded English, which could restore stale names after bank edits or language changes. [62af074](https://github.com/Mudcrab-Team/mudcrab/commit/62af074) hashes normalized selected language and each winning bank's presence/content for both readers. MO2 uses its effective virtual winners; filtered ingestion now retains every language. The shared batching/durability backend with #208/#213 preserves those cache constraints.\n\nPassing evidence: `database_cache_cold_warm_invalidation_and_corrupt_receipt_recovery` and both new `localization_integration` tests. The latter cover Legacy/Inhouse, PerFile/Archive, cold/warm reuse, bank edits/removal/addition, language switches and MO2 winner changes.\n\nFor rebases, keep cache identity tied to the exact lookup used by the reader and retain selection coverage when reusing older inventories.\n\nCombined validation and acceptance limits: [integration report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 211,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/211#issuecomment-6097442584",
+      "comment_id": 6097442584,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:26Z",
+      "captured_head_sha": "eb44729e3b5f13efcf5dc3b280518667db2e03b0",
+      "body": "> Written with an AI assistant (Codex).\n\nThe all-open-PR integration found three ownership gaps with #125/#200/#205. The integration repair charges dynamic clutter collision costs during scene preflight and observes the actual NifDepthMaterial/image bindings, retaining reservations when typed storage is unavailable. Bevy ExtendedMaterial does not automatically visit base texture dependencies, so the repair traverses its base explicitly. New regressions cover spawned MISC requests, collision bytes, native image catalog claims, and native CPU absence. LOD batching now keeps its original meshes whenever priority/admission/pipeline controls are enabled: its retained source assets plus generated mesh buffers still need explicit ledger reservations before that combination can be enabled. Default batching and Bevy upload budgets remain available independently.\n\nCaptured head `eb44729e3b5f13efcf5dc3b280518667db2e03b0`; repairs are in [e55a12a](https://github.com/Mudcrab-Team/mudcrab/commit/e55a12a) on the [integration branch](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs). Combined workspace test evidence and remaining native/retail gates are in the [report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 212,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/212#issuecomment-6097442911",
+      "comment_id": 6097442911,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:28Z",
+      "captured_head_sha": "97be55d3cd9302b648854529e92ee43d384ae53c",
+      "body": "> Written with an AI assistant (Codex).\n\nThe integration with #122 found that standalone streaming routes wrote benchmark reports but did not satisfy EngineConfig::is_benchmark_run(), so pacing/schedule instrumentation was omitted. The integration repair includes routes in that predicate and suppresses --benchmark-jump when a route already owns the camera. Added regression coverage for a stationary route and competing jump flags. Combined profiling retains measured window dimensions and the build-profile stamp.\n\nCaptured head `97be55d3cd9302b648854529e92ee43d384ae53c`; repairs are in [e55a12a](https://github.com/Mudcrab-Team/mudcrab/commit/e55a12a) on the [integration branch](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs). Combined workspace test evidence and remaining native/retail gates are in the [report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    },
+    {
+      "pr": 213,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/213#issuecomment-6097443633",
+      "comment_id": 6097443633,
+      "author": "TaylorTurnerIT",
+      "created_at": "2026-10-10T12:22:33Z",
+      "captured_head_sha": "68ec2dc296a87a90d8108026d39ca0096e0a2094",
+      "body": "> Written with an AI assistant (Codex) for @TaylorTurnerIT.\n\nIntegrated captured head `68ec2dc296a87a90d8108026d39ca0096e0a2094` with every other pending PR in the [combined branch](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs); [merge and repairs](https://github.com/Mudcrab-Team/mudcrab/commit/f3a6a5c2d43b7d25282889e433e14d93a7f414eb). The merge preserves format2 pack deduplication, verified pack-only restore, none-to-durable flushing and the Archive default while retaining all-language v2 coverage, effective MO2 string winners, selected-language database identity and producer 27 with retained metadata provenance. Those are the main rebase boundaries with #154/#198/#204/#208/#209. A warm fast path also skipped PerFile flushes after None and omitted fallback-copy counters; [927f07f](https://github.com/Mudcrab-Team/mudcrab/commit/927f07f) repairs both with verified streamed materialization and an 18-case regression. Payload-copy counters still do not represent all metadata/read/hash I/O.\n\nThe integration also removes the workflow's PR-base allowlist, so stacked targets can run CI; file filtering uses the immutable event base and full history, and manual dispatch runs all owning gates. Future merges should run the captured-head/overlap audit and the combined converter fixtures, rather than rely on either parent's earlier validation. Final workspace results and unrun retail/native/performance gates are recorded in the [report](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010)."
+    }
+  ]
 }
