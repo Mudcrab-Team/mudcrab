@@ -51,3 +51,24 @@ using the outline to judge whether it has an active collider.
 The collision extractor does not decode every Havok shape family. Its skip
 reports are the coverage queue for those models. The Riverwood test area must
 have zero unsupported fixed placements before treating its coverage as complete.
+
+Version 2 collision extras add a `bodies` array with each `bhkRigidBody`'s
+mass, inertia, centre of mass, damping, friction, restitution and velocity
+limits. A placed reference whose base record type is movable (`MISC`, `WEAP`,
+`ARMO`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`, `KEYM`, `SCRL`) and whose model
+carries a body of kind `dynamic` becomes a dynamic Rapier body on the
+reference entity, using the authored mass properties and falling and colliding
+with the player, tankards and other clutter; a non-convex body uses one convex
+hull instead. Everything else is unchanged: fixed bodies keep today's fixed path, the record
+types deferred for later (`CONT`, `ACTI`, `FLOR` and the rest) keep no collider,
+as today, a version 1 asset spawns nothing new, and the body despawns with its
+cell. Two limits are deliberate for this slice: the character controller
+cannot push dynamic bodies yet, and the authored `deactivator_type` is not
+mapped, so bodies may sleep. Each body also starts asleep and stays where it
+was placed until a contact (a tankard, other clutter), a grab or a set velocity
+wakes it: models become ready one by one, so the shelf or terrain under a body
+may not have its collider yet when the body appears. Clutter bodies use continuous collision detection,
+the global linear speed cap is raised to 20,000 units/s and each body is clamped
+to its authored limit. Only a model's first dynamic body is used (extra ones
+are counted and logged), and over the live cap of 256 bodies a reference keeps
+no collider until its cell loads again.
