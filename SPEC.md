@@ -307,6 +307,8 @@ V161: Dynamic ingestion: Complete SE structural verdict includes TES4, all group
 
 V162: Dynamic ingestion: No-op archive-reopened output equals input bytes; complete archive remains usable without original Data files.
 
+V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -374,6 +376,8 @@ T55|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native in
 T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V128,V134,V143,V144,V145,V147,V148,V151,R26
 
 T57|x|P0 human schema explorer: compact offline HTML, searchable candidate catalog/current SQL, selected field/variant labels from project + read-only mudcrab-re MCP; verify source data, navigation, citations & unknowns|V134,V138,V140,V141,V159,V160
+
+T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
 
 ## §B BUGS
 
@@ -518,3 +522,5 @@ B135|2026-10-06|new main quaternion/performance entries reused schema V118/T42/B
 B170|2026-10-04|Fiji terrain LOD took 3302.352s for 4673 chunks; every enabled run rebuilt all chunks; atlas independently encoded supplied mips then discarded extra generated pyramid; per-world cache reads & per-tier DDS decodes repeated; world retained all GLBs|V170,V171,V172,V173; measured contributions pending
 B171|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused bytes as u32, persisting non-zero retail padding as flags|V174; shared one-byte decoder; padded/missing/truncated regressions
 B172|2026-10-09|Cached GLB forward node/mesh links used unchecked indexing, and reuse refusal reasons were discarded|V171; checked links, matching-hash malformed-cache regression, refusal notices and per-world totals; V116 overall weights unchanged
+
+B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190

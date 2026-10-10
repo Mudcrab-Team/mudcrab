@@ -303,28 +303,37 @@ pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
 /// physics arrays (`TREE` trunk flexibility), or RGBA color structures (`CLFM`/`AACT`)
 /// are not inadvertently overwritten as 4-byte FormIDs.
 fn is_form_id_subrecord(record_type: &[u8; 4], tag: &[u8], len: usize) -> bool {
-    if len != 4 || tag.len() < 4 {
+    let Ok(tag_4) = <&[u8; 4]>::try_from(tag) else {
+        return false;
+    };
+    // xEdit wbFaction: FormID, signed rank, three unused bytes. Only the
+    // leading FormID changes; the same SNAM tag on TES4/TREE has another layout.
+    if record_type == b"NPC_" && tag_4 == b"SNAM" {
+        return len == 8;
+    }
+    if len != 4 {
         return false;
     }
-    let tag_4: &[u8; 4] = tag[..4].try_into().unwrap();
     match (record_type, tag_4) {
         (b"TES4" | b"CLFM" | b"AACT", _) => false,
-        (b"TREE", b"CNAM") => false,
-        (b"TREE", b"SNAM" | b"PFIG") if len == 4 => true,
+        (b"TREE", b"SNAM" | b"PFIG") => true,
         (b"LTEX", b"TNAM" | b"GNAM" | b"MNAM") => true,
         (b"CELL", b"XCWT") => true,
         (b"WRLD", b"NAM2" | b"NAM3") => true,
-        (b"WRLD", b"WNAM" | b"CNAM" | b"RNAM" | b"TNAM") if len == 4 => true,
-        (b"CELL", b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") if len == 4 => true,
-        (b"NPC_", b"RNAM" | b"CNAM" | b"INAM") if len == 4 => true,
-        (b"RACE", b"WKMV" | b"RNMV") if len == 4 => true,
-        (b"NPC_", b"SNAM") if len >= 4 => true,
+        // xEdit TES5Edit @ 9fb016884bec138ea6c7b872cec831537d464c3e defines
+        // WRLD.RNAM as mixed coordinate/reference rows (Common:10011-10038)
+        // and TNAM as a string (TES5:10708). Neither is a single FormID;
+        // nested RNAM reference remapping remains separate work.
+        (b"WRLD", b"WNAM" | b"CNAM") => true,
+        (b"CELL", b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") => true,
+        (b"NPC_", b"RNAM" | b"CNAM" | b"INAM") => true,
+        (b"RACE", b"WKMV" | b"RNMV") => true,
         (
             b"REFR" | b"ACHR" | b"ACRE" | b"PGRE" | b"PMIS" | b"PHZD" | b"PARW" | b"PBAR" | b"PBEA"
             | b"PCON" | b"PFLA",
             b"NAME" | b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL",
-        ) if len == 4 => true,
-        (_, b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") if len == 4 => true,
+        ) => true,
+        (_, b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL") => true,
         _ => false,
     }
 }
