@@ -1,0 +1,36 @@
+{
+  "status": "posted_and_read_back",
+  "code_head": "c27b7234a078f195c1dd5731a17bfe3cf4e7bb19",
+  "comments": [
+    {
+      "pr": 128,
+      "captured_head": "386267dc6569154036d6c45ebb04a91dc7c9e5aa",
+      "id": 6101278962,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/128#issuecomment-6101278962",
+      "author": "TaylorTurnerIT",
+      "created_at": null,
+      "body": "> Written with an AI assistant (Codex).\n\nRiverwood evaluation of the integrated build found no working load doors: the production converter never populated the optional `door_links` table this PR consumes. [c27b723](https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19) adds an atomic projection from canonical winning XTEL records for both readers, validates finite arrivals and destination door/cell identity, and exports display names. Database-cache identity includes the projection source. An exclusive-lock helper repairs an existing compatible database from its own records without relabeling asset producers.\n\nThe repaired producer-27 pack has 2,263 links, including seven Riverwood exterior doors and Sleeping Giant Inn. Full asset hashes and database integrity pass. Legacy and in-house fixtures verify reciprocal arrival frames and names; override removal and corrupt-record rollback are covered. A shared crosshair target drives the named E prompt and activation, preventing pickup/door double actions and stale-target fallback.\n\nKeep converter export, cache invalidation and optional-table compatibility together in future merges. Head `386267dc6569154036d6c45ebb04a91dc7c9e5aa` remains the captured PR head. Retail interior roundtrips and timeout/failed-return collision readiness remain open; fixture success does not establish those gates. [Runtime evidence](https://github.com/Mudcrab-Team/mudcrab/blob/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010/RUNTIME-REPAIRS.md).",
+      "readback_verified": true
+    },
+    {
+      "pr": 125,
+      "captured_head": "7bd9cc0bb76ad463132b7e95472ca14a38b93d73",
+      "id": 6101279263,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/125#issuecomment-6101279263",
+      "author": "TaylorTurnerIT",
+      "created_at": null,
+      "body": "> Written with an AI assistant (Codex).\n\nRiverwood evaluation found that E pickup only accepted DebugTankard, leaving authored DynamicClutter difficult to interact with. [c27b723](https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19) resolves a hit collider child to its owning dynamic reference, holds it in the streamed parent's local coordinates and wakes it on drop. Pickup/drop prompts share the same target with door activation. A regression uses a compound collider, translated parent and actual drop/fall simulation.\n\nSix native stationary probes each loaded 39 clutter bodies and 1,136 authored static colliders in the Riverwood window. This does not make containers, activators, doors or movable statics universally dynamic. Bodies start asleep; controller impulses remain disabled because of the Rapier transfer failure, so walking into an object is not an interaction acceptance test.\n\nFor future merges, preserve rigid-body root ownership, parent-space placement, wake-on-drop and arbitration of the shared E action. Inventory/persistence and broader collision coverage remain separate work. Captured/current head: `7bd9cc0bb76ad463132b7e95472ca14a38b93d73`. [Runtime evidence](https://github.com/Mudcrab-Team/mudcrab/blob/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010/RUNTIME-REPAIRS.md).",
+      "readback_verified": true
+    },
+    {
+      "pr": 200,
+      "captured_head": "28dce5aecdf095407ae10f12843550e4af7902c8",
+      "id": 6101279610,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/200#issuecomment-6101279610",
+      "author": "TaylorTurnerIT",
+      "created_at": null,
+      "body": "> Written with an AI assistant (Codex).\n\nDefault-mode Riverwood profiling identified repeated LOD visibility refresh work across 65,224 ready quadrants. [c27b723](https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19) reuses selector scratch tables and Bevy's integer-key hasher while preserving semantic invalidation, tier selection, source/batch masks and upload ordering. Three baseline and three repaired native physics probes reduced that stage's p95 from 7.32–7.46 ms to 1.27–1.35 ms (about 82%). Final coverage and physics counts match; recorded functional failure counts are zero.\n\nWhole-frame acceptance still fails. Repaired runs measured 44.4–45.5 FPS, frame p99 46.6–60.9 ms and worst frames 63.7–104.2 ms. Nearby world-ready time was 2.31–2.50 s after versus 2.09–2.15 s before. This is a CPU-stage improvement, not an accepted overall loading improvement. Large initial LOD scene spawning reached about 14 ms and render extract/asset preparation about 40 ms. GPU timings were unavailable; render-thread waiting does not establish GPU execution cost.\n\nFuture pacing work needs to bound/split initial LOD scene instantiation separately from later batching and account for retained source assets/generated buffers before enabling batching under admission control. Do not generalize these warm-cache stationary probes to travel or the user's older version. Captured/current head: `28dce5aecdf095407ae10f12843550e4af7902c8`. [Settings, hashes and six-run receipt](https://github.com/Mudcrab-Team/mudcrab/blob/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010/runtime-native-comparison.json); [validation and limits](https://github.com/Mudcrab-Team/mudcrab/blob/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010/RUNTIME-REPAIRS.md).",
+      "readback_verified": true
+    }
+  ]
+}
