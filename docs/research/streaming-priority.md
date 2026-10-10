@@ -51,7 +51,7 @@ LOD keeps its existing build/content validation, hash verification, bounded retr
 
 ## Trace fields
 
-The existing [streaming trace](streaming-trace.md) receives an additive `scene_admission` object when priority, a scene cap or pipeline controls enable admission; the default fixed path records `null`. Pipeline controls also report their effective budgets, mode, reasons and reservation observations. The trace retains `format_version: 1`, benchmark format 7 and the existing measured-frame CSV layout.
+The existing [streaming trace](streaming-trace.md) receives an additive `scene_admission` object when priority, a scene cap or pipeline controls enable admission; the default fixed path records `null`. Pipeline controls also report their effective budgets, mode, reasons and reservation observations. The trace retains `format_version: 1` and the existing measured-frame CSV layout. Legacy benchmark reports retain format 7; the dedicated real-time comparison route uses format 8, as described in the [comparison protocol](streaming-comparison-protocol.md).
 
 | Field | Meaning |
 | --- | --- |

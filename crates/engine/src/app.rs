@@ -31,6 +31,7 @@ use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap},
     log::{Level, LogPlugin},
+    math::DVec3,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     render::occlusion_culling::OcclusionCulling,
@@ -127,8 +128,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
     let asset_path = config.assets_dir.to_string_lossy().into_owned();
-    let benchmark_active =
-        config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
+    let benchmark_active = config.benchmark_frames.is_some()
+        || config.benchmark_duration_secs.is_some()
+        || config.streaming_benchmark_route_speed.is_some();
     configure_benchmark_priority(benchmark_active)?;
     let window = (!config.headless || shots_active).then(|| Window {
         title: config.window_title(),
@@ -145,7 +147,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         } else {
             WindowPosition::Automatic
         },
-        present_mode: if benchmark_active {
+        present_mode: if benchmark_active && !config.benchmark_vsync {
             PresentMode::AutoNoVsync
         } else {
             PresentMode::AutoVsync
@@ -212,6 +214,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
         .add_systems(Update, (fly_camera, capture_acceptance_screenshot));
+    if app
+        .world()
+        .resource::<EngineConfig>()
+        .streaming_benchmark_route_speed
+        .is_some()
+    {
+        app.init_resource::<StreamingBenchmarkRoute>()
+            .add_systems(PreUpdate, drive_streaming_benchmark_route);
+    }
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
             .insert_resource(catalog)
@@ -1922,7 +1933,9 @@ fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
 /// walk-around view from behind and above it. [`sun_shadow_cascades`] measures its range from the
 /// camera, so the offsets live here rather than in two places.
 fn camera_offset(config: &EngineConfig) -> Vec3 {
-    if config.acceptance_screenshot.is_some() {
+    if config.streaming_benchmark_route_speed.is_some() {
+        Vec3::new(0.0, 6000.0, 0.0)
+    } else if config.acceptance_screenshot.is_some() {
         config
             .screenshot_camera_offset
             .map(Vec3::from)
@@ -1951,6 +1964,9 @@ fn setup_world(
     let camera_transform = if config.interactive_world_physics() {
         Transform::from_translation(camera_position)
             .looking_at(camera_position + Vec3::NEG_Z, Vec3::Y)
+    } else if config.streaming_benchmark_route_speed.is_some() {
+        Transform::from_translation(camera_position)
+            .looking_at(target + Vec3::new(0.0, 0.0, -8000.0), Vec3::Y)
     } else {
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
     };
@@ -2038,6 +2054,188 @@ fn initial_camera_ground_height(
 const CELL_SIZE_HALF: f32 = crate::world::components::CELL_SIZE * 0.5;
 const AUTO_FLIGHT_HALF_SPAN: f32 = crate::world::components::CELL_SIZE * 4.0;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StreamingBenchmarkPhase {
+    #[default]
+    Waiting,
+    Moving,
+    Tail,
+    Finished,
+}
+
+/// An opt-in real-clock camera workload. CPU settlement plus a fixed quiet
+/// interval does not certify GPU preparation or collision safety.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct StreamingBenchmarkRoute {
+    pub phase: StreamingBenchmarkPhase,
+    pub cpu_settled_real_seconds: Option<f64>,
+    pub movement_started_real_seconds: Option<f64>,
+    pub movement_finished_real_seconds: Option<f64>,
+    pub tail_finished_real_seconds: Option<f64>,
+    pub latest_real_seconds: f64,
+    pub route_distance_units: f64,
+    pub start_world_position: Option<[f64; 3]>,
+}
+
+impl StreamingBenchmarkRoute {
+    fn advance(&mut self, now: f64, cpu_ready: bool, config: &EngineConfig) {
+        self.latest_real_seconds = now;
+        let speed = config.streaming_benchmark_route_speed.unwrap_or(0.0);
+        if self.phase == StreamingBenchmarkPhase::Waiting {
+            if !cpu_ready {
+                self.cpu_settled_real_seconds = None;
+                return;
+            }
+            let settled = *self.cpu_settled_real_seconds.get_or_insert(now);
+            if now - settled + f64::EPSILON < config.streaming_benchmark_settle_secs {
+                return;
+            }
+            self.movement_started_real_seconds = Some(now);
+            self.phase = if speed == 0.0 {
+                self.movement_finished_real_seconds = Some(now);
+                StreamingBenchmarkPhase::Tail
+            } else {
+                StreamingBenchmarkPhase::Moving
+            };
+        }
+        let Some(started) = self.movement_started_real_seconds else {
+            return;
+        };
+        let moving_seconds = if speed == 0.0 {
+            0.0
+        } else {
+            (now - started).clamp(0.0, config.streaming_benchmark_route_secs)
+        };
+        self.route_distance_units = speed * moving_seconds;
+        if self.phase == StreamingBenchmarkPhase::Moving
+            && now - started >= config.streaming_benchmark_route_secs
+        {
+            self.movement_finished_real_seconds =
+                Some(started + config.streaming_benchmark_route_secs);
+            self.phase = StreamingBenchmarkPhase::Tail;
+        }
+        if self.phase == StreamingBenchmarkPhase::Tail
+            && let Some(finished) = self.movement_finished_real_seconds
+            && now - finished >= config.streaming_benchmark_tail_secs
+        {
+            self.tail_finished_real_seconds = Some(finished + config.streaming_benchmark_tail_secs);
+            self.phase = StreamingBenchmarkPhase::Finished;
+        }
+    }
+
+    fn local_position(&self, origin: IVec2) -> Option<Vec3> {
+        let mut position = DVec3::from_array(self.start_world_position?);
+        position.z -= self.route_distance_units;
+        position.x -= f64::from(origin.x) * f64::from(crate::world::components::CELL_SIZE);
+        position.z += f64::from(origin.y) * f64::from(crate::world::components::CELL_SIZE);
+        Some(position.as_vec3())
+    }
+}
+
+fn streaming_benchmark_cpu_ready(
+    config: &EngineConfig,
+    metrics: &StreamingMetrics,
+    admission: &crate::streaming::admission::SceneAdmission,
+    renderer: &RendererMetrics,
+    raw_responses: usize,
+    deferred_responses: usize,
+) -> bool {
+    let expected_cells =
+        ((i64::from(config.stream_radius) * 2 + 1).max(0) as usize).saturating_pow(2);
+    metrics.resident_cells == expected_cells
+        && metrics.loading_cells == 0
+        && metrics.active_requests == 0
+        && metrics.requests_submitted == metrics.responses_received
+        && metrics.retiring_cells == 0
+        && metrics.pending_asset_instances == 0
+        && metrics.pending_surface_instances == 0
+        && metrics.arming_queue_depth == 0
+        && metrics.pending_lod_queries == 0
+        && metrics.pending_lod_chunks == 0
+        && admission.active_jobs() == 0
+        && admission.queued_jobs() == 0
+        && raw_responses == 0
+        && deferred_responses == 0
+        && config
+            .streaming_benchmark_expected_models
+            .is_none_or(|expected| metrics.assets_ready == expected)
+        && config
+            .streaming_benchmark_expected_lod_chunks
+            .is_none_or(|expected| metrics.resident_lod_chunks == expected)
+        && config
+            .streaming_benchmark_expected_terrain
+            .is_none_or(|expected| metrics.terrain_patches_validated == expected)
+        && config
+            .streaming_benchmark_expected_water
+            .is_none_or(|expected| metrics.water_surfaces_validated == expected)
+        && metrics.failed_cells == 0
+        && metrics.asset_load_failures == 0
+        && metrics.material_validation_failures == 0
+        && metrics.terrain_validation_failures == 0
+        && metrics.water_validation_failures == 0
+        && metrics.transform_bounds_validation_failures == 0
+        && metrics.diagnostic_fallbacks == 0
+        && metrics.streaming_invariant_failures == 0
+        && metrics.failed_lod_queries == 0
+        && metrics.unrecovered_lod_queries == 0
+        && metrics.failed_lod_chunks == 0
+        && metrics.unrecovered_lod_chunks == 0
+        && renderer.renderer_validation_failures == 0
+        && renderer.final_path_active()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drive_streaming_benchmark_route(
+    time: Res<Time<Real>>,
+    config: Res<EngineConfig>,
+    origin: Res<RenderOrigin>,
+    metrics: Res<StreamingMetrics>,
+    admission: Res<crate::streaming::admission::SceneAdmission>,
+    renderer: Res<RendererMetrics>,
+    database: Res<WorldDatabase>,
+    runtime: Option<Res<crate::streaming::runtime::StreamingRuntime>>,
+    mut route: ResMut<StreamingBenchmarkRoute>,
+    mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    let Ok(mut transform) = camera.single_mut() else {
+        return;
+    };
+    route.start_world_position.get_or_insert([
+        f64::from(transform.translation.x)
+            + f64::from(origin.0.x) * f64::from(crate::world::components::CELL_SIZE),
+        f64::from(transform.translation.y),
+        f64::from(transform.translation.z)
+            - f64::from(origin.0.y) * f64::from(crate::world::components::CELL_SIZE),
+    ]);
+    let ready = streaming_benchmark_cpu_ready(
+        &config,
+        &metrics,
+        &admission,
+        &renderer,
+        database.pending_cell_responses(),
+        runtime
+            .as_ref()
+            .map_or(0, |runtime| runtime.deferred_responses.len()),
+    );
+    let before = route.phase;
+    route.advance(time.elapsed_secs_f64(), ready, &config);
+    if let Some(position) = route.local_position(origin.0) {
+        transform.translation = position;
+    }
+    if route.phase != before {
+        let stage = match route.phase {
+            StreamingBenchmarkPhase::Waiting => "route_waiting",
+            StreamingBenchmarkPhase::Moving => "route_moving",
+            StreamingBenchmarkPhase::Tail => "route_tail",
+            StreamingBenchmarkPhase::Finished => "route_finished",
+        };
+        info!(phase = ?route.phase, distance = route.route_distance_units, "streaming benchmark route phase");
+        profiler.event("streaming-benchmark-route", stage, None);
+    }
+}
+
 #[derive(Default)]
 struct AutoFlightState {
     initialized: bool,
@@ -2076,7 +2274,11 @@ fn fly_camera(
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
-    if config.physics_fixture || config.interactive_world_physics() || config.shots.is_some() {
+    if config.physics_fixture
+        || config.interactive_world_physics()
+        || config.shots.is_some()
+        || config.streaming_benchmark_route_speed.is_some()
+    {
         return;
     }
     let started = std::time::Instant::now();
@@ -2213,6 +2415,170 @@ struct ScreenshotCaptureState {
 mod tests {
     use super::*;
     use bevy::asset::{AssetApp, AssetPlugin};
+
+    #[test]
+    fn benchmark_route_requires_an_uninterrupted_cpu_settled_interval() {
+        let config = EngineConfig {
+            streaming_benchmark_route_speed: Some(370.0),
+            ..default()
+        };
+        let mut route = StreamingBenchmarkRoute::default();
+        route.advance(1.0, false, &config);
+        route.advance(2.0, true, &config);
+        route.advance(6.0, true, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Waiting);
+        assert_eq!(route.cpu_settled_real_seconds, Some(2.0));
+        route.advance(6.5, false, &config);
+        assert_eq!(route.cpu_settled_real_seconds, None);
+        route.advance(8.0, true, &config);
+        route.advance(13.0, true, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Moving);
+        assert_eq!(route.cpu_settled_real_seconds, Some(8.0));
+        assert_eq!(route.movement_started_real_seconds, Some(13.0));
+        // New streaming demand during the route must not restart the wait.
+        route.advance(14.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Moving);
+        assert_eq!(route.route_distance_units, 370.0);
+    }
+
+    #[test]
+    fn benchmark_route_uses_absolute_real_time_across_large_deltas_and_rebases() {
+        let config = EngineConfig {
+            streaming_benchmark_route_speed: Some(3000.0),
+            streaming_benchmark_settle_secs: 0.0,
+            ..default()
+        };
+        let mut route = StreamingBenchmarkRoute {
+            start_world_position: Some([22_528.0, 5976.0, 47_104.0]),
+            ..default()
+        };
+        route.advance(10.0, true, &config);
+        let mut partitioned = StreamingBenchmarkRoute {
+            start_world_position: route.start_world_position,
+            ..default()
+        };
+        partitioned.advance(10.0, true, &config);
+        for now in [10.1, 10.4, 10.7, 11.0] {
+            partitioned.advance(now, false, &config);
+        }
+        // A one-second real interval is not reduced to virtual time's 250 ms cap.
+        route.advance(11.0, false, &config);
+        assert_eq!(route.route_distance_units, 3000.0);
+        assert_eq!(route.route_distance_units, partitioned.route_distance_units);
+        let before = route.local_position(IVec2::new(5, -12)).unwrap();
+        let after = route.local_position(IVec2::new(5, -11)).unwrap();
+        assert_eq!(before.x, after.x);
+        assert_eq!(before.y, after.y);
+        assert_eq!(after.z - before.z, crate::world::components::CELL_SIZE);
+        let stable = |position: Vec3, origin: IVec2| {
+            f64::from(position.z)
+                - f64::from(origin.y) * f64::from(crate::world::components::CELL_SIZE)
+        };
+        assert_eq!(
+            stable(before, IVec2::new(5, -12)),
+            stable(after, IVec2::new(5, -11))
+        );
+        // A long stalled frame clamps at the planned endpoint and crosses both
+        // phase boundaries without extending the route or the tail.
+        route.advance(1000.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Finished);
+        assert_eq!(route.route_distance_units, 135_000.0);
+        assert_eq!(route.movement_finished_real_seconds, Some(55.0));
+        assert_eq!(route.tail_finished_real_seconds, Some(65.0));
+    }
+
+    #[test]
+    fn stationary_benchmark_route_enters_tail_without_movement() {
+        let config = EngineConfig {
+            streaming_benchmark_route_speed: Some(0.0),
+            streaming_benchmark_settle_secs: 0.0,
+            streaming_benchmark_tail_secs: 3.0,
+            ..default()
+        };
+        let mut route = StreamingBenchmarkRoute::default();
+        route.advance(4.0, true, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Tail);
+        assert_eq!(route.movement_started_real_seconds, Some(4.0));
+        assert_eq!(route.movement_finished_real_seconds, Some(4.0));
+        assert_eq!(route.route_distance_units, 0.0);
+        route.advance(6.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Tail);
+        route.advance(7.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Finished);
+        assert_eq!(route.tail_finished_real_seconds, Some(7.0));
+        assert_eq!(route.route_distance_units, 0.0);
+    }
+
+    #[test]
+    fn benchmark_cpu_gate_checks_expected_counts_and_pending_database_payloads() {
+        let config = EngineConfig {
+            streaming_benchmark_expected_models: Some(7),
+            streaming_benchmark_expected_lod_chunks: Some(3),
+            streaming_benchmark_expected_terrain: Some(4),
+            streaming_benchmark_expected_water: Some(1),
+            ..default()
+        };
+        let metrics = StreamingMetrics {
+            resident_cells: 25,
+            requests_submitted: 25,
+            responses_received: 25,
+            assets_ready: 7,
+            resident_lod_chunks: 3,
+            terrain_patches_validated: 4,
+            water_surfaces_validated: 1,
+            ..default()
+        };
+        let admission = crate::streaming::admission::SceneAdmission::default();
+        let renderer = RendererMetrics {
+            gpu_preprocessing_active: true,
+            gpu_culling_active: true,
+            indirect_drawing_active: true,
+            occlusion_culling_views: 1,
+            hzb_views: 1,
+            indirect_phase_buffers: 1,
+            indirect_batch_sets: 1,
+            proof_frames: 1,
+            ..default()
+        };
+        let ready = |metrics: &StreamingMetrics, raw, deferred| {
+            streaming_benchmark_cpu_ready(&config, metrics, &admission, &renderer, raw, deferred)
+        };
+        assert!(ready(&metrics, 0, 0));
+        assert!(!ready(&metrics, 1, 0));
+        assert!(!ready(&metrics, 0, 1));
+        assert!(!ready(
+            &StreamingMetrics {
+                assets_ready: 6,
+                ..metrics.clone()
+            },
+            0,
+            0
+        ));
+        assert!(!ready(
+            &StreamingMetrics {
+                pending_lod_queries: 1,
+                ..metrics.clone()
+            },
+            0,
+            0
+        ));
+        assert!(!ready(
+            &StreamingMetrics {
+                pending_surface_instances: 1,
+                ..metrics.clone()
+            },
+            0,
+            0
+        ));
+        assert!(!ready(
+            &StreamingMetrics {
+                asset_load_failures: 1,
+                ..metrics
+            },
+            0,
+            0
+        ));
+    }
     use bevy::world_serialization::WorldSerializationPlugin;
 
     #[test]
