@@ -2,6 +2,7 @@
 """Capture repeated Riverwood startups; counters never establish pixel coverage."""
 
 import argparse
+from contextlib import contextmanager
 import csv
 import hashlib
 import json
@@ -396,22 +397,37 @@ def analyze_run(directory, manifest):
     }
 
 
+@contextmanager
+def defer_campaign_interrupts(mark_interrupted):
+    """Finish owned-child cleanup and artifact writes after repeated stop signals."""
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    for sig in previous:
+        signal.signal(sig, lambda _sig, _frame: mark_interrupted())
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def stop_owned_group(process):
-    """The child was launched in a new session; signal only that session's group."""
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        process.wait()
-        return
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+    """Reap the leader and stop only its original, separately launched process group."""
+    errors = []
+    process.poll()
+    for sig, timeout in ((signal.SIGTERM, 5), (signal.SIGKILL, 2)):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            errors.append(f"owned group signal {sig}: {error}")
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if sig == signal.SIGKILL:
+                errors.append("owned engine did not exit before cleanup deadline")
+        process.poll()
+    return errors
 
 
 def engine_command(args, directory, budget, run_id):
@@ -430,9 +446,17 @@ def engine_command(args, directory, budget, run_id):
     ]
 
 
+def interrupted_validation(reason):
+    """Record incomplete analysis without implying functional or visual acceptance."""
+    return {
+        "functional_checks_passed": False, "visual_inspection": "pending",
+        "failures": [reason], "notes": [],
+        "retry_accounting": {"status": "not_observed"},
+    }
+
+
 def run_one(args, directory, budget, run_id, environment):
     directory.mkdir()
-    before = input_hashes(args.engine, args.assets)
     command = engine_command(args, directory, budget, run_id)
     manifest = {
         "format_version": 1, "run_id": run_id, "started_utc": utc_now(), "ended_utc": None,
@@ -442,7 +466,7 @@ def run_one(args, directory, budget, run_id, environment):
         "worldspace": 60, "start_grid": [5, -12], "stream_radius": 2,
         "camera_offset": CAMERA_OFFSET, "environment": {key: environment[key] for key in SAFE_ENVIRONMENT if key in environment},
         "commit": args.commit, "scenario": "repeat-terrain-startup",
-        "input_hashes_before": before, "input_hashes_after": None,
+        "input_hashes_before": None, "input_hashes_after": None,
         "hash_scope": "engine plus five primary asset inputs; mesh/texture payload files are not individually hashed",
         "exit_code": None, "timed_out": False, "interrupted": False,
         "cache_policy": "fresh process; operating-system caches preserved",
@@ -451,8 +475,9 @@ def run_one(args, directory, budget, run_id, environment):
     write_json(directory / "run.json", manifest)
     started = time.monotonic()
     process = None
-    with (directory / "engine.stdout.log").open("wb") as stdout, (directory / "engine.stderr.log").open("wb") as stderr:
-        try:
+    try:
+        manifest["input_hashes_before"] = input_hashes(args.engine, args.assets)
+        with (directory / "engine.stdout.log").open("wb") as stdout, (directory / "engine.stderr.log").open("wb") as stderr:
             process = subprocess.Popen(command, cwd=directory, env=environment, stdout=stdout, stderr=stderr, start_new_session=True)
             manifest["owned_process_group"] = process.pid
             write_json(directory / "run.json", manifest)
@@ -460,28 +485,46 @@ def run_one(args, directory, budget, run_id, environment):
                 manifest["exit_code"] = process.wait(timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 manifest["timed_out"] = True
-                stop_owned_group(process)
-                manifest["exit_code"] = process.returncode
-        except KeyboardInterrupt:
-            # Signals can arrive while publishing the owned process group, before wait starts.
+    except KeyboardInterrupt:
+        manifest["interrupted"] = True
+    except OSError as error:
+        manifest["run_error"] = str(error)
+    finally:
+        def mark_interrupted():
             manifest["interrupted"] = True
+
+        with defer_campaign_interrupts(mark_interrupted):
             if process is not None:
-                stop_owned_group(process)
+                try:
+                    manifest["cleanup_errors"] = stop_owned_group(process)
+                except KeyboardInterrupt:
+                    # Also retain evidence if a caller-injected interruption reaches cleanup.
+                    mark_interrupted()
+                    manifest["cleanup_errors"] = stop_owned_group(process)
                 manifest["exit_code"] = process.returncode
-        except OSError as error:
-            manifest["launch_error"] = str(error)
-        finally:
-            if process is not None:
-                stop_owned_group(process)
             manifest["ended_utc"] = utc_now()
             manifest["wall_seconds"] = time.monotonic() - started
             try:
                 manifest["input_hashes_after"] = input_hashes(args.engine, args.assets)
+            except KeyboardInterrupt:
+                mark_interrupted()
+                manifest["input_hash_error"] = "input hashing interrupted"
             except OSError as error:
                 manifest["input_hash_error"] = str(error)
             write_json(directory / "run.json", manifest)
-    result = analyze_run(directory, manifest)
-    write_json(directory / "validation.json", result)
+            try:
+                result = analyze_run(directory, manifest)
+            except KeyboardInterrupt:
+                mark_interrupted()
+                result = interrupted_validation("run analysis interrupted")
+            if manifest["interrupted"]:
+                result["functional_checks_passed"] = False
+                result["failures"].append("campaign interrupted")
+            if manifest.get("cleanup_errors"):
+                result["functional_checks_passed"] = False
+                result["failures"].extend(manifest["cleanup_errors"])
+            write_json(directory / "run.json", manifest)
+            write_json(directory / "validation.json", result)
     return {"run_id": run_id, "upload_budget_mib": budget, **result}, manifest["interrupted"]
 
 
@@ -527,12 +570,9 @@ def main(argv=None):
     args = parse_args(argv)
     if os.name != "posix":
         raise SystemExit("This runner requires POSIX process groups (Linux or macOS).")
-    # Preserve the owned-child cleanup and partial manifests when a campaign is stopped.
-    signal.signal(signal.SIGTERM, interrupt_campaign)
     if not args.engine.is_file() or not os.access(args.engine, os.X_OK):
         raise SystemExit("--engine must name an executable file")
     try:
-        baseline = input_hashes(args.engine, args.assets)
         args.output.mkdir(parents=True, exist_ok=False)
     except OSError as error:
         raise SystemExit(str(error)) from error
@@ -541,30 +581,62 @@ def main(argv=None):
     summary = {
         "format_version": 1, "started_utc": utc_now(), "ended_utc": None,
         "planned_launches": args.repeats * len(args.budgets), "runs": [],
-        "baseline_input_hashes": baseline, "functional_checks_passed": False,
+        "baseline_input_hashes": None, "functional_checks_passed": False,
         "visual_inspection": "pending", "performance_claim": "none; repeated functional captures",
+        "interrupted": False,
     }
     write_json(args.output / "summary.json", summary)
+    previous_term = signal.signal(signal.SIGTERM, interrupt_campaign)
     interrupted = False
-    for budget in args.budgets:
-        for repeat in range(1, args.repeats + 1):
-            run_id = f"{budget}mib-{repeat:02d}"
-            result, interrupted = run_one(args, args.output / run_id, budget, run_id, environment)
-            if input_hashes(args.engine, args.assets) != baseline:
-                result["functional_checks_passed"] = False
-                result["failures"].append("inputs differ from the campaign baseline")
-                write_json(args.output / run_id / "validation.json", {key: value for key, value in result.items() if key not in ("run_id", "upload_budget_mib")})
-            summary["runs"].append(result)
-            summary["functional_checks_passed"] = len(summary["runs"]) == summary["planned_launches"] and all(run["functional_checks_passed"] for run in summary["runs"])
-            write_json(args.output / "summary.json", summary)
-            print(json.dumps({"run_id": run_id, "functional_checks_passed": result["functional_checks_passed"], "failures": result["failures"], "retry_status": result["retry_accounting"]["status"]}), flush=True)
+    current_result = None
+    current_directory = None
+    try:
+        baseline = input_hashes(args.engine, args.assets)
+        summary["baseline_input_hashes"] = baseline
+        for budget in args.budgets:
+            for repeat in range(1, args.repeats + 1):
+                run_id = f"{budget}mib-{repeat:02d}"
+                current_result = None
+                current_directory = args.output / run_id
+                result, interrupted = run_one(args, current_directory, budget, run_id, environment)
+                current_result = result
+                # Retain completed run evidence before the next interruptible hash operation.
+                summary["runs"].append(result)
+                if not interrupted and input_hashes(args.engine, args.assets) != baseline:
+                    result["functional_checks_passed"] = False
+                    result["failures"].append("inputs differ from the campaign baseline")
+                    write_json(args.output / run_id / "validation.json", {key: value for key, value in result.items() if key not in ("run_id", "upload_budget_mib")})
+                write_json(args.output / "summary.json", summary)
+                print(json.dumps({"run_id": run_id, "functional_checks_passed": result["functional_checks_passed"], "failures": result["failures"], "retry_status": result["retry_accounting"]["status"]}), flush=True)
+                if interrupted:
+                    break
             if interrupted:
                 break
-        if interrupted:
-            break
-    summary["ended_utc"] = utc_now()
-    write_json(args.output / "summary.json", summary)
-    return 130 if interrupted else (0 if summary["functional_checks_passed"] else 1)
+    except KeyboardInterrupt:
+        interrupted = True
+        if current_result is not None:
+            current_result["functional_checks_passed"] = False
+            current_result["failures"].append("campaign input verification interrupted")
+    except OSError as error:
+        summary["campaign_error"] = str(error)
+    finally:
+        def mark_interrupted():
+            summary["interrupted"] = True
+            summary["functional_checks_passed"] = False
+
+        with defer_campaign_interrupts(mark_interrupted):
+            summary["interrupted"] = interrupted
+            summary["ended_utc"] = utc_now()
+            if interrupted and current_result is not None:
+                write_json(current_directory / "validation.json", {key: value for key, value in current_result.items() if key not in ("run_id", "upload_budget_mib")})
+            summary["functional_checks_passed"] = (
+                not summary["interrupted"] and "campaign_error" not in summary
+                and len(summary["runs"]) == summary["planned_launches"]
+                and all(run["functional_checks_passed"] for run in summary["runs"])
+            )
+            write_json(args.output / "summary.json", summary)
+        signal.signal(signal.SIGTERM, previous_term)
+    return 130 if summary["interrupted"] else (0 if summary["functional_checks_passed"] else 1)
 
 
 if __name__ == "__main__":

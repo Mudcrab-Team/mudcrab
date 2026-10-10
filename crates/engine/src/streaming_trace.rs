@@ -315,6 +315,62 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual CPU-only ledger diagnostic; timings are not an acceptance gate"]
+    fn measures_bounded_ledger_collection_cost() {
+        use std::{hint::black_box, time::Instant};
+
+        const FRAMES: usize = 2_000;
+        const REPEATS: usize = 7;
+        for scene_count in [0, 442, 20_000] {
+            let assets = Assets::<WorldAsset>::default();
+            let handles: Vec<_> = (0..scene_count).map(|_| assets.reserve_handle()).collect();
+            let mut baseline_ns = Vec::new();
+            let mut collection_ns = Vec::new();
+            for repeat in 0..REPEATS {
+                let mut trace = StreamingTrace::new(FRAMES, 20_000);
+                for handle in &handles {
+                    trace.observe_scene(handle.id());
+                    trace.update_scene(handle.id(), SceneLoadStatus::CpuLoaded);
+                }
+                let baseline = || {
+                    let started = Instant::now();
+                    for index in 0..FRAMES {
+                        black_box(index);
+                    }
+                    started.elapsed().as_nanos() as f64 / FRAMES as f64
+                };
+                // Alternate order to reduce consistent warm-cache or scheduling bias.
+                if repeat % 2 == 0 {
+                    baseline_ns.push(baseline());
+                }
+                let started = Instant::now();
+                for index in 0..FRAMES {
+                    black_box(trace.pending_scene_ids().count());
+                    trace.push_frame(frame(index as u64, BenchmarkWindow::Measured));
+                }
+                collection_ns.push(started.elapsed().as_nanos() as f64 / FRAMES as f64);
+                if repeat % 2 != 0 {
+                    baseline_ns.push(baseline());
+                }
+                assert_eq!(trace.report().samples.len(), FRAMES);
+                assert_eq!(trace.report().scenes.lifetime_unique_observed, scene_count);
+                assert_eq!(trace.report().dropped_samples, 0);
+                black_box(trace);
+            }
+            println!(
+                "{}",
+                serde_json::json!({
+                    "scope": "CPU-only loaded-scene ledger scan and frame append; excludes asset-server queries, ECS, GPU, serialization and retail rendering",
+                    "scene_count": scene_count, "frames_per_repeat": FRAMES,
+                    "baseline_ns_per_frame": baseline_ns,
+                    "collection_ns_per_frame": collection_ns,
+                    "performance_acceptance": false,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn keeps_startup_samples_and_reports_truncation() {
         let mut trace = StreamingTrace::new(2, 1);
         trace.push_frame(frame(1, BenchmarkWindow::Warmup));
