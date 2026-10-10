@@ -14,6 +14,8 @@ The [integration branch](https://github.com/Mudcrab-Team/mudcrab/tree/t3/merge-p
 | Python results | `301 passed` |
 | Build, Clippy, formatting and tooling gates | `Passed: workspace all-target check, strict all-target/all-feature Clippy, formatting, schema generation, workflow and spec checks` |
 
+The [player changelog](CHANGELOG.md) lists what to try. Follow-up [runtime repair evidence](RUNTIME-REPAIRS.md) covers the missing door projection, authored clutter pickup, action prompts and measured LOD selector work. The checkpoint below records the earlier integration validation; follow-up results are recorded separately.
+
 ## Scope and evidence
 
 The inventory records each PR's URL, exact `headRefOid`, base branch, draft status, changed files and captured ancestor PRs. The scope is #122, #123, #124, #125, #126, #128, #154, #161, #163, #167, #171, #173, #174, #175, #189, #190, #191, #197, #198, #200, #201, #204, #205, #206, #207, #208, #209, #210, #211, #212 and #213.
