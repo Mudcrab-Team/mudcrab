@@ -314,6 +314,8 @@ V200: Real-output timing validation ! propagate full selected-set failure; missi
 V180: Mutagen comparison ! reject every placement lacking record/winning-plugin metadata before type filtering; same-source checksums, independent full/light slots, winning plugin & interpreted placement fields; deleted overrides absent, no unexplained REFR/ACHR difference; finite comparisons; game inputs external.
 V181: Mutagen JSON flags ! preserve32-bit bitmask from signed/unsigned integers; non-integer & out-of-range flags fail.
 
+V210: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -387,6 +389,8 @@ T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/lig
 T100|x|Make validation timing fail on bad output; valid/broken generated artifact regression|V200
 
 T80|x|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V180,V181
+
+T110|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V210
 
 ## §B BUGS
 
@@ -538,3 +542,9 @@ B180|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan miscl
 B181|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V180; validate winner before deletion shortcut & require live position/rotation
 B182|2026-10-05|Mutagen exported high-bit record flags as negative JSON integers; unsigned-only test rejected real oracle at line12664|V181; bounded signed/unsigned32-bit deserialization
 B183|2026-10-09|Oracle inner joins hid placements missing record or winning-plugin metadata, allowing deleted-row resurrection to pass as absent|V180; left-joined metadata completeness guard, procedural orphan and REFR/ACHR resurrection regressions
+
+B210|2026-10-05|GPU tests validated shader/container without dispatching encoder|V210
+
+B211|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V210 unchanged
+
+B212|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V210,V118; same workspace/target selection for both test steps
