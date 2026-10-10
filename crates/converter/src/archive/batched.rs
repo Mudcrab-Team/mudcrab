@@ -341,6 +341,20 @@ pub(super) fn extract_with_session(
             }
         }
     }
+    let sync = SyncMeasurements::default();
+    let ingestion = FreshIngestion {
+        session,
+        archive: session.next_archive.fetch_add(1, Ordering::Relaxed),
+        // In archive mode the pack is canonical and durable. Derived blobs need no fsync.
+        sync_mode: if options.sync == IngestionSync::PerFile {
+            IngestionSync::PerFile
+        } else {
+            IngestionSync::None
+        },
+        sync: &sync,
+        writes: RawWriteMeasurements::default(),
+        used_blobs: Mutex::new(Vec::new()),
+    };
     // A complete sealed inventory permits #209's parallel, per-hash restore path.
     // Missing/corrupt derived blobs fall through to reconstruction from packs.
     if observer.is_none()
@@ -371,17 +385,16 @@ pub(super) fn extract_with_session(
                 progress,
                 stop,
                 options.io_jobs,
+                Some(&ingestion),
             )
         })? {
             verify_checkpoint_source(archive_path, &source_hash, &BTreeSet::new(), options)?;
             timings.cache_restore_seconds = restore_started.elapsed().as_secs_f64();
             timings.selected_files = files.len() as u64;
             timings.selected_bytes = files.iter().map(|file| file.bytes_written).sum();
-            timings.unique_payloads = files
-                .iter()
-                .map(|file| &file.sha256)
-                .collect::<BTreeSet<_>>()
-                .len() as u64;
+            ingestion.record_timings(&mut timings);
+            timings.sync_calls = sync.calls.load(Ordering::Relaxed);
+            timings.sync_worker_seconds = sync.nanoseconds.load(Ordering::Relaxed) as f64 / 1e9;
             timings.checkpoint_sync_calls = checkpoint_sync.calls.load(Ordering::Relaxed);
             timings.checkpoint_sync_worker_seconds =
                 checkpoint_sync.nanoseconds.load(Ordering::Relaxed) as f64 / 1e9;
@@ -398,20 +411,6 @@ pub(super) fn extract_with_session(
         reporter.announce();
     }
     let extraction_started = std::time::Instant::now();
-    let sync = SyncMeasurements::default();
-    let ingestion = FreshIngestion {
-        session,
-        archive: session.next_archive.fetch_add(1, Ordering::Relaxed),
-        // In archive mode the pack is canonical and durable. Derived blobs need no fsync.
-        sync_mode: if options.sync == IngestionSync::PerFile {
-            IngestionSync::PerFile
-        } else {
-            IngestionSync::None
-        },
-        sync: &sync,
-        writes: RawWriteMeasurements::default(),
-        used_blobs: Mutex::new(Vec::new()),
-    };
     let batches = partition(selected);
     let largest = batches
         .iter()
@@ -1369,6 +1368,119 @@ mod tests {
         assert!(durable.timings.checkpoint_sync_calls > 0);
         assert_eq!(durable.timings.payload_writes, 0);
         assert_eq!(fs::read(output.join("textures/a.dds")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn warm_restore_upgrades_none_durability_and_measures_fallback_copies() {
+        fn cannot_link(_: &Path, _: &Path) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+        fn blob_is_full(from: &Path, to: &Path) -> std::io::Result<()> {
+            if from.extension().is_none_or(|extension| extension != "1") {
+                return Err(std::io::Error::from_raw_os_error(if cfg!(windows) {
+                    1142
+                } else {
+                    31
+                }));
+            }
+            fs::hard_link(from, to)
+        }
+        type Link = fn(&Path, &Path) -> std::io::Result<()>;
+        let directory = tempfile::tempdir().unwrap();
+        let payload = b"warm shared payload";
+        for mode in [
+            IngestionSync::None,
+            IngestionSync::Archive,
+            IngestionSync::PerFile,
+        ] {
+            for same_cache in [true, false] {
+                for (route, link, alias_copies) in [
+                    ("hardlinks", (|from, to| fs::hard_link(from, to)) as Link, 0),
+                    ("copy", cannot_link as Link, 2),
+                    ("spill", blob_is_full as Link, 1),
+                ] {
+                    let root = directory
+                        .path()
+                        .join(format!("{mode:?}-{route}-{same_cache}"));
+                    fs::create_dir_all(&root).unwrap();
+                    let archive = fixture(
+                        &root,
+                        "policy.bsa",
+                        &[("textures/a.dds", payload), ("textures/b.dds", payload)],
+                    );
+                    let cache = root.join("cache");
+                    let warm_cache = if same_cache {
+                        cache.clone()
+                    } else {
+                        root.join("warm-cache")
+                    };
+                    let mut options = options();
+                    options.sync = IngestionSync::None;
+                    let cold = ArchiveExtractor::extract_batched(
+                        &archive,
+                        &root.join("cold"),
+                        &cache,
+                        &cache,
+                        None,
+                        true,
+                        &options,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    assert_eq!(cold.timings.sync_calls, 0);
+                    assert_eq!(cold.timings.checkpoint_sync_calls, 0);
+                    options.sync = mode;
+                    let mut session = RawIngestionSession::new(&warm_cache);
+                    session.link = link;
+                    let warm = ArchiveExtractor::extract_batched_with_session(
+                        &archive,
+                        &root.join("warm"),
+                        &cache,
+                        &warm_cache,
+                        Some(&cold.cache_entry),
+                        true,
+                        &options,
+                        None,
+                        None,
+                        &session,
+                    )
+                    .unwrap();
+                    assert!(
+                        warm.cache_hit,
+                        "{mode:?}/{route}/{same_cache} decoded an archive payload"
+                    );
+                    assert_eq!(warm.timings.payload_writes, 0);
+                    assert_eq!(warm.timings.payload_reuses, 2);
+                    assert_eq!(warm.timings.unique_payloads, 1);
+                    let copies = alias_copies + u64::from(!same_cache && route != "hardlinks");
+                    assert_eq!(warm.timings.physical_copy_writes, copies);
+                    assert_eq!(
+                        warm.timings.physical_copy_bytes_written,
+                        copies * payload.len() as u64
+                    );
+                    // One canonical raw file plus each distinct spill/fallback alias copy.
+                    assert_eq!(
+                        warm.timings.sync_calls,
+                        if mode == IngestionSync::PerFile {
+                            1 + alias_copies
+                        } else {
+                            0
+                        }
+                    );
+                    assert_eq!(
+                        warm.timings.checkpoint_sync_calls,
+                        if mode == IngestionSync::None { 0 } else { 1 }
+                    );
+                    for name in ["a.dds", "b.dds"] {
+                        assert_eq!(
+                            fs::read(root.join("warm/textures").join(name)).unwrap(),
+                            payload
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

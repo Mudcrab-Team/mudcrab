@@ -182,6 +182,8 @@ pub struct RawIngestionSession {
     blobs: Mutex<BTreeMap<String, Arc<Mutex<RawBlobState>>>>,
     next_archive: AtomicU64,
     spill_cache: SpillCache,
+    #[cfg(test)]
+    link: fn(&Path, &Path) -> std::io::Result<()>,
 }
 
 impl RawIngestionSession {
@@ -191,6 +193,8 @@ impl RawIngestionSession {
             blobs: Mutex::new(BTreeMap::new()),
             next_archive: AtomicU64::new(1),
             spill_cache: SpillCache::default(),
+            #[cfg(test)]
+            link: |from, to| fs::hard_link(from, to),
         }
     }
 
@@ -275,7 +279,11 @@ struct FreshIngestion<'a> {
 
 impl FreshIngestion<'_> {
     fn materialize(&self, destination: &Path, data: &[u8], hash: &str) -> Result<()> {
-        self.materialize_with_link(destination, data, hash, |from, to| fs::hard_link(from, to))
+        #[cfg(test)]
+        let link = self.session.link;
+        #[cfg(not(test))]
+        let link = |from: &Path, to: &Path| fs::hard_link(from, to);
+        self.materialize_with_link(destination, data, hash, link)
     }
 
     fn materialize_with_link(
@@ -285,12 +293,82 @@ impl FreshIngestion<'_> {
         hash: &str,
         link: fn(&Path, &Path) -> std::io::Result<()>,
     ) -> Result<()> {
+        self.materialize_with_writer(destination, data.len() as u64, hash, link, None, |blob| {
+            write_raw_payload(blob, data, self.sync_mode, self.sync)?;
+            Ok((true, self.sync_mode == IngestionSync::PerFile))
+        })
+    }
+
+    fn materialize_verified_cache(
+        &self,
+        destination: &Path,
+        source: &Path,
+        file: &IngestedFile,
+        identity: &RawFileIdentity,
+    ) -> Result<()> {
+        #[cfg(test)]
+        let link = self.session.link;
+        #[cfg(not(test))]
+        let link = |from: &Path, to: &Path| fs::hard_link(from, to);
+        self.materialize_with_writer(
+            destination,
+            file.size,
+            &file.hash,
+            link,
+            Some(identity),
+            |blob| {
+                color_eyre::eyre::ensure!(
+                    raw_file_identity(source)? == *identity,
+                    "archive cache payload changed before restoration"
+                );
+                let parent = blob.parent().unwrap();
+                fs::create_dir_all(parent)?;
+                let temporary = tempfile::NamedTempFile::new_in(parent)?.into_temp_path();
+                fs::remove_file(&temporary)?;
+                let copied = if link(source, &temporary).is_ok() {
+                    false
+                } else {
+                    copy_raw_payload(source, &temporary, self.sync_mode, self.sync)?;
+                    self.writes
+                        .physical_copy_writes
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.writes
+                        .physical_copy_bytes_written
+                        .fetch_add(file.size, Ordering::Relaxed);
+                    true
+                };
+                color_eyre::eyre::ensure!(
+                    raw_file_identity(source)? == *identity
+                        && (if copied {
+                            cache_blob_matches(&temporary, file.size, &file.hash)
+                        } else {
+                            raw_file_identity(&temporary)? == *identity
+                        }),
+                    "archive cache payload changed during restoration"
+                );
+                temporary.persist(blob).map_err(|error| error.error)?;
+                // These bytes came from the verified cache, not a decoded payload.
+                // Streamed copies are recorded as physical_copy_writes above.
+                Ok((false, copied && self.sync_mode == IngestionSync::PerFile))
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_with_writer(
+        &self,
+        destination: &Path,
+        size: u64,
+        hash: &str,
+        link: fn(&Path, &Path) -> std::io::Result<()>,
+        verified_source: Option<&RawFileIdentity>,
+        write: impl FnOnce(&Path) -> Result<(bool, bool)>,
+    ) -> Result<()> {
         let blob = blob_path(&self.session.cache_root, hash)?;
         let blob_state = self.session.blob(hash);
         // A hash has one writer, including all of its spill names. Unrelated hashes proceed
         // concurrently in the bounded extraction pool.
         let mut state = blob_state.lock().unwrap();
-        let size = data.len() as u64;
         color_eyre::eyre::ensure!(
             state.size.is_none_or(|previous| previous == size),
             "conflicting raw payload sizes for SHA-256 {hash}"
@@ -304,17 +382,24 @@ impl FreshIngestion<'_> {
                 .lock()
                 .unwrap()
                 .push(Arc::clone(&blob_state));
-            if cache_blob_matches(&blob, size, hash) {
+            let verified_identity = verified_source.is_some_and(|identity| {
+                raw_file_identity(&blob).is_ok_and(|actual| &actual == identity)
+            });
+            if verified_identity || cache_blob_matches(&blob, size, hash) {
                 self.retain_durability(main, &blob)?;
             } else {
-                write_raw_payload(&blob, data, self.sync_mode, self.sync)?;
-                main.durable = self.sync_mode == IngestionSync::PerFile;
+                let (payload_written, durable) = write(&blob)?;
+                written = payload_written;
+                // A streamed copy was flushed by its callback. A hard link must
+                // still pass the requested policy through flush_per_file below.
+                main.durable = durable;
                 main.identity = Some(raw_file_identity(&blob)?);
-                self.writes.payload_writes.fetch_add(1, Ordering::Relaxed);
-                self.writes
-                    .payload_bytes_written
-                    .fetch_add(size, Ordering::Relaxed);
-                written = true;
+                if written {
+                    self.writes.payload_writes.fetch_add(1, Ordering::Relaxed);
+                    self.writes
+                        .payload_bytes_written
+                        .fetch_add(size, Ordering::Relaxed);
+                }
             }
             main.verified_archive = self.archive;
         }
@@ -1028,6 +1113,7 @@ fn restore_cached_files(
         progress,
         stop,
         rayon::current_num_threads(),
+        None,
     )
 }
 
@@ -1041,6 +1127,7 @@ fn restore_cached_files_with_io_limit(
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
     io_jobs: usize,
+    ingestion: Option<&FreshIngestion<'_>>,
 ) -> Result<Option<Vec<ExtractedFile>>> {
     let mut seen_paths = BTreeMap::new();
     let mut blobs = BTreeMap::<&str, CachedRestoreBlob<'_>>::new();
@@ -1066,15 +1153,23 @@ fn restore_cached_files_with_io_limit(
     // work in the same bounded pool used for fresh extraction.
     let valid = blobs
         .par_iter()
-        .map(|blob| -> Result<bool> {
+        .map(|blob| -> Result<Option<RawFileIdentity>> {
             check_stop(stop)?;
-            Ok(fs::symlink_metadata(&blob.previous).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.len() == blob.representative.size
-            }) && (!verify_integrity
-                || hash_file(&blob.previous).is_ok_and(|hash| hash == blob.representative.hash)))
+            let Ok(identity) = raw_file_identity(&blob.previous) else {
+                return Ok(None);
+            };
+            if identity.size != blob.representative.size
+                || (verify_integrity
+                    && !hash_file(&blob.previous)
+                        .is_ok_and(|hash| hash == blob.representative.hash))
+                || !raw_file_identity(&blob.previous).is_ok_and(|actual| actual == identity)
+            {
+                return Ok(None);
+            }
+            Ok(Some(identity))
         })
         .collect::<Result<Vec<_>>>()?;
-    if valid.iter().any(|valid| !valid) {
+    if valid.iter().any(|valid| valid.is_none()) {
         return Ok(None);
     }
 
@@ -1098,18 +1193,29 @@ fn restore_cached_files_with_io_limit(
     let restored = io_pool.install(|| {
         blobs
             .into_par_iter()
-            .map(|blob| -> Result<Vec<_>> {
+            .zip(valid.into_par_iter())
+            .map(|(blob, identity)| -> Result<Vec<_>> {
+                let identity = identity.unwrap();
                 let mut restored = Vec::with_capacity(blob.files.len());
                 for (offset, (index, file, relative)) in blob.files.into_iter().enumerate() {
                     check_stop(stop)?;
-                    if offset == 0 {
-                        copy_verified_cache_blob(
+                    if let Some(ingestion) = ingestion {
+                        ingestion.materialize_verified_cache(
+                            &output_root.join(&relative),
                             &blob.previous,
-                            &blob.staged,
-                            blob.representative,
+                            file,
+                            &identity,
                         )?;
+                    } else {
+                        if offset == 0 {
+                            copy_verified_cache_blob(
+                                &blob.previous,
+                                &blob.staged,
+                                blob.representative,
+                            )?;
+                        }
+                        share_blob(&blob.staged, &output_root.join(&relative), &spill_cache)?;
                     }
-                    share_blob(&blob.staged, &output_root.join(&relative), &spill_cache)?;
                     if let Some(reporter) = &reporter {
                         let _guard = progress_lock.lock().unwrap();
                         reporter.advance(file.size);

@@ -13,7 +13,7 @@ expression: manifest
           "size": 721
         }
       ],
-      "recipe": "runtime-all-strings-v2",
+      "recipe": "converter-inputs-v2",
       "selection": "runtime_all_strings_v2",
       "source_hash": "[source_hash]"
     },
@@ -30,7 +30,7 @@ expression: manifest
           "size": 131
         }
       ],
-      "recipe": "runtime-all-strings-v2",
+      "recipe": "converter-inputs-v2",
       "selection": "runtime_all_strings_v2",
       "source_hash": "[source_hash]"
     },
@@ -62,7 +62,7 @@ expression: manifest
           "size": 2876
         }
       ],
-      "recipe": "runtime-all-strings-v2",
+      "recipe": "converter-inputs-v2",
       "selection": "runtime_all_strings_v2",
       "source_hash": "[source_hash]"
     }
