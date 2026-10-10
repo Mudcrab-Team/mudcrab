@@ -1,0 +1,55 @@
+{
+  "pinned_pr_head": "0650c70987cb4056eb3f08525ab9329f2e8cf179",
+  "integration_baseline": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+  "local_source_checkout": "<local-source-checkout>",
+  "local_files": {
+    "scripts/profiling/native-hud-counters.patch": {
+      "source": "untracked local development file; not part of pinned PR head",
+      "original_local_sha256": "fbfc2d63e18641996c98e2fddb7aa613c5dbbb5658f588be35e14f3238313089",
+      "original_local_bytes": 2090,
+      "split_sha256": "c557b822c0f0d91c70c32c262a262139127c466d71b5b8d8c0408cd39bbc4e67",
+      "split_bytes": 3102
+    },
+    "scripts/profiling/correlate_drawables.py": {
+      "source": "untracked local development file; not part of pinned PR head",
+      "original_local_sha256": "689157b8b558c480328412e670c80a7a9dbe42d8691dad6fdb56a3ce97525198",
+      "original_local_bytes": 4403,
+      "split_sha256": "689157b8b558c480328412e670c80a7a9dbe42d8691dad6fdb56a3ce97525198",
+      "split_bytes": 4403
+    },
+    "scripts/profiling/metal_trace.m": {
+      "source": "untracked local development file; not part of pinned PR head",
+      "original_local_sha256": "10c18a46eec6d6ee180e819fc3b4e0f41ba18e1b3ca386e0f34becc381c59352",
+      "original_local_bytes": 40025,
+      "split_sha256": "3f47c75b61726e93a64104afd0cbca072a088d26ec11aeca592541d77c8dbc2d",
+      "split_bytes": 41123
+    },
+    "scripts/profiling/README.md": {
+      "source": "untracked local development file; not part of pinned PR head",
+      "original_local_sha256": "11ee4421ccef082c68dd6f3d0b0594ee2b4ab1bc86edc000efe5978606432088",
+      "original_local_bytes": 7654,
+      "split_sha256": "8f978d3fce080c169e14cfcf1fb596f57d9f94447df721b1d0f5594b9f511466",
+      "split_bytes": 10060
+    },
+    "scripts/profiling/analyze_native.py": {
+      "source": "untracked local development file; not part of pinned PR head",
+      "original_local_sha256": "70435e60a63797ab054f6f4024c941067ba2df49a7453d9947a1af97c325920c",
+      "original_local_bytes": 6048,
+      "split_sha256": "3d28c946fc0a0b726e7c3f7ea3b53b21b9ea054353af631d03e75cace6eac310",
+      "split_bytes": 6608
+    },
+    "docs/research/metal-native-timeline-20261009.md": {
+      "source": "untracked local development file; not part of pinned PR head",
+      "original_local_sha256": "281f62b5cc259825cb1a07fc9ff6e3f22a212ed89cc5a1e2c3f23a7073050386",
+      "original_local_bytes": 15519,
+      "split_sha256": "19f166fbd98c9b957a14323e25dbd9fb539ae711e494ed717f6d85fc36d44ce6",
+      "split_bytes": 15874
+    }
+  },
+  "engine_extraction": {
+    "source": "pinned source 0650c70987cb4056eb3f08525ab9329f2e8cf179, selected observational hunks only",
+    "excludes": "sampler, config-root fix, generation retry, batching, terrain upload, visibility optimization, reflection change"
+  },
+  "new_tooling": "scene_evidence.rs, two protocol fixtures, procedural native analyzer tests and matched protocol document",
+  "path_scope": "The private checkout path is replaced with a portable placeholder; original source hashes and final split hashes remain exact."
+}
