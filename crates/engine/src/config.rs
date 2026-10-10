@@ -115,6 +115,7 @@ pub struct EngineConfig {
     pub allow_incomplete_assets: bool,
     pub synthetic_instances: usize,
     pub profile_output_dir: Option<PathBuf>,
+    pub profile_gpu_inventory: bool,
     pub profile_scenario: String,
     pub profile_run_id: String,
     pub profile_commit: String,
@@ -187,6 +188,7 @@ impl Default for EngineConfig {
             allow_incomplete_assets: false,
             synthetic_instances: 250_000,
             profile_output_dir: None,
+            profile_gpu_inventory: false,
             profile_scenario: "adhoc".into(),
             profile_run_id: "run-1".into(),
             profile_commit: "unknown".into(),
@@ -261,6 +263,7 @@ Benchmark and profiling:
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
+  --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
   --profile-run-id <id>                 run id recorded in the profile (default: run-1)
   --profile-commit <hash>               commit recorded in the profile (default: unknown)
@@ -720,6 +723,7 @@ impl EngineConfig {
                         take_value("--profile-commit", "a commit hash", args.next())?;
                 }
                 "--profile-dirty-worktree" => config.profile_dirty_worktree = true,
+                "--profile-gpu-inventory" => config.profile_gpu_inventory = true,
                 "--profile-hardware" => {
                     config.profile_hardware = take_value(
                         "--profile-hardware",
@@ -1156,6 +1160,26 @@ mod tests {
         assert_eq!(config.max_cell_unloads_per_frame, 2);
         assert_eq!(config.max_model_spawns_per_frame, 32);
         assert_eq!(config.io_threads, 0);
+    }
+
+    #[test]
+    fn gpu_inventory_is_separate_from_normal_profile_output() {
+        assert!(!EngineConfig::default().profile_gpu_inventory);
+        assert!(!run_config(&["--profile-output", "profiles/test"]).profile_gpu_inventory);
+        let diagnostic = run_config(&[
+            "--profile-gpu-inventory",
+            "--profile-output",
+            "profiles/test",
+        ]);
+        assert!(diagnostic.profile_gpu_inventory);
+        assert_eq!(
+            diagnostic.profile_output_dir,
+            Some(PathBuf::from("profiles/test"))
+        );
+        // Parsing the switch alone must not implicitly enable profile collection.
+        let without_output = run_config(&["--profile-gpu-inventory"]);
+        assert!(without_output.profile_gpu_inventory);
+        assert!(without_output.profile_output_dir.is_none());
     }
 
     #[test]

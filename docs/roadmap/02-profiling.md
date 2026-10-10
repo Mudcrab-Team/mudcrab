@@ -8,6 +8,9 @@ the user's converted, legally owned asset set.
 
 Each run writes a self-contained directory containing `metadata.json`, `frame-metrics.json`,
 `cpu-spans.json`, `gpu-passes.json`, `streaming.json`, `memory.json`, and `summary.md`.
+Profiling runs also write [`streaming-frames.json`](../research/streaming-trace.md), a bounded
+frame trace covering warmup, measurement and capture settlement. It separates synchronous CPU
+spans from reported completion latencies and keeps render observations' source-frame IDs.
 
 - CPU spans cover camera/world work, streaming planning, database queue/query/total latency, cell
   commit and spawn, terrain mesh generation, asset readiness, origin rebasing, and water systems.
