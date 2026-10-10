@@ -181,6 +181,14 @@ impl ArchiveExtractor {
         extract_selected_reporting(archive_path, output_root, is_lod_setting, None, None)
     }
 
+    /// Extracts only the localized string tables (`strings/*.strings`, `.dlstrings`, `.ilstrings`).
+    pub(crate) fn extract_strings(
+        archive_path: &Path,
+        output_root: &Path,
+    ) -> Result<Vec<ExtractedFile>> {
+        extract_selected_reporting(archive_path, output_root, is_string_table, None, None)
+    }
+
     pub(crate) fn extract_paths(
         archive_path: &Path,
         output_root: &Path,
@@ -338,6 +346,19 @@ fn extract_selected_reporting(
 
 fn is_lod_setting(path: &Path) -> bool {
     path.starts_with("lodsettings") && path.extension().is_some_and(|extension| extension == "lod")
+}
+
+fn is_string_table(path: &Path) -> bool {
+    path.components().count() == 2
+        && path
+            .components()
+            .next()
+            .is_some_and(|folder| folder.as_os_str().eq_ignore_ascii_case("strings"))
+        && path.extension().is_some_and(|extension| {
+            ["strings", "dlstrings", "ilstrings"]
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
+        })
 }
 
 fn restore_cached_files(
@@ -545,6 +566,24 @@ mod tests {
             safe_relative_path(r"textures\authoring\data\textures\landscape\Rock.DDS").unwrap(),
             PathBuf::from("textures/landscape/rock.dds")
         );
+    }
+
+    #[test]
+    fn selects_only_top_level_string_tables() {
+        for path in [
+            "strings/skyrim_english.strings",
+            "Strings/Skyrim_English.DLSTRINGS",
+            "strings/update_english.ilstrings",
+        ] {
+            assert!(is_string_table(Path::new(path)), "{path}");
+        }
+        for path in [
+            "strings/readme.txt",
+            "textures/strings/skyrim_english.strings",
+            "skyrim_english.strings",
+        ] {
+            assert!(!is_string_table(Path::new(path)), "{path}");
+        }
     }
 
     #[test]

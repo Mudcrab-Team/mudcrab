@@ -64,6 +64,14 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub texture_encoder: TextureEncoder,
     pub script_abi_version: u32,
+    /// Language of the string tables localized plugins' names are read from,
+    /// as in Skyrim's `sLanguage`: `Strings/<plugin>_<language>.STRINGS`.
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    crate::esm::strings::DEFAULT_LANGUAGE.to_owned()
 }
 
 fn default_texture_zstd_level() -> i32 {
@@ -93,6 +101,7 @@ impl PipelineConfig {
             texture_zstd_level: default_texture_zstd_level(),
             texture_encoder: TextureEncoder::Cpu,
             script_abi_version: 1,
+            language: default_language(),
         }
     }
 
@@ -137,6 +146,15 @@ impl PipelineConfig {
         color_eyre::eyre::ensure!(
             (0..=22).contains(&self.texture_zstd_level),
             "texture_zstd_level must be between 0 and 22"
+        );
+        // Part of a file name: `Strings/<plugin>_<language>.STRINGS`.
+        color_eyre::eyre::ensure!(
+            !self.language.is_empty()
+                && self
+                    .language
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_'),
+            "language must be a name such as english, made of letters, digits and underscores"
         );
         // Compared as resolved folders, not as spelled: the output is replaced
         // on publish, staging is deleted after it, and the cache is pruned, so

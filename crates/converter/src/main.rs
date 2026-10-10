@@ -37,6 +37,8 @@ struct Cli {
     verify_cache: bool,
     no_lod: bool,
     verbose: bool,
+    /// Overrides the default string-table language.
+    language: Option<String>,
 }
 
 impl Cli {
@@ -63,6 +65,9 @@ impl Cli {
         }
         if let Some(value) = self.io_jobs {
             config.io_jobs = value;
+        }
+        if let Some(language) = &self.language {
+            config.language = language.clone();
         }
         config
     }
@@ -516,6 +521,10 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
+    // The database is rebuilt on resume; it must read the same string tables.
+    if let Some(language) = &cli.language {
+        command.push_str(&format!(" --language {language}"));
+    }
     command
 }
 
@@ -760,6 +769,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut verify_cache = true;
     let mut no_lod = false;
     let mut verbose = false;
+    let mut language = None;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.to_str() {
@@ -834,6 +844,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
             Some("--no-lod") => no_lod = true,
+            Some("--language") => {
+                let value = next_value(&mut args, "--language")?;
+                language =
+                    Some(value.into_string().map_err(|_| {
+                        color_eyre::eyre::eyre!("--language value is not valid UTF-8")
+                    })?);
+            }
             Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
@@ -896,6 +913,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         verify_cache,
         no_lod,
         verbose,
+        language,
     })
 }
 
@@ -947,6 +965,7 @@ fn usage() -> &'static str {
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
                  [--mo2-instance DIR] [--mo2-profile NAME]
+                 [--language NAME]
        converter check <output directory> [--full]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
@@ -968,6 +987,9 @@ MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are no
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
+
+--language selects the string tables that localized plugins' names are read from,
+Strings/<plugin>_<language>.STRINGS, as Skyrim's sLanguage does. Default: english.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -1436,6 +1458,7 @@ mod tests {
             verify_cache: true,
             no_lod: false,
             verbose: false,
+            language: None,
         };
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
@@ -1452,6 +1475,9 @@ mod tests {
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
         assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        let french = parse_cli(vec!["Data".into(), "--language".into(), "french".into()]).unwrap();
+        assert_eq!(french.language.as_deref(), Some("french"));
+        assert!(resume_command("converter", &french, staging).ends_with(" --language french"));
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {
