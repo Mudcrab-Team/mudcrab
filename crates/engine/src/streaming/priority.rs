@@ -104,7 +104,11 @@ impl DemandPriority {
         self.sequence
     }
 
-    fn compare_age(&self, other: &Self) -> Ordering {
+    pub(super) fn is_protected_collision(&self) -> bool {
+        self.protected_collision
+    }
+
+    pub(super) fn compare_age(&self, other: &Self) -> Ordering {
         self.sequence
             .cmp(&other.sequence)
             .then_with(|| self.center[0].total_cmp(&other.center[0]))

@@ -249,6 +249,17 @@ impl SceneAdmission {
         self.active_jobs
     }
 
+    /// Weak IDs include loading orphans, so byte reservations survive owner loss.
+    pub(super) fn tracked_jobs(&self) -> Vec<(SceneKey, AssetId<WorldAsset>)> {
+        self.records
+            .iter()
+            .filter_map(|(key, record)| match &record.job {
+                Job::Queued => None,
+                Job::Dispatched { handle, .. } => Some((key.clone(), handle.id())),
+            })
+            .collect()
+    }
+
     pub fn queued_jobs(&self) -> usize {
         self.records
             .values()
