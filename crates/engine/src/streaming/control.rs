@@ -456,13 +456,24 @@ impl ControllerState {
             .into_iter()
             .chain(sample(input.gpu_frame_ms))
             .reduce(f64::max);
+        if input.camera_moving || input.camera_turning {
+            self.motion_remaining_seconds = duration(settings.motion_hold_seconds);
+        } else {
+            self.motion_remaining_seconds = (self.motion_remaining_seconds - delta).max(0.0);
+        }
+        let moving =
+            input.camera_moving || input.camera_turning || self.motion_remaining_seconds > 0.0;
+        let stationary_startup = !self.startup_complete && !moving;
         let enter_ratio = positive_or(settings.pressure_enter_ratio, 1.15).max(1.0);
         // Current work must be substantial before a moderate frame overshoot
         // pauses intake. Routine reconciliation and a stale work EMA are not a
-        // new load spike. Half-target CPU work still applies immediate backoff.
-        let material_streaming = streaming_work_ms >= target * 0.25;
+        // new load spike. Stationary startup permits a larger CPU burst; walking
+        // and all later loading keep their smaller material/immediate thresholds.
+        let material_fraction = if stationary_startup { 0.5 } else { 0.25 };
+        let immediate_fraction = if stationary_startup { 1.0 } else { 0.5 };
+        let material_streaming = streaming_work_ms >= target * material_fraction;
         let frame_pressure = settings.adaptive
-            && (streaming_work_ms >= target * 0.5
+            && (streaming_work_ms >= target * immediate_fraction
                 || (material_streaming
                     && observed_ms
                         .into_iter()
@@ -537,13 +548,6 @@ impl ControllerState {
             self.recovery_probe_elapsed = 0.0;
         }
 
-        if input.camera_moving || input.camera_turning {
-            self.motion_remaining_seconds = duration(settings.motion_hold_seconds);
-        } else {
-            self.motion_remaining_seconds = (self.motion_remaining_seconds - delta).max(0.0);
-        }
-        let moving =
-            input.camera_moving || input.camera_turning || self.motion_remaining_seconds > 0.0;
         if moving || self.recovery {
             self.quiet_seconds = 0.0;
         } else {
@@ -692,7 +696,7 @@ impl ControllerState {
         settings: &ControllerSettings,
         input: ControllerInput,
         budgets: &mut StageBudgets,
-        target: f64,
+        effective_target: f64,
     ) -> bool {
         let non_streaming = self.non_streaming_ema_ms.unwrap_or(0.0);
         let fraction = if settings.streaming_headroom_fraction.is_finite() {
@@ -700,7 +704,20 @@ impl ControllerState {
         } else {
             0.5
         };
-        let available_micros = ((target - non_streaming).max(0.0) * fraction * 1_000.0) as u64;
+        let mut available_ms = (effective_target - non_streaming).max(0.0) * fraction;
+        if !self.startup_complete
+            && !input.camera_moving
+            && !input.camera_turning
+            && self.motion_remaining_seconds <= 0.0
+            && !self.recovery_reduced
+        {
+            // Startup spends a deliberate CPU allowance instead of inheriting
+            // the small walking headroom of a naturally slow renderer. Queue
+            // pressure still pauses intake while funded work drains; timing or
+            // memory pressure retains the reduced budgets and service floors.
+            available_ms = available_ms.max(positive_or(settings.target_frame_ms, 16.67) * 0.5);
+        }
+        let available_micros = (available_ms * 1_000.0) as u64;
         let sum = u128::from(budgets.max_commit_micros)
             + u128::from(budgets.max_activation_micros)
             + u128::from(budgets.max_collision_micros)
@@ -841,7 +858,10 @@ mod tests {
     #[test]
     fn timing_recovery_retains_reduced_drain_budgets_through_the_hold() {
         let settings = adaptive();
-        let mut state = ControllerState::default();
+        let mut state = ControllerState {
+            startup_complete: true,
+            ..Default::default()
+        };
         let base = ControllerInput {
             frame_ms: Some(40.0),
             streaming_work_ms: 1.0,
@@ -886,7 +906,7 @@ mod tests {
                 &settings,
                 ControllerInput {
                     frame_ms: Some(if memory_pressure { 40.0 } else { 50.0 }),
-                    streaming_work_ms: if memory_pressure { 1.0 } else { 10.0 },
+                    streaming_work_ms: if memory_pressure { 1.0 } else { 20.0 },
                     memory_blocked: memory_pressure,
                     ..queued
                 },
@@ -1111,6 +1131,7 @@ mod tests {
             ControllerInput {
                 frame_ms: Some(50.0),
                 streaming_work_ms: 10.0,
+                camera_moving: true,
                 ..slow_base
             },
         );
@@ -1121,6 +1142,226 @@ mod tests {
         assert_ne!(recovered.mode, ControllerMode::Recovery);
         assert!(recovered.allow_scene_intake);
         assert!(recovered.budgets.max_scene_jobs < decision.budgets.max_scene_jobs);
+    }
+
+    #[test]
+    fn stationary_startup_permits_cpu_bursts_but_still_pauses_overload() {
+        let settings = adaptive();
+        let mut state = ControllerState::default();
+        for cpu in [9.0, 10.0, 12.0].into_iter().cycle().take(60) {
+            let decision = state.tick(
+                &settings,
+                ControllerInput {
+                    frame_ms: Some(16.0),
+                    streaming_work_ms: cpu,
+                    ..input()
+                },
+            );
+            assert_eq!(decision.mode, ControllerMode::Startup);
+            assert!(!decision.reasons.frame_pressure);
+            assert!(decision.allow_scene_intake);
+            assert!(
+                decision.budgets.max_model_activations > settings.minimum.max_model_activations
+            );
+            assert!(
+                decision.budgets.max_activation_micros > settings.minimum.max_activation_micros
+            );
+            assert_bounded(decision.budgets, input().hard_limits);
+        }
+        let overloaded = state.tick(
+            &settings,
+            ControllerInput {
+                frame_ms: Some(20.0),
+                streaming_work_ms: 20.0,
+                ..input()
+            },
+        );
+        assert!(overloaded.reasons.frame_pressure);
+        assert_eq!(overloaded.mode, ControllerMode::Recovery);
+        assert!(!overloaded.allow_scene_intake);
+        assert_eq!(
+            overloaded.budgets.max_model_activations,
+            settings.minimum.max_model_activations
+        );
+    }
+
+    #[test]
+    fn slow_stationary_startup_keeps_useful_allowances_while_walking_uses_headroom() {
+        let settings = adaptive();
+        let base = ControllerInput {
+            delta_seconds: 0.04,
+            frame_ms: Some(40.0),
+            streaming_work_ms: 1.0,
+            ..input()
+        };
+        let mut state = ControllerState::default();
+        let startup = advance(&mut state, &settings, base, 100);
+        assert_eq!(startup.mode, ControllerMode::Startup);
+        assert!(startup.allow_scene_intake);
+        assert!(startup.budgets.max_activation_micros >= 1_700);
+        assert!(startup.budgets.max_admission_micros >= 850);
+        assert_bounded(startup.budgets, base.hard_limits);
+
+        let mut completed = state.clone();
+        completed.startup_complete = true;
+        completed.quiet_seconds = 0.0;
+        let later = completed.tick(&settings, base);
+        assert_eq!(later.mode, ControllerMode::Cruise);
+        assert!(later.budgets.max_activation_micros <= settings.cruise.max_activation_micros);
+        assert!(later.budgets.max_admission_micros <= settings.cruise.max_admission_micros);
+
+        let walking = state.tick(
+            &settings,
+            ControllerInput {
+                camera_moving: true,
+                ..base
+            },
+        );
+        assert_eq!(walking.mode, ControllerMode::Cruise);
+        assert!(walking.budgets.max_activation_micros <= settings.cruise.max_activation_micros);
+        assert!(walking.budgets.max_admission_micros <= settings.cruise.max_admission_micros);
+        assert!(walking.budgets.max_activation_micros < startup.budgets.max_activation_micros);
+        assert_bounded(
+            walking.budgets,
+            settings.cruise.bounded_by(base.hard_limits),
+        );
+
+        // The motion hold retains walking allowance after releasing the keys.
+        let held = state.tick(&settings, base);
+        assert_eq!(held.mode, ControllerMode::Cruise);
+        assert!(held.budgets.max_activation_micros <= settings.cruise.max_activation_micros);
+        assert!(held.budgets.max_admission_micros <= settings.cruise.max_admission_micros);
+    }
+
+    #[test]
+    fn queue_only_startup_recovery_keeps_drain_allowance_but_real_pressure_reduces_it() {
+        let settings = adaptive();
+        let base = ControllerInput {
+            delta_seconds: 0.04,
+            frame_ms: Some(40.0),
+            streaming_work_ms: 1.0,
+            ..input()
+        };
+        let mut state = ControllerState::default();
+        advance(&mut state, &settings, base, 100);
+        let queued = ControllerInput {
+            backlog: DownstreamBacklog {
+                ready_placements: 2_000,
+                ..Default::default()
+            },
+            ..base
+        };
+        let draining = state.tick(&settings, queued);
+        assert_eq!(draining.mode, ControllerMode::Recovery);
+        assert!(draining.reasons.queue_pressure);
+        assert!(!draining.allow_scene_intake);
+        assert_eq!(draining.budgets.max_scene_jobs, 0);
+        assert!(draining.budgets.max_activation_micros >= 1_700);
+        assert!(draining.budgets.max_model_activations > settings.minimum.max_model_activations);
+        assert_bounded(draining.budgets, queued.hard_limits);
+
+        for memory in [false, true] {
+            let mut pressured = state.clone();
+            let reduced = pressured.tick(
+                &settings,
+                ControllerInput {
+                    memory_blocked: memory,
+                    streaming_work_ms: if memory { 1.0 } else { 20.0 },
+                    ..queued
+                },
+            );
+            assert!(!reduced.allow_scene_intake);
+            assert_eq!(
+                reduced.budgets.max_activation_micros,
+                settings.minimum.max_activation_micros
+            );
+            assert_eq!(
+                reduced.budgets.max_admission_micros,
+                settings.minimum.max_admission_micros
+            );
+            assert_eq!(
+                reduced.budgets.max_model_activations,
+                settings.minimum.max_model_activations
+            );
+            assert_bounded(reduced.budgets, queued.hard_limits);
+            let held = pressured.tick(&settings, queued);
+            assert!(held.reasons.recovery_hold || held.reasons.queue_pressure);
+            assert_eq!(
+                held.budgets.max_activation_micros,
+                settings.minimum.max_activation_micros
+            );
+        }
+    }
+
+    #[test]
+    fn moving_during_startup_immediately_uses_walking_pressure_and_budgets() {
+        let settings = adaptive();
+        for turning in [false, true] {
+            let mut state = ControllerState::default();
+            let walking = ControllerInput {
+                camera_moving: !turning,
+                camera_turning: turning,
+                frame_ms: Some(16.0),
+                ..input()
+            };
+            let cruising = state.tick(&settings, walking);
+            assert_eq!(cruising.mode, ControllerMode::Cruise);
+            assert!(!cruising.startup_complete);
+            assert_bounded(
+                cruising.budgets,
+                settings.cruise.bounded_by(walking.hard_limits),
+            );
+            let overloaded = state.tick(
+                &settings,
+                ControllerInput {
+                    streaming_work_ms: 10.0,
+                    ..walking
+                },
+            );
+            assert!(overloaded.reasons.frame_pressure);
+            assert_eq!(overloaded.mode, ControllerMode::Recovery);
+            assert!(!overloaded.allow_scene_intake);
+            assert_bounded(
+                overloaded.budgets,
+                settings.cruise.bounded_by(walking.hard_limits),
+            );
+            // Releasing the keys does not immediately restore the startup burst.
+            let holding_motion = state.tick(
+                &settings,
+                ControllerInput {
+                    camera_moving: false,
+                    camera_turning: false,
+                    streaming_work_ms: 10.0,
+                    ..walking
+                },
+            );
+            assert!(holding_motion.reasons.camera_motion);
+            assert!(holding_motion.reasons.frame_pressure);
+            assert_bounded(
+                holding_motion.budgets,
+                settings.cruise.bounded_by(walking.hard_limits),
+            );
+        }
+    }
+
+    #[test]
+    fn completed_startup_retains_walking_cpu_pressure_while_stationary() {
+        let settings = adaptive();
+        let mut state = ControllerState {
+            startup_complete: true,
+            ..Default::default()
+        };
+        let decision = state.tick(
+            &settings,
+            ControllerInput {
+                frame_ms: Some(16.0),
+                streaming_work_ms: 10.0,
+                ..input()
+            },
+        );
+        assert!(decision.reasons.frame_pressure);
+        assert_eq!(decision.mode, ControllerMode::Recovery);
+        assert!(!decision.allow_scene_intake);
     }
 
     #[test]
@@ -1348,7 +1589,7 @@ mod tests {
             &mut state,
             &settings,
             ControllerInput {
-                streaming_work_ms: 10.0,
+                streaming_work_ms: 20.0,
                 ..ready
             },
             30,
@@ -1378,6 +1619,7 @@ mod tests {
             ControllerInput {
                 frame_ms: Some(50.0),
                 streaming_work_ms: 10.0,
+                camera_moving: true,
                 ..base
             },
         );
@@ -1436,7 +1678,10 @@ mod tests {
     #[test]
     fn sustained_frame_pressure_has_bounded_progress_probes() {
         let settings = adaptive();
-        let mut state = ControllerState::default();
+        let mut state = ControllerState {
+            startup_complete: true,
+            ..Default::default()
+        };
         let input = ControllerInput {
             frame_ms: Some(40.0),
             streaming_work_ms: 10.0,
