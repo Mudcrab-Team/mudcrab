@@ -1,8 +1,10 @@
 pub mod app;
+mod capture_frame;
 pub mod color_pipeline;
 pub mod config;
 pub mod indirect_metrics;
 pub mod lights;
+mod matched_route;
 pub mod mesh_preparation_retry;
 pub mod metrics;
 pub mod nif_depth;
@@ -26,6 +28,3 @@ pub mod world;
 pub use app::run;
 
 mod mesh_residency_audit;
-
-mod matched_route;
-mod capture_frame;

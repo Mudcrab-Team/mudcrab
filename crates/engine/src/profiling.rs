@@ -136,7 +136,11 @@ impl ProfilingState {
     }
 
     pub(crate) fn terrain_gauges(&self) -> BTreeMap<String, f64> {
-        self.gauges.iter().filter(|(name, _)| name.starts_with("lod/")).map(|(name, value)| (name.clone(), *value)).collect()
+        self.gauges
+            .iter()
+            .filter(|(name, _)| name.starts_with("lod/"))
+            .map(|(name, value)| (name.clone(), *value))
+            .collect()
     }
 
     pub(crate) fn gauge(&self, name: &str) -> Option<f64> {

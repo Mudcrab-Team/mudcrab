@@ -62,3 +62,24 @@ uninstrumented throughput comparison. Follow the original protocol for release b
 receipts, repetitions, RSS sampling, stability and native GPU/presentation attribution.
 No runtime speedup, visual equivalence or Metal validation is established by the code
 or its automated tests.
+
+## Verification limits for this follow-up
+
+On the Linux editing host, all 120 existing Python script tests passed (five tests
+requiring macOS frameworks were skipped), and `git diff --check` passed. New Rust
+regressions cover fixture interpretation/count validation, every fixed movement,
+checkpoint returns, rebasing while an image is delayed, transition-to-settle
+ordering, immutable frame receipts, missing readback and queue readiness resets.
+The host has no Rust toolchain: those Rust tests, compilation, formatting and Clippy
+have not been executed. The existing CI workflow automatically targets only main
+and develop; this PR's preserved dependency base does not trigger it. Run the
+workflow manually against the branch before treating implementation checks as passed.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked -p engine --all-targets -- -D warnings
+cargo test --locked -p engine --lib
+```
+
+No converted retail assets, macOS/Metal execution, image review, RSS campaign or
+repeated matched comparison at either budget was available on this host.

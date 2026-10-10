@@ -1,5 +1,10 @@
 # Matched terrain batching protocol
 
+Implementation follow-up: [deterministic route driver and frame receipts](matched-route-driver.md)
+adds `--matched-route` and stronger checkpoint accounting. The historical limitations
+below describe the October 9 implementation; runtime validation and all acceptance
+gates remain open. Both comparison sides need the same follow-up code.
+
 PR #200 stays draft. The archived result is not acceptance evidence: fixed-view FPS
 was 47.315 → 47.453, ordinary play was one unmatched pair at 48.448 → 59.971,
 and static peak RSS was 2.428 → 2.770 GiB. The 14.1% increase does not prove a leak.

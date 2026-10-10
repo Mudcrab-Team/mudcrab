@@ -693,7 +693,11 @@ impl EngineConfig {
                 // with no path is no mode at all, and continuing would silently launch an ordinary
                 // interactive run.
                 "--matched-route" => {
-                    config.matched_route = Some(take_value("--matched-route", "a route fixture", args.next())?);
+                    config.matched_route = Some(take_value(
+                        "--matched-route",
+                        "a route fixture",
+                        args.next(),
+                    )?);
                 }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
@@ -1189,6 +1193,15 @@ mod tests {
             "Mudcrab - shots: riverwood"
         );
         assert_eq!(args(&[]).window_title(), "Mudcrab");
+    }
+
+    #[test]
+    fn matched_route_is_a_separate_automated_camera_mode() {
+        let config = run_config(&["--matched-route", "route.json"]);
+        assert_eq!(config.matched_route, Some(PathBuf::from("route.json")));
+        assert!(!config.interactive_world_physics());
+        assert!(run_config(&["--matched-route", "route.json", "--run-label", "test"])
+            .window_title().contains("matched-route"));
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a

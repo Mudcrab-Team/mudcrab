@@ -37,10 +37,17 @@ impl MatchedRoute {
 
     /// Leg values are destinations relative to the start, not displacements.
     pub(crate) fn expand(&self) -> Result<(ShotsFile, BTreeSet<usize>), ShotsError> {
-        let invalid = || ShotsError("invalid matched route: schema, bounds, step count or closed legs".into());
-        if self.schema_version != 1 || self.cell_size != 4096 || self.step_creation_units <= 0
-            || self.cycles == 0 || self.movement_steps > 100_000
-            || self.legs_relative_x.last() != Some(&0) {
+        let invalid = || {
+            ShotsError("invalid matched route: schema, bounds, step count or closed legs".into())
+        };
+        if self.schema_version != 1
+            || self.cell_size != 4096
+            || self.step_creation_units <= 0
+            || self.step_creation_units > self.cell_size
+            || self.cycles == 0
+            || self.movement_steps > 100_000
+            || self.legs_relative_x.last() != Some(&0)
+        {
             return Err(invalid());
         }
         let mut relative = vec![0i32];
@@ -75,7 +82,11 @@ impl MatchedRoute {
             }
         }
         if relative.len() - 1 != self.movement_steps
-            || self.start_creation.iter().any(|v| i64::from(*v).abs() > 16_777_216) {
+            || self
+                .start_creation
+                .iter()
+                .any(|v| i64::from(*v).abs() > 16_777_216)
+        {
             return Err(invalid());
         }
         let shots = relative.into_iter().enumerate().map(|(step, x)| Shot {
@@ -89,7 +100,11 @@ impl MatchedRoute {
             reference: None,
             note: None,
         }).collect();
-        let file = ShotsFile { width: 1600, height: 900, shots };
+        let file = ShotsFile {
+            width: 1600,
+            height: 900,
+            shots,
+        };
         file.validate()?;
         Ok((file, checkpoints))
     }

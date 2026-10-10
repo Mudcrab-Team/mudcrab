@@ -323,7 +323,11 @@ fn world_gltf_plugin() -> bevy::gltf::GltfPlugin {
 /// shot's worldspace and grid square are where streaming starts, so the first view does not wait
 /// for cells around a start the file never looks at.
 fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
-    let Some(path) = config.shots.clone().or_else(|| config.matched_route.clone()) else {
+    let Some(path) = config
+        .shots
+        .clone()
+        .or_else(|| config.matched_route.clone())
+    else {
         return Ok(None);
     };
     let other_mode = (config.shots.is_some() && config.matched_route.is_some())
@@ -2097,7 +2101,11 @@ fn fly_camera(
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
-    if config.physics_fixture || config.interactive_world_physics() || (config.shots.is_some() || config.matched_route.is_some()) {
+    if config.physics_fixture
+        || config.interactive_world_physics()
+        || config.shots.is_some()
+        || config.matched_route.is_some()
+    {
         return;
     }
     let started = std::time::Instant::now();

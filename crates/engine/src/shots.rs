@@ -27,7 +27,7 @@ use bevy::{
 };
 use serde::Deserialize;
 use std::{
-    collections::{HashSet, BTreeSet},
+    collections::{BTreeSet, HashSet},
     fmt, fs,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -811,8 +811,20 @@ fn run_shots(
             }
         }
         Phase::Traverse => {
-            place_camera(shot, run.file.aspect(), origin.0, &mut transform, &mut projection);
-            run.note(format!("route_step={} main_frame={} position={:?} elapsed_seconds={}", run.shot, main_frame.0, shot.position, time.elapsed_secs_f64()));
+            place_camera(
+                shot,
+                run.file.aspect(),
+                origin.0,
+                &mut transform,
+                &mut projection,
+            );
+            run.note(format!(
+                "route_step={} main_frame={} position={:?} elapsed_seconds={}",
+                run.shot,
+                main_frame.0,
+                shot.position,
+                time.elapsed_secs_f64()
+            ));
             run.advance();
         }
         Phase::Settle => {
@@ -838,11 +850,19 @@ fn run_shots(
             );
             counts.pending_lod_queries = streaming.pending_lod_queries;
             counts.pending_lod_chunks = streaming.pending_lod_chunks;
-            counts.failed_lod_work = streaming.failed_lod_queries + streaming.failed_lod_chunks;
+            counts.failed_lod_work = streaming
+                .failed_lod_queries
+                .saturating_add(streaming.failed_lod_chunks);
             counts.outstanding_terrain_uploads = uploads.outstanding();
-            counts.pending_batch_cpu = profiler.gauge("lod/pending_terrain_batch_chunks").unwrap_or(0.0) as usize;
-            counts.pending_batch_initial = profiler.gauge("lod/pending_initial_terrain_upload_chunks").unwrap_or(0.0) as usize;
-            counts.pending_batch_selection = profiler.gauge("lod/pending_terrain_selection_uploads").unwrap_or(0.0) as usize;
+            counts.pending_batch_cpu = profiler
+                .gauge("lod/pending_terrain_batch_chunks")
+                .unwrap_or(0.0) as usize;
+            counts.pending_batch_initial = profiler
+                .gauge("lod/pending_initial_terrain_upload_chunks")
+                .unwrap_or(0.0) as usize;
+            counts.pending_batch_selection = profiler
+                .gauge("lod/pending_terrain_selection_uploads")
+                .unwrap_or(0.0) as usize;
             counts.pending_specializations = *retries.0.lock().unwrap();
             counts.pending_render_transfers = *transfers.0.lock().unwrap();
             // The window is counted in before it is read, so a view that has been quiet for
@@ -880,7 +900,13 @@ fn run_shots(
             }
         }
         Phase::Capture => {
-            place_camera(shot, run.file.aspect(), origin.0, &mut transform, &mut projection);
+            place_camera(
+                shot,
+                run.file.aspect(),
+                origin.0,
+                &mut transform,
+                &mut projection,
+            );
             run.timer += time.delta_secs();
             // The capture observer records the write's own result, so a save that failed - even
             // one that left a partial or empty file behind - is this shot's failure, not a
@@ -933,29 +959,55 @@ fn request_capture(commands: &mut Commands, run: &mut ShotsRun, request_frame: u
     let dimensions = (run.file.width, run.file.height);
     let counts = run.counts;
     run.capture = None;
-    commands.spawn((Screenshot::primary_window(), ticket)).observe(
-        move |trigger: On<ScreenshotCaptured>, mut run: ResMut<ShotsRun>| {
-            if run.shot != index || run.transition_capture != transition || run.phase != Phase::Capture { return; }
-            let result = crate::capture_frame::validate_receipt(&observed, position).and_then(|receipt| {
-                if receipt.main_frame < request_frame || receipt.rotation_runtime_xyzw != rotation || receipt.vertical_fov_radians != Some(fov) {
-                    return Err("captured frame precedes request or differs in camera orientation/projection".into());
-                }
-                let size = trigger.image.texture_descriptor.size;
-                if (size.width, size.height) != dimensions {
-                    return Err("captured image dimensions differ from requested dimensions".into());
-                }
-                if !transition && !run.timed_out && !receipt.work.is_quiet() {
-                    return Err("captured settled frame has pending or unavailable specialization work".into());
-                }
-                write_shot(trigger.image.clone(), &path)?;
-                let line = serde_json::json!({"capture": index, "kind": if transition { "transition" } else { "settled" }, "requested_main_frame": request_frame, "requested_camera_creation": position, "requested_rotation_runtime_xyzw": rotation, "requested_vertical_fov_radians": fov, "captured_frame": receipt, "settle_counts": counts, "timed_out": run.timed_out, "image": path, "dimensions": dimensions});
-                run.note(line.to_string());
-                if run.log_failed { return Err("capture receipt could not be saved".into()); }
-                Ok(())
-            });
+    commands
+        .spawn((Screenshot::primary_window(), ticket))
+        .observe(move |trigger: On<ScreenshotCaptured>, mut run: ResMut<ShotsRun>| {
+            if run.shot != index
+                || run.transition_capture != transition
+                || run.phase != Phase::Capture
+            {
+                return;
+            }
+            let result = crate::capture_frame::validate_receipt(&observed, position)
+                .and_then(|receipt| {
+                    if receipt.main_frame < request_frame
+                        || receipt.rotation_runtime_xyzw != rotation
+                        || receipt.vertical_fov_radians != Some(fov)
+                    {
+                        return Err(
+                            "captured frame precedes request or differs in camera orientation/projection"
+                                .into(),
+                        );
+                    }
+                    let size = trigger.image.texture_descriptor.size;
+                    if (size.width, size.height) != dimensions {
+                        return Err("captured image dimensions differ from requested dimensions".into());
+                    }
+                    if !transition && !run.timed_out && !receipt.work.is_quiet() {
+                        return Err("captured settled frame has pending or unavailable work".into());
+                    }
+                    write_shot(trigger.image.clone(), &path)?;
+                    let line = serde_json::json!({
+                        "capture": index,
+                        "kind": if transition { "transition" } else { "settled" },
+                        "requested_main_frame": request_frame,
+                        "requested_camera_creation": position,
+                        "requested_rotation_runtime_xyzw": rotation,
+                        "requested_vertical_fov_radians": fov,
+                        "captured_frame": receipt,
+                        "settle_counts": counts,
+                        "timed_out": run.timed_out,
+                        "image": path,
+                        "dimensions": dimensions
+                    });
+                    run.note(line.to_string());
+                    if run.log_failed {
+                        return Err("capture receipt could not be saved".into());
+                    }
+                    Ok(())
+                });
             run.capture = Some(result);
-        }
-    );
+        });
     run.enter(Phase::Capture);
 }
 
@@ -1518,7 +1570,8 @@ mod tests {
     fn the_settle_rule_needs_a_quiet_window_and_every_count_at_zero() {
         let ready = SettleCounts {
             renderer_ready: true,
-            pending_specializations: Some(0), pending_render_transfers: Some(0),
+            pending_specializations: Some(0),
+            pending_render_transfers: Some(0),
             ..SettleCounts::default()
         };
         assert!(
@@ -1673,19 +1726,55 @@ mod tests {
 
     #[test]
     fn settle_requires_lod_upload_and_render_retry_acknowledgments() {
-        let ready = SettleCounts { renderer_ready: true, pending_specializations: Some(0), pending_render_transfers: Some(0), quiet_frames: 10, ..default() };
+        let ready = SettleCounts {
+            renderer_ready: true,
+            pending_specializations: Some(0),
+            pending_render_transfers: Some(0),
+            quiet_frames: 10,
+            ..default()
+        };
         assert!(shots_settled(&ready));
         for counts in [
-            SettleCounts { pending_lod_queries: 1, ..ready },
-            SettleCounts { pending_lod_chunks: 1, ..ready },
-            SettleCounts { outstanding_terrain_uploads: 1, ..ready },
-            SettleCounts { pending_batch_cpu: 1, ..ready },
-            SettleCounts { pending_batch_initial: 1, ..ready },
-            SettleCounts { pending_batch_selection: 1, ..ready },
-            SettleCounts { pending_specializations: Some(1), ..ready },
-            SettleCounts { pending_specializations: None, ..ready },
-            SettleCounts { pending_render_transfers: Some(1), ..ready },
-            SettleCounts { pending_render_transfers: None, ..ready },
+            SettleCounts {
+                pending_lod_queries: 1,
+                ..ready
+            },
+            SettleCounts {
+                pending_lod_chunks: 1,
+                ..ready
+            },
+            SettleCounts {
+                outstanding_terrain_uploads: 1,
+                ..ready
+            },
+            SettleCounts {
+                pending_batch_cpu: 1,
+                ..ready
+            },
+            SettleCounts {
+                pending_batch_initial: 1,
+                ..ready
+            },
+            SettleCounts {
+                pending_batch_selection: 1,
+                ..ready
+            },
+            SettleCounts {
+                pending_specializations: Some(1),
+                ..ready
+            },
+            SettleCounts {
+                pending_specializations: None,
+                ..ready
+            },
+            SettleCounts {
+                pending_render_transfers: Some(1),
+                ..ready
+            },
+            SettleCounts {
+                pending_render_transfers: None,
+                ..ready
+            },
         ] {
             assert!(!shots_settled(&counts));
             assert_eq!(advance_settle(counts).quiet_frames, 0);
@@ -1694,7 +1783,9 @@ mod tests {
 
     #[test]
     fn route_freezes_capture_pose_and_executes_every_step_after_rebase() {
-        let (mut file, _) = crate::matched_route::MatchedRoute::parse_for_test(include_str!("../../../scripts/profiling/fixtures/matched-route.json"));
+        let (mut file, _) = crate::matched_route::MatchedRoute::parse_for_test(include_str!(
+            "../../../scripts/profiling/fixtures/matched-route.json"
+        ));
         file.shots.truncate(3);
         let output = tempfile::tempdir().unwrap();
         let mut run = ShotsRun::new(file, output.path().into(), 60);
@@ -1709,14 +1800,24 @@ mod tests {
             .init_resource::<crate::capture_frame::RetryReadiness>()
             .init_resource::<crate::capture_frame::TransferReadiness>()
             .add_plugins(ShotsPlugin { run });
-        let camera = app.world_mut().spawn((Transform::default(), Projection::Perspective(default()), StreamingCamera)).id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Transform::default(),
+                Projection::Perspective(default()),
+                StreamingCamera,
+            ))
+            .id();
         app.update();
         assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
         assert!(app.world().resource::<ShotsRun>().transition_capture);
         // Simulate a rebase and a delayed image while the capture is in flight.
         app.world_mut().resource_mut::<RenderOrigin>().0 = IVec2::new(5, -11);
         app.update();
-        assert_eq!(app.world().get::<Transform>(camera).unwrap().translation, Vec3::new(2048.0, 6000.0, 2048.0));
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            Vec3::new(2048.0, 6000.0, 2048.0)
+        );
         assert_eq!(app.world().resource::<ShotsRun>().shot, 0);
         app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
         app.update();
@@ -1731,12 +1832,23 @@ mod tests {
         app.update();
         app.update();
         assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Traverse);
-        assert_eq!(app.world().get::<Transform>(camera).unwrap().translation.x, 2112.0);
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation.x,
+            2112.0
+        );
         app.update();
         app.update();
         assert_eq!(app.world().resource::<ShotsRun>().shot, 2);
-        assert_eq!(app.world().get::<Transform>(camera).unwrap().translation.x, 2176.0);
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation.x,
+            2176.0
+        );
         assert!(app.world().resource::<ShotsRun>().transition_capture);
+        app.world_mut().resource_mut::<ShotsRun>().timer = CAPTURE_TIMEOUT_SECONDS;
+        app.update();
+        assert!(app.world().resource::<ShotsRun>().failed);
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
+        assert!(!output.path().join("route-000002-transition.png").exists());
     }
 
     /// An image the size a shot's capture arrives at, so the writer can be exercised without a

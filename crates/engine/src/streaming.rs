@@ -6435,6 +6435,10 @@ mod tests {
 
 impl TerrainCoverage {
     pub(crate) fn receipt(&self) -> serde_json::Value {
-        serde_json::json!({"cell": self.grid.to_array(), "quadrant": self.quadrant, "tier": format!("{:?}", self.tier)})
+        serde_json::json!({
+            "cell": self.grid.to_array(),
+            "quadrant": self.quadrant,
+            "tier": format!("{:?}", self.tier)
+        })
     }
 }
