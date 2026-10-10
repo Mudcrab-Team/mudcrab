@@ -758,9 +758,9 @@ impl LodBatchVisibility<'_, '_> {
         }
     }
 
-    pub(super) fn update(
+    pub(super) fn update<S: std::hash::BuildHasher>(
         &mut self,
-        selected_tiers: &HashMap<(IVec2, u8), Option<LodTier>>,
+        selected_tiers: &HashMap<(IVec2, u8), Option<LodTier>, S>,
     ) -> (usize, usize, usize) {
         let Some(meshes) = self.meshes.as_deref_mut() else {
             return (0, 0, 0);

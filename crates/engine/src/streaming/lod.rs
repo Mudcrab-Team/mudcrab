@@ -795,6 +795,16 @@ fn terrain_batch_budget_available(budget: &StreamingCommitBudget, max_micros: u6
     budget.remaining != 0 && budget.frame_started.elapsed().as_micros() < u128::from(max_micros)
 }
 
+// These tables are rebuilt on semantic changes, often once per arriving LOD chunk. Reuse their
+// allocations and Bevy's integer-key hasher instead of allocating and SipHashing tens of thousands
+// of quadrant keys on every refresh. Selection and upload ordering remain unchanged.
+#[derive(Default)]
+pub(super) struct TerrainSelectionScratch {
+    full_ready: HashSet<(IVec2, u8), bevy::platform::hash::FixedHasher>,
+    available: HashMap<(IVec2, u8), u8, bevy::platform::hash::FixedHasher>,
+    selected: HashMap<(IVec2, u8), Option<LodTier>, bevy::platform::hash::FixedHasher>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_terrain_lod_visibility(
     config: Res<EngineConfig>,
@@ -816,6 +826,7 @@ pub(super) fn update_terrain_lod_visibility(
     mut budget: Option<ResMut<StreamingCommitBudget>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    mut scratch: Local<TerrainSelectionScratch>,
 ) {
     let started = Instant::now();
     let replaced_sources = std::mem::take(&mut streaming.p1().replaced_source_quadrants);
@@ -859,13 +870,21 @@ pub(super) fn update_terrain_lod_visibility(
         state.visibility_revision = state.visibility_revision.wrapping_add(1);
     }
     if refresh {
-        let full_ready: HashSet<_> = full_detail
-            .iter()
-            .map(|coverage| (coverage.grid, coverage.quadrant))
-            .collect();
+        let TerrainSelectionScratch {
+            full_ready,
+            available,
+            selected,
+        } = &mut *scratch;
+        full_ready.clear();
+        available.clear();
+        selected.clear();
+        full_ready.extend(
+            full_detail
+                .iter()
+                .map(|coverage| (coverage.grid, coverage.quadrant)),
+        );
         // The three legal tier discriminants (4, 8, 16) are distinct bits. A byte records
         // the same ready set without allocating a separate hash table for each quadrant.
-        let mut available = HashMap::<(IVec2, u8), u8>::new();
         let mut ready_patches = 0usize;
         for (coverage, ready, _) in &mut lod_patches {
             if let (Some(tier), Some(_)) = (coverage.tier, ready) {
@@ -883,26 +902,23 @@ pub(super) fn update_terrain_lod_visibility(
                 ready_patches += 1;
             }
         }
-        let selected_tiers: HashMap<_, _> = available
-            .iter()
-            .map(|(&(grid, quadrant), candidates)| {
-                let distance = chebyshev_grid_distance(grid, camera_grid);
-                (
-                    (grid, quadrant),
-                    select_terrain_lod_tier(
-                        distance,
-                        full_ready.contains(&(grid, quadrant)),
-                        *candidates,
-                        &config.terrain_lod,
-                    ),
-                )
-            })
-            .collect();
+        selected.extend(available.iter().map(|(&(grid, quadrant), candidates)| {
+            let distance = chebyshev_grid_distance(grid, camera_grid);
+            (
+                (grid, quadrant),
+                select_terrain_lod_tier(
+                    distance,
+                    full_ready.contains(&(grid, quadrant)),
+                    *candidates,
+                    &config.terrain_lod,
+                ),
+            )
+        }));
         let mut visible_patches = 0usize;
         for (coverage, ready, mut visibility) in &mut lod_patches {
             let selected = coverage.tier.is_some_and(|tier| {
                 ready.is_some()
-                    && selected_tiers.get(&(coverage.grid, coverage.quadrant)) == Some(&Some(tier))
+                    && selected.get(&(coverage.grid, coverage.quadrant)) == Some(&Some(tier))
             });
             let next = if selected {
                 Visibility::Inherited
@@ -916,7 +932,7 @@ pub(super) fn update_terrain_lod_visibility(
                 *visibility = next;
             }
         }
-        let (batched_quadrants, _, changed_batches) = batches.update(&selected_tiers);
+        let (batched_quadrants, _, changed_batches) = batches.update(selected);
         visible_patches += batched_quadrants;
         profiler.increment("lod/terrain_batches_updated", changed_batches as u64);
         profiler.increment("lod/selection_refreshes", 1);
