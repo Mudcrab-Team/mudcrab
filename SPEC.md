@@ -244,12 +244,16 @@ V112: Combined converter 24/world 7 ! native-BC, lighting, grass & LOD contracts
 V113: Launcher Play readiness & runtime startup share read-only world DB/LOD validation; actual schema ! report schema. Empty/corrupt/unsupported DB ⊥ ready; grass-only schema 5 requires no LOD tables. Advertised current LOD ! exact producer/world/build identity & chunk count; stale/missing/mismatched identity ⊥ ready.
 
 V114: Serialized legacy PipelineReport without lod_chunks/lod_warnings/LOD-publication timings → zero/empty defaults; explicit values retained. Timings measured by monotonic clock; absent historical values ≠ measured zero.
-V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed generated outputs rebuilt; source package unchanged.
+V115: `--no-lod` & PipelineConfig.no_lod skip terrain compiler in normal/metadata routes; full-detail assets/world data remain; published LOD rows empty, manifest/payloads absent. Toggle preserves ordinary asset configuration/byte proof; resumed world/index/build metadata rebuilt; chunk reuse only with V171 proof; source package unchanged.
 V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/ETA; shared overall estimate monotonic & restored after LOD.
 
 V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
-
 V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
+V170: LOD atlas mip chain ! each supplied mip encoded once; container assembly reuses encoded base metadata; authored mip/color/gutter/runtime contracts retained; changed assembler/compiler identity invalidates LOD reuse without relabeling ordinary assets.
+V171: LOD chunk reuse ! current explicit compiler/producer identity, exact consumed cell/grid/height/VCLR/layer/opacity/material-byte/origin/tier/tiling proof & verified payload hash/structure. Changed/removed/corrupt/unproven inputs or output → rebuild affected chunk; hash-consistent malformed node/mesh links rebuild rather than panic; refused package/chunk reasons and committed per-world reused/rebuilt totals retained in notices; fresh world/index/build metadata includes only accepted current chunks; no-lod publishes none.
+V172: LOD pipeline retains ≤ CPU worker count completed chunk payloads per batch; invalid content rolls back entire world & removes partial payloads; cancellation/input mutation/publication/DB errors remain fatal.
+V173: Winning LAND selected by highest plugin priority; distinct LAND records tied at the winning priority abort before publishing, including user mod lists. LOD cell-cache snapshot read/validated once per stage; each winning diffuse source read once & each selected authored DDS mip decoded once per stage; tier images shared across worlds/FormIDs; source bytes reverified before publication.
+V174: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; bytes 5–7 unused, excluded from typed/exported flags. Raw flags/unused bytes retained; normal load-order path remaps parent only & drops non-eight-byte XESP. Missing/truncated XESP → absent parent/flags.
 
 V119: Dynamic ingestion: Resolution, interpretation and winner merging cannot mutate source bytes or remove source occurrences/tombstones.
 V120: Dynamic ingestion: Compressed subrecord spans identify decoded address space; encoded stream and all original length/header encodings remain preserved.
@@ -351,6 +355,7 @@ T41|x|Separate test-job kache cache; action input verified against upstream acti
 
 T58|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V161,V162,V128,V134,V138,V141,V142,V143,V146,V150
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
+T70|x|Remove redundant atlas compression; fuse diffuse decode/tier resizing; share stage inputs; bounded transactional chunk batches; verified prior-package chunk reuse; correctness regressions & cold/warm Fiji measurements|V29,V72,V92,V93,V100,V103,V105,V114,V115,V170,V171,V172,V173
 
 T59|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V161,V119,V120,V121,V136,V142
 T43|.|Dynamic ingestion P1 persist/reopen SE archive and no-op writer; prove structural diagnostics/failure/immutability gates|V162,V121,V131,V142
@@ -510,3 +515,6 @@ B132|2026-10-06|merge verifier demanded exact parent invariant text although chi
 B133|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V143; explicit completion blockers + matched-runtime base-only regression
 B134|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V143; shared source provenance + custom missing-descriptor regression
 B135|2026-10-06|new main quaternion/performance entries reused schema V118/T42/B80/B81 before publication|preserve main V118/T42/B80/B81; schema V162/T59/B133/B134; three-way row/reference checks; no new behavior invariant
+B170|2026-10-04|Fiji terrain LOD took 3302.352s for 4673 chunks; every enabled run rebuilt all chunks; atlas independently encoded supplied mips then discarded extra generated pyramid; per-world cache reads & per-tier DDS decodes repeated; world retained all GLBs|V170,V171,V172,V173; measured contributions pending
+B171|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused bytes as u32, persisting non-zero retail padding as flags|V174; shared one-byte decoder; padded/missing/truncated regressions
+B172|2026-10-09|Cached GLB forward node/mesh links used unchecked indexing, and reuse refusal reasons were discarded|V171; checked links, matching-hash malformed-cache regression, refusal notices and per-world totals; V116 overall weights unchanged

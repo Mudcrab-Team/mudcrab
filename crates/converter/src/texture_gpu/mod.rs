@@ -36,7 +36,7 @@
 //!   endpoint fit the encoder is modelled on.
 
 mod astc_tables;
-mod ktx2;
+use crate::texture_ktx2 as ktx2;
 
 use crate::texture::{
     TextureEncoding, decode_packed_rgba8_mips, has_tight_packed_rows, inspect_ktx2, max_mip_levels,
@@ -462,6 +462,7 @@ fn build_ktx2(
         // The CPU path takes the KTX2 header (and so the RGB/RGBA channel
         // choice) from the first face's full-size image; mirror that.
         first_image_has_alpha,
+        "mudcrab texture_gpu",
     );
     Ok(BuiltKtx2 {
         bytes,
@@ -1445,6 +1446,7 @@ mod tests {
                 &[vec![0; 4 * UASTC_BLOCK_BYTES]],
                 encoding == TextureEncoding::ColorSrgb,
                 alpha != 255,
+                "mudcrab texture_gpu",
             );
             let dfd = |bytes: &[u8]| {
                 let index = ::ktx2::Reader::new(bytes).unwrap().header().index;
