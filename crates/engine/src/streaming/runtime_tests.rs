@@ -2,7 +2,10 @@ use super::*;
 use crate::{
     streaming::{RenderOrigin, StaticCollisionCache, admission::SceneDemand},
     streaming_preparation::StreamingPreparationPlugin,
-    world::components::{StreamingCamera, TerrainPatch},
+    world::{
+        components::{StreamingCamera, TerrainPatch},
+        database::{CellPayload, DatabaseRequest},
+    },
 };
 use bevy::asset::{AssetApp, AssetPlugin};
 use shared::streaming_costs::{ResourceCost, SceneCost};
@@ -105,6 +108,384 @@ fn cell_key(x: i32) -> CellKey {
 fn observe_at(app: &mut App, frame: u64) {
     app.world_mut().resource_mut::<StreamingRuntime>().frame = frame;
     observe_streaming_ownership(app.world_mut());
+}
+
+fn cell_pipeline_fixture(
+    capacity: usize,
+) -> (
+    App,
+    tempfile::TempDir,
+    crossbeam_channel::Receiver<DatabaseRequest>,
+    crossbeam_channel::Sender<DatabaseResponse>,
+) {
+    use crate::{
+        render::WaterReflectionTexture,
+        streaming::{StreamingCommitBudget, TerrainContinuity},
+        world::{cache::CellCache, database::AssetCatalog},
+    };
+    let (mut app, directory) = fixture(true);
+    {
+        let mut config = app.world_mut().resource_mut::<EngineConfig>();
+        config.headless = true;
+        config.stream_radius = 0;
+        config.unload_radius = 0;
+        config.max_streaming_backlog = 2;
+    }
+    let path = directory.path().join("cell-catalog.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+             CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);",
+        )
+        .unwrap();
+    drop(connection);
+    let cache_path = directory.path().join("cells.rkyv");
+    std::fs::write(
+        &cache_path,
+        rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: vec![],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let (database, requests, responses) = WorldDatabase::channel_fixture(capacity);
+    app.insert_resource(database)
+        .insert_resource(AssetCatalog::open(&path).unwrap())
+        .insert_resource(CellCache::open(&cache_path).unwrap())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(WaterReflectionTexture(Handle::default()))
+        .init_resource::<StreamingCommitBudget>()
+        .init_resource::<TerrainContinuity>();
+    app.world_mut()
+        .spawn((Transform::default(), StreamingCamera));
+    (app, directory, requests, responses)
+}
+
+fn returned_cell(generation: u64, key: CellKey) -> DatabaseResponse {
+    DatabaseResponse {
+        generation,
+        key,
+        result: Ok(CellPayload {
+            generation,
+            key,
+            cell_id: 1,
+            references: vec![],
+        }),
+        query_micros: 0,
+        queue_wait_micros: 0,
+        total_request_micros: 0,
+        row_count: 0,
+    }
+}
+
+#[test]
+fn raw_cell_payloads_enter_backpressure_and_drain_without_false_settlement() {
+    let (mut app, _directory) = fixture(true);
+    let (database, _requests, responses) = WorldDatabase::channel_fixture(1);
+    app.insert_resource(database);
+    for x in 0..16 {
+        responses.send(returned_cell(1, cell_key(x))).unwrap();
+    }
+    app.world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .deferred_responses
+        .push_back(returned_cell(2, cell_key(16)));
+    update_streaming_control(app.world_mut());
+    let snapshot = app
+        .world()
+        .resource::<StreamingRuntime>()
+        .snapshot
+        .as_ref()
+        .unwrap();
+    assert_eq!(snapshot.backlog.cell_responses, 17);
+    assert!(snapshot.control.reasons.queue_pressure);
+    assert!(!snapshot.control.reasons.demand_settled);
+    assert!(!snapshot.control.allow_cell_requests);
+    let database = app.world().resource::<WorldDatabase>();
+    while database.try_response().is_some() {}
+    app.world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .deferred_responses
+        .clear();
+    update_streaming_control(app.world_mut());
+    let snapshot = app
+        .world()
+        .resource::<StreamingRuntime>()
+        .snapshot
+        .as_ref()
+        .unwrap();
+    assert_eq!(snapshot.backlog.cell_responses, 0);
+    assert!(!snapshot.control.reasons.queue_pressure);
+    assert!(snapshot.control.reasons.recovery_hold);
+    assert!(!snapshot.control.allow_cell_requests);
+    // Recovery intentionally waits for a stable low-watermark interval.
+    for _ in 0..12 {
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_millis(50));
+        update_streaming_control(app.world_mut());
+    }
+    let snapshot = app
+        .world()
+        .resource::<StreamingRuntime>()
+        .snapshot
+        .as_ref()
+        .unwrap();
+    assert!(!snapshot.control.reasons.recovery_hold);
+    assert!(snapshot.control.allow_cell_requests);
+}
+
+#[test]
+fn rejected_cell_enqueue_stays_retryable_and_its_unused_reservation_is_reclaimed() {
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _directory, requests, _responses) = cell_pipeline_fixture(1);
+    app.world()
+        .resource::<WorldDatabase>()
+        .try_request(DatabaseRequest::Load {
+            generation: 99,
+            key: CellKey::Interior(99),
+            queued_at: Instant::now(),
+        })
+        .unwrap();
+    app.world_mut()
+        .run_system_once(super::super::plan_cells)
+        .unwrap();
+    let streaming = app.world().resource::<StreamingWorld>();
+    assert!(streaming.cells.is_empty());
+    assert!(streaming.outstanding_cells.is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<StreamingMetrics>()
+            .requests_submitted,
+        0
+    );
+    let reserved = app.world().resource::<StreamingRuntime>().ledger.totals();
+    assert!(reserved.resident_bytes > 0);
+    observe_at(&mut app, 1);
+    assert!(app.world().resource::<StreamingRuntime>().cells.is_empty());
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .totals()
+            .orphan_bytes()
+            .unwrap()
+            > 0
+    );
+    observe_at(&mut app, 3);
+    assert_eq!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .totals()
+            .peak_bytes(),
+        Some(0)
+    );
+    requests.try_recv().unwrap();
+    app.world_mut()
+        .run_system_once(super::super::plan_cells)
+        .unwrap();
+    let streaming = app.world().resource::<StreamingWorld>();
+    assert!(matches!(
+        streaming.cells[&cell_key(0)],
+        CellStatus::Loading { .. }
+    ));
+    assert_eq!(streaming.outstanding_cells.len(), 1);
+    assert_eq!(
+        app.world()
+            .resource::<StreamingMetrics>()
+            .requests_submitted,
+        1
+    );
+}
+
+#[test]
+fn stale_cell_payloads_retain_reservations_until_consumed_and_do_not_block_reload() {
+    use crate::streaming::{StreamingCommitBudget, collect_cells, plan_cells};
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _directory, requests, responses) = cell_pipeline_fixture(4);
+    app.world_mut().run_system_once(plan_cells).unwrap();
+    let DatabaseRequest::Load {
+        generation: old_generation,
+        key: old_key,
+        ..
+    } = requests.try_recv().unwrap()
+    else {
+        panic!("expected a cell request");
+    };
+    let camera = {
+        let world = app.world_mut();
+        world
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(world)
+            .unwrap()
+    };
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation
+        .x = CELL_SIZE * 100.0;
+    app.world_mut().run_system_once(plan_cells).unwrap();
+    let DatabaseRequest::Load {
+        generation: far_generation,
+        key: far_key,
+        ..
+    } = requests.try_recv().unwrap()
+    else {
+        panic!("expected a second cell request");
+    };
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = Vec3::ZERO;
+    app.world_mut().run_system_once(plan_cells).unwrap();
+    assert!(
+        requests.is_empty(),
+        "same-key reload must wait for its old payload"
+    );
+    assert!(app.world().resource::<StreamingWorld>().cells.is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .len(),
+        2
+    );
+    let reserved = app.world().resource::<StreamingRuntime>().ledger.totals();
+    observe_at(&mut app, 1);
+    observe_at(&mut app, 4);
+    assert_eq!(
+        app.world().resource::<StreamingRuntime>().ledger.totals(),
+        reserved
+    );
+    assert_eq!(app.world().resource::<StreamingRuntime>().cells.len(), 2);
+    responses
+        .send(returned_cell(old_generation, old_key))
+        .unwrap();
+    responses
+        .send(returned_cell(far_generation, far_key))
+        .unwrap();
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    assert!(
+        app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .is_empty()
+    );
+    assert!(app.world().resource::<StreamingWorld>().cells.is_empty());
+    assert_eq!(
+        app.world().resource::<StreamingMetrics>().stale_responses,
+        2
+    );
+    observe_at(&mut app, 5);
+    assert!(app.world().resource::<StreamingRuntime>().cells.is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .totals()
+            .peak_bytes(),
+        reserved.peak_bytes()
+    );
+    observe_at(&mut app, 7);
+    assert_eq!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .totals()
+            .peak_bytes(),
+        Some(0)
+    );
+    app.world_mut().run_system_once(plan_cells).unwrap();
+    let DatabaseRequest::Load {
+        generation: fresh_generation,
+        key: fresh_key,
+        ..
+    } = requests.try_recv().unwrap()
+    else {
+        panic!("expected reload after stale payload disposal");
+    };
+    assert_eq!(fresh_key, old_key);
+    assert_ne!(fresh_generation, old_generation);
+    responses
+        .send(returned_cell(old_generation, old_key))
+        .unwrap();
+    responses
+        .send(returned_cell(fresh_generation, fresh_key))
+        .unwrap();
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 1;
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    let streaming = app.world().resource::<StreamingWorld>();
+    assert!(matches!(
+        streaming.cells[&fresh_key],
+        CellStatus::Resident { .. }
+    ));
+    assert!(streaming.outstanding_cells.is_empty());
+    assert_eq!(streaming.cells.len(), 1);
+    let metrics = app.world().resource::<StreamingMetrics>();
+    assert_eq!(metrics.requests_submitted, 3);
+    assert_eq!(metrics.responses_received, 4);
+    assert_eq!(metrics.stale_responses, 3);
+    assert_eq!(metrics.failed_cells, 0);
+}
+
+#[test]
+fn startup_usefulness_counts_unadmitted_scene_demand() {
+    let (mut app, _directory) = fixture(true);
+    let key = scene_key("meshes/a.glb");
+    {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        runtime.catalog = known_catalog();
+        assert!(runtime.reserve_scene(&key));
+        runtime.scenes.get_mut(&key).unwrap().prepared = true;
+    }
+    app.world_mut()
+        .resource_mut::<StreamingMetrics>()
+        .terrain_patches_validated = 4;
+    let demands: Vec<_> = (0..20)
+        .map(|index| SceneDemand {
+            key: scene_key(&format!("meshes/queued-{index}.glb")),
+            subscriber: app.world_mut().spawn_empty().id(),
+            existing_handle: None,
+            priority: index,
+        })
+        .collect();
+    app.world_mut()
+        .resource_mut::<SceneAdmission>()
+        .reconcile_demands(demands);
+    update_streaming_control(app.world_mut());
+    assert!(
+        !app.world()
+            .resource::<StreamingRuntime>()
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .control
+            .reasons
+            .startup_useful
+    );
+    app.world_mut()
+        .resource_mut::<SceneAdmission>()
+        .reconcile_demands([]);
+    app.world_mut()
+        .resource_mut::<StreamingMetrics>()
+        .pending_lod_chunks = 1;
+    update_streaming_control(app.world_mut());
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .control
+            .reasons
+            .startup_useful
+    );
 }
 
 #[test]
@@ -998,6 +1379,7 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
             streaming
                 .cells
                 .insert(key, CellStatus::Loading { generation: 7 });
+            streaming.outstanding_cells.insert(key, 7);
         }
     }
     app.world_mut()
@@ -1057,6 +1439,43 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
     assert_eq!(runtime.deferred_responses.len(), 1);
     assert_eq!(runtime.deferred_responses[0].key, blocked);
     assert_eq!(runtime.cells.len(), 2);
+    assert!(
+        app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .contains_key(&blocked)
+    );
+    assert!(
+        !app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .contains_key(&affordable)
+    );
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .cells
+        .remove(&blocked);
+    {
+        let mut budget = app.world_mut().resource_mut::<StreamingCommitBudget>();
+        budget.remaining = 1;
+        budget.commits = 0;
+    }
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    assert!(
+        app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .is_empty()
+    );
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .deferred_responses
+            .is_empty()
+    );
+    let metrics = app.world().resource::<StreamingMetrics>();
+    assert_eq!(metrics.responses_received, 3);
+    assert_eq!(metrics.stale_responses, 2);
 }
 
 #[derive(TypePath)]

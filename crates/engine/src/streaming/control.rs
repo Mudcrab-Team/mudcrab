@@ -273,6 +273,9 @@ pub(crate) struct ControllerDecision {
     pub effective_target_frame_ms: f64,
     /// Median recent non-streaming cost; short asynchronous frames are outliers.
     pub recent_base_frame_ms: Option<f64>,
+    /// Recent non-streaming 95th percentile, including ordinary frame variance.
+    pub recent_base_upper_ms: Option<f64>,
+    pub frame_spike_threshold_ms: f64,
     pub quiet_seconds: f64,
     pub startup_complete: bool,
     pub frame_samples: u64,
@@ -351,6 +354,17 @@ fn update_ema(ema: &mut Option<f64>, value: Option<f64>, alpha: f64) {
     }
 }
 
+fn median(sorted: &[f64]) -> Option<f64> {
+    let middle = sorted.len() / 2;
+    if sorted.is_empty() {
+        None
+    } else if sorted.len().is_multiple_of(2) {
+        Some(sorted[middle - 1] * 0.5 + sorted[middle] * 0.5)
+    } else {
+        Some(sorted[middle])
+    }
+}
+
 impl ControllerState {
     pub fn tick(
         &mut self,
@@ -413,21 +427,22 @@ impl ControllerState {
             .map(|(_, value)| *value)
             .collect();
         base_costs.sort_unstable_by(f64::total_cmp);
-        let recent_base_frame_ms = if base_costs.is_empty() {
-            None
-        } else {
-            let middle = base_costs.len() / 2;
-            Some(if base_costs.len() % 2 == 0 {
-                base_costs[middle - 1] * 0.5 + base_costs[middle] * 0.5
-            } else {
-                base_costs[middle]
-            })
-        };
+        let recent_base_frame_ms = median(&base_costs);
+        let recent_base_upper_ms = base_costs
+            .len()
+            .checked_sub(1)
+            .map(|last| base_costs[(last as f64 * 0.95).floor() as usize]);
         // A GPU-bound machine may never meet the requested target. Compare new
         // load spikes with typical recent base cost instead of starving intake.
         // A few short asynchronous frames must not pin the reference below the
         // cost at which this scene normally renders.
         let effective_target = target.max(recent_base_frame_ms.unwrap_or(0.0) * 1.1);
+        // Asynchronous presentation has a heavy upper tail. A spike must exceed
+        // the usual slow frames, not just the median frame. The lower percentile
+        // index also keeps one new outlier from setting its own short-history
+        // threshold. Material streaming CPU work is checked independently below.
+        let frame_spike_threshold = effective_target.max(recent_base_upper_ms.unwrap_or(0.0))
+            * positive_or(settings.spike_ratio, 1.5);
         if frame_sample.is_some() {
             self.frame_samples = self.frame_samples.saturating_add(1);
         }
@@ -442,8 +457,10 @@ impl ControllerState {
             .chain(sample(input.gpu_frame_ms))
             .reduce(f64::max);
         let enter_ratio = positive_or(settings.pressure_enter_ratio, 1.15).max(1.0);
-        let material_streaming =
-            streaming_work_ms.max(self.streaming_work_ema_ms.unwrap_or(0.0)) >= target * 0.15;
+        // Current work must be substantial before a moderate frame overshoot
+        // pauses intake. Routine reconciliation and a stale work EMA are not a
+        // new load spike. Half-target CPU work still applies immediate backoff.
+        let material_streaming = streaming_work_ms >= target * 0.25;
         let frame_pressure = settings.adaptive
             && (streaming_work_ms >= target * 0.5
                 || (material_streaming
@@ -451,9 +468,8 @@ impl ControllerState {
                         .into_iter()
                         .chain(current_ms)
                         .any(|ms| ms >= effective_target * enter_ratio)));
-        let frame_spike = settings.adaptive
-            && current_ms
-                .is_some_and(|ms| ms >= effective_target * positive_or(settings.spike_ratio, 1.5));
+        let frame_spike =
+            settings.adaptive && current_ms.is_some_and(|ms| ms >= frame_spike_threshold);
         let queue_pressure = input.backlog.any_at_or_above(settings.high_watermarks);
         let reduced_pressure = input.memory_blocked || frame_pressure || frame_spike;
         let pressure = queue_pressure || reduced_pressure;
@@ -538,6 +554,7 @@ impl ControllerState {
             if (input.useful_nearby_ready || input.demand_settled)
                 && !queue_pressure
                 && !input.memory_blocked
+                && !self.recovery
             {
                 self.useful_seconds += delta;
                 if self.useful_seconds >= duration(settings.startup_ready_hold_seconds) {
@@ -662,6 +679,8 @@ impl ControllerState {
             configured_target_frame_ms: target,
             effective_target_frame_ms: effective_target,
             recent_base_frame_ms,
+            recent_base_upper_ms,
+            frame_spike_threshold_ms: frame_spike_threshold,
             quiet_seconds: self.quiet_seconds,
             startup_complete: self.startup_complete,
             frame_samples: self.frame_samples,
@@ -1188,6 +1207,159 @@ mod tests {
             assert!(!decision.reasons.recovery_probe);
             assert_bounded(decision.budgets, input().hard_limits);
         }
+    }
+
+    #[test]
+    fn native_variable_frames_do_not_repeatedly_pause_safe_streaming() {
+        let settings = adaptive();
+        // Corrected native smoke, frames 801–864. Ordinary presentation variance
+        // and 1–3 ms polling repeatedly restarted recovery in the failed run.
+        let timings = [
+            (27.5524, 1.1706),
+            (10.1675, 1.2842),
+            (19.9291, 1.1132),
+            (19.5076, 1.2662),
+            (18.8772, 1.4083),
+            (19.3578, 1.2049),
+            (20.3557, 1.2935),
+            (21.4543, 1.4669),
+            (14.7773, 1.2550),
+            (31.3561, 1.1993),
+            (9.1606, 1.1841),
+            (17.8850, 1.6206),
+            (19.1965, 1.2208),
+            (22.1490, 1.2372),
+            (18.2336, 1.2005),
+            (17.0462, 1.3611),
+            (20.4678, 1.1996),
+            (17.6575, 1.6430),
+            (18.9934, 1.2427),
+            (19.0863, 1.1622),
+            (19.2258, 1.1272),
+            (21.0422, 1.3079),
+            (17.6693, 1.5982),
+            (18.1223, 1.1899),
+            (19.0905, 1.1320),
+            (19.0838, 1.1963),
+            (21.4451, 1.1094),
+            (18.0709, 1.3257),
+            (19.7039, 1.1242),
+            (19.0338, 1.1641),
+            (19.4765, 1.1807),
+            (19.0295, 1.3051),
+            (20.2239, 1.1760),
+            (24.7824, 1.4229),
+            (10.4640, 1.1511),
+            (20.5132, 1.1802),
+            (20.6176, 1.2673),
+            (18.4386, 2.8950),
+            (19.5679, 2.8898),
+            (19.8725, 3.0453),
+            (24.9081, 3.0392),
+            (11.0269, 1.6588),
+            (22.2500, 1.3771),
+            (17.8849, 1.7510),
+            (19.6785, 1.6782),
+            (18.6036, 1.6212),
+            (19.3309, 1.6638),
+            (20.1075, 1.5067),
+            (18.1092, 1.6849),
+            (19.1169, 1.5627),
+            (18.9250, 1.3932),
+            (19.6439, 1.4390),
+            (20.3955, 1.5413),
+            (17.7151, 1.6892),
+            (19.8846, 1.3598),
+            (17.8529, 1.6242),
+            (20.6674, 1.3191),
+            (19.2535, 1.4479),
+            (18.6773, 1.4479),
+            (26.9276, 1.3203),
+            (9.6728, 1.8154),
+            (21.7242, 1.3539),
+            (20.3706, 1.4414),
+            (17.3369, 1.8119),
+        ];
+        let mut state = ControllerState {
+            frame_ema_ms: Some(29.143965249070565),
+            non_streaming_ema_ms: Some(27.820484405261347),
+            streaming_work_ema_ms: Some(1.3234808438092187),
+            baseline_samples: timings
+                .iter()
+                .map(|(frame, cpu)| (0.0, frame - cpu))
+                .collect(),
+            recovery: true,
+            recovery_reduced: true,
+            startup_complete: true,
+            ..Default::default()
+        };
+        for index in 0..timings.len() * 3 {
+            let (frame_ms, streaming_work_ms) = timings[index % timings.len()];
+            let decision = state.tick(
+                &settings,
+                ControllerInput {
+                    delta_seconds: frame_ms / 1_000.0,
+                    frame_ms: Some(frame_ms),
+                    streaming_work_ms,
+                    ..input()
+                },
+            );
+            assert!(!decision.reasons.frame_pressure, "sample {index}");
+            assert!(!decision.reasons.frame_spike, "sample {index}");
+            if index >= 30 {
+                assert!(decision.allow_scene_intake, "sample {index}");
+                assert!(!decision.reasons.recovery_probe);
+            }
+            assert_bounded(decision.budgets, input().hard_limits);
+        }
+        // Neither presentation variance nor its wider spike reference can hide
+        // expensive streaming CPU work or a severe unexplained frame stall.
+        let cpu_spike = state.tick(
+            &settings,
+            ControllerInput {
+                frame_ms: Some(30.0),
+                streaming_work_ms: 10.0,
+                ..input()
+            },
+        );
+        assert!(cpu_spike.reasons.frame_pressure);
+        assert!(!cpu_spike.allow_scene_intake);
+        let frame_spike = state.tick(
+            &settings,
+            ControllerInput {
+                frame_ms: Some(80.0),
+                streaming_work_ms: 1.3,
+                ..input()
+            },
+        );
+        assert!(frame_spike.reasons.frame_spike);
+        assert!(!frame_spike.allow_scene_intake);
+    }
+
+    #[test]
+    fn startup_usefulness_waits_until_recovery_has_finished() {
+        let settings = adaptive();
+        let mut state = ControllerState::default();
+        let ready = ControllerInput {
+            useful_nearby_ready: true,
+            ..input()
+        };
+        let blocked = advance(
+            &mut state,
+            &settings,
+            ControllerInput {
+                streaming_work_ms: 10.0,
+                ..ready
+            },
+            30,
+        );
+        assert_eq!(blocked.mode, ControllerMode::Recovery);
+        assert!(!blocked.startup_complete);
+        let recovered = advance(&mut state, &settings, ready, 11);
+        assert_eq!(recovered.mode, ControllerMode::Startup);
+        assert!(!recovered.startup_complete);
+        let useful = advance(&mut state, &settings, ready, 5);
+        assert!(useful.startup_complete);
     }
 
     #[test]

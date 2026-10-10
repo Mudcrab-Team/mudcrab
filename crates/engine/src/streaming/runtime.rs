@@ -21,7 +21,7 @@ use crate::{
     },
     world::{
         components::CELL_SIZE,
-        database::{CellKey, DatabaseResponse},
+        database::{CellKey, DatabaseResponse, WorldDatabase},
     },
 };
 use bevy::{
@@ -783,7 +783,11 @@ pub(super) fn update_streaming_control(world: &mut World) {
             .unwrap_or(0),
         // Reserved decode bytes are not GPU backlog bytes; only IDs are observed here.
         gpu_bytes: 0,
-        cell_responses: runtime.deferred_responses.len(),
+        cell_responses: runtime.deferred_responses.len().saturating_add(
+            world
+                .get_resource::<WorldDatabase>()
+                .map_or(0, WorldDatabase::pending_cell_responses),
+        ),
     };
     let admission = world.resource::<SceneAdmission>();
     let metrics = world.resource::<StreamingMetrics>();
@@ -794,7 +798,12 @@ pub(super) fn update_streaming_control(world: &mut World) {
         && metrics.active_requests == 0
         && metrics.pending_lod_queries == 0
         && metrics.pending_lod_chunks == 0
-        && runtime.deferred_responses.is_empty();
+        && runtime.deferred_responses.is_empty()
+        && world
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .is_empty()
+        && backlog.cell_responses == 0;
     let time = world
         .get_resource::<Time<Real>>()
         .map_or(0.0, Time::delta_secs_f64);
@@ -821,7 +830,11 @@ pub(super) fn update_streaming_control(world: &mut World) {
                         .filter(|scene| scene.prepared)
                         .count()
                         * 4
-                        >= runtime.scenes.len() * 3),
+                        >= runtime
+                            .scenes
+                            .len()
+                            .saturating_add(admission.queued_jobs())
+                            .saturating_mul(3)),
             demand_settled: settled,
             backlog,
             active_scene_jobs: admission.active_jobs(),
@@ -1145,11 +1158,10 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
         .cells
         .keys()
         .filter(|key| {
-            !cells.contains(key)
-                || matches!(
-                    world.resource::<StreamingWorld>().cells.get(key),
-                    Some(CellStatus::Failed)
-                )
+            let streaming = world.resource::<StreamingWorld>();
+            !streaming.outstanding_cells.contains_key(key)
+                && (!cells.contains(key)
+                    || matches!(streaming.cells.get(key), Some(CellStatus::Failed)))
         })
         .copied()
         .collect();

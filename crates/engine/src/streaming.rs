@@ -134,6 +134,9 @@ pub struct StreamingWorld {
     /// first whatever order the queries iterate in.
     next_model_sequence: u64,
     cells: HashMap<CellKey, CellStatus>,
+    /// Keep each dispatched payload accounted for after its cell leaves the wanted window.
+    /// An entry survives channel delivery and deferral until the response is consumed.
+    outstanding_cells: HashMap<CellKey, u64>,
 }
 
 impl StreamingWorld {
@@ -148,14 +151,14 @@ impl StreamingWorld {
         key: CellKey,
         metrics: &mut StreamingMetrics,
         profiler: &mut ProfilingState,
-    ) {
-        if self.cells.contains_key(&key) {
-            return;
+    ) -> bool {
+        if self.cells.contains_key(&key) || self.outstanding_cells.contains_key(&key) {
+            return false;
         }
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         if database
-            .request(DatabaseRequest::Load {
+            .try_request(DatabaseRequest::Load {
                 generation,
                 key,
                 queued_at: Instant::now(),
@@ -166,6 +169,15 @@ impl StreamingWorld {
             profiler.increment("streaming/requests", 1);
             profiler.event(format!("{key:?}"), "requested", None);
             self.cells.insert(key, CellStatus::Loading { generation });
+            self.outstanding_cells.insert(key, generation);
+            return true;
+        }
+        false
+    }
+
+    fn consume_cell_response(&mut self, key: CellKey, generation: u64) {
+        if self.outstanding_cells.get(&key) == Some(&generation) {
+            self.outstanding_cells.remove(&key);
         }
     }
 }
@@ -556,7 +568,8 @@ fn plan_cells(
         }
     }
     let mut ordered: Vec<_> = wanted.iter().copied().collect();
-    if config.prioritize_streaming {
+    let controlled = config.streaming_controls_enabled();
+    if config.prioritize_streaming || controlled {
         ordered.sort_by_key(|key| match *key {
             CellKey::Exterior { grid_x, grid_y, .. } => {
                 let dx = i64::from(grid_x) - i64::from(center.x);
@@ -566,17 +579,39 @@ fn plan_cells(
             _ => (0, cell_order_key(*key)),
         });
     }
+    let request_limit = if controlled {
+        commit_budget.remaining
+    } else {
+        usize::MAX
+    };
+    let outstanding_limit = if controlled {
+        match config.streaming_backlog_limit() {
+            0 => 256,
+            limit => limit,
+        }
+    } else {
+        usize::MAX
+    };
+    let mut submitted = 0;
     for key in &ordered {
+        if submitted >= request_limit || streaming.outstanding_cells.len() >= outstanding_limit {
+            break;
+        }
         // A retiring cell is still in the map, so `request_cell` never requests it a second time:
         // the retain pass below revives it with the root it kept.
-        if !streaming.cells.contains_key(key) {
+        if !streaming.cells.contains_key(key) && !streaming.outstanding_cells.contains_key(key) {
             if let Some(runtime) = runtime.as_mut()
                 && (!runtime.cell_requests_allowed()
                     || !runtime.reserve_cell(*key, config.interactive_world_physics()))
             {
                 continue;
             }
-            streaming.request_cell(&database, *key, &mut metrics, &mut profiler);
+            if streaming.request_cell(&database, *key, &mut metrics, &mut profiler) {
+                submitted += 1;
+            } else {
+                // A full worker queue is retryable. Stop before reserving more unsubmitted cells.
+                break;
+            }
         }
     }
     let mut revived = 0u64;
@@ -866,11 +901,13 @@ fn collect_cells(
             );
         }
         let Some(CellStatus::Loading { generation }) = streaming.cells.get(&response.key) else {
+            streaming.consume_cell_response(response.key, response.generation);
             metrics.stale_responses += 1;
             profiler.event(format!("{:?}", response.key), "stale_discarded", None);
             continue;
         };
         if *generation != response.generation {
+            streaming.consume_cell_response(response.key, response.generation);
             metrics.stale_responses += 1;
             profiler.event(format!("{:?}", response.key), "stale_generation", None);
             continue;
@@ -888,6 +925,7 @@ fn collect_cells(
                 continue;
             }
         }
+        streaming.consume_cell_response(response.key, response.generation);
         commit_budget.remaining -= 1;
         commit_budget.commits = commit_budget.commits.saturating_add(1);
         let commit_started = std::time::Instant::now();
@@ -4385,6 +4423,52 @@ mod tests {
             grid_x,
             grid_y,
         }
+    }
+
+    #[test]
+    fn controlled_cell_intake_is_nearest_first_and_bounds_the_entire_outstanding_pipeline() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            max_streaming_backlog: 2,
+            max_cell_commits_per_frame: 1,
+            prioritize_streaming: false,
+            stream_radius: 2,
+            unload_radius: 2,
+            ..default()
+        });
+        spawn_camera(&mut app, IVec2::ZERO);
+        app.update();
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert_eq!(streaming.outstanding_cells.len(), 1);
+        assert!(streaming.cells.contains_key(&exterior_key(0, 0)));
+        app.update();
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert_eq!(streaming.outstanding_cells.len(), 2);
+        assert!(streaming.cells.keys().all(|key| {
+            matches!(key, CellKey::Exterior { grid_x, grid_y, .. }
+                if grid_x * grid_x + grid_y * grid_y <= 1)
+        }));
+        for _ in 0..12 {
+            move_camera(&mut app, IVec2::new(100, 0));
+            app.update();
+        }
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert!(streaming.cells.is_empty());
+        assert_eq!(streaming.outstanding_cells.len(), 2);
+        assert_eq!(streaming_metrics(&app).requests_submitted, 2);
+    }
+
+    #[test]
+    fn default_cell_intake_still_requests_the_whole_wanted_window() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 2,
+            ..default()
+        });
+        spawn_camera(&mut app, IVec2::ZERO);
+        app.update();
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert_eq!(streaming.cells.len(), 25);
+        assert_eq!(streaming.outstanding_cells.len(), 25);
+        assert_eq!(streaming_metrics(&app).requests_submitted, 25);
     }
 
     /// Spawns a cell root with a two-entity subtree under it and records the cell as resident or
