@@ -227,7 +227,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .add_plugins(StreamingPlugin);
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
-            app.add_plugins(WorldPlayerPlugin);
+            app.add_plugins((WorldPlayerPlugin, crate::door_crossing::DoorCrossingPlugin));
             // `coc`/`coe` move the player, so they come with it, as `tcl` does: a run without a
             // player (a benchmark, `--shots`, headless) lists neither in Help.
             crate::cell_commands::register_cell_commands(&mut app);
@@ -586,8 +586,8 @@ struct StreamingFixtureState {
 /// way a door crossing will load one; the camera then carries on over exteriors far outside the
 /// unload radius and comes back. The contract is that the interior never exists twice and its
 /// references match its root. Today it also stays loaded throughout (an interior has no grid
-/// square, so [`cell_within_unload_radius`](crate::streaming) keeps it, and no runtime path unloads
-/// one); that is current behaviour, not part of the contract.
+/// square, so [`cell_within_unload_radius`](crate::streaming) keeps it, and only a space switch
+/// unloads one); that is current behaviour, not part of the contract.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 struct InteriorCrossing {
     requested_frame: Option<u32>,

@@ -1,5 +1,6 @@
 use super::{
-    RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage, TerrainSurfaceReady,
+    ActiveSpace, RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage,
+    TerrainSurfaceReady,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
@@ -43,6 +44,8 @@ fn lod_camera_far(reach_cells: i32) -> f32 {
 pub(super) struct LodStreaming {
     generation: u64,
     center: Option<IVec2>,
+    /// The worldspace `center` belongs to; a door into another worldspace moves the centre too.
+    worldspace_id: Option<u32>,
     requested_queries: HashSet<LodTier>,
     pending_queries: HashSet<LodTier>,
     query_retries: HashMap<LodTier, (u8, Option<Instant>)>,
@@ -96,6 +99,7 @@ impl LodStreaming {
         self.pending_queries.clear();
         self.query_retries.clear();
         self.center = Some(center);
+        self.worldspace_id = Some(worldspace_id);
         self.pending_chunks.retain_mut(|(generation, metadata, _)| {
             let keep = metadata.key.worldspace_id == worldspace_id
                 && chunk_within_radius(
@@ -214,10 +218,39 @@ pub(super) fn mark_lod_world_instance_ready(
     }
 }
 
+/// The worldspace whose distant terrain should be streamed, or `None` for none at all: a negative
+/// stream radius turns LOD off, and an interior has no distant terrain. Otherwise LOD follows the
+/// exterior the player is in, which a door may have changed from the configured one.
+fn lod_worldspace(stream_radius: i32, space: Option<&ActiveSpace>, configured: u32) -> Option<u32> {
+    if stream_radius < 0 || space.is_some_and(|space| space.interior.is_some()) {
+        return None;
+    }
+    Some(space.map_or(configured, |space| space.exterior_worldspace(configured)))
+}
+
+/// Whether a resident chunk stays: it must belong to the streamed worldspace and lie within its
+/// tier's unload radius of the camera's cell.
+fn keep_resident_chunk(
+    key: ChunkKey,
+    origin: LodOrigin,
+    worldspace_id: u32,
+    center: (i64, i64),
+    distances: &TerrainLodDistances,
+) -> bool {
+    key.worldspace_id == worldspace_id
+        && chunk_within_radius(
+            key,
+            origin,
+            center,
+            query_unload_radius(distances.reach_cells(key.tier)),
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_lod_chunks(
     mut commands: Commands,
     config: Res<EngineConfig>,
+    space: Option<Res<ActiveSpace>>,
     database: Res<WorldDatabase>,
     origin: Res<RenderOrigin>,
     camera: Query<&Transform, With<StreamingCamera>>,
@@ -230,10 +263,13 @@ pub(super) fn plan_lod_chunks(
     let Ok(camera) = camera.single() else {
         return;
     };
-    if config.stream_radius < 0 {
+    let Some(worldspace_id) =
+        lod_worldspace(config.stream_radius, space.as_deref(), config.worldspace_id)
+    else {
         if streaming.center.take().is_some() {
             streaming.generation = streaming.generation.wrapping_add(1);
         }
+        streaming.worldspace_id = None;
         streaming.requested_queries.clear();
         streaming.pending_queries.clear();
         streaming.query_retries.clear();
@@ -253,11 +289,11 @@ pub(super) fn plan_lod_chunks(
         update_counts(&streaming, &mut metrics, &mut profiler);
         profiler.record_elapsed("lod/plan", started);
         return;
-    }
+    };
 
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
-    if streaming.center != Some(center) {
-        streaming.move_center(center, config.worldspace_id, &config.terrain_lod);
+    if streaming.center != Some(center) || streaming.worldspace_id != Some(worldspace_id) {
+        streaming.move_center(center, worldspace_id, &config.terrain_lod);
     }
     let generation = streaming.generation;
     for tier in LodTier::ALL {
@@ -265,7 +301,7 @@ pub(super) fn plan_lod_chunks(
             continue;
         }
         let query = query_for(
-            config.worldspace_id,
+            worldspace_id,
             tier,
             center,
             query_unload_radius(config.terrain_lod.reach_cells(tier)),
@@ -288,11 +324,12 @@ pub(super) fn plan_lod_chunks(
     let center64 = (i64::from(center.x), i64::from(center.y));
     let previous_chunks = streaming.chunks.len();
     streaming.chunks.retain(|key, status| {
-        let keep = chunk_within_radius(
+        let keep = keep_resident_chunk(
             *key,
             status.origin(),
+            worldspace_id,
             center64,
-            query_unload_radius(config.terrain_lod.reach_cells(key.tier)),
+            &config.terrain_lod,
         );
         if !keep {
             if let Some(root) = status.root() {
@@ -1382,6 +1419,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn lod_follows_the_active_exterior_and_stops_in_an_interior() {
+        assert_eq!(lod_worldspace(3, None, 60), Some(60));
+        assert_eq!(lod_worldspace(-1, None, 60), None, "LOD turned off");
+        let configured = ActiveSpace::default();
+        assert_eq!(lod_worldspace(3, Some(&configured), 60), Some(60));
+        let other = ActiveSpace {
+            worldspace_id: Some(61),
+            interior: None,
+        };
+        assert_eq!(lod_worldspace(3, Some(&other), 60), Some(61));
+        let inside = ActiveSpace {
+            worldspace_id: None,
+            interior: Some(7),
+        };
+        assert_eq!(lod_worldspace(3, Some(&inside), 60), None);
+    }
+
+    #[test]
+    fn resident_chunks_of_another_worldspace_are_dropped() {
+        let metadata = retry_test_metadata();
+        let distances = TerrainLodDistances::default();
+        let at = |worldspace_id| {
+            keep_resident_chunk(
+                metadata.key,
+                metadata.origin,
+                worldspace_id,
+                (0, 0),
+                &distances,
+            )
+        };
+        assert!(at(metadata.key.worldspace_id));
+        assert!(!at(metadata.key.worldspace_id.wrapping_add(1)));
+    }
+
+    #[test]
+    fn a_worldspace_change_moves_the_centre_even_on_the_same_grid() {
+        let metadata = retry_test_metadata();
+        let mut streaming = LodStreaming {
+            generation: 3,
+            center: Some(IVec2::ZERO),
+            worldspace_id: Some(metadata.key.worldspace_id),
+            pending_chunks: VecDeque::from([(3, metadata.clone(), None)]),
+            ..default()
+        };
+        let other = metadata.key.worldspace_id.wrapping_add(1);
+        streaming.move_center(IVec2::ZERO, other, &TerrainLodDistances::default());
+        assert_eq!(streaming.worldspace_id, Some(other));
+        assert!(
+            streaming.pending_chunks.is_empty(),
+            "queued chunks of the old worldspace are dropped"
+        );
     }
 
     #[test]

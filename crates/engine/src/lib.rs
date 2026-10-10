@@ -3,6 +3,8 @@ pub mod cell_commands;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;
+pub mod door_crossing;
+pub mod doors;
 pub mod lights;
 pub mod metrics;
 pub mod nif_material;
