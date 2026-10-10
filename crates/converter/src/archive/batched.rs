@@ -237,6 +237,33 @@ pub(super) fn extract(
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
 ) -> Result<ExtractionOutcome> {
+    extract_with_ingestion(
+        archive_path,
+        output,
+        previous_cache,
+        cache,
+        previous,
+        options,
+        progress,
+        stop,
+        observer,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn extract_with_ingestion(
+    archive_path: &Path,
+    output: &Path,
+    previous_cache: &Path,
+    cache: &Path,
+    previous: Option<&IngestionCacheEntry>,
+    options: &ExtractOptions,
+    progress: Option<ExtractionProgressCallback<'_>>,
+    stop: Option<StopCheck<'_>>,
+    observer: WriterObserver<'_>,
+    ingestion: Option<&super::FreshIngestion<'_>>,
+) -> Result<ExtractionOutcome> {
     ensure!(
         options.cpu_jobs > 0 && options.io_jobs > 0,
         "archive CPU and I/O worker counts must be greater than zero"
@@ -291,6 +318,9 @@ pub(super) fn extract(
         options.reuse_cache
             && entry.source_hash == source_hash
             && options.selection.accepts_recipe(&entry.recipe)
+            && entry
+                .selection
+                .can_satisfy(options.selection.ingestion_selection())
     }) {
         for file in &previous.files {
             let path = safe_relative_path(&file.path)?;
@@ -351,6 +381,7 @@ pub(super) fn extract(
                         stop,
                         observer,
                         reporter.as_ref(),
+                        ingestion,
                     );
                     if let Some(observer) = observer {
                         observer(WriterEvent::Finished);
@@ -455,6 +486,7 @@ pub(super) fn extract(
     let entry = IngestionCacheEntry {
         source_hash,
         recipe: options.selection.recipe().to_owned(),
+        selection: options.selection.ingestion_selection(),
         files: files
             .iter()
             .map(|file| IngestedFile {
@@ -468,6 +500,7 @@ pub(super) fn extract(
         files,
         cache_entry: entry,
         cache_hit: decoded.load(Ordering::Relaxed) == 0,
+        timings: super::ExtractionTimings::default(),
     })
 }
 
@@ -629,6 +662,7 @@ fn write_batch(
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
     progress: Option<&ProgressReporter<'_>>,
+    ingestion: Option<&super::FreshIngestion<'_>>,
 ) -> Result<Vec<ExtractedFile>> {
     let unsealed: Vec<_> = files.iter().filter(|file| !file.durable).collect();
     if !unsealed.is_empty() {
@@ -640,16 +674,25 @@ fn write_batch(
     let mut written = Vec::with_capacity(files.len());
     for prepared in files {
         check_stop(stop)?;
-        let blob = blob_path(cache, &prepared.file.sha256)?;
-        if valid_blob(cache, &prepared.file.sha256, prepared.file.bytes_written).is_none() {
-            if let Some(existing) = &prepared.existing {
-                atomic_link_or_copy(existing, &blob)?;
-            } else {
-                let data = prepared.bytes()?;
-                atomic_write_derived(&blob, &data)?;
+        if let Some(ingestion) = ingestion {
+            let data = prepared.bytes()?;
+            ingestion.materialize(
+                &output.join(&prepared.file.path),
+                &data,
+                &prepared.file.sha256,
+            )?;
+        } else {
+            let blob = blob_path(cache, &prepared.file.sha256)?;
+            if valid_blob(cache, &prepared.file.sha256, prepared.file.bytes_written).is_none() {
+                if let Some(existing) = &prepared.existing {
+                    atomic_link_or_copy(existing, &blob)?;
+                } else {
+                    let data = prepared.bytes()?;
+                    atomic_write_derived(&blob, &data)?;
+                }
             }
+            share_blob(&blob, &output.join(&prepared.file.path), spill_cache)?;
         }
-        share_blob(&blob, &output.join(&prepared.file.path), spill_cache)?;
         if let Some(progress) = progress {
             progress.advance(prepared.file.bytes_written);
         }

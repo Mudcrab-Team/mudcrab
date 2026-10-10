@@ -5,7 +5,7 @@ use super::{
     schema_format::{FieldSchema, Schema},
 };
 use crate::esm::load_order::LoadOrder;
-use std::{collections::HashMap, sync::OnceLock};
+use std::{borrow::Cow, collections::HashMap, sync::OnceLock};
 
 /// Per-file interpretation supplied by the shared load-order authority.
 pub(crate) struct Context<'a> {
@@ -348,11 +348,11 @@ pub(crate) fn decode(
                     .as_deref()
                     .is_some_and(|tag| tag.as_bytes() == signature)
             }) {
-                let common = schema.resolve(common)?;
+                let common = schema.resolve_borrowed(common)?;
                 match value(&common, bytes, schema, context, diagnostics, &selection, 0) {
                     Ok((value, canonical_bytes)) => fields.push(DecodedField {
                         signature,
-                        name: common.name,
+                        name: common.name.clone(),
                         value,
                         canonical_bytes,
                     }),
@@ -570,7 +570,7 @@ fn value(
     }
     if field.definition.is_some() {
         return value(
-            &schema.resolve(field)?,
+            schema.resolve_borrowed(field)?.as_ref(),
             bytes,
             schema,
             context,
@@ -690,7 +690,7 @@ fn value(
             let mut values = Vec::new();
             let mut canonical = bytes.to_vec();
             for member in &field.members {
-                let member = schema.resolve(member)?;
+                let member = schema.resolve_borrowed(member)?;
                 if member.optional && member.offset >= bytes.len() {
                     continue;
                 }
@@ -717,7 +717,7 @@ fn value(
                     depth + 1,
                 )?;
                 canonical[member.offset..end].copy_from_slice(&encoded);
-                values.push((member.name, decoded));
+                values.push((member.name.clone(), decoded));
             }
             return Ok((Value::Struct(values), canonical));
         }
@@ -813,14 +813,14 @@ fn array(
         return Err("array extent/count mismatch".into());
     }
     let element = if field.members.len() == 1 && field.members[0].offset == 0 {
-        schema.resolve(&field.members[0])?
+        schema.resolve_borrowed(&field.members[0])?
     } else {
-        FieldSchema {
+        Cow::Owned(FieldSchema {
             kind: "struct".into(),
             size: Some(stride),
             members: field.members.clone(),
             ..Default::default()
-        }
+        })
     };
     let mut canonical = bytes.to_vec();
     let mut values = Vec::with_capacity(count);
@@ -1103,7 +1103,7 @@ pub(crate) fn validate_targets(result: &mut ReadResult, schema: &Schema, order: 
                 continue;
             };
             let resolved = schema
-                .resolve(field_schema)
+                .resolve_borrowed(field_schema)
                 .expect("validated common field");
             if resolved.decider.as_deref() == Some("vmad") {
                 // Canonical VMAD links are already global; check all primary and alias objects.
@@ -1168,7 +1168,7 @@ fn validate_value(
     diagnostics: &mut PluginDiagnostics,
     selection: &super::deciders::Context<'_>,
 ) {
-    let Ok(field) = schema.resolve(field) else {
+    let Ok(field) = schema.resolve_borrowed(field) else {
         return;
     };
     if let Ok(Some(layout)) = super::deciders::layout(&field, bytes) {
@@ -1296,13 +1296,13 @@ fn validate_value(
                         == Some("prefix_u32"),
                 ) * 4;
                 let element = if field.members.len() == 1 {
-                    field.members[0].clone()
+                    Cow::Borrowed(&field.members[0])
                 } else {
-                    FieldSchema {
+                    Cow::Owned(FieldSchema {
                         kind: "struct".into(),
                         members: field.members.clone(),
                         ..Default::default()
-                    }
+                    })
                 };
                 for (index, value) in values.iter_mut().enumerate() {
                     let start = offset + index * stride;

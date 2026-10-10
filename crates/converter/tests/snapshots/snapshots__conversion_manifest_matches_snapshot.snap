@@ -14,6 +14,7 @@ expression: manifest
         }
       ],
       "recipe": "converter-inputs-v1",
+      "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
     "skyrim - misc.bsa": {
@@ -30,6 +31,7 @@ expression: manifest
         }
       ],
       "recipe": "converter-inputs-v1",
+      "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
     "skyrim - textures.ba2": {
@@ -61,6 +63,7 @@ expression: manifest
         }
       ],
       "recipe": "converter-inputs-v1",
+      "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     }
   },

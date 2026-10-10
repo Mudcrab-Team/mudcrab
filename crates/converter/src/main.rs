@@ -2,6 +2,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
+use converter::archive::IngestionSync;
 use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
@@ -29,6 +30,8 @@ struct Cli {
     report_json: Option<PathBuf>,
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
+    ingestion_sync: IngestionSync,
+    extract_all_archive_files: bool,
     texture_encoder: TextureEncoder,
     texture_fallback_quality: Option<u8>,
     texture_uastc_level: Option<u8>,
@@ -56,6 +59,8 @@ impl Cli {
         config.texture_encoder = self.texture_encoder;
         config.lod_texture_encoder = self.lod_texture_encoder;
         config.record_reader = self.record_reader;
+        config.ingestion_sync = self.ingestion_sync;
+        config.extract_all_archive_files = self.extract_all_archive_files;
         if let Some(value) = self.texture_fallback_quality {
             config.texture_fallback_quality = value;
         }
@@ -543,6 +548,14 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.record_reader == RecordReader::Inhouse {
         command.push_str(" --record-reader inhouse");
     }
+    if cli.extract_all_archive_files {
+        command.push_str(" --extract-all-archive-files");
+    }
+    match cli.ingestion_sync {
+        IngestionSync::PerFile => {}
+        IngestionSync::Archive => command.push_str(" --ingestion-sync archive"),
+        IngestionSync::None => command.push_str(" --ingestion-sync none"),
+    }
     command
 }
 
@@ -776,6 +789,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut reuse_assets = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
+    let mut ingestion_sync = IngestionSync::PerFile;
+    let mut extract_all_archive_files = false;
     let mut use_gpu = false;
     let mut record_reader = RecordReader::Legacy;
     let mut use_lod_gpu = true;
@@ -847,6 +862,15 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     _ => bail!("--lod-encoder must be cpu or gpu"),
                 };
             }
+            Some("--ingestion-sync") => {
+                ingestion_sync = match next_value(&mut args, "--ingestion-sync")?.to_str() {
+                    Some("per-file") => IngestionSync::PerFile,
+                    Some("archive") => IngestionSync::Archive,
+                    Some("none") => IngestionSync::None,
+                    _ => bail!("--ingestion-sync must be per-file, archive, or none"),
+                };
+            }
+            Some("--extract-all-archive-files") => extract_all_archive_files = true,
             Some("--gpu-quality") => {
                 gpu_quality = Some(parse_u32(
                     next_value(&mut args, "--gpu-quality")?,
@@ -904,6 +928,9 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             "--gpu-quality and --gpu-batch-mb require --texture-encoder gpu or --lod-encoder gpu"
         );
     }
+    if ingestion_sync == IngestionSync::None && !verify_cache {
+        bail!("--ingestion-sync none requires verified cache reuse; omit --no-verify-cache");
+    }
     let texture_encoder = if use_gpu {
         gpu_encoder
     } else {
@@ -947,6 +974,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         report_json,
         cpu_jobs,
         io_jobs,
+        ingestion_sync,
+        extract_all_archive_files,
         texture_encoder,
         texture_fallback_quality,
         texture_uastc_level,
@@ -1012,6 +1041,7 @@ fn usage() -> &'static str {
                  [--mo2-instance DIR] [--mo2-profile NAME]
                  [--language NAME]
                  [--record-reader legacy|inhouse]
+                 [--ingestion-sync per-file|archive|none] [--extract-all-archive-files]
        converter check <output directory> [--full]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
@@ -1033,6 +1063,12 @@ MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are no
 
 Terrain LOD uses the GPU by default, with CPU fallback if GPU initialization fails.
 --lod-encoder cpu selects CPU LOD. Ordinary textures default to the CPU independently.
+
+Archive ingestion extracts the formats used by conversion and English string banks.
+--extract-all-archive-files retains every archive entry for compatibility and comparisons.
+--ingestion-sync defaults to per-file. archive syncs every extracted file in parallel after
+each archive; none skips those syncs for regenerable ingestion bytes and requires cache
+verification. These options do not change runtime package publication.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1498,6 +1534,8 @@ mod tests {
             report_json: None,
             cpu_jobs: None,
             io_jobs: None,
+            ingestion_sync: IngestionSync::PerFile,
+            extract_all_archive_files: false,
             texture_encoder: TextureEncoder::Cpu,
             texture_fallback_quality: None,
             texture_uastc_level: None,
@@ -1559,6 +1597,49 @@ mod tests {
         assert!(resume_command("converter.exe", &gpu, staging).ends_with(
             " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --lod-encoder cpu"
         ));
+    }
+
+    #[test]
+    fn parses_and_preserves_ingestion_options_on_resume() {
+        let staging = Path::new("assets.staging");
+        let defaults = parse_cli(vec!["Data".into()]).unwrap();
+        assert_eq!(defaults.ingestion_sync, IngestionSync::PerFile);
+        assert!(!defaults.extract_all_archive_files);
+        for (value, policy) in [
+            ("archive", IngestionSync::Archive),
+            ("none", IngestionSync::None),
+        ] {
+            let cli = parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                value.into(),
+                "--extract-all-archive-files".into(),
+            ])
+            .unwrap();
+            assert_eq!(cli.ingestion_sync, policy);
+            assert!(cli.extract_all_archive_files);
+            let command = resume_command("converter", &cli, staging);
+            assert!(command.contains(" --extract-all-archive-files"));
+            assert!(command.ends_with(&format!(" --ingestion-sync {value}")));
+        }
+        assert!(parse_cli(vec!["Data".into(), "--ingestion-sync".into()]).is_err());
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                "invalid".into()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                "none".into(),
+                "--no-verify-cache".into()
+            ])
+            .is_err()
+        );
     }
 
     /// Integration failures count as failures without skipped inputs and point to the

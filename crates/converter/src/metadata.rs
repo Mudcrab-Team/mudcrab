@@ -402,6 +402,9 @@ async fn rebuild_into(
     if config.record_reader == crate::config::RecordReader::Inhouse {
         report
             .artifacts
+            .push(PathBuf::from(crate::esm::inhouse::DATABASE_PROFILE_FILE));
+        report
+            .artifacts
             .push(PathBuf::from("inhouse-reader-diagnostics.json"));
         report
             .artifacts

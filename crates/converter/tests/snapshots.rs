@@ -230,7 +230,25 @@ async fn conversion_manifest_matches_snapshot() {
 #[tokio::test]
 async fn pipeline_report_matches_snapshot() {
     let (directory, _, report) = convert_generated_data().await;
-    let report = serde_json::to_value(&report).unwrap();
+    let database_cache_key = report
+        .database_cache_key
+        .as_deref()
+        .expect("a fresh database bundle has a cache identity");
+    assert_eq!(database_cache_key.len(), 64);
+    assert!(
+        database_cache_key
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
+    let mut report = serde_json::to_value(&report).unwrap();
+    // Normalize duration values explicitly: an insta map wildcard also
+    // redacts keys, which would hide changes to the measured phase names.
+    for field in ["phase_elapsed_ms", "publication_phase_elapsed_ms"] {
+        for elapsed in report[field].as_object_mut().unwrap().values_mut() {
+            assert!(elapsed.is_u64());
+            *elapsed = Value::from("[elapsed_ms]");
+        }
+    }
 
     assert_no_machine_paths(&report, directory.path());
     assert_json_snapshot!(report, {
@@ -238,6 +256,15 @@ async fn pipeline_report_matches_snapshot() {
         ".elapsed_ms" => "[elapsed_ms]",
         ".lod_elapsed_ms" => "[lod_elapsed_ms]",
         ".publication_elapsed_ms" => "[publication_elapsed_ms]",
+        ".archive_timings.*.source_hash_seconds" => "[seconds]",
+        ".archive_timings.*.extraction_seconds" => "[seconds]",
+        ".archive_timings.*.cache_restore_seconds" => "[seconds]",
+        ".archive_timings.*.cache_link_seconds" => "[seconds]",
+        ".archive_timings.*.sync_seconds" => "[seconds]",
+        ".archive_timings.*.sync_worker_seconds" => "[seconds]",
+        // The identity includes the executable and platform. Keep its shape
+        // checked above while retaining the cache outcome and work counters.
+        ".database_cache_key" => "[database_cache_key]",
         // Artifacts are appended in the order the parallel conversions finish,
         // which is not stable between runs; sorting keeps the same set of
         // published files readable.

@@ -1449,7 +1449,7 @@ impl<'a> NifCursor<'a> {
     }
 }
 
-fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
+pub(crate) fn glb_bounds_from_bytes(glb: &[u8]) -> Result<shared::Bounds3> {
     ensure!(
         glb.len() >= 20 && &glb[..4] == b"glTF",
         "invalid GLB container"

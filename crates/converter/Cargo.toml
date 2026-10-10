@@ -39,8 +39,8 @@ zstd = "0.13"
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"
 
-[target.'cfg(all(target_arch = "aarch64", target_vendor = "apple"))'.dependencies]
-# ARM SHA instructions accelerate checksums; sha2-asm does not support Windows.
+[target.'cfg(all(target_arch = "aarch64", target_family = "unix"))'.dependencies]
+# sha2's AArch64 hardware backend is gated by its asm feature.
 sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
