@@ -552,7 +552,7 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
         command.push_str(" --extract-all-archive-files");
     }
     match cli.ingestion_sync {
-        IngestionSync::PerFile => {}
+        IngestionSync::PerFile => command.push_str(" --ingestion-sync per-file"),
         IngestionSync::Archive => command.push_str(" --ingestion-sync archive"),
         IngestionSync::None => command.push_str(" --ingestion-sync none"),
     }
@@ -795,7 +795,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut reuse_assets = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
-    let mut ingestion_sync = IngestionSync::PerFile;
+    let mut ingestion_sync = IngestionSync::Archive;
     let mut extract_all_archive_files = false;
     let mut use_gpu = false;
     let mut record_reader = RecordReader::Legacy;
@@ -861,8 +861,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                 };
             }
             Some("--lod-encoder") => {
-                let value = next_value(&mut args, "--lod-encoder")?;
-                use_lod_gpu = match value.to_str() {
+                use_lod_gpu = match next_value(&mut args, "--lod-encoder")?.to_str() {
                     Some("cpu") => false,
                     Some("gpu") => true,
                     _ => bail!("--lod-encoder must be cpu or gpu"),
@@ -1070,11 +1069,12 @@ MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are no
 Terrain LOD uses the GPU by default, with CPU fallback if GPU initialization fails.
 --lod-encoder cpu selects CPU LOD. Ordinary textures default to the CPU independently.
 
-Archive ingestion extracts the formats used by conversion and English string banks.
---extract-all-archive-files retains every archive entry for compatibility and comparisons.
---ingestion-sync defaults to per-file. archive syncs every extracted file in parallel after
-each archive; none skips those syncs for regenerable ingestion bytes and requires cache
-verification. These options do not change runtime package publication.
+Archive ingestion extracts the formats used by conversion and string banks for every
+language. --extract-all-archive-files retains every archive entry for compatibility and
+comparisons. --ingestion-sync defaults to archive: sealed packs provide batch durability.
+per-file also flushes each unique derived payload; none skips extraction flushes for
+regenerable bytes and requires verified reuse. Runtime package publication keeps its
+durability contract.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1559,21 +1559,21 @@ mod tests {
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
             resume_command("converter.exe", &cli, staging),
-            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu"
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu --ingestion-sync per-file"
         );
         // A renamed binary is named as it is, quoted when its name has a space.
         assert_eq!(
             resume_command("mudcrab converter", &cli, staging),
-            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu"
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu --ingestion-sync per-file"
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
-        assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        assert!(resume_command("converter", &no_lod, staging).contains(" --no-lod"));
         let french = parse_cli(vec!["Data".into(), "--language".into(), "french".into()]).unwrap();
         assert_eq!(french.language.as_deref(), Some("french"));
-        assert!(resume_command("converter", &french, staging).ends_with(" --language french"));
+        assert!(resume_command("converter", &french, staging).contains(" --language french"));
         let inhouse = parse_cli(vec![
             "Data".into(),
             "--record-reader".into(),
@@ -1582,7 +1582,7 @@ mod tests {
         .unwrap();
         assert_eq!(inhouse.record_reader, RecordReader::Inhouse);
         assert!(
-            resume_command("converter", &inhouse, staging).ends_with(" --record-reader inhouse")
+            resume_command("converter", &inhouse, staging).contains(" --record-reader inhouse")
         );
         assert!(
             parse_cli(vec![
@@ -1602,7 +1602,7 @@ mod tests {
             ..cli
         };
         assert!(resume_command("converter.exe", &gpu, staging).ends_with(
-            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --lod-encoder cpu"
+            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --lod-encoder cpu --ingestion-sync per-file"
         ));
     }
 
@@ -1610,9 +1610,10 @@ mod tests {
     fn parses_and_preserves_ingestion_options_on_resume() {
         let staging = Path::new("assets.staging");
         let defaults = parse_cli(vec!["Data".into()]).unwrap();
-        assert_eq!(defaults.ingestion_sync, IngestionSync::PerFile);
+        assert_eq!(defaults.ingestion_sync, IngestionSync::Archive);
         assert!(!defaults.extract_all_archive_files);
         for (value, policy) in [
+            ("per-file", IngestionSync::PerFile),
             ("archive", IngestionSync::Archive),
             ("none", IngestionSync::None),
         ] {
@@ -1826,7 +1827,7 @@ mod tests {
         .unwrap();
         assert_eq!(cpu.lod_texture_encoder, TextureEncoder::Cpu);
         assert!(
-            resume_command("converter", &cpu, Path::new("staging")).ends_with(" --lod-encoder cpu")
+            resume_command("converter", &cpu, Path::new("staging")).contains(" --lod-encoder cpu")
         );
         let resumed = parse_cli(
             [
@@ -1915,7 +1916,7 @@ mod tests {
         );
         assert!(
             resume_command("converter", &lod, Path::new("staging"))
-                .ends_with(" --lod-encoder gpu --gpu-quality 3 --gpu-batch-mb 256")
+                .contains(" --lod-encoder gpu --gpu-quality 3 --gpu-batch-mb 256")
         );
     }
 

@@ -66,10 +66,10 @@ pub struct PipelineConfig {
     pub fail_fast: bool,
     pub invalidate_cache: bool,
     pub verify_cache: bool,
-    /// Include archive entries beyond the runtime inputs and English string banks.
+    /// Include archive entries beyond the runtime inputs and string banks for all languages.
     #[serde(default)]
     pub extract_all_archive_files: bool,
-    /// Flush extracted inputs per file, after an archive, or rely on cache verification.
+    /// Use durable batch packs, additionally flush derived payloads, or skip extraction flushes.
     #[serde(default)]
     pub ingestion_sync: crate::archive::IngestionSync,
     /// Quality for the UASTC fallback path (uncompressed/legacy sources).
@@ -122,7 +122,7 @@ impl PipelineConfig {
             invalidate_cache: false,
             verify_cache: true,
             extract_all_archive_files: false,
-            ingestion_sync: crate::archive::IngestionSync::PerFile,
+            ingestion_sync: crate::archive::IngestionSync::Archive,
             texture_fallback_quality: 192,
             texture_uastc_level: 2,
             texture_zstd_level: default_texture_zstd_level(),

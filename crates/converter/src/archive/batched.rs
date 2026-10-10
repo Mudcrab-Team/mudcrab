@@ -5,8 +5,9 @@
 
 use super::{
     ArchiveSelection, ExtractOptions, ExtractedFile, ExtractionOutcome, ExtractionProgressCallback,
-    Interrupted, ProgressReporter, StopCheck, ba2, blob_path, bsa, check_stop,
-    detect_archive_collision, safe_relative_path, share_blob,
+    ExtractionTimings, FreshIngestion, IngestionSync, Interrupted, ProgressReporter,
+    RawIngestionSession, RawWriteMeasurements, StopCheck, SyncMeasurements, ba2, blob_path, bsa,
+    check_stop, detect_archive_collision, restore_cached_files_with_io_limit, safe_relative_path,
 };
 use crate::cache::{
     IngestedFile, IngestionCacheEntry, SpillCache, hash_bytes, hash_file, link_or_copy,
@@ -31,7 +32,7 @@ use std::{
 };
 
 const PACK_MAGIC: &[u8; 8] = b"MINGPK01";
-const PACK_VERSION: u32 = 1;
+const PACK_VERSION: u32 = 2;
 const BATCH_FILES: usize = 256;
 const BATCH_BYTES: usize = 16 * 1024 * 1024;
 const QUEUED_BYTES: usize = 64 * 1024 * 1024;
@@ -237,7 +238,8 @@ pub(super) fn extract(
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
 ) -> Result<ExtractionOutcome> {
-    extract_with_ingestion(
+    let session = RawIngestionSession::new(cache);
+    extract_with_session(
         archive_path,
         output,
         previous_cache,
@@ -247,12 +249,12 @@ pub(super) fn extract(
         progress,
         stop,
         observer,
-        None,
+        &session,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn extract_with_ingestion(
+pub(super) fn extract_with_session(
     archive_path: &Path,
     output: &Path,
     previous_cache: &Path,
@@ -262,18 +264,23 @@ pub(super) fn extract_with_ingestion(
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
-    ingestion: Option<&super::FreshIngestion<'_>>,
+    session: &RawIngestionSession,
 ) -> Result<ExtractionOutcome> {
     ensure!(
         options.cpu_jobs > 0 && options.io_jobs > 0,
         "archive CPU and I/O worker counts must be greater than zero"
     );
     check_stop(stop)?;
+    let hash_started = std::time::Instant::now();
     let file = File::open(archive_path)?;
     // The archive is immutable input for this scoped extraction.
     let bytes = unsafe { Mmap::map(&file) }?;
     // Hash the exact inode decoded below; a path can be replaced between opens.
     let source_hash = hash_bytes(&bytes);
+    let mut timings = ExtractionTimings {
+        source_hash_seconds: hash_started.elapsed().as_secs_f64(),
+        ..ExtractionTimings::default()
+    };
     let raw: Vec<(String, Payload<'_>)> = match bytes.get(..4) {
         Some(b"BSA\0") => bsa::iter_raw_entries(&bytes)?
             .into_iter()
@@ -304,23 +311,25 @@ pub(super) fn extract_with_ingestion(
     let total_bytes = selected.iter().map(|entry| entry.bytes as u64).sum();
     let reporter = progress
         .map(|callback| ProgressReporter::new(callback, selected.len() as u64, total_bytes));
-    if let Some(reporter) = &reporter {
-        reporter.announce();
-    }
 
+    let checkpoint_sync = SyncMeasurements::default();
+    let restore_started = std::time::Instant::now();
     let packed = if options.reuse_cache {
-        restore_pack_inventory(previous_cache, cache, &source_hash, options.selection, stop)?
+        restore_pack_inventory(
+            previous_cache,
+            cache,
+            &source_hash,
+            options.selection,
+            options.sync,
+            &checkpoint_sync,
+            stop,
+        )?
     } else {
         BTreeMap::new()
     };
     let mut expected = BTreeMap::new();
     if let Some(previous) = previous.filter(|entry| {
-        options.reuse_cache
-            && entry.source_hash == source_hash
-            && options.selection.accepts_recipe(&entry.recipe)
-            && entry
-                .selection
-                .can_satisfy(options.selection.ingestion_selection())
+        options.reuse_cache && entry.source_hash == source_hash && entry.covers(options.selection)
     }) {
         for file in &previous.files {
             let path = safe_relative_path(&file.path)?;
@@ -332,6 +341,77 @@ pub(super) fn extract_with_ingestion(
             }
         }
     }
+    // A complete sealed inventory permits #209's parallel, per-hash restore path.
+    // Missing/corrupt derived blobs fall through to reconstruction from packs.
+    if observer.is_none()
+        && expected.len() == selected.len()
+        && previous.is_some()
+        && expected.iter().all(|(path, file)| {
+            packed.get(path).is_some_and(|packed| {
+                packed.item.sha256 == file.hash && packed.item.size == file.size
+            })
+        })
+    {
+        let entry = IngestionCacheEntry {
+            source_hash: source_hash.clone(),
+            selection: options.selection,
+            recipe: options.selection.recipe().to_owned(),
+            files: expected.values().map(|file| (*file).clone()).collect(),
+        };
+        let restore_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(options.cpu_jobs)
+            .build()?;
+        if let Some(files) = restore_pool.install(|| {
+            restore_cached_files_with_io_limit(
+                &entry,
+                output,
+                previous_cache,
+                cache,
+                true,
+                progress,
+                stop,
+                options.io_jobs,
+            )
+        })? {
+            verify_checkpoint_source(archive_path, &source_hash, &BTreeSet::new(), options)?;
+            timings.cache_restore_seconds = restore_started.elapsed().as_secs_f64();
+            timings.selected_files = files.len() as u64;
+            timings.selected_bytes = files.iter().map(|file| file.bytes_written).sum();
+            timings.unique_payloads = files
+                .iter()
+                .map(|file| &file.sha256)
+                .collect::<BTreeSet<_>>()
+                .len() as u64;
+            timings.checkpoint_sync_calls = checkpoint_sync.calls.load(Ordering::Relaxed);
+            timings.checkpoint_sync_worker_seconds =
+                checkpoint_sync.nanoseconds.load(Ordering::Relaxed) as f64 / 1e9;
+            return Ok(ExtractionOutcome {
+                files,
+                cache_entry: entry,
+                cache_hit: true,
+                timings,
+            });
+        }
+    }
+    timings.cache_restore_seconds = restore_started.elapsed().as_secs_f64();
+    if let Some(reporter) = &reporter {
+        reporter.announce();
+    }
+    let extraction_started = std::time::Instant::now();
+    let sync = SyncMeasurements::default();
+    let ingestion = FreshIngestion {
+        session,
+        archive: session.next_archive.fetch_add(1, Ordering::Relaxed),
+        // In archive mode the pack is canonical and durable. Derived blobs need no fsync.
+        sync_mode: if options.sync == IngestionSync::PerFile {
+            IngestionSync::PerFile
+        } else {
+            IngestionSync::None
+        },
+        sync: &sync,
+        writes: RawWriteMeasurements::default(),
+        used_blobs: Mutex::new(Vec::new()),
+    };
     let batches = partition(selected);
     let largest = batches
         .iter()
@@ -361,6 +441,8 @@ pub(super) fn extract_with_ingestion(
             let reporter = &reporter;
             let created_packs = &created_packs;
             let spill_cache = &spill_cache;
+            let ingestion = &ingestion;
+            let checkpoint_sync = &checkpoint_sync;
             let writer_budget = Arc::clone(&budget);
             writers.push(scope.spawn(move || -> Result<Vec<ExtractedFile>> {
                 let _exit = WriterExit(writer_budget);
@@ -376,12 +458,13 @@ pub(super) fn extract_with_ingestion(
                         cache,
                         source_hash,
                         spill_cache,
+                        ingestion,
+                        checkpoint_sync,
                         options,
                         created_packs,
                         stop,
                         observer,
                         reporter.as_ref(),
-                        ingestion,
                     );
                     if let Some(observer) = observer {
                         observer(WriterEvent::Finished);
@@ -485,8 +568,8 @@ pub(super) fn extract_with_ingestion(
     files.sort_by(|left, right| left.path.cmp(&right.path));
     let entry = IngestionCacheEntry {
         source_hash,
+        selection: options.selection,
         recipe: options.selection.recipe().to_owned(),
-        selection: options.selection.ingestion_selection(),
         files: files
             .iter()
             .map(|file| IngestedFile {
@@ -496,11 +579,27 @@ pub(super) fn extract_with_ingestion(
             })
             .collect(),
     };
+    timings.extraction_seconds = extraction_started.elapsed().as_secs_f64();
+    timings.selected_files = files.len() as u64;
+    timings.selected_bytes = files.iter().map(|file| file.bytes_written).sum();
+    ingestion.record_timings(&mut timings);
+    timings.sync_calls = sync.calls.load(Ordering::Relaxed);
+    timings.checkpoint_sync_calls = checkpoint_sync.calls.load(Ordering::Relaxed);
+    timings.checkpoint_sync_worker_seconds =
+        checkpoint_sync.nanoseconds.load(Ordering::Relaxed) as f64 / 1e9;
+    timings.sync_worker_seconds = sync.nanoseconds.load(Ordering::Relaxed) as f64 / 1e9;
+    let cache_hit = decoded.load(Ordering::Relaxed) == 0
+        && (!files.is_empty()
+            || previous.is_some_and(|previous| {
+                options.reuse_cache
+                    && previous.source_hash == entry.source_hash
+                    && previous.covers(options.selection)
+            }));
     Ok(ExtractionOutcome {
+        timings,
         files,
         cache_entry: entry,
-        cache_hit: decoded.load(Ordering::Relaxed) == 0,
-        timings: super::ExtractionTimings::default(),
+        cache_hit,
     })
 }
 
@@ -656,17 +755,25 @@ fn write_batch(
     output: &Path,
     cache: &Path,
     source_hash: &str,
-    spill_cache: &SpillCache,
+    _spill_cache: &SpillCache,
+    ingestion: &FreshIngestion<'_>,
+    checkpoint_sync: &SyncMeasurements,
     options: &ExtractOptions,
     created_packs: &Mutex<BTreeSet<PathBuf>>,
     stop: Option<StopCheck<'_>>,
     observer: WriterObserver<'_>,
     progress: Option<&ProgressReporter<'_>>,
-    ingestion: Option<&super::FreshIngestion<'_>>,
 ) -> Result<Vec<ExtractedFile>> {
     let unsealed: Vec<_> = files.iter().filter(|file| !file.durable).collect();
     if !unsealed.is_empty() {
-        seal_pack(&unsealed, cache, source_hash, options, created_packs)?;
+        seal_pack(
+            &unsealed,
+            cache,
+            source_hash,
+            options,
+            created_packs,
+            checkpoint_sync,
+        )?;
         if let Some(observer) = observer {
             observer(WriterEvent::Sealed);
         }
@@ -674,25 +781,17 @@ fn write_batch(
     let mut written = Vec::with_capacity(files.len());
     for prepared in files {
         check_stop(stop)?;
-        if let Some(ingestion) = ingestion {
-            let data = prepared.bytes()?;
-            ingestion.materialize(
-                &output.join(&prepared.file.path),
-                &data,
-                &prepared.file.sha256,
-            )?;
-        } else {
-            let blob = blob_path(cache, &prepared.file.sha256)?;
-            if valid_blob(cache, &prepared.file.sha256, prepared.file.bytes_written).is_none() {
-                if let Some(existing) = &prepared.existing {
-                    atomic_link_or_copy(existing, &blob)?;
-                } else {
-                    let data = prepared.bytes()?;
-                    atomic_write_derived(&blob, &data)?;
-                }
-            }
-            share_blob(&blob, &output.join(&prepared.file.path), spill_cache)?;
-        }
+        let data = prepared.bytes()?;
+        ensure!(
+            data.len() as u64 == prepared.file.bytes_written
+                && (prepared.data.is_some() || hash_bytes(&data) == prepared.file.sha256),
+            "archive cache payload changed before materialization"
+        );
+        ingestion.materialize(
+            &output.join(&prepared.file.path),
+            &data,
+            &prepared.file.sha256,
+        )?;
         if let Some(progress) = progress {
             progress.advance(prepared.file.bytes_written);
         }
@@ -707,7 +806,12 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v1" | "all-v2" | "converter-inputs-v2"
+            "all-v1"
+                | "converter-inputs-v1"
+                | "all-v2"
+                | "converter-inputs-v2"
+                | "runtime-english-v1"
+                | "runtime-all-strings-v2"
         ),
         "unknown ingestion recipe"
     );
@@ -720,21 +824,28 @@ fn seal_pack(
     source_hash: &str,
     options: &ExtractOptions,
     created_packs: &Mutex<BTreeSet<PathBuf>>,
+    checkpoint_sync: &SyncMeasurements,
 ) -> Result<PathBuf> {
     let directory = pack_directory(cache, source_hash, options.selection.recipe())?;
     fs::create_dir_all(&directory)?;
     let mut offset = 0u64;
+    let mut payloads = BTreeMap::new();
+    let mut unique = Vec::new();
     let mut records = Vec::new();
     for prepared in files {
+        let key = (prepared.file.sha256.clone(), prepared.file.bytes_written);
+        let payload_offset = *payloads.entry(key).or_insert_with(|| {
+            let start = offset;
+            offset += prepared.file.bytes_written;
+            unique.push(*prepared);
+            start
+        });
         records.push(PackItem {
             path: prepared.file.path.to_string_lossy().replace('\\', "/"),
             size: prepared.file.bytes_written,
             sha256: prepared.file.sha256.clone(),
-            offset,
+            offset: payload_offset,
         });
-        offset = offset
-            .checked_add(prepared.file.bytes_written)
-            .ok_or_else(|| color_eyre::eyre::eyre!("archive pack length overflow"))?;
     }
     let index = PackIndex {
         version: PACK_VERSION,
@@ -757,7 +868,7 @@ fn seal_pack(
     write(PACK_MAGIC)?;
     write(&(index.len() as u64).to_le_bytes())?;
     write(&index)?;
-    for prepared in files {
+    for prepared in unique {
         let bytes = prepared.bytes()?;
         ensure!(
             bytes.len() as u64 == prepared.file.bytes_written
@@ -768,7 +879,9 @@ fn seal_pack(
         );
         write(&bytes)?;
     }
-    temporary.as_file().sync_all()?;
+    if options.sync != IngestionSync::None {
+        checkpoint_sync.flush(temporary.as_file())?;
+    }
     let hash: String = digest
         .finalize()
         .iter()
@@ -778,7 +891,9 @@ fn seal_pack(
     if hash_file(&destination).is_ok_and(|actual| actual == hash) {
         // A verified pre-existing pack belongs to an earlier generation. Do
         // not replace or later invalidate it when this extraction is rejected.
-        sync_pack_file(&destination)?;
+        if options.sync != IngestionSync::None {
+            checkpoint_sync.flush(&super::open_raw_payload_for_sync(&destination)?)?;
+        }
     } else {
         temporary
             .persist(&destination)
@@ -787,7 +902,9 @@ fn seal_pack(
         created_packs.lock().unwrap().insert(destination.clone());
     }
     // Flush every newly introduced directory entry through the cache parent.
-    sync_directory_chain(&directory, cache_directory_anchor(cache))?;
+    if options.sync != IngestionSync::None {
+        sync_directory_chain(&directory, cache_directory_anchor(cache))?;
+    }
     if let Some(checkpoints) = &options.checkpoint_dir {
         fs::create_dir_all(checkpoints)?;
         let marker = checkpoints.join(format!(
@@ -808,33 +925,6 @@ fn seal_pack(
         sync_directory(checkpoints)?;
     }
     Ok(destination)
-}
-
-fn atomic_write_derived(destination: &Path, data: &[u8]) -> Result<()> {
-    let parent = destination.parent().unwrap();
-    fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(data)?;
-    // The containing sealed pack is durable. This copy is replaceable and is
-    // always hash-checked before reuse, including with --no-verify-cache.
-    temporary
-        .persist(destination)
-        .map_err(|error| error.error)?;
-    Ok(())
-}
-
-fn atomic_link_or_copy(source: &Path, destination: &Path) -> Result<()> {
-    let parent = destination.parent().unwrap();
-    fs::create_dir_all(parent)?;
-    let temporary = tempfile::NamedTempFile::new_in(parent)?.into_temp_path();
-    // The temporary name belongs to this writer. Neither a failed link nor a
-    // copy fallback can write through another writer's shared destination.
-    fs::remove_file(&temporary)?;
-    fs::hard_link(source, &temporary).or_else(|_| fs::copy(source, &temporary).map(|_| ()))?;
-    temporary
-        .persist(destination)
-        .map_err(|error| error.error)?;
-    Ok(())
 }
 
 fn sync_directory_chain(mut path: &Path, stop: &Path) -> Result<()> {
@@ -929,7 +1019,7 @@ fn read_pack(
     );
     let index: PackIndex = serde_json::from_slice(&bytes[16..16 + length])?;
     ensure!(
-        index.version == PACK_VERSION
+        matches!(index.version, 1 | PACK_VERSION)
             && index.source_hash == source_hash
             && !index.recipe.is_empty()
             && selection.accepts_recipe(&index.recipe),
@@ -943,16 +1033,30 @@ fn read_pack(
     let mut seen = BTreeMap::new();
     let mut packed = Vec::new();
     let mut expected_offset = 0u64;
+    let mut payloads = BTreeMap::new();
     for item in index.files {
         let relative = safe_relative_path(&item.path)?;
         detect_archive_collision(&mut seen, &relative, &item.path)?;
         ensure!(
-            item.offset == expected_offset && item.size <= MAX_FILE_BYTES as u64,
-            "archive pack has invalid payload layout"
+            item.size <= MAX_FILE_BYTES as u64,
+            "archive pack payload exceeds limit"
         );
-        expected_offset = expected_offset
-            .checked_add(item.size)
-            .ok_or_else(|| color_eyre::eyre::eyre!("archive pack range overflow"))?;
+        let key = (item.sha256.clone(), item.size);
+        if index.version == 2 && payloads.contains_key(&key) {
+            ensure!(
+                payloads[&key] == item.offset,
+                "archive pack alias has invalid range"
+            );
+        } else {
+            ensure!(
+                item.offset == expected_offset,
+                "archive pack has invalid payload layout"
+            );
+            payloads.insert(key, item.offset);
+            expected_offset = expected_offset
+                .checked_add(item.size)
+                .ok_or_else(|| color_eyre::eyre::eyre!("archive pack range overflow"))?;
+        }
         let start = base
             .checked_add(usize::try_from(item.offset)?)
             .ok_or_else(|| color_eyre::eyre::eyre!("archive pack range overflow"))?;
@@ -989,6 +1093,8 @@ fn restore_pack_inventory(
     cache: &Path,
     source_hash: &str,
     selection: ArchiveSelection,
+    sync_mode: IngestionSync,
+    checkpoint_sync: &SyncMeasurements,
     stop: Option<StopCheck<'_>>,
 ) -> Result<BTreeMap<PathBuf, PackedFile>> {
     let mut inventory = BTreeMap::new();
@@ -998,12 +1104,15 @@ fn restore_pack_inventory(
         if !directory.is_dir() {
             continue;
         }
-        for recipe in [
+        for recipe in BTreeSet::from([
             selection.recipe(),
+            ArchiveSelection::ConverterInputsV1.recipe(),
             ArchiveSelection::All.recipe(),
-            "converter-inputs-v1",
+            "converter-inputs-v2",
+            "runtime-all-strings-v2",
+            "runtime-english-v1",
             "all-v1",
-        ] {
+        ]) {
             if !selection.accepts_recipe(recipe) {
                 continue;
             }
@@ -1033,12 +1142,16 @@ fn restore_pack_inventory(
                     fs::create_dir_all(&destination_dir)?;
                     if read_pack(&destination, source_hash, selection).is_err() {
                         link_or_copy(&path, &destination)?;
-                        sync_pack_file(&destination)?;
-                        sync_directory_chain(&destination_dir, cache_directory_anchor(cache))?;
                     }
                     for (_, packed) in &mut records {
                         packed.pack = destination.clone();
                     }
+                }
+                // A previous none-sync run proves bytes, not durability. Flush
+                // reused packs even when no copy or repair was needed.
+                if sync_mode != IngestionSync::None {
+                    checkpoint_sync.flush(&super::open_raw_payload_for_sync(&destination)?)?;
+                    sync_directory_chain(&destination_dir, cache_directory_anchor(cache))?;
                 }
                 for (relative, packed) in records {
                     if let Some(old) = inventory.get(&relative) {
@@ -1098,6 +1211,197 @@ mod tests {
     }
 
     #[test]
+    fn selection_expansion_cannot_reuse_an_english_only_inventory() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "selection.bsa",
+            &[
+                ("textures/a.dds", b"texture"),
+                ("strings/game_english.strings", b"english"),
+                ("strings/game_french.strings", b"french"),
+                ("notes/readme.txt", b"unused"),
+            ],
+        );
+        let cache = directory.path().join("cache");
+        let output = directory.path().join("vfs");
+        let mut options = options();
+        options.selection = ArchiveSelection::RuntimeEnglishV1;
+        let english = extract(
+            &archive, &output, &cache, &cache, None, &options, None, None, None,
+        )
+        .unwrap();
+        assert_eq!(english.files.len(), 2);
+        options.selection = ArchiveSelection::ConverterInputsV1;
+        let expanded = extract(
+            &archive,
+            &output,
+            &cache,
+            &cache,
+            Some(&english.cache_entry),
+            &options,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(expanded.files.len(), 3);
+        assert!(!expanded.cache_hit);
+        assert_eq!(
+            fs::read(output.join("strings/game_french.strings")).unwrap(),
+            b"french"
+        );
+        options.selection = ArchiveSelection::RuntimeEnglishV1;
+        let narrowed = extract(
+            &archive,
+            &output,
+            &cache,
+            &cache,
+            Some(&expanded.cache_entry),
+            &options,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(narrowed.files.len(), 2);
+        assert!(narrowed.cache_hit);
+        assert!(!options.selection.accepts_recipe("future-unknown-v1"));
+    }
+
+    #[test]
+    fn deduplicated_pack_recovers_aliases_after_all_derived_blobs_are_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "aliases.bsa",
+            &[
+                ("textures/a.dds", b"same payload"),
+                ("textures/b.dds", b"same payload"),
+            ],
+        );
+        let cache = directory.path().join("cache");
+        let output = directory.path().join("vfs");
+        let options = options();
+        let cold = extract(
+            &archive, &output, &cache, &cache, None, &options, None, None, None,
+        )
+        .unwrap();
+        assert_eq!(cold.timings.payload_writes, 1);
+        let sealed = packs(&cache);
+        assert_eq!(sealed.len(), 1);
+        let bytes = fs::read(&sealed[0]).unwrap();
+        let length = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        let index: PackIndex = serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        assert_eq!(index.version, 2);
+        assert_eq!(index.files[0].offset, index.files[1].offset);
+        assert_eq!(bytes.len(), 16 + length + b"same payload".len());
+        fs::remove_dir_all(cache.join("sha256")).unwrap();
+        fs::remove_dir_all(&output).unwrap();
+        let resumed = extract(
+            &archive,
+            &output,
+            &cache,
+            &cache,
+            Some(&cold.cache_entry),
+            &options,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(resumed.cache_hit);
+        assert_eq!(resumed.files.len(), 2);
+        for name in ["a.dds", "b.dds"] {
+            assert_eq!(
+                fs::read(output.join("textures").join(name)).unwrap(),
+                b"same payload"
+            );
+        }
+    }
+
+    #[test]
+    fn changing_none_sync_to_archive_flushes_verified_packs_without_redecoding() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "policy.bsa",
+            &[("textures/a.dds", b"payload")],
+        );
+        let cache = directory.path().join("cache");
+        let output = directory.path().join("vfs");
+        let mut options = options();
+        options.sync = IngestionSync::None;
+        let cold = ArchiveExtractor::extract_batched(
+            &archive, &output, &cache, &cache, None, true, &options, None, None,
+        )
+        .unwrap();
+        assert_eq!(cold.timings.checkpoint_sync_calls, 0);
+        assert_eq!(cold.timings.sync_calls, 0);
+        assert!(
+            ArchiveExtractor::extract_batched(
+                &archive,
+                &output,
+                &cache,
+                &cache,
+                Some(&cold.cache_entry),
+                false,
+                &options,
+                None,
+                None
+            )
+            .is_err()
+        );
+        options.sync = IngestionSync::Archive;
+        let durable = ArchiveExtractor::extract_batched(
+            &archive,
+            &output,
+            &cache,
+            &cache,
+            Some(&cold.cache_entry),
+            true,
+            &options,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(durable.cache_hit);
+        assert!(durable.timings.checkpoint_sync_calls > 0);
+        assert_eq!(durable.timings.payload_writes, 0);
+        assert_eq!(fs::read(output.join("textures/a.dds")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn version_one_pack_remains_readable_after_deduplicated_format_upgrade() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = "ab".repeat(32);
+        let data = b"old payload";
+        let index = PackIndex {
+            version: 1,
+            source_hash: source.clone(),
+            recipe: "converter-inputs-v1".into(),
+            files: vec![PackItem {
+                path: "textures/old.dds".into(),
+                size: data.len() as u64,
+                sha256: hash_bytes(data),
+                offset: 0,
+            }],
+        };
+        let index = serde_json::to_vec(&index).unwrap();
+        let mut bytes = Vec::from(PACK_MAGIC.as_slice());
+        bytes.extend_from_slice(&(index.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&index);
+        bytes.extend_from_slice(data);
+        let path = directory
+            .path()
+            .join(format!("{}.pack", hash_bytes(&bytes)));
+        fs::write(&path, &bytes).unwrap();
+        let restored = read_pack(&path, &source, ArchiveSelection::RuntimeEnglishV1).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].1.item.sha256, hash_bytes(data));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn source_replacement_invalidates_only_new_or_repaired_checkpoint_packs() {
         // Atomic replacement keeps the mapped inode immutable. In-place writes
@@ -1116,7 +1420,7 @@ mod tests {
                 &[("textures/a.dds", b"modified")],
             );
             let previous_cache = directory.path().join("previous/cache");
-            ArchiveExtractor::extract_cached_with_options(
+            ArchiveExtractor::extract_batched(
                 &archive,
                 &directory.path().join("previous/vfs"),
                 Path::new("unused"),
@@ -1179,7 +1483,7 @@ mod tests {
             }
             fs::write(&archive, original).unwrap();
             options.reuse_cache = true;
-            let resumed = ArchiveExtractor::extract_cached_with_options(
+            let resumed = ArchiveExtractor::extract_batched(
                 &archive,
                 &directory.path().join("resumed"),
                 &cache,
@@ -1401,7 +1705,7 @@ mod tests {
         assert_eq!(old.files.len(), 9);
         let output = directory.path().join("new/vfs");
         let cache = directory.path().join("new/cache");
-        let current = ArchiveExtractor::extract_cached_with_options(
+        let current = ArchiveExtractor::extract_batched(
             &archive,
             &output,
             &old_cache,
@@ -1431,7 +1735,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!all.cache_hit);
+        assert!(
+            all.cache_hit,
+            "the retained all-files pack, rather than the restricted inventory, proves full coverage"
+        );
         assert_eq!(all.files.len(), 9);
     }
 
@@ -1444,7 +1751,7 @@ mod tests {
             &[("textures/a.dds", b"correct")],
         );
         let cache = directory.path().join("cache");
-        let first = ArchiveExtractor::extract_cached_with_options(
+        let first = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("first"),
             Path::new("unused"),
@@ -1458,7 +1765,7 @@ mod tests {
         .unwrap();
         let blob = blob_path(&cache, &first.files[0].sha256).unwrap();
         fs::write(&blob, b"corrupt").unwrap();
-        let second = ArchiveExtractor::extract_cached_with_options(
+        let second = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("second"),
             &cache,
@@ -1523,12 +1830,14 @@ mod tests {
             &cache,
             &cache,
             &hash_file(&archive).unwrap(),
-            ArchiveSelection::ConverterInputs,
+            ArchiveSelection::ConverterInputsV1,
+            IngestionSync::Archive,
+            &SyncMeasurements::default(),
             None,
         )
         .unwrap();
         assert_eq!(recovered.len(), BATCH_FILES);
-        let resumed = ArchiveExtractor::extract_cached_with_options(
+        let resumed = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("resumed"),
             &cache,
@@ -1542,7 +1851,7 @@ mod tests {
         .unwrap();
         assert_eq!(resumed.files.len(), 600);
         assert!(!resumed.cache_hit); // Only the uncommitted remainder was decoded.
-        let repeat = ArchiveExtractor::extract_cached_with_options(
+        let repeat = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("repeat"),
             &cache,
@@ -1567,7 +1876,7 @@ mod tests {
             &[("textures/a.dds", b"source bytes")],
         );
         let cache = directory.path().join("cache");
-        let first = ArchiveExtractor::extract_cached_with_options(
+        let first = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("first"),
             Path::new("unused"),
@@ -1584,7 +1893,7 @@ mod tests {
         *bytes.last_mut().unwrap() ^= 1;
         fs::write(&pack, bytes).unwrap();
         fs::remove_dir_all(cache.join("sha256")).unwrap();
-        let rebuilt = ArchiveExtractor::extract_cached_with_options(
+        let rebuilt = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("rebuilt"),
             &cache,
@@ -1618,7 +1927,7 @@ mod tests {
         );
         let cache = directory.path().join("cache");
         let output = directory.path().join("vfs");
-        let first = ArchiveExtractor::extract_cached_with_options(
+        let first = ArchiveExtractor::extract_batched(
             &first,
             &output,
             Path::new("unused"),
@@ -1630,7 +1939,7 @@ mod tests {
             None,
         )
         .unwrap();
-        ArchiveExtractor::extract_cached_with_options(
+        ArchiveExtractor::extract_batched(
             &second,
             &output,
             Path::new("unused"),
@@ -1742,7 +2051,7 @@ mod tests {
         let task_cache = cache.clone();
         let worker = std::thread::spawn(move || {
             sent.send(
-                ArchiveExtractor::extract_cached_with_options(
+                ArchiveExtractor::extract_batched(
                     &task_archive,
                     &output,
                     Path::new("unused"),
@@ -1764,7 +2073,7 @@ mod tests {
         );
         worker.join().unwrap();
         assert_eq!(packs(&cache).len(), 1);
-        let resumed = ArchiveExtractor::extract_cached_with_options(
+        let resumed = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("resumed"),
             &cache,
@@ -1788,7 +2097,7 @@ mod tests {
             &[("textures/a.dds", b"source")],
         );
         let cache = directory.path().join("cache");
-        let first = ArchiveExtractor::extract_cached_with_options(
+        let first = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("first"),
             Path::new("unused"),
@@ -1802,7 +2111,7 @@ mod tests {
         .unwrap();
         let mut options = options();
         options.reuse_cache = false;
-        let fresh = ArchiveExtractor::extract_cached_with_options(
+        let fresh = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("fresh"),
             &cache,
@@ -1824,7 +2133,7 @@ mod tests {
         let archive = many(directory.path(), 1025);
         let first_cache = directory.path().join("first/cache");
         let options = ExtractOptions::converter(8, 4, None);
-        let first = ArchiveExtractor::extract_cached_with_options(
+        let first = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("first/vfs"),
             Path::new("unused"),
@@ -1838,7 +2147,7 @@ mod tests {
         .unwrap();
         let second_cache = directory.path().join("second/cache");
         let output = directory.path().join("second/vfs");
-        let second = ArchiveExtractor::extract_cached_with_options(
+        let second = ArchiveExtractor::extract_batched(
             &archive,
             &output,
             &first_cache,
@@ -1884,7 +2193,7 @@ mod tests {
             .unwrap();
         bytes[folder..folder + 2].copy_from_slice(b"..");
         fs::write(&archive, bytes).unwrap();
-        let error = ArchiveExtractor::extract_cached_with_options(
+        let error = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("vfs"),
             Path::new("unused"),
@@ -2029,7 +2338,7 @@ mod tests {
         let archive = directory.path().join("compressed.ba2");
         fs::write(&archive, bytes).unwrap();
         let output = directory.path().join("vfs");
-        let result = ArchiveExtractor::extract_cached_with_options(
+        let result = ArchiveExtractor::extract_batched(
             &archive,
             &output,
             Path::new("unused"),
@@ -2112,7 +2421,7 @@ mod tests {
         options.reuse_cache = false;
         let batch_cache = directory.path().join("batched/cache");
         let batch_start = std::time::Instant::now();
-        let batch = ArchiveExtractor::extract_cached_with_options(
+        let batch = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("batched/vfs"),
             Path::new("unused"),
@@ -2141,7 +2450,7 @@ mod tests {
         options.reuse_cache = true;
         let warm_cache = directory.path().join("warm/cache");
         let warm_start = std::time::Instant::now();
-        let warm = ArchiveExtractor::extract_cached_with_options(
+        let warm = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("warm/vfs"),
             &batch_cache,
@@ -2161,7 +2470,7 @@ mod tests {
         let blob = blob_path(&warm_cache, &damaged.sha256).unwrap();
         fs::write(&blob, vec![0xff; damaged.bytes_written as usize]).unwrap();
         let repair_start = std::time::Instant::now();
-        let repaired = ArchiveExtractor::extract_cached_with_options(
+        let repaired = ArchiveExtractor::extract_batched(
             &archive,
             &directory.path().join("repaired/vfs"),
             &warm_cache,

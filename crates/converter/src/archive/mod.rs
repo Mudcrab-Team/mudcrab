@@ -68,6 +68,7 @@ struct ProgressReporter<'a> {
     files: AtomicU64,
     bytes: AtomicU64,
     totals: ExtractionProgress,
+    emission: Mutex<()>,
 }
 
 impl<'a> ProgressReporter<'a> {
@@ -76,6 +77,7 @@ impl<'a> ProgressReporter<'a> {
             callback,
             files: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
+            emission: Mutex::new(()),
             totals: ExtractionProgress {
                 completed_files: 0,
                 completed_bytes: 0,
@@ -92,6 +94,7 @@ impl<'a> ProgressReporter<'a> {
     }
 
     fn advance(&self, bytes: u64) {
+        let _emission = self.emission.lock().unwrap();
         let files = self.files.fetch_add(1, Ordering::Relaxed) + 1;
         let bytes = self.bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
         if files.is_multiple_of(PROGRESS_FILE_STEP) || files == self.totals.total_files {
@@ -144,7 +147,8 @@ impl Default for IngestionOptions {
     }
 }
 
-/// Wall times partition fresh extraction; per-file flushes occur inside extraction_seconds.
+/// Measured wall spans within archive ingestion; metadata parsing/setup is boundary overhead.
+/// Per-file flushes occur inside extraction_seconds.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExtractionTimings {
@@ -156,6 +160,9 @@ pub struct ExtractionTimings {
     /// Summed worker flush time overlaps across threads and is not a wall-time phase.
     pub sync_worker_seconds: f64,
     pub sync_calls: u64,
+    /// Pack flushes overlap extraction and are separate from derived blob flushes.
+    pub checkpoint_sync_calls: u64,
+    pub checkpoint_sync_worker_seconds: f64,
     pub selected_files: u64,
     pub selected_bytes: u64,
     pub unique_payloads: u64,
@@ -174,6 +181,7 @@ pub struct RawIngestionSession {
     cache_root: PathBuf,
     blobs: Mutex<BTreeMap<String, Arc<Mutex<RawBlobState>>>>,
     next_archive: AtomicU64,
+    spill_cache: SpillCache,
 }
 
 impl RawIngestionSession {
@@ -182,6 +190,7 @@ impl RawIngestionSession {
             cache_root: cache_root.to_owned(),
             blobs: Mutex::new(BTreeMap::new()),
             next_archive: AtomicU64::new(1),
+            spill_cache: SpillCache::default(),
         }
     }
 
@@ -319,7 +328,8 @@ impl FreshIngestion<'_> {
         link_or_copy_spilling_with_copy_and_link(
             &blob,
             destination,
-            link,
+            &self.session.spill_cache,
+            &link,
             |source, copy, spill| {
                 self.materialize_copy(&mut state, source, copy, spill, size, hash)
                     .map_err(|error| std::io::Error::other(format!("{error:#}")))
@@ -375,6 +385,7 @@ impl FreshIngestion<'_> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn flush_archive(&self, stop: Option<StopCheck<'_>>) -> Result<()> {
         let blobs = self.used_blobs.lock().unwrap().clone();
         blobs.par_iter().try_for_each(|blob| -> Result<()> {
@@ -432,47 +443,38 @@ pub struct ExtractionOutcome {
 
 pub struct ArchiveExtractor;
 
-/// The inputs for which this converter has consumers. String tables are retained
-/// alongside the currently converted assets for localized plugin records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveSelection {
-    All,
-    ConverterInputs,
-}
+/// One versioned coverage contract for both cache manifests and sealed packs.
+pub type ArchiveSelection = IngestionSelection;
 
-impl ArchiveSelection {
+impl IngestionSelection {
     pub fn recipe(self) -> &'static str {
         match self {
             Self::All => "all-v2",
-            Self::ConverterInputs => "converter-inputs-v2",
-        }
-    }
-
-    fn ingestion_selection(self) -> IngestionSelection {
-        match self {
-            Self::All => IngestionSelection::All,
-            Self::ConverterInputs => IngestionSelection::RuntimeAllStringsV2,
+            Self::ConverterInputsV1 => "converter-inputs-v1",
+            Self::RuntimeEnglishV1 => "runtime-english-v1",
+            Self::RuntimeAllStringsV2 => "converter-inputs-v2",
         }
     }
 
     fn includes(self, path: &Path) -> bool {
-        self == Self::All
-            || path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|extension| {
-                    matches!(
-                        extension.to_ascii_lowercase().as_str(),
-                        "dds" | "nif" | "pex" | "lod" | "strings" | "ilstrings" | "dlstrings"
-                    )
-                })
+        selection_includes(self, path)
     }
 
     fn accepts_recipe(self, recipe: &str) -> bool {
-        recipe == self.recipe()
-            || (self == Self::ConverterInputs
-                && matches!(recipe, "" | "all-v1" | "all-v2" | "converter-inputs-v1"))
-            || (self == Self::All && matches!(recipe, "" | "all-v1"))
+        let proven = match recipe {
+            "" | "all-v1" | "all-v2" => Self::All,
+            "converter-inputs-v1" => Self::ConverterInputsV1,
+            "converter-inputs-v2" | "runtime-all-strings-v2" => Self::RuntimeAllStringsV2,
+            "runtime-english-v1" => Self::RuntimeEnglishV1,
+            _ => return false,
+        };
+        proven.can_satisfy(self)
+    }
+}
+
+impl IngestionCacheEntry {
+    pub(crate) fn covers(&self, requested: IngestionSelection) -> bool {
+        self.selection.can_satisfy(requested) && requested.accepts_recipe(&self.recipe)
     }
 }
 
@@ -485,6 +487,7 @@ pub struct ExtractOptions {
     pub selection: ArchiveSelection,
     pub checkpoint_dir: Option<PathBuf>,
     pub reuse_cache: bool,
+    pub sync: IngestionSync,
 }
 
 impl ExtractOptions {
@@ -492,9 +495,10 @@ impl ExtractOptions {
         Self {
             cpu_jobs,
             io_jobs,
-            selection: ArchiveSelection::ConverterInputs,
+            selection: ArchiveSelection::RuntimeAllStringsV2,
             checkpoint_dir,
             reuse_cache: true,
+            sync: IngestionSync::Archive,
         }
     }
 }
@@ -505,17 +509,21 @@ impl ArchiveExtractor {
     /// The source inode must stay immutable while its bytes are memory-mapped.
     /// A replaced or unreadable source path invalidates newly sealed checkpoints.
     #[allow(clippy::too_many_arguments)]
-    pub fn extract_cached_with_options(
+    pub fn extract_batched(
         archive_path: &Path,
         output_root: &Path,
         previous_cache_root: &Path,
         cache_root: &Path,
         previous: Option<&IngestionCacheEntry>,
-        _verify_integrity: bool,
+        verify_integrity: bool,
         options: &ExtractOptions,
         progress: Option<ExtractionProgressCallback<'_>>,
         stop: Option<StopCheck<'_>>,
     ) -> Result<ExtractionOutcome> {
+        color_eyre::eyre::ensure!(
+            options.sync != IngestionSync::None || verify_integrity,
+            "ingestion_sync=none requires cache verification"
+        );
         // Packed recipes materialize ordinary blobs without per-file flushes.
         // Every reused blob is checked even if legacy cache verification was disabled.
         batched::extract(
@@ -531,8 +539,7 @@ impl ArchiveExtractor {
         )
     }
 
-    /// Archive durability uses sealed batches; raw session deduplication materializes
-    /// their disposable VFS/blob names. Explicit per-file/none modes use raw durability.
+    /// Compatibility entry point for callers supplying both scheduling and ingestion options.
     #[allow(clippy::too_many_arguments)]
     pub fn extract_cached_with_adapter(
         archive: &Path,
@@ -547,72 +554,81 @@ impl ArchiveExtractor {
         session: &RawIngestionSession,
         options: IngestionOptions,
     ) -> Result<ExtractionOutcome> {
-        if options.sync != IngestionSync::Archive {
-            return Self::extract_cached_with_session(
-                archive,
-                output,
-                previous_cache,
-                cache,
-                previous,
-                verify,
-                progress,
-                stop,
-                session,
-                options,
-            );
-        }
-        color_eyre::eyre::ensure!(
-            session.cache_root == cache,
-            "raw ingestion session belongs to a different cache root"
-        );
-        let sync = SyncMeasurements::default();
-        // Sealed pack fsync is the durable proof. Derived raw names can be reconstructed.
-        let ingestion = FreshIngestion {
-            session,
-            archive: session.next_archive.fetch_add(1, Ordering::Relaxed),
-            sync_mode: IngestionSync::None,
-            sync: &sync,
-            writes: RawWriteMeasurements::default(),
-            used_blobs: Mutex::new(Vec::new()),
-        };
         let mut batch = batch.clone();
-        batch.selection = match options.selection {
-            IngestionSelection::All => ArchiveSelection::All,
-            IngestionSelection::RuntimeAllStringsV2 => ArchiveSelection::ConverterInputs,
-            // English legacy selection retains its own filter/cache contract.
-            IngestionSelection::RuntimeEnglishV1 => {
-                return Self::extract_cached_with_session(
-                    archive,
-                    output,
-                    previous_cache,
-                    cache,
-                    previous,
-                    verify,
-                    progress,
-                    stop,
-                    session,
-                    options,
-                );
-            }
-        };
-        let started = Instant::now();
-        let mut outcome = batched::extract_with_ingestion(
+        batch.selection = options.selection;
+        batch.sync = options.sync;
+        Self::extract_batched_with_session(
             archive,
             output,
             previous_cache,
             cache,
             previous,
+            verify,
             &batch,
             progress,
             stop,
+            session,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn extract_cached_with_options(
+        archive: &Path,
+        output: &Path,
+        previous_cache: &Path,
+        cache: &Path,
+        previous: Option<&IngestionCacheEntry>,
+        verify: bool,
+        options: &ExtractOptions,
+        progress: Option<ExtractionProgressCallback<'_>>,
+        stop: Option<StopCheck<'_>>,
+    ) -> Result<ExtractionOutcome> {
+        Self::extract_batched(
+            archive,
+            output,
+            previous_cache,
+            cache,
+            previous,
+            verify,
+            options,
+            progress,
+            stop,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn extract_batched_with_session(
+        archive_path: &Path,
+        output_root: &Path,
+        previous_cache_root: &Path,
+        cache_root: &Path,
+        previous: Option<&IngestionCacheEntry>,
+        verify_integrity: bool,
+        options: &ExtractOptions,
+        progress: Option<ExtractionProgressCallback<'_>>,
+        stop: Option<StopCheck<'_>>,
+        session: &RawIngestionSession,
+    ) -> Result<ExtractionOutcome> {
+        color_eyre::eyre::ensure!(
+            options.sync != IngestionSync::None || verify_integrity,
+            "ingestion_sync=none requires cache verification"
+        );
+        color_eyre::eyre::ensure!(
+            session.cache_root == cache_root,
+            "raw ingestion session belongs to a different cache root"
+        );
+        batched::extract_with_session(
+            archive_path,
+            output_root,
+            previous_cache_root,
+            cache_root,
+            previous,
+            options,
+            progress,
+            stop,
             None,
-            Some(&ingestion),
-        )?;
-        outcome.timings.extraction_seconds = started.elapsed().as_secs_f64();
-        outcome.timings.selected_files = outcome.files.len() as u64;
-        outcome.timings.selected_bytes = outcome.files.iter().map(|file| file.bytes_written).sum();
-        ingestion.record_timings(&mut outcome.timings);
-        Ok(outcome)
+            session,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -683,116 +699,25 @@ impl ArchiveExtractor {
             session.cache_root == cache_root,
             "raw ingestion session belongs to a different cache root"
         );
-        color_eyre::eyre::ensure!(options.cpu_jobs > 0, "cpu_jobs must be greater than zero");
         color_eyre::eyre::ensure!(
             options.sync != IngestionSync::None || verify_integrity,
             "ingestion_sync=none requires cache verification"
         );
-        let mut timings = ExtractionTimings::default();
-        let hash_started = Instant::now();
-        let source_hash = hash_file(archive_path)?;
-        timings.source_hash_seconds = hash_started.elapsed().as_secs_f64();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.cpu_jobs)
-            .build()
-            .wrap_err("failed to create archive ingestion worker pool")?;
-        if let Some(entry) = previous.filter(|entry| {
-            entry.source_hash == source_hash && entry.selection.can_satisfy(options.selection)
-        }) {
-            let restore_started = Instant::now();
-            let entry = selected_cache_entry(entry, options.selection)?;
-            let restored = pool.install(|| {
-                restore_cached_files(
-                    &entry,
-                    output_root,
-                    previous_cache_root,
-                    cache_root,
-                    verify_integrity,
-                    progress,
-                    stop,
-                )
-            })?;
-            timings.cache_restore_seconds = restore_started.elapsed().as_secs_f64();
-            if let Some(files) = restored {
-                timings.selected_files = files.len() as u64;
-                timings.selected_bytes = files.iter().map(|file| file.bytes_written).sum();
-                timings.unique_payloads = files
-                    .iter()
-                    .map(|file| &file.sha256)
-                    .collect::<BTreeSet<_>>()
-                    .len() as u64;
-                return Ok(ExtractionOutcome {
-                    files,
-                    cache_entry: entry,
-                    cache_hit: true,
-                    timings,
-                });
-            }
-        }
-
-        let sync = SyncMeasurements::default();
-        let ingestion = FreshIngestion {
+        let mut batched = ExtractOptions::converter(options.cpu_jobs, options.cpu_jobs, None);
+        batched.selection = options.selection;
+        batched.sync = options.sync;
+        batched::extract_with_session(
+            archive_path,
+            output_root,
+            previous_cache_root,
+            cache_root,
+            previous,
+            &batched,
+            progress,
+            stop,
+            None,
             session,
-            archive: session.next_archive.fetch_add(1, Ordering::Relaxed),
-            sync_mode: options.sync,
-            sync: &sync,
-            writes: RawWriteMeasurements::default(),
-            used_blobs: Mutex::new(Vec::new()),
-        };
-        let extraction_started = Instant::now();
-        let mut files = pool.install(|| {
-            extract_selected_with_sync_reporting(
-                archive_path,
-                output_root,
-                |path| selection_includes(options.selection, path),
-                progress,
-                stop,
-                ExtractionWriteContext {
-                    sync_mode: options.sync,
-                    sync: &sync,
-                    ingestion: Some(&ingestion),
-                },
-            )
-        })?;
-        files.sort_by(|left, right| left.path.cmp(&right.path));
-        timings.extraction_seconds = extraction_started.elapsed().as_secs_f64();
-        if options.sync == IngestionSync::Archive {
-            let sync_started = Instant::now();
-            pool.install(|| ingestion.flush_archive(stop))?;
-            timings.sync_seconds = sync_started.elapsed().as_secs_f64();
-        }
-        timings.sync_worker_seconds = sync.nanoseconds.load(Ordering::Relaxed) as f64 / 1e9;
-        timings.sync_calls = sync.calls.load(Ordering::Relaxed);
-        timings.selected_files = files.len() as u64;
-        timings.selected_bytes = files.iter().map(|file| file.bytes_written).sum();
-        ingestion.record_timings(&mut timings);
-        check_stop(stop)?;
-        let cache_entry = IngestionCacheEntry {
-            source_hash,
-            recipe: match options.selection {
-                IngestionSelection::All => "all-v2",
-                IngestionSelection::RuntimeEnglishV1 => "runtime-english-v1",
-                IngestionSelection::RuntimeAllStringsV2 => "runtime-all-strings-v2",
-            }
-            .to_owned(),
-            selection: options.selection,
-            files: files
-                .iter()
-                .map(|file| IngestedFile {
-                    path: file.path.to_string_lossy().replace('\\', "/"),
-                    size: file.bytes_written,
-                    hash: file.sha256.clone(),
-                })
-                .collect(),
-        };
-        // Fresh VFS links are made directly from blobs inside extraction_seconds. There is no
-        // second pass that rewrites duplicate payloads or relinks every extracted file.
-        Ok(ExtractionOutcome {
-            files,
-            cache_entry,
-            cache_hit: false,
-            timings,
-        })
+        )
     }
 
     pub fn extract(archive_path: &Path, output_root: &Path) -> Result<Vec<ExtractedFile>> {
@@ -1024,6 +949,17 @@ fn extract_selected_with_sync_reporting(
 }
 
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
+    if selection == IngestionSelection::ConverterInputsV1 {
+        return path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "dds" | "nif" | "pex" | "lod" | "strings" | "ilstrings" | "dlstrings"
+                )
+            });
+    }
     if selection == IngestionSelection::All {
         return true;
     }
@@ -1047,26 +983,6 @@ fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
             .is_some_and(|stem| {
                 selection == IngestionSelection::RuntimeAllStringsV2 || stem.ends_with("_english")
             })
-}
-
-fn selected_cache_entry(
-    entry: &IngestionCacheEntry,
-    selection: IngestionSelection,
-) -> Result<IngestionCacheEntry> {
-    let mut files = Vec::new();
-    for file in &entry.files {
-        let relative = safe_relative_path(&file.path)?;
-        if selection_includes(selection, &relative) {
-            files.push(file.clone());
-        }
-    }
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(IngestionCacheEntry {
-        recipe: entry.recipe.clone(),
-        source_hash: entry.source_hash.clone(),
-        selection,
-        files,
-    })
 }
 
 fn is_lod_setting(path: &Path) -> bool {
@@ -1093,6 +1009,7 @@ struct CachedRestoreBlob<'a> {
     files: Vec<(usize, &'a IngestedFile, PathBuf)>,
 }
 
+#[cfg(test)]
 fn restore_cached_files(
     entry: &IngestionCacheEntry,
     output_root: &Path,
@@ -1101,6 +1018,29 @@ fn restore_cached_files(
     verify_integrity: bool,
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
+) -> Result<Option<Vec<ExtractedFile>>> {
+    restore_cached_files_with_io_limit(
+        entry,
+        output_root,
+        previous_cache_root,
+        cache_root,
+        verify_integrity,
+        progress,
+        stop,
+        rayon::current_num_threads(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_cached_files_with_io_limit(
+    entry: &IngestionCacheEntry,
+    output_root: &Path,
+    previous_cache_root: &Path,
+    cache_root: &Path,
+    verify_integrity: bool,
+    progress: Option<ExtractionProgressCallback<'_>>,
+    stop: Option<StopCheck<'_>>,
+    io_jobs: usize,
 ) -> Result<Option<Vec<ExtractedFile>>> {
     let mut seen_paths = BTreeMap::new();
     let mut blobs = BTreeMap::<&str, CachedRestoreBlob<'_>>::new();
@@ -1152,32 +1092,41 @@ fn restore_cached_files(
     // payload stay sequential, avoiding shared spill temporary-file races on link-limited disks.
     let progress_lock = Mutex::new(());
     let spill_cache = SpillCache::default();
-    let restored = blobs
-        .into_par_iter()
-        .map(|blob| -> Result<Vec<_>> {
-            let mut restored = Vec::with_capacity(blob.files.len());
-            for (offset, (index, file, relative)) in blob.files.into_iter().enumerate() {
-                check_stop(stop)?;
-                if offset == 0 {
-                    copy_verified_cache_blob(&blob.previous, &blob.staged, blob.representative)?;
+    let io_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(io_jobs)
+        .build()?;
+    let restored = io_pool.install(|| {
+        blobs
+            .into_par_iter()
+            .map(|blob| -> Result<Vec<_>> {
+                let mut restored = Vec::with_capacity(blob.files.len());
+                for (offset, (index, file, relative)) in blob.files.into_iter().enumerate() {
+                    check_stop(stop)?;
+                    if offset == 0 {
+                        copy_verified_cache_blob(
+                            &blob.previous,
+                            &blob.staged,
+                            blob.representative,
+                        )?;
+                    }
+                    share_blob(&blob.staged, &output_root.join(&relative), &spill_cache)?;
+                    if let Some(reporter) = &reporter {
+                        let _guard = progress_lock.lock().unwrap();
+                        reporter.advance(file.size);
+                    }
+                    restored.push((
+                        index,
+                        ExtractedFile {
+                            path: relative,
+                            bytes_written: file.size,
+                            sha256: file.hash.clone(),
+                        },
+                    ));
                 }
-                share_blob(&blob.staged, &output_root.join(&relative), &spill_cache)?;
-                if let Some(reporter) = &reporter {
-                    let _guard = progress_lock.lock().unwrap();
-                    reporter.advance(file.size);
-                }
-                restored.push((
-                    index,
-                    ExtractedFile {
-                        path: relative,
-                        bytes_written: file.size,
-                        sha256: file.hash.clone(),
-                    },
-                ));
-            }
-            Ok(restored)
-        })
-        .collect::<Result<Vec<_>>>()?;
+                Ok(restored)
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
     let mut restored: Vec<_> = restored.into_iter().flatten().collect();
     restored.sort_unstable_by_key(|(index, _)| *index);
     Ok(Some(restored.into_iter().map(|(_, file)| file).collect()))
@@ -1468,7 +1417,7 @@ mod tests {
                 assert_eq!(outcome.timings.physical_copy_writes, 0);
                 assert_eq!(
                     outcome.timings.sync_calls,
-                    if mode == IngestionSync::None { 0 } else { 2 }
+                    if mode == IngestionSync::PerFile { 2 } else { 0 }
                 );
                 assert_eq!(count_files(&root.join("cache")), 2);
                 for (file, name) in outcome.files.iter().zip(&names) {
@@ -1527,7 +1476,7 @@ mod tests {
                 None,
                 session,
                 IngestionOptions {
-                    sync: IngestionSync::Archive,
+                    sync: IngestionSync::PerFile,
                     cpu_jobs: 2,
                     ..IngestionOptions::default()
                 },
@@ -1615,7 +1564,8 @@ mod tests {
         .unwrap();
         assert_eq!(resumed.timings.payload_writes, 0);
         assert_eq!(resumed.timings.payload_reuses, 3);
-        assert_eq!(resumed.timings.sync_calls, 2);
+        assert_eq!(resumed.timings.sync_calls, 0);
+        assert!(resumed.cache_hit);
     }
 
     #[test]
@@ -1878,9 +1828,9 @@ mod tests {
             });
         }
         IngestionCacheEntry {
-            recipe: String::new(),
             source_hash: hash_bytes(b"archive"),
             selection: IngestionSelection::All,
+            recipe: String::new(),
             files: cached,
         }
     }
@@ -2141,6 +2091,9 @@ mod tests {
         let arrivals = Mutex::new(0);
         let ready = Condvar::new();
         let stop = || {
+            if rayon::current_thread_index().is_none() {
+                return false;
+            }
             assert_eq!(rayon::current_num_threads(), 2);
             let working = active.fetch_add(1, Ordering::Relaxed) + 1;
             peak.fetch_max(working, Ordering::Relaxed);
@@ -2294,7 +2247,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!full.cache_hit);
+        assert!(
+            full.cache_hit,
+            "a retained all-files pack independently proves broader coverage"
+        );
         assert_eq!(full.files.len(), 10);
         assert!(full_output.join("sound/test.wav").is_file());
     }
@@ -2328,7 +2284,7 @@ mod tests {
             assert_eq!(outcome.files.len(), 7);
             assert_eq!(
                 outcome.timings.sync_calls,
-                if mode == IngestionSync::None { 0 } else { 7 }
+                if mode == IngestionSync::PerFile { 7 } else { 0 }
             );
             if mode != IngestionSync::Archive {
                 assert_eq!(outcome.timings.sync_seconds, 0.0);
@@ -2336,7 +2292,7 @@ mod tests {
         }
         let output = directory.path().join("stopped/vfs");
         let cache = directory.path().join("stopped/cache");
-        let stop = stop_after(7);
+        let stop = || count_files(&output) >= 3;
         let error = ArchiveExtractor::extract_cached_with_ingestion_options(
             &archive,
             &output,
@@ -2354,8 +2310,8 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("interrupted"));
-        assert_eq!(count_files(&output), 7);
-        assert_eq!(count_files(&cache), 7);
+        assert_eq!(count_files(&output), 3);
+        assert_eq!(count_files(&cache), 3);
         // Workspace blobs survive the failed archive, but a new session must verify and flush
         // them before returning a cache entry. It does not inherit the abandoned flush state.
         let resumed = ArchiveExtractor::extract_cached_with_ingestion_options(
@@ -2374,9 +2330,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(resumed.timings.payload_writes, 0);
-        assert_eq!(resumed.timings.payload_reuses, 7);
-        assert_eq!(resumed.timings.sync_calls, 7);
+        assert!(resumed.cache_hit);
+        assert_eq!(resumed.files.len(), 7);
+        assert_eq!(count_files(&output), 7);
+        assert_eq!(resumed.timings.payload_writes, 4);
+        assert_eq!(resumed.timings.payload_reuses, 3);
+        assert_eq!(resumed.timings.sync_calls, 0);
     }
 
     #[test]
@@ -2450,7 +2409,10 @@ mod tests {
                     },
                 )
                 .unwrap();
-                assert_eq!(outcome.cache_hit, restore);
+                assert!(
+                    outcome.cache_hit,
+                    "sealed packs prove the source even without a manifest"
+                );
                 assert_eq!(fs::read(output.join("textures/test.dds")).unwrap(), payload);
                 assert_eq!(fs::read(blob).unwrap(), payload);
                 assert_eq!(fs::read(&old_name).unwrap(), corrupt);
@@ -2816,7 +2778,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!third.cache_hit);
+        assert!(
+            third.cache_hit,
+            "valid sealed packs recover corrupted blobs"
+        );
     }
 
     /// A stop that turns true after `allowed` checks, so a test can stop an archive at a known
@@ -2832,6 +2797,7 @@ mod tests {
         }
         walkdir::WalkDir::new(root)
             .into_iter()
+            .filter_entry(|entry| entry.file_name() != "batches")
             .filter(|entry| entry.as_ref().unwrap().file_type().is_file())
             .count()
     }
@@ -2862,7 +2828,7 @@ mod tests {
         for archive in [&ba2, &bsa] {
             let output = directory.path().join("stopped/vfs");
             let cache = directory.path().join("stopped/.ingestion-cache");
-            let stop = stop_after(1);
+            let stop = || count_files(&output) >= 1;
             let error = ArchiveExtractor::extract_cached(
                 archive,
                 &output,
@@ -2895,8 +2861,8 @@ mod tests {
         )
         .unwrap();
         let output = directory.path().join("second/vfs");
-        let stop = stop_after(names.len() + 3);
-        let error = ArchiveExtractor::extract_cached(
+        let stop = || count_files(&output) >= 3;
+        let error = ArchiveExtractor::extract_cached_with_ingestion_options(
             &ba2,
             &output,
             &first_cache,
@@ -2905,6 +2871,10 @@ mod tests {
             true,
             None,
             Some(&stop),
+            IngestionOptions {
+                cpu_jobs: 1,
+                ..IngestionOptions::default()
+            },
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("interrupted"));

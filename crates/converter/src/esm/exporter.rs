@@ -348,6 +348,14 @@ fn export_records(
     unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
     terrain_offsets: Option<&HashMap<u32, u64>>,
 ) -> Result<()> {
+    if terrain_offsets.is_none() {
+        super::records::land_by_cell(master).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error.to_string(),
+            )))
+        })?;
+    }
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
     tx.execute("DELETE FROM movement_game_settings", [])?;

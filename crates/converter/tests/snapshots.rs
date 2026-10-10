@@ -262,6 +262,7 @@ async fn pipeline_report_matches_snapshot() {
         ".archive_timings.*.cache_link_seconds" => "[seconds]",
         ".archive_timings.*.sync_seconds" => "[seconds]",
         ".archive_timings.*.sync_worker_seconds" => "[seconds]",
+        ".archive_timings.*.checkpoint_sync_worker_seconds" => "[seconds]",
         // The identity includes the executable and platform. Keep its shape
         // checked above while retaining the cache outcome and work counters.
         ".database_cache_key" => "[database_cache_key]",

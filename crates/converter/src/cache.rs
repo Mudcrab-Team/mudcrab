@@ -182,6 +182,8 @@ pub enum IngestionSelection {
     RuntimeEnglishV1,
     /// Runtime inputs and string banks for every selected language.
     RuntimeAllStringsV2,
+    /// Legacy converter recipe with all localized banks.
+    ConverterInputsV1,
 }
 
 impl IngestionSelection {
@@ -189,6 +191,11 @@ impl IngestionSelection {
         self == Self::All
             || self == requested
             || (self == Self::RuntimeAllStringsV2 && requested == Self::RuntimeEnglishV1)
+            || (self == Self::ConverterInputsV1
+                && matches!(
+                    requested,
+                    Self::RuntimeEnglishV1 | Self::RuntimeAllStringsV2
+                ))
     }
 }
 
@@ -621,15 +628,48 @@ fn link_or_copy_spilling_with(
     link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
     hash: &impl Fn(&fs::File) -> std::io::Result<String>,
 ) -> std::io::Result<()> {
-    if same_path(blob, to) {
-        return Ok(());
-    }
-    if to.exists() {
-        fs::remove_file(to)?;
+    link_or_copy_spilling_impl(blob, to, cache, link, hash, &mut |from, to, spill| {
+        if !spill {
+            return fs::copy(from, to).map(|_| ());
+        }
+        let temporary = tempfile::NamedTempFile::new_in(to.parent().unwrap())?;
+        fs::copy(from, temporary.path())?;
+        temporary.persist(to).map_err(|error| error.error)?;
+        Ok(())
+    })
+}
+
+pub(crate) fn link_or_copy_spilling_with_copy_and_link(
+    blob: &Path,
+    to: &Path,
+    cache: &SpillCache,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+    mut copy: impl FnMut(&Path, &Path, bool) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    link_or_copy_spilling_impl(blob, to, cache, link, &hash_open_file, &mut copy)
+}
+
+fn link_or_copy_spilling_impl(
+    blob: &Path,
+    to: &Path,
+    cache: &SpillCache,
+    link: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+    hash: &impl Fn(&fs::File) -> std::io::Result<String>,
+    copy: &mut impl FnMut(&Path, &Path, bool) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match fs::symlink_metadata(to) {
+        Ok(metadata) => {
+            if metadata.is_file() && same_path(blob, to) {
+                return Ok(());
+            }
+            fs::remove_file(to)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     match link(blob, to) {
         Ok(()) => return Ok(()),
-        Err(error) if !is_too_many_links(&error) => return fs::copy(blob, to).map(|_| ()),
+        Err(error) if !is_too_many_links(&error) => return copy(blob, to, false),
         Err(_) => {}
     }
     let lease = cache.lease(blob);
@@ -664,18 +704,16 @@ fn link_or_copy_spilling_with(
             if valid {
                 state.active = candidate;
             } else {
-                // Same-blob writers share this lock; the temporary name also
-                // protects creation from independent extractions.
-                let temporary =
-                    tempfile::NamedTempFile::new_in(blob.parent().unwrap_or(Path::new(".")))?;
-                fs::copy(blob, temporary.path())?;
-                let proof = SpillProof::open(temporary.path())?;
+                // The callback atomically replaces the logical spill path and records
+                // that physical file's durability, rather than a disposable temporary name.
+                copy(blob, &spill, true)?;
+                let proof = SpillProof::open(&spill)?;
                 if &proof.hash(hash)? != expected {
-                    return Err(std::io::Error::other(
-                        "cache file changed before spill copy",
+                    return Err(discard_unverified(
+                        &spill,
+                        std::io::Error::other("cache file changed before spill copy"),
                     ));
                 }
-                temporary.persist(&spill).map_err(|error| error.error)?;
                 state.active = Some(proof);
             }
         }
@@ -690,7 +728,7 @@ fn link_or_copy_spilling_with(
     }
     // Beyond the bounded spill count, verify this derived copy before use.
     let result = (|| {
-        fs::copy(blob, to)?;
+        copy(blob, to, false)?;
         let copied = SpillProof::open(to)?;
         if copied.hash(hash)? != state.base.as_ref().unwrap().1 {
             return Err(std::io::Error::other("cache file changed before copying"));
@@ -709,64 +747,6 @@ fn discard_unverified(path: &Path, error: std::io::Error) -> std::io::Error {
             path.display()
         )),
     }
-}
-
-pub(crate) fn link_or_copy_spilling_with_copy_and_link(
-    blob: &Path,
-    to: &Path,
-    link: fn(&Path, &Path) -> std::io::Result<()>,
-    mut copy: impl FnMut(&Path, &Path, bool) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    match fs::symlink_metadata(to) {
-        Ok(_) => {
-            if same_path(blob, to) {
-                return Ok(());
-            }
-            fs::remove_file(to)?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    match link(blob, to) {
-        Ok(()) => return Ok(()),
-        Err(error) if !is_too_many_links(&error) => return copy(blob, to, false),
-        Err(_) => {}
-    }
-    for index in 1..=MAX_SPILLS {
-        let mut name = blob.as_os_str().to_owned();
-        name.push(format!(".{index}"));
-        let spill = std::path::PathBuf::from(name);
-        copy(blob, &spill, true)?;
-        match link(&spill, to) {
-            Ok(()) => return Ok(()),
-            Err(error) if is_too_many_links(&error) => continue,
-            Err(_) => break,
-        }
-    }
-    copy(blob, to, false)
-}
-
-#[cfg(test)]
-fn raw_link_or_copy_spilling_with(
-    blob: &Path,
-    to: &Path,
-    link: fn(&Path, &Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    link_or_copy_spilling_with_copy_and_link(blob, to, link, |source, destination, spill| {
-        if spill && destination.is_file() {
-            return Ok(());
-        }
-        if !spill {
-            return fs::copy(source, destination).map(|_| ());
-        }
-        // Unique temporary names also make interrupted spill creation safe to retry.
-        let temporary = tempfile::NamedTempFile::new_in(destination.parent().unwrap())?;
-        fs::copy(source, temporary.path())?;
-        temporary
-            .persist(destination)
-            .map_err(|error| error.error)?;
-        Ok(())
-    })
 }
 
 /// A link refused because the file already has as many names as the filesystem allows.
@@ -853,48 +833,6 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn older_ingestion_entries_prove_all_files_and_coverage_is_directional() {
-        let entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
-            "source_hash": "source", "files": [],
-        }))
-        .unwrap();
-        assert_eq!(entry.selection, IngestionSelection::All);
-        assert!(
-            entry
-                .selection
-                .can_satisfy(IngestionSelection::RuntimeEnglishV1)
-        );
-        assert!(!IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::All));
-        assert!(
-            IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::RuntimeEnglishV1)
-        );
-    }
-
-    #[test]
-    fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
-        let config = crate::config::PipelineConfig::new("Data", "output");
-        // Exact configuration hash in the protected original schema-15
-        // manifest and its metadata rebuild's retained producer provenance.
-        let recorded = "b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435";
-        assert!(retained_configuration_matches(&config, 15, recorded).unwrap());
-        assert_eq!(
-            configuration_hash_for_schema(&config, 15).unwrap(),
-            "9a58fda00b27d0f2a8e46afb9334ea869602556393a35bffd7fcb39582a08a4f"
-        );
-        assert!(!retained_configuration_matches(&config, 16, recorded).unwrap());
-        assert!(!retained_configuration_matches(&config, 15, "different-hash").unwrap());
-        let mut changed = config.clone();
-        changed.texture_fallback_quality = 191;
-        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
-        let mut changed = config.clone();
-        changed.script_abi_version = 2;
-        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
-        let mut changed = config;
-        changed.texture_zstd_level = 7;
-        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
-    }
 
     #[test]
     fn parallel_spill_creation_uses_unique_temporary_files() {
@@ -1198,8 +1136,8 @@ mod tests {
     fn ingestion_journal_resumes_completed_inventories_and_drops_partial_tail() {
         let directory = tempfile::tempdir().unwrap();
         let entry = IngestionCacheEntry {
-            selection: crate::cache::IngestionSelection::All,
             source_hash: "ab".repeat(32),
+            selection: IngestionSelection::ConverterInputsV1,
             recipe: "converter-inputs-v1".to_owned(),
             files: vec![IngestedFile {
                 path: "lodsettings/tamriel.lod".to_owned(),
@@ -1226,6 +1164,83 @@ mod tests {
         let loaded = IngestionJournal::load(directory.path()).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded["dlc.bsa"], entry);
+    }
+
+    #[test]
+    fn both_prior_cache_contracts_limit_coverage_and_unknown_recipes_miss() {
+        let pack_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
+            "source_hash": "source", "recipe": "converter-inputs-v1", "files": []
+        }))
+        .unwrap();
+        assert!(pack_entry.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(pack_entry.covers(IngestionSelection::ConverterInputsV1));
+        assert!(!pack_entry.covers(IngestionSelection::All));
+        assert!(pack_entry.covers(IngestionSelection::RuntimeAllStringsV2));
+        let all_languages = IngestionCacheEntry {
+            recipe: "converter-inputs-v2".into(),
+            selection: IngestionSelection::RuntimeAllStringsV2,
+            ..pack_entry.clone()
+        };
+        assert!(all_languages.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(!all_languages.covers(IngestionSelection::ConverterInputsV1));
+        assert!(!all_languages.covers(IngestionSelection::All));
+        let raw_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
+            "source_hash": "source", "selection": "runtime_english_v1", "files": []
+        }))
+        .unwrap();
+        assert!(raw_entry.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(!raw_entry.covers(IngestionSelection::All));
+        assert!(!raw_entry.covers(IngestionSelection::ConverterInputsV1));
+        let mut conflicting = raw_entry.clone();
+        conflicting.recipe = "all-v1".into();
+        assert!(!conflicting.covers(IngestionSelection::All));
+        conflicting.recipe = "unknown-v99".into();
+        assert!(!conflicting.covers(IngestionSelection::RuntimeEnglishV1));
+        let roundtrip: IngestionCacheEntry =
+            serde_json::from_slice(&serde_json::to_vec(&pack_entry).unwrap()).unwrap();
+        assert_eq!(roundtrip, pack_entry);
+    }
+
+    #[test]
+    fn older_ingestion_entries_prove_all_files_and_coverage_is_directional() {
+        let entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
+            "source_hash": "source", "files": [],
+        }))
+        .unwrap();
+        assert_eq!(entry.selection, IngestionSelection::All);
+        assert!(
+            entry
+                .selection
+                .can_satisfy(IngestionSelection::RuntimeEnglishV1)
+        );
+        assert!(!IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::All));
+        assert!(
+            IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::RuntimeEnglishV1)
+        );
+    }
+
+    #[test]
+    fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
+        let config = crate::config::PipelineConfig::new("Data", "output");
+        // Exact configuration hash in the protected original schema-15
+        // manifest and its metadata rebuild's retained producer provenance.
+        let recorded = "b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435";
+        assert!(retained_configuration_matches(&config, 15, recorded).unwrap());
+        assert_eq!(
+            configuration_hash_for_schema(&config, 15).unwrap(),
+            "9a58fda00b27d0f2a8e46afb9334ea869602556393a35bffd7fcb39582a08a4f"
+        );
+        assert!(!retained_configuration_matches(&config, 16, recorded).unwrap());
+        assert!(!retained_configuration_matches(&config, 15, "different-hash").unwrap());
+        let mut changed = config.clone();
+        changed.texture_fallback_quality = 191;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+        let mut changed = config.clone();
+        changed.script_abi_version = 2;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+        let mut changed = config;
+        changed.texture_zstd_level = 7;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
     }
 
     #[test]
@@ -1463,7 +1478,15 @@ mod tests {
         type Restore = fn(&Path, &Path) -> std::io::Result<()>;
         let restores: [Restore; 2] = [
             |from, to| link_or_copy_with(from, to, force_copy),
-            |from, to| raw_link_or_copy_spilling_with(from, to, force_copy),
+            |from, to| {
+                link_or_copy_spilling_with(
+                    from,
+                    to,
+                    &SpillCache::default(),
+                    &force_copy,
+                    &hash_open_file,
+                )
+            },
         ];
         for restore in restores {
             for target_exists in [false, true] {

@@ -158,8 +158,12 @@ Fallback chunks have no GPU reuse proof, so a later GPU run retries them.
 Explicit CPU selection produces the CPU recipe and its reuse proof instead.
 
 Archive extraction uses `--cpu-jobs` for decoding and `--io-jobs` for writers.
-It extracts converter inputs into a bounded queue and seals flushed cache
-batches before creating derived files. Resuming validates those batches and
+By default it selects runtime inputs and string banks for every language;
+`--extract-all-archive-files` keeps every archive entry. The default
+`--ingestion-sync archive` seals flushed cache batches before creating derived
+files. `per-file` additionally flushes unique derived payloads; `none` skips
+fresh extraction flushes and requires verified reuse. Resuming validates those
+batches and
 reconstructs missing or damaged files; archive ordering still determines
 which override wins. Containing directories are also flushed on Unix;
 portable directory flushing remains a Windows limitation.

@@ -1,6 +1,6 @@
 use crate::{
     archive::{
-        ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings, IngestionOptions,
+        ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
         RawIngestionSession,
     },
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
@@ -620,9 +620,9 @@ impl AssetPipeline {
         // Bytes already extracted, so each archive reports progress against the whole run instead
         // of restarting at zero.
         let mut extracted_bytes = 0u64;
+
         let raw_ingestion_session =
             Arc::new(RawIngestionSession::new(&staging.join(".ingestion-cache")));
-
         for (index, archive) in enabled_archives.iter().enumerate() {
             interrupt(cancellation)?;
             send(
@@ -655,21 +655,16 @@ impl AssetPipeline {
                 .or_else(|| previous.archives.get(&archive_key))
                 .cloned();
             let verify_cache = config.verify_cache;
-            // The sealed pack carries its own index; a second per-batch marker
-            // would duplicate the checkpoint and its filesystem flush.
+            let ingestion_session_for_worker = Arc::clone(&raw_ingestion_session);
             let mut extraction_options =
                 ExtractOptions::converter(config.cpu_jobs, config.io_jobs, None);
-            extraction_options.reuse_cache = !config.invalidate_cache;
-            let ingestion_session_for_worker = Arc::clone(&raw_ingestion_session);
-            let ingestion_options = IngestionOptions {
-                selection: if config.extract_all_archive_files {
-                    IngestionSelection::All
-                } else {
-                    IngestionSelection::RuntimeAllStringsV2
-                },
-                sync: config.ingestion_sync,
-                cpu_jobs: config.cpu_jobs,
+            extraction_options.selection = if config.extract_all_archive_files {
+                IngestionSelection::All
+            } else {
+                IngestionSelection::RuntimeAllStringsV2
             };
+            extraction_options.sync = config.ingestion_sync;
+            extraction_options.reuse_cache = !config.invalidate_cache;
 
             // The extractor reports file by file; the event keeps the archive count the launcher
             // reads and carries the smoother per-file fraction for the status line.
@@ -724,7 +719,7 @@ impl AssetPipeline {
             };
 
             let result = spawn_blocking(move || {
-                ArchiveExtractor::extract_cached_with_adapter(
+                ArchiveExtractor::extract_batched_with_session(
                     &archive_for_worker,
                     &vfs_for_worker,
                     &previous_cache_root,
@@ -734,8 +729,7 @@ impl AssetPipeline {
                     &extraction_options,
                     Some(&progress),
                     Some(&stop),
-                    ingestion_session_for_worker.as_ref(),
-                    ingestion_options,
+                    &ingestion_session_for_worker,
                 )
             })
             .await
@@ -3076,20 +3070,17 @@ fn publish_runtime_pack(
 
 /// Copies sealed packs and canonical blobs into the persistent cache root.
 fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
-    let absolute_cache = if cache_root.is_absolute() {
+    let absolute = if cache_root.is_absolute() {
         cache_root.to_owned()
     } else {
         std::env::current_dir()?.join(cache_root)
     };
-    let cache_root = absolute_cache.as_path();
-    let mut existing_ancestor = cache_root.to_owned();
-    while !existing_ancestor.is_dir() {
-        existing_ancestor = existing_ancestor
-            .parent()
-            .ok_or_else(|| color_eyre::eyre::eyre!("cache has no existing parent"))?
-            .to_owned();
+    let cache_root = absolute.as_path();
+    let mut ancestor = cache_root.to_owned();
+    while !ancestor.is_dir() {
+        ancestor = ancestor.parent().unwrap().to_owned();
     }
-    let mut pack_directories = BTreeSet::new();
+    let mut directories = BTreeSet::new();
     for entry in WalkDir::new(staging_cache).follow_links(false) {
         let entry = entry?;
         if !entry.file_type().is_file() {
@@ -3107,7 +3098,8 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
         if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             continue;
         }
-        let repair_existing = destination.is_file();
+        let repair_existing =
+            fs::symlink_metadata(&destination).is_ok_and(|metadata| metadata.is_file());
         let mut valid = false;
         if repair_existing {
             let source_metadata = entry.metadata()?;
@@ -3142,20 +3134,14 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
         }
         if is_pack {
             crate::archive::sync_pack_file(&destination)?;
-            if let Some(parent) = destination.parent() {
-                pack_directories.insert(parent.to_owned());
+            let mut current = destination.parent();
+            while let Some(path) = current.filter(|path| path.starts_with(&ancestor)) {
+                directories.insert(path.to_owned());
+                current = path.parent();
             }
         }
     }
-    let mut durable_directories = BTreeSet::new();
-    for directory in pack_directories {
-        let mut current = Some(directory.as_path());
-        while let Some(path) = current.filter(|path| path.starts_with(&existing_ancestor)) {
-            durable_directories.insert(path.to_owned());
-            current = path.parent();
-        }
-    }
-    for directory in durable_directories.into_iter().rev() {
+    for directory in directories.into_iter().rev() {
         crate::archive::sync_directory(&directory)?;
     }
     Ok(())
@@ -5863,8 +5849,11 @@ mod tests {
         let mut reader_changed = config.clone();
         reader_changed.record_reader = crate::config::RecordReader::Inhouse;
         let corrupted = run_without_progress(reader_changed.clone()).await;
-        assert_eq!(corrupted.converted, 1);
-        assert_eq!(corrupted.cache_hits, 0);
+        assert_eq!(corrupted.converted, 0);
+        assert_eq!(
+            corrupted.cache_hits, 1,
+            "verified packs recover corrupt derived blobs"
+        );
         let manifest = published_manifest(&output);
         assert_eq!(
             manifest.archives.values().next().unwrap().files[0].hash,
@@ -5883,10 +5872,10 @@ mod tests {
             .save(&output.join("conversion-manifest.json"))
             .unwrap();
         let rejected = run_without_progress(reader_changed.clone()).await;
-        assert_eq!(rejected.converted, 1);
+        assert_eq!(rejected.converted, 0);
         assert_eq!(
-            rejected.cache_hits, 0,
-            "unsupported schemas must not be reused"
+            rejected.cache_hits, 1,
+            "independently versioned raw packs remain valid; unsupported derived schemas are not reused"
         );
 
         fs::write(
@@ -5956,7 +5945,7 @@ mod tests {
                 let data = temp.path().join("Data");
                 let output = temp.path().join("modern");
                 write_archived_script(&data);
-                let mut config = PipelineConfig::new(&data, &output);
+                let mut config = cpu_lod_config(&data, &output);
                 config.record_reader = previous_reader;
                 let first = run_without_progress(config.clone()).await;
                 assert!(first.complete);
@@ -5989,7 +5978,7 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_archived_script(&data);
-        let config = PipelineConfig::new(&data, &output);
+        let config = cpu_lod_config(&data, &output);
         assert!(run_without_progress(config.clone()).await.complete);
         let expected = fs::read(output.join("scripts/one.luau")).unwrap();
         let mut manifest = published_manifest(&output);
@@ -7656,7 +7645,7 @@ mod tests {
             .unwrap();
         };
         write_plugin("CacheFixture");
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.record_reader = crate::config::RecordReader::Inhouse;
         config.no_lod = true;
         let cold = run_without_progress(config.clone()).await;
@@ -7809,7 +7798,7 @@ mod tests {
         fs::create_dir_all(&data).unwrap();
         let archive = dummy_content::ba2::general(
             &[dummy_content::Entry::new(
-                "strings/review.strings",
+                "strings/review_english.strings",
                 b"input",
             )],
             dummy_content::ba2::Compression::None,
@@ -7925,6 +7914,26 @@ mod tests {
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn persisting_the_ingestion_cache_replaces_symlinks_without_touching_their_targets() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging-cache");
+        let root = directory.path().join("cache");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let bytes = b"verified payload";
+        let hash = hash_bytes(bytes);
+        let outside = directory.path().join("outside");
+        fs::write(&outside, bytes).unwrap();
+        fs::write(staging.join(&hash), bytes).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(&hash)).unwrap();
+        persist_ingestion_cache(&staging, &root).unwrap();
+        assert!(fs::symlink_metadata(root.join(&hash)).unwrap().is_file());
+        assert_eq!(fs::read(root.join(&hash)).unwrap(), bytes);
+        assert_eq!(fs::read(&outside).unwrap(), bytes);
+    }
+
     #[test]
     fn persisting_the_ingestion_cache_preserves_healthy_blobs() {
         for linked in [false, true] {
@@ -7988,7 +7997,7 @@ mod tests {
         let data = directory.path().join("Data");
         let output = directory.path().join("modern");
         write_archived_script(&data);
-        let config = PipelineConfig::new(&data, &output);
+        let config = cpu_lod_config(&data, &output);
         let first = run_without_progress(config.clone()).await;
         assert!(first.complete);
         assert_eq!(first.converted, 2);
@@ -8006,12 +8015,12 @@ mod tests {
 
         assert!(recovered.complete);
         assert_eq!(
-            recovered.converted, 1,
-            "the archive must be extracted again"
+            recovered.converted, 0,
+            "sealed packs recover raw bytes without archive decoding"
         );
         assert_eq!(
-            recovered.cache_hits, 1,
-            "the unchanged script can be reused"
+            recovered.cache_hits, 2,
+            "the sealed archive and unchanged script can be reused"
         );
         assert_eq!(fs::read(&blob).unwrap(), expected);
         assert_eq!(hash_file(&blob).unwrap(), file.hash);
