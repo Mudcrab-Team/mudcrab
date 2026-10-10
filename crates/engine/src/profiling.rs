@@ -111,6 +111,7 @@ pub struct ProfilingState {
     pub(crate) frame_cpu_spans_ms: BTreeMap<String, f64>,
     pub(crate) frame_completion_latencies_ms: BTreeMap<String, f64>,
     pub(crate) trace_delta_ms: f64,
+    pub(crate) capture_window_resolution: Option<[u32; 2]>,
 }
 
 impl Default for ProfilingState {
@@ -135,6 +136,7 @@ impl Default for ProfilingState {
             frame_cpu_spans_ms: BTreeMap::new(),
             frame_completion_latencies_ms: BTreeMap::new(),
             trace_delta_ms: 0.0,
+            capture_window_resolution: None,
         }
     }
 }
@@ -359,10 +361,11 @@ impl ProfilingState {
                 } else {
                     "release"
                 },
-                resolution: self
-                    .window
-                    .as_ref()
-                    .map(|window| window.physical_resolution),
+                resolution: self.capture_window_resolution.or_else(|| {
+                    self.window
+                        .as_ref()
+                        .map(|window| window.physical_resolution)
+                }),
                 window: self.window.clone(),
                 worldspace_id: config.worldspace_id,
                 start_grid: config.start_grid,
@@ -557,6 +560,7 @@ struct Metadata<'a> {
     hardware_label: String,
     build_profile: &'a str,
     resolution: Option<[u32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     window: Option<WindowMetadata>,
     worldspace_id: u32,
     start_grid: (i32, i32),

@@ -2234,6 +2234,7 @@ fn fly_camera(
     profiler.record_elapsed("world/fly_camera", started);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_acceptance_screenshot(
     mut commands: Commands,
     config: Res<EngineConfig>,
@@ -2241,7 +2242,8 @@ fn capture_acceptance_screenshot(
     streaming: Option<Res<StreamingMetrics>>,
     world_database: Option<Res<WorldDatabase>>,
     renderer: Res<RendererMetrics>,
-    windows: Query<(), With<Window>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut profiler: ResMut<ProfilingState>,
 ) {
     let Some(path) = &config.acceptance_screenshot else {
         return;
@@ -2272,6 +2274,10 @@ fn capture_acceptance_screenshot(
     {
         error!(%error, path = %path.display(), "failed to create screenshot directory");
         return;
+    }
+    if let Ok(window) = windows.single() {
+        profiler.capture_window_resolution =
+            Some([window.physical_width(), window.physical_height()]);
     }
     commands
         .spawn(Screenshot::primary_window())
