@@ -8,6 +8,7 @@ use crate::{
         exporter::{create_tables, export_inhouse_to_db, validate_inhouse_record},
         load_order::LoadOrder,
         records::RawRecord,
+        strings::{StringsKind, StringsSource, find_table},
     },
     records::{self, Value},
 };
@@ -23,7 +24,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 4;
+pub const ADAPTER_VERSION: u32 = 5;
 
 /// Diagnostic timings do not participate in producer identity or asset reuse.
 pub(crate) const DATABASE_PROFILE_FILE: &str = "inhouse-database-profile.json";
@@ -70,7 +71,7 @@ pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
         RecordReader::Inhouse => serde_json::json!({
             "mode": "inhouse", "adapter_version": ADAPTER_VERSION,
             "schema_sha256": crate::cache::hash_bytes(records::SCHEMA_BYTES),
-            "language": "english",
+            "language": "configured",
             "text_encoding": "windows-1252", "vmad_text_encoding": "utf-8",
         }),
     }
@@ -121,7 +122,10 @@ pub fn export_record_bundle_typed(
     let records = convert_plugins_with_dump(
         &plugins,
         &output.join("skyrim_world.db"),
-        &strings_root,
+        &StringsSource {
+            roots: vec![data.to_owned(), strings_root.clone()],
+            language: config.language.clone(),
+        },
         (!signatures.is_empty()).then_some((output, signatures)),
     )?;
     let count = write_terrain_caches(&records, &output.join("skyrim_world.db"), output)?;
@@ -286,16 +290,16 @@ pub(crate) fn write_terrain_caches(
 pub(crate) fn convert_plugins(
     plugin_paths: &[PathBuf],
     db_path: &Path,
-    strings_root: &Path,
+    strings: &StringsSource,
 ) -> Result<HashMap<u32, RawRecord>> {
-    convert_plugins_with_dump(plugin_paths, db_path, strings_root, None)
+    convert_plugins_with_dump(plugin_paths, db_path, strings, None)
 }
 
 /// Diagnostic export shares the exact decoder, winner and text lookup paths with publication.
 fn convert_plugins_with_dump(
     plugin_paths: &[PathBuf],
     db_path: &Path,
-    strings_root: &Path,
+    strings: &StringsSource,
     dump: Option<(&Path, &[[u8; 4]])>,
 ) -> Result<HashMap<u32, RawRecord>> {
     let started = Instant::now();
@@ -383,11 +387,12 @@ fn convert_plugins_with_dump(
                 let table = tables
                     .entry((priority, bank.to_owned()))
                     .or_insert_with(|| {
-                        read_plugin_strings(&plugin_paths[priority], strings_root, bank)
-                            .unwrap_or_else(|error| {
+                        read_plugin_strings(&plugin_paths[priority], strings, bank).unwrap_or_else(
+                            |error| {
                                 warnings.skipped(plugin, format!("localized table: {error}"));
                                 HashMap::new()
-                            })
+                            },
+                        )
                     });
                 // Zero is a null key even if a malformed table gives it text.
                 let resolved = if *id == 0 { None } else { table.get(id) };
@@ -662,42 +667,23 @@ fn runtime_string(text: &str) -> Vec<u8> {
     bytes
 }
 
-/// Find a plugin's loose STRINGS override first, then the effective staged archive VFS.
+/// Read the same selected-language winner used by the legacy reader and DB cache.
 fn read_plugin_strings(
     plugin: &Path,
-    strings_root: &Path,
+    source: &StringsSource,
     bank: &str,
 ) -> Result<HashMap<u32, String>> {
-    let file_name = format!(
-        "{}_english.{bank}",
-        plugin.file_stem().unwrap_or_default().to_string_lossy()
-    );
-    for root in [plugin.parent().unwrap_or(Path::new(".")), strings_root] {
-        if let Some(folder) = child_case_insensitive(root, "strings")
-            && let Some(path) = child_case_insensitive(&folder, &file_name)
-        {
-            return parse_text_table(&fs::read(path)?, bank != "strings");
-        }
+    let kind = match bank {
+        "strings" => StringsKind::Strings,
+        "dlstrings" => StringsKind::DlStrings,
+        "ilstrings" => StringsKind::IlStrings,
+        _ => return Ok(HashMap::new()),
+    };
+    let name = plugin.file_name().unwrap_or_default().to_string_lossy();
+    match find_table(&source.roots, &name, &source.language, kind) {
+        Some(path) => parse_text_table(&fs::read(path)?, bank != "strings"),
+        None => Ok(HashMap::new()),
     }
-    Ok(HashMap::new())
-}
-
-/// Resolve a single path component on both case-sensitive and Windows filesystems.
-fn child_case_insensitive(parent: &Path, name: &str) -> Option<PathBuf> {
-    let direct = parent.join(name);
-    if direct.exists() {
-        return Some(direct);
-    }
-    fs::read_dir(parent)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .find(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(name)
-        })
-        .map(|entry| entry.path())
 }
 
 /// Read STRINGS offsets within their declared data region; one bad entry is skipped.

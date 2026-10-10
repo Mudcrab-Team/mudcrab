@@ -1318,7 +1318,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     let output = dir.path().join("modern");
     let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
-    let mut expected_texture_rebuilds = 0;
+    let mut expected_asset_rebuilds = 0;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1326,7 +1326,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         drain.await.unwrap();
         assert!(report.complete, "{:?}", report.warnings);
         if pass == 1 {
-            assert_eq!(report.converted, expected_texture_rebuilds);
+            assert_eq!(report.converted, expected_asset_rebuilds);
             assert!(report.cache_hits > 0);
         }
         let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -1419,16 +1419,16 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                 rusqlite::params![old, 0x0300_0800u32],
             )
             .unwrap();
-            // Producer 24 has compatible meshes/scripts, but its world projection
-            // contains padding in enable-parent flags. Rebuild the world while
-            // reusing proved meshes/scripts and regenerating all old textures.
+            // Producer 24's world projection contains enable-parent padding.
+            // The combined producer rebuilds its meshes/textures and the world,
+            // while verified scripts remain candidates for reuse.
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest: converter::cache::ConversionManifest =
                 serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-            expected_texture_rebuilds = manifest
+            expected_asset_rebuilds = manifest
                 .entries
                 .values()
-                .filter(|entry| entry.output.ends_with(".ktx2"))
+                .filter(|entry| !entry.output.ends_with(".luau"))
                 .count() as u64;
             manifest.schema_version = 24;
             manifest.configuration_hash =

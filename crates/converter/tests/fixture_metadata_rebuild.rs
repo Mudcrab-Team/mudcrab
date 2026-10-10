@@ -94,14 +94,100 @@ fn generate(data: &Path) {
 }
 
 async fn convert(data: &Path, output: &Path) -> converter::PipelineReport {
+    convert_with_config(common::cpu_lod_config(data, output)).await
+}
+
+async fn convert_with_config(config: PipelineConfig) -> converter::PipelineReport {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = AssetPipeline::run_async(common::cpu_lod_config(data, output), tx)
-        .await
-        .unwrap();
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
     assert!(report.complete, "{:?}", report.warnings);
     report
+}
+
+#[tokio::test]
+async fn reader26_metadata_preserves_recorded_identity_without_normal_mesh_reuse() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    let mut config = common::cpu_lod_config(&data, &source);
+    config.no_lod = true;
+    config.record_reader = converter::config::RecordReader::Inhouse;
+    convert_with_config(config.clone()).await;
+    let original_mesh = hash_file(&source.join("meshes/generated.glb")).unwrap();
+
+    // The reader branch's schema26 stamp had a fixed English adapter. Author its
+    // contract independently of the compatibility hash function under test.
+    let prior_reader = serde_json::json!({
+        "mode": "inhouse", "adapter_version": 4,
+        "schema_sha256": converter::cache::hash_bytes(converter::records::SCHEMA_BYTES),
+        "language": "english", "text_encoding": "windows-1252", "vmad_text_encoding": "utf-8",
+    });
+    let prior_settings = serde_json::json!({
+        "schema": 26,
+        "texture_etc1s_quality": config.texture_fallback_quality,
+        "texture_uastc_level": config.texture_uastc_level,
+        "texture_zstd_level": config.texture_zstd_level,
+        "texture_encoder": {"mode": "cpu"},
+        "script_abi_version": config.script_abi_version,
+        "record_reader": prior_reader,
+    });
+    let prior_hash = converter::cache::hash_bytes(&serde_json::to_vec(&prior_settings).unwrap());
+    let manifest_path = source.join("conversion-manifest.json");
+    let mut manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.schema_version = 26;
+    manifest.configuration_hash = prior_hash.clone();
+    manifest.save(&manifest_path).unwrap();
+    fs::write(
+        source.join("record-reader.json"),
+        serde_json::to_vec(&prior_reader).unwrap(),
+    )
+    .unwrap();
+    let normal_cache = ConversionManifest::load(&manifest_path).unwrap();
+    assert!(!normal_cache.complete);
+    assert!(
+        normal_cache
+            .entries
+            .values()
+            .all(|entry| !entry.output.ends_with(".glb"))
+    );
+
+    config.output_dir = output.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    AssetPipeline::rebuild_metadata_async(config, &source, tx)
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap();
+    assert_eq!(provenance["source_converter_schema"], 26);
+    assert_eq!(provenance["retained_asset_record_reader"], prior_reader);
+    assert_eq!(provenance["retained_asset_configuration_hash"], prior_hash);
+    assert_eq!(
+        hash_file(&output.join("meshes/generated.glb")).unwrap(),
+        original_mesh
+    );
+    let retained: ConversionManifest =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(retained.retained_mesh_schema_version, Some(26));
+    let normal_cache = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    assert!(!normal_cache.complete);
+    assert!(
+        normal_cache
+            .entries
+            .values()
+            .all(|entry| !entry.output.ends_with(".glb"))
+    );
+    assert_ne!(
+        provenance["record_reader"],
+        provenance["retained_asset_record_reader"]
+    );
 }
 
 async fn rebuild(
@@ -310,7 +396,7 @@ async fn metadata_rebuild_reuses_bytes_and_recovers_authoritative_flags() {
     assert!(output.join("lod-manifest.json").is_file());
 }
 
-/// Retained asset provenance allows proven producer-24 GLBs but rebuilds its textures.
+/// Metadata retention preserves old bytes; normal reuse requires the current producer.
 #[tokio::test]
 async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
     for source_schema in [
@@ -322,6 +408,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
         22,
         23,
         24,
+        26,
         converter::cache::CONVERTER_SCHEMA_VERSION,
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -365,7 +452,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if source_schema == 24 || source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
+            if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
                 meshes
             } else {
                 0
@@ -381,7 +468,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| {
                     let output = entry.output.to_ascii_lowercase();
-                    !output.ends_with(".luau") && !(source_schema == 24 && output.ends_with(".glb"))
+                    !output.ends_with(".luau")
                 })
                 .count()
         };
@@ -960,7 +1047,7 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
             .to_string();
         assert!(
             error.contains(&format!(
-                "complete converter schema 15, 16, 19 through 24 or {}",
+                "complete converter schema 15, 16, 19 through 24, 26 or {}",
                 converter::cache::CONVERTER_SCHEMA_VERSION
             )),
             "{error}"

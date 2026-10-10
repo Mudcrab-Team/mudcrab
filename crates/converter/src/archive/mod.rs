@@ -740,7 +740,7 @@ impl ArchiveExtractor {
             used_blobs: Mutex::new(Vec::new()),
         };
         let extraction_started = Instant::now();
-        let files = pool.install(|| {
+        let mut files = pool.install(|| {
             extract_selected_with_sync_reporting(
                 archive_path,
                 output_root,
@@ -754,6 +754,7 @@ impl ArchiveExtractor {
                 },
             )
         })?;
+        files.sort_by(|left, right| left.path.cmp(&right.path));
         timings.extraction_seconds = extraction_started.elapsed().as_secs_f64();
         if options.sync == IngestionSync::Archive {
             let sync_started = Instant::now();
@@ -1059,9 +1060,9 @@ fn selected_cache_entry(
             files.push(file.clone());
         }
     }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(IngestionCacheEntry {
         recipe: entry.recipe.clone(),
-        selection: crate::cache::IngestionSelection::All,
         source_hash: entry.source_hash.clone(),
         selection,
         files,
@@ -1346,6 +1347,9 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
     }
     if safe.as_os_str().is_empty() {
         bail!("archive contains an empty path");
+    }
+    if is_string_table(&safe) {
+        return Ok(PathBuf::from(safe.to_string_lossy().to_ascii_lowercase()));
     }
     let extension = safe.extension().and_then(|value| value.to_str());
     let kind = extension.and_then(|extension| {
@@ -2468,6 +2472,45 @@ mod tests {
             safe_relative_path(r"textures\authoring\data\textures\landscape\Rock.DDS").unwrap(),
             PathBuf::from("textures/landscape/rock.dds")
         );
+        assert_eq!(
+            safe_relative_path(r"Strings\Skyrim_French.STRINGS").unwrap(),
+            PathBuf::from("strings/skyrim_french.strings")
+        );
+    }
+
+    #[test]
+    fn string_bank_casing_preserves_later_archive_precedence() {
+        for extension in ["bsa", "ba2"] {
+            let directory = tempfile::tempdir().unwrap();
+            let first = directory.path().join(format!("base.{extension}"));
+            let second = directory.path().join(format!("override.{extension}"));
+            let output = directory.path().join("vfs");
+            write_archive(
+                &first,
+                &[
+                    dummy_content::Entry::new("Strings/Skyrim_French.STRINGS", b"base"),
+                    dummy_content::Entry::new("strings/Update_French.STRINGS", b"update"),
+                ],
+            );
+            write_archive(
+                &second,
+                &[dummy_content::Entry::new(
+                    "strings/SKYRIM_french.strings",
+                    b"winner",
+                )],
+            );
+            ArchiveExtractor::extract(&first, &output).unwrap();
+            ArchiveExtractor::extract(&second, &output).unwrap();
+            assert_eq!(
+                fs::read(output.join("strings/skyrim_french.strings")).unwrap(),
+                b"winner"
+            );
+            assert_eq!(
+                fs::read(output.join("strings/update_french.strings")).unwrap(),
+                b"update"
+            );
+            assert_eq!(fs::read_dir(output.join("strings")).unwrap().count(), 2);
+        }
     }
 
     #[test]

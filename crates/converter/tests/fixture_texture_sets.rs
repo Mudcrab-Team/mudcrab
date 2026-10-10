@@ -184,10 +184,9 @@ fn legacy_pack(data: &Path, output: &Path, schema: u32) -> ConversionManifest {
     legacy
 }
 
-/// Producer 24 rebuilds every texture and world output, retaining verified GLBs/Luau.
-/// Producer 23 remains a negative control for the earlier changed mesh contract.
+/// The combined producer rebuilds older meshes/textures and retains verified Luau.
 #[tokio::test]
-async fn texture_semantic_migration_preserves_only_known_compatible_published_meshes() {
+async fn texture_semantic_migration_rebuilds_older_meshes_and_textures() {
     for schema in [24, 23] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
@@ -210,10 +209,7 @@ async fn texture_semantic_migration_preserves_only_known_compatible_published_me
         let mut config = PipelineConfig::new(&data, &output);
         config.no_lod = true;
         let report = run_pipeline(config.clone()).await;
-        assert_eq!(
-            report.converted,
-            (textures + if schema == 24 { 0 } else { meshes }) as u64
-        );
+        assert_eq!(report.converted, (textures + meshes) as u64);
         assert_eq!(
             fs::read(output.join("textures/txst_slot_05.ktx2")).unwrap(),
             expected_cube
@@ -342,7 +338,7 @@ async fn texture_semantic_migration_preserves_original_metadata_asset_provenance
         eligible
             .entries
             .values()
-            .any(|entry| entry.output.ends_with(".glb"))
+            .all(|entry| !entry.output.ends_with(".glb"))
     );
     assert!(
         eligible
@@ -352,17 +348,17 @@ async fn texture_semantic_migration_preserves_original_metadata_asset_provenance
     );
     let normal = run_pipeline(config).await;
     let current = manifest(&output);
-    let textures = retained
+    let rebuilt_assets = retained
         .entries
         .values()
-        .filter(|entry| entry.output.ends_with(".ktx2"))
+        .filter(|entry| !entry.output.ends_with(".luau"))
         .count();
     let ingested = current
         .archives
         .values()
         .map(|archive| archive.files.len())
         .sum::<usize>();
-    assert_eq!(normal.converted, (textures + ingested) as u64);
+    assert_eq!(normal.converted, (rebuilt_assets + ingested) as u64);
     assert_eq!(current.retained_mesh_schema_version, None);
     assert_eq!(
         fs::read(output.join("textures/txst_slot_05.ktx2")).unwrap(),

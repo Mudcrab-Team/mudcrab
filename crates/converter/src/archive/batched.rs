@@ -705,7 +705,10 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     // The same validation as a blob key prevents provenance-controlled paths.
     blob_path(cache, source_hash)?;
     ensure!(
-        matches!(recipe, "all-v1" | "converter-inputs-v1"),
+        matches!(
+            recipe,
+            "all-v1" | "converter-inputs-v1" | "all-v2" | "converter-inputs-v2"
+        ),
         "unknown ingestion recipe"
     );
     Ok(cache.join("batches").join(source_hash).join(recipe))
@@ -995,7 +998,12 @@ fn restore_pack_inventory(
         if !directory.is_dir() {
             continue;
         }
-        for recipe in [selection.recipe(), ArchiveSelection::All.recipe()] {
+        for recipe in [
+            selection.recipe(),
+            ArchiveSelection::All.recipe(),
+            "converter-inputs-v1",
+            "all-v1",
+        ] {
             if !selection.accepts_recipe(recipe) {
                 continue;
             }
@@ -1298,6 +1306,57 @@ mod tests {
     }
 
     #[test]
+    fn legacy_sealed_pack_restores_canonical_strings_without_derived_blobs() {
+        let directory = tempfile::tempdir().unwrap();
+        let name = "Strings/Names_French.STRINGS";
+        let payload = b"legacy bank";
+        let archive = fixture(directory.path(), "names.bsa", &[(name, payload)]);
+        let source_hash = hash_file(&archive).unwrap();
+        let index = serde_json::to_vec(&serde_json::json!({
+            "version": 1, "source_hash": source_hash, "recipe": "converter-inputs-v1",
+            "files": [{"path": name, "size": payload.len(), "sha256": hash_bytes(payload), "offset": 0}],
+        })).unwrap();
+        let bytes = [
+            PACK_MAGIC.as_slice(),
+            &(index.len() as u64).to_le_bytes(),
+            &index,
+            payload,
+        ]
+        .concat();
+        let previous = directory.path().join("previous");
+        let old_packs = previous
+            .join("batches")
+            .join(&source_hash)
+            .join("converter-inputs-v1");
+        fs::create_dir_all(&old_packs).unwrap();
+        fs::write(
+            old_packs.join(format!("{}.pack", hash_bytes(&bytes))),
+            bytes,
+        )
+        .unwrap();
+        assert!(!previous.join("sha256").exists());
+        let output = directory.path().join("vfs");
+        let outcome = ArchiveExtractor::extract_cached_with_options(
+            &archive,
+            &output,
+            &previous,
+            &directory.path().join("cache"),
+            None,
+            true,
+            &options(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(outcome.cache_hit);
+        assert_eq!(outcome.cache_entry.recipe, "converter-inputs-v2");
+        assert_eq!(
+            fs::read(output.join("strings/names_french.strings")).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
     fn sealing_a_relative_cache_flushes_its_current_directory_ancestor() {
         // Avoid changing the process-wide working directory in parallel tests.
         let directory = tempfile::tempdir_in(".").unwrap();
@@ -1358,7 +1417,7 @@ mod tests {
         assert_eq!(current.files.len(), 7);
         assert!(!output.join("sound/a.fuz").exists());
         assert!(!output.join("docs/a.txt").exists());
-        assert_eq!(current.cache_entry.recipe, "converter-inputs-v1");
+        assert_eq!(current.cache_entry.recipe, "converter-inputs-v2");
         assert!(!packs(&cache).is_empty());
         // A filtered inventory must never be treated as proof of a full archive.
         let all = ArchiveExtractor::extract_cached(

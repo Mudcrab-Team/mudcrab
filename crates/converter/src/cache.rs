@@ -388,12 +388,23 @@ pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
 ) -> Result<String> {
+    configuration_hash_with_reader(config, schema, None)
+}
+
+fn configuration_hash_with_reader(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    retained_reader: Option<&serde_json::Value>,
+) -> Result<String> {
     let mut relevant = serde_json::json!({
         "schema": schema,
         "texture_etc1s_quality": config.texture_fallback_quality,
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
+    if schema >= 27 {
+        relevant["language"] = serde_json::json!(config.language.to_ascii_lowercase());
+    }
     if let Some(selection) = &config.mo2 {
         let instance = mo2::Instance::open(&selection.instance_path)?;
         let profile = instance.profile_dir(&selection.profile)?;
@@ -410,7 +421,9 @@ pub fn configuration_hash_for_schema(
     // The in-house frontend corrects texture roles as well as record projections.
     // Older legacy hashes stay byte-identical for existing pack compatibility.
     if config.record_reader == crate::config::RecordReader::Inhouse {
-        relevant["record_reader"] = crate::esm::inhouse::reader_identity(config.record_reader);
+        relevant["record_reader"] = retained_reader
+            .cloned()
+            .unwrap_or_else(|| crate::esm::inhouse::reader_identity(config.record_reader));
     }
     if schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
@@ -733,6 +746,7 @@ pub(crate) fn link_or_copy_spilling_with_copy_and_link(
     copy(blob, to, false)
 }
 
+#[cfg(test)]
 fn raw_link_or_copy_spilling_with(
     blob: &Path,
     to: &Path,
@@ -773,12 +787,24 @@ fn same_path(from: &Path, to: &Path) -> bool {
 /// The protected schema-15 source manifest proves this exact configuration
 /// variant; quality and script ABI must still match its recorded hash.
 /// This compatibility route verifies retained bytes, not normal cache reuse.
+#[cfg(test)]
 pub(crate) fn retained_configuration_matches(
     config: &crate::config::PipelineConfig,
     schema: u32,
     recorded: &str,
 ) -> Result<bool> {
-    if recorded == configuration_hash_for_schema(config, schema)? {
+    retained_configuration_matches_with_reader(config, schema, recorded, None)
+}
+
+/// Metadata-only migration verifies the exact recorded producer identity. Callers
+/// must validate that identity against a supported historical reader first.
+pub(crate) fn retained_configuration_matches_with_reader(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    recorded: &str,
+    retained_reader: Option<&serde_json::Value>,
+) -> Result<bool> {
+    if recorded == configuration_hash_with_reader(config, schema, retained_reader)? {
         return Ok(true);
     }
     if !matches!(schema, 15 | 16) || config.texture_zstd_level != 6 {

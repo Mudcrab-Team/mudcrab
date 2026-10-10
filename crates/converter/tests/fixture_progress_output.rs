@@ -139,14 +139,10 @@ async fn terrain_lod_batches_are_visible_in_the_default_terminal() {
             .filter(|event| event.notice && event.message == totals)
             .collect();
         assert_eq!(notices.len(), 1);
-        let notice = renderer
-            .update(notices[0], Duration::from_secs(3))
-            .unwrap();
+        let notice = renderer.update(notices[0], Duration::from_secs(3)).unwrap();
         assert!(notice.starts_with('\n') && notice.ends_with('\n'));
         assert!(notice.contains(&totals), "{notice:?}");
-        let final_line = renderer
-            .update(completed, Duration::from_secs(4))
-            .unwrap();
+        let final_line = renderer.update(completed, Duration::from_secs(4)).unwrap();
         assert!(final_line.contains("100%"), "{final_line:?}");
         assert!(!final_line.contains("/6 chunks"), "{final_line:?}");
     }

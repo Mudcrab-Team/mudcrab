@@ -794,6 +794,9 @@ impl AssetPipeline {
         if config.mo2.is_none() {
             overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
         }
+        if config.mo2.is_some() {
+            stage_mo2_string_inputs(&staging.join("vfs"), &resolved_files)?;
+        }
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),
             extraction_started.elapsed().as_millis(),
@@ -901,10 +904,7 @@ impl AssetPipeline {
                 // SQLite writes in place. Every fresh build unlinks old names, and a restored
                 // bundle uses private copies, so neither can mutate the previous pack or cache.
                 database_cache::clear_outputs(staging)?;
-                let strings = StringsSource {
-                    roots: vec![config.data_dir.clone(), vfs_dir.clone()],
-                    language: config.language.clone(),
-                };
+                let strings = strings_source(config, &vfs_dir);
                 let merged = EsmParser::convert_plugins_with_reader(
                     &plugins,
                     &db_path,
@@ -2620,6 +2620,37 @@ fn stage_mo2_lod_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Resu
 /// Removes staged mesh, texture, and script outputs absent from the current MO2 source selection.
 ///
 /// Retains current resume work while preventing removed outputs from contributing stale references.
+/// Both readers and their database cache use this exact winner lookup order.
+pub(super) fn strings_source(config: &PipelineConfig, vfs: &Path) -> StringsSource {
+    StringsSource {
+        roots: if config.mo2.is_some() {
+            vec![vfs.to_owned()]
+        } else {
+            vec![config.data_dir.clone(), vfs.to_owned()]
+        },
+        language: config.language.to_ascii_lowercase(),
+    }
+}
+
+/// Loose MO2 string banks are metadata inputs resolved by virtual file priority.
+/// They can come from a different mod or overwrite than the winning plugin.
+fn stage_mo2_string_inputs(vfs: &Path, resolved: &BTreeMap<String, PathBuf>) -> Result<()> {
+    for (relative, source) in resolved {
+        let path = Path::new(relative);
+        if path.parent() != Some(Path::new("strings"))
+            || !extension(path, &["strings", "dlstrings", "ilstrings"])
+        {
+            continue;
+        }
+        let destination = vfs.join(relative.to_ascii_lowercase());
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        link_or_copy(source, &destination)?;
+    }
+    Ok(())
+}
+
 fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> {
     let mut current = BTreeSet::new();
     for source in sources {
@@ -2639,7 +2670,11 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
         )?);
     }
     for folder in ["meshes", "textures", "scripts"] {
-        for path in discover(&staging.join(folder))? {
+        let directory = staging.join(folder);
+        if !directory.is_dir() {
+            continue;
+        }
+        for path in discover(&directory)? {
             if !extension(&path, &["glb", "ktx2", "luau"]) {
                 continue;
             }
@@ -3361,170 +3396,180 @@ async fn compile_lod_chunks_with_cancel(
                 cell_hashes.insert(cell.cell_id, cell.fingerprint());
             }
         }
-        let tx = connection.unchecked_transaction()?;
         let mut accepted = Vec::with_capacity(jobs.len());
         let mut reused = 0u64;
         let mut gpu_chunks = 0u64;
         let mut fallback_chunks = 0u64;
         let mut refusals = BTreeMap::<String, u64>::new();
-        let mut content_error = validation.err();
-        for batch in jobs.chunks(compiler_pool.current_num_threads()) {
-            if content_error.is_some() {
-                break;
-            }
-            interrupt(cancellation)?;
-            // Prepare and encode a bounded chunk batch; SQLite stays on this thread.
-            let compiled: Result<Vec<_>> = compiler_pool.install(|| {
-                batch
-                    .par_iter()
-                    .map(|job| {
-                        let input_hash = job.fingerprint_for_encoder(
-                            origin,
-                            &cell_hashes,
-                            &textures,
-                            config.lod_texture_encoder,
-                        )?;
-                        let refusal = if let Some(reuse) = &reuse {
-                            match reuse.chunk(job, origin, &input_hash) {
-                                Ok(chunk) => return Ok(LodBatchItem::Reused(chunk, input_hash)),
-                                Err(error) => Some(format!("{error:#}")),
-                            }
-                        } else {
-                            None
-                        };
-                        let (geometry, atlas) = job.prepare(origin, &textures)?;
-                        Ok(LodBatchItem::Prepared(geometry, atlas, input_hash, refusal))
-                    })
-                    .collect()
-            });
-            let items = match compiled {
-                Ok(chunks) => chunks,
-                Err(error) => {
-                    content_error = Some(error);
+        // Keep SQLite references out of the async state while retaining one atomic
+        // transaction per world. Batch progress is best-effort inside this scope;
+        // the world completion event is delivered with backpressure afterward.
+        let content_error = {
+            let tx = connection.unchecked_transaction()?;
+            let mut content_error = validation.err();
+            for batch in jobs.chunks(compiler_pool.current_num_threads()) {
+                if content_error.is_some() {
                     break;
                 }
-            };
-            interrupt(cancellation)?;
-            let mut chunks = (0..items.len()).map(|_| None).collect::<Vec<_>>();
-            let mut prepared = Vec::new();
-            let mut atlases = Vec::new();
-            for (position, item) in items.into_iter().enumerate() {
-                match item {
-                    LodBatchItem::Reused(chunk, input_hash) => {
-                        chunks[position] = Some((chunk, input_hash, true, true, None))
+                interrupt(cancellation)?;
+                // Prepare and encode a bounded chunk batch; SQLite stays on this thread.
+                let compiled: Result<Vec<_>> = compiler_pool.install(|| {
+                    batch
+                        .par_iter()
+                        .map(|job| {
+                            let input_hash = job.fingerprint_for_encoder(
+                                origin,
+                                &cell_hashes,
+                                &textures,
+                                config.lod_texture_encoder,
+                            )?;
+                            let refusal = if let Some(reuse) = &reuse {
+                                match reuse.chunk(job, origin, &input_hash) {
+                                    Ok(chunk) => {
+                                        return Ok(LodBatchItem::Reused(chunk, input_hash));
+                                    }
+                                    Err(error) => Some(format!("{error:#}")),
+                                }
+                            } else {
+                                None
+                            };
+                            let (geometry, atlas) = job.prepare(origin, &textures)?;
+                            Ok(LodBatchItem::Prepared(geometry, atlas, input_hash, refusal))
+                        })
+                        .collect()
+                });
+                let items = match compiled {
+                    Ok(chunks) => chunks,
+                    Err(error) => {
+                        content_error = Some(error);
+                        break;
                     }
-                    LodBatchItem::Prepared(geometry, atlas, input_hash, refusal) => {
-                        prepared.push((position, geometry, input_hash, refusal));
-                        atlases.push(atlas);
+                };
+                interrupt(cancellation)?;
+                let mut chunks = (0..items.len()).map(|_| None).collect::<Vec<_>>();
+                let mut prepared = Vec::new();
+                let mut atlases = Vec::new();
+                for (position, item) in items.into_iter().enumerate() {
+                    match item {
+                        LodBatchItem::Reused(chunk, input_hash) => {
+                            chunks[position] = Some((chunk, input_hash, true, true, None))
+                        }
+                        LodBatchItem::Prepared(geometry, atlas, input_hash, refusal) => {
+                            prepared.push((position, geometry, input_hash, refusal));
+                            atlases.push(atlas);
+                        }
                     }
                 }
-            }
-            if !atlases.is_empty() && !gpu_attempted {
-                gpu_attempted = true;
-                if let TextureEncoder::Gpu { quality, batch_mb } = config.lod_texture_encoder {
-                    match create_lod_gpu(quality, batch_mb) {
-                        Ok(encoder) => {
-                            report.notices.push(format!(
+                if !atlases.is_empty() && !gpu_attempted {
+                    gpu_attempted = true;
+                    if let TextureEncoder::Gpu { quality, batch_mb } = config.lod_texture_encoder {
+                        match create_lod_gpu(quality, batch_mb) {
+                            Ok(encoder) => {
+                                report.notices.push(format!(
                                 "Terrain atlas GPU encoder: {} (quality {quality}, batch {} MiB)",
                                 encoder.adapter_name,
                                 encoder.batch_bytes >> 20
                             ));
-                            gpu = Some(encoder);
+                                gpu = Some(encoder);
+                            }
+                            Err(error) => report.notices.push(format!(
+                                "Terrain atlas GPU unavailable ({error:#}); using CPU encoding"
+                            )),
                         }
-                        Err(error) => report.notices.push(format!(
-                            "Terrain atlas GPU unavailable ({error:#}); using CPU encoding"
-                        )),
                     }
                 }
-            }
-            // GPU post-processing and validation each use this many workers.
-            let post_threads = (compiler_pool.current_num_threads() / 2).max(1);
-            let encoded = compiler_pool
-                .install(|| TerrainAtlas::encode_batch(atlases, gpu.as_ref(), post_threads));
-            let encoded = match encoded {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    content_error = Some(error);
+                // GPU post-processing and validation each use this many workers.
+                let post_threads = (compiler_pool.current_num_threads() / 2).max(1);
+                let encoded = compiler_pool
+                    .install(|| TerrainAtlas::encode_batch(atlases, gpu.as_ref(), post_threads));
+                let encoded = match encoded {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        content_error = Some(error);
+                        break;
+                    }
+                };
+                ensure!(
+                    encoded.len() == prepared.len(),
+                    "terrain atlas batch returned the wrong result count"
+                );
+                let finished: Result<Vec<_>> = compiler_pool.install(|| {
+                    prepared
+                        .into_par_iter()
+                        .zip(encoded)
+                        .map(|((position, geometry, input_hash, refusal), atlas)| {
+                            Ok((
+                                position,
+                                geometry.finish(&atlas.bytes)?,
+                                input_hash,
+                                atlas.gpu_used,
+                                atlas.fallback_reason,
+                                refusal,
+                            ))
+                        })
+                        .collect()
+                });
+                let finished = match finished {
+                    Ok(finished) => finished,
+                    Err(error) => {
+                        content_error = Some(error);
+                        break;
+                    }
+                };
+                for (position, chunk, input_hash, gpu_used, fallback_reason, refusal) in finished {
+                    let reusable =
+                        matches!(config.lod_texture_encoder, TextureEncoder::Cpu) || gpu_used;
+                    if gpu_used {
+                        gpu_chunks += 1;
+                    } else if matches!(config.lod_texture_encoder, TextureEncoder::Gpu { .. }) {
+                        fallback_chunks += 1;
+                    }
+                    if let Some(reason) = fallback_reason
+                        && !report
+                            .notices
+                            .iter()
+                            .any(|notice| notice.starts_with("Terrain atlas GPU fallback:"))
+                    {
+                        report
+                            .notices
+                            .push(format!("Terrain atlas GPU fallback: {reason}"));
+                    }
+                    chunks[position] = Some((chunk, input_hash, false, reusable, refusal));
+                }
+                if content_error.is_some() {
                     break;
                 }
-            };
-            ensure!(
-                encoded.len() == prepared.len(),
-                "terrain atlas batch returned the wrong result count"
-            );
-            let finished: Result<Vec<_>> = compiler_pool.install(|| {
-                prepared
-                    .into_par_iter()
-                    .zip(encoded)
-                    .map(|((position, geometry, input_hash, refusal), atlas)| {
-                        Ok((
-                            position,
-                            geometry.finish(&atlas.bytes)?,
-                            input_hash,
-                            atlas.gpu_used,
-                            atlas.fallback_reason,
-                            refusal,
-                        ))
-                    })
-                    .collect()
-            });
-            let finished = match finished {
-                Ok(finished) => finished,
-                Err(error) => {
-                    content_error = Some(error);
-                    break;
+                interrupt(cancellation)?;
+                for (chunk, input_hash, hit, reusable, refusal) in chunks.into_iter().flatten() {
+                    publish_chunk(&tx, staging, &chunk)?;
+                    let relative = shared::lod::chunk_payload_path(chunk.key);
+                    accepted.push((relative, input_hash, hash_bytes(&chunk.glb), reusable));
+                    reused += u64::from(hit);
+                    if let Some(reason) = refusal {
+                        *refusals.entry(reason).or_default() += 1;
+                    }
                 }
-            };
-            for (position, chunk, input_hash, gpu_used, fallback_reason, refusal) in finished {
-                let reusable =
-                    matches!(config.lod_texture_encoder, TextureEncoder::Cpu) || gpu_used;
-                if gpu_used {
-                    gpu_chunks += 1;
-                } else if matches!(config.lod_texture_encoder, TextureEncoder::Gpu { .. }) {
-                    fallback_chunks += 1;
-                }
-                if let Some(reason) = fallback_reason
-                    && !report
-                        .notices
-                        .iter()
-                        .any(|notice| notice.starts_with("Terrain atlas GPU fallback:"))
-                {
-                    report
-                        .notices
-                        .push(format!("Terrain atlas GPU fallback: {reason}"));
-                }
-                chunks[position] = Some((chunk, input_hash, false, reusable, refusal));
+                let _ = progress_tx.try_send(ProgressEvent::new(
+                    ProgressStage::LodChunks,
+                    index as u64,
+                    worlds.len() as u64,
+                    None,
+                    &format!(
+                        "Terrain LOD {editor_id}: {}/{} chunks ({reused} reused)",
+                        accepted.len(),
+                        jobs.len()
+                    ),
+                ));
             }
+            textures.verify_sources(&staging.join("vfs"))?;
             if content_error.is_some() {
-                break;
+                tx.rollback()?;
+            } else {
+                tx.commit()?;
             }
-            interrupt(cancellation)?;
-            for (chunk, input_hash, hit, reusable, refusal) in chunks.into_iter().flatten() {
-                publish_chunk(&tx, staging, &chunk)?;
-                let relative = shared::lod::chunk_payload_path(chunk.key);
-                accepted.push((relative, input_hash, hash_bytes(&chunk.glb), reusable));
-                reused += u64::from(hit);
-                if let Some(reason) = refusal {
-                    *refusals.entry(reason).or_default() += 1;
-                }
-            }
-            send(
-                progress_tx,
-                ProgressStage::LodChunks,
-                index as u64,
-                worlds.len() as u64,
-                None,
-                &format!(
-                    "Terrain LOD {editor_id}: {}/{} chunks ({reused} reused)",
-                    accepted.len(),
-                    jobs.len()
-                ),
-            )
-            .await;
-        }
-        textures.verify_sources(&staging.join("vfs"))?;
+            content_error
+        };
         if let Some(error) = content_error {
-            tx.rollback()?;
             let partial_world = staging.join(format!("lod/{worldspace_id:08x}"));
             if partial_world.exists() {
                 fs::remove_dir_all(partial_world)?;
@@ -3545,7 +3590,6 @@ async fn compile_lod_chunks_with_cancel(
             .await;
             continue 'world;
         }
-        tx.commit()?;
         for (reason, count) in refusals {
             let message =
                 format!("Terrain LOD {editor_id}: {count} cached chunks refused: {reason}");
@@ -7743,7 +7787,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path().join("staging-cache");
         fs::create_dir_all(&staging).unwrap();
-        let blob = "ab".repeat(32);
+        let blob = hash_bytes(b"blob");
         fs::write(staging.join(&blob), b"blob").unwrap();
         fs::write(staging.join(format!("{blob}.1")), b"spill").unwrap();
         fs::write(staging.join(".tmp-abandoned-blob"), b"unfinished blob").unwrap();
@@ -7774,7 +7818,7 @@ mod tests {
         fs::write(data.join("review.ba2"), &archive).unwrap();
         let recipe = PathBuf::from("batches")
             .join(hash_bytes(&archive))
-            .join("converter-inputs-v1");
+            .join("converter-inputs-v2");
         let pack_directory = staging.join(".ingestion-cache").join(&recipe);
         fs::create_dir_all(&pack_directory).unwrap();
         let abandoned = [
@@ -7787,6 +7831,7 @@ mod tests {
         }
         let mut config = cpu_lod_config(&data, &output);
         let cache = config.ingestion_cache_dir().join(".ingestion-cache");
+        config.ingestion_sync = crate::archive::IngestionSync::Archive;
         config.resume_staging = Some(staging.clone());
         assert!(run_without_progress(config.clone()).await.complete);
         assert!(!staging.exists());

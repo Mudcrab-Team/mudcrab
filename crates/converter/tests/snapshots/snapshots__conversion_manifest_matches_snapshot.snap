@@ -1,6 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 215
+assertion_line: 218
 expression: manifest
 ---
 {
@@ -13,8 +13,8 @@ expression: manifest
           "size": 721
         }
       ],
-      "recipe": "converter-inputs-v1",
-      "selection": "runtime_english_v1",
+      "recipe": "runtime-all-strings-v2",
+      "selection": "runtime_all_strings_v2",
       "source_hash": "[source_hash]"
     },
     "skyrim - misc.bsa": {
@@ -30,8 +30,8 @@ expression: manifest
           "size": 131
         }
       ],
-      "recipe": "converter-inputs-v1",
-      "selection": "runtime_english_v1",
+      "recipe": "runtime-all-strings-v2",
+      "selection": "runtime_all_strings_v2",
       "source_hash": "[source_hash]"
     },
     "skyrim - textures.ba2": {
@@ -62,13 +62,13 @@ expression: manifest
           "size": 2876
         }
       ],
-      "recipe": "converter-inputs-v1",
-      "selection": "runtime_english_v1",
+      "recipe": "runtime-all-strings-v2",
+      "selection": "runtime_all_strings_v2",
       "source_hash": "[source_hash]"
     }
   },
   "complete": true,
-  "configuration_hash": "ea5d65ec603445aa304868b3b9bb15e2c4a04ebbcc24a4ab03ca751e92a4aeb8",
+  "configuration_hash": "0b58c7bf0ed2d8a3ccd16c49f5189eda02a8394bf50c04e677af76299f509304",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",

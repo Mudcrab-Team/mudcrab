@@ -279,20 +279,42 @@ pub fn find_table(
 ) -> Option<PathBuf> {
     let stem = Path::new(plugin).file_stem()?.to_string_lossy();
     let file_name = format!("{stem}_{language}.{}", kind.extension());
-    roots.iter().find_map(|root| {
-        let folder = entry_ignoring_case(root, "strings")?;
-        entry_ignoring_case(&folder, &file_name).filter(|path| path.is_file())
-    })
+    for root in roots {
+        let mut candidates: Vec<_> = entries_ignoring_case(root, "strings")
+            .into_iter()
+            .filter(|path| path.is_dir())
+            .flat_map(|folder| entries_ignoring_case(&folder, &file_name))
+            .filter(|path| path.is_file())
+            .collect();
+        candidates.sort();
+        match candidates.len() {
+            0 => continue,
+            1 => return candidates.pop(),
+            _ => {
+                eprintln!(
+                    "warning: ambiguous localized table {file_name} in {}: {candidates:?}; refusing lower-priority fallback",
+                    root.display()
+                );
+                return None;
+            }
+        }
+    }
+    None
 }
 
-fn entry_ignoring_case(folder: &Path, name: &str) -> Option<PathBuf> {
-    fs::read_dir(folder).ok()?.flatten().find_map(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|entry_name| entry_name.eq_ignore_ascii_case(name))
-            .then(|| entry.path())
-    })
+fn entries_ignoring_case(folder: &Path, name: &str) -> Vec<PathBuf> {
+    fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|entry_name| entry_name.eq_ignore_ascii_case(name))
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 #[cfg(test)]
@@ -444,6 +466,39 @@ mod tests {
         assert_eq!(
             strings.unresolved.into_inner(),
             BTreeMap::from([(1, (2, 0x23))])
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn searches_all_case_sensitive_directories_and_rejects_same_root_aliases() {
+        let loose = tempfile::tempdir().unwrap();
+        let archived = tempfile::tempdir().unwrap();
+        for folder in ["strings", "Strings"] {
+            fs::create_dir(loose.path().join(folder)).unwrap();
+        }
+        fs::create_dir(archived.path().join("strings")).unwrap();
+        fs::write(loose.path().join("strings/other_english.strings"), b"other").unwrap();
+        let winning = loose.path().join("Strings/Skyrim_English.STRINGS");
+        fs::write(&winning, b"winner").unwrap();
+        fs::write(
+            archived.path().join("strings/skyrim_english.strings"),
+            b"fallback",
+        )
+        .unwrap();
+        let roots = [loose.path().to_owned(), archived.path().to_owned()];
+        assert_eq!(
+            find_table(&roots, "Skyrim.esm", "english", StringsKind::Strings),
+            Some(winning)
+        );
+        fs::write(
+            loose.path().join("strings/skyrim_english.strings"),
+            b"ambiguous",
+        )
+        .unwrap();
+        assert_eq!(
+            find_table(&roots, "Skyrim.esm", "english", StringsKind::Strings),
+            None
         );
     }
 

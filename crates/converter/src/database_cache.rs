@@ -72,33 +72,6 @@ fn cancelled(cancellation: &Cancellation) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the same loose-before-VFS lookup as the reader. Ambiguous or unreadable banks
-/// prevent caching rather than pretending that a bank was absent.
-fn child(parent: &Path, name: &str) -> Result<Option<PathBuf>> {
-    let direct = parent.join(name);
-    if direct.exists() {
-        return Ok(Some(direct));
-    }
-    let entries = match fs::read_dir(parent) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let mut matches = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .eq_ignore_ascii_case(name)
-        {
-            matches.push(entry.path());
-        }
-    }
-    ensure!(matches.len() <= 1, "ambiguous localized string path");
-    Ok(matches.pop())
-}
-
 fn source_fingerprint() -> String {
     // Include the native producers and dependency contracts; the compiled program digest in
     // the input identity also binds future modules, build flags and dependency code.
@@ -164,30 +137,25 @@ pub(super) fn identity(
             "size": fs::metadata(plugin)?.len(),
             "sha256": hash_file(plugin)?,
         }));
-        if config.record_reader != RecordReader::Inhouse {
-            continue;
-        }
-        for bank in ["strings", "dlstrings", "ilstrings"] {
-            let name = format!(
-                "{}_english.{bank}",
-                plugin.file_stem().unwrap_or_default().to_string_lossy()
-            );
+        let source = super::strings_source(config, vfs);
+        for (bank, kind) in [
+            ("strings", crate::esm::strings::StringsKind::Strings),
+            ("dlstrings", crate::esm::strings::StringsKind::DlStrings),
+            ("ilstrings", crate::esm::strings::StringsKind::IlStrings),
+        ] {
+            let name = plugin.file_name().unwrap_or_default().to_string_lossy();
             let lookup = (|| -> Result<serde_json::Value> {
-                for (origin, root) in [
-                    ("loose", plugin.parent().unwrap_or(Path::new("."))),
-                    ("vfs", vfs),
-                ] {
-                    if let Some(folder) = child(root, "strings")?
-                        && let Some(path) = child(&folder, &name)?
-                    {
-                        let metadata = fs::metadata(&path)?;
-                        ensure!(metadata.is_file(), "localized bank is not a file");
-                        return Ok(serde_json::json!({
-                            "plugin": index, "bank": bank, "state": "present", "origin": origin,
-                            "name": path.file_name().unwrap_or_default().to_string_lossy(),
-                            "size": metadata.len(), "sha256": hash_file(&path)?,
-                        }));
-                    }
+                if let Some(path) =
+                    crate::esm::strings::find_table(&source.roots, &name, &source.language, kind)
+                {
+                    let metadata = fs::metadata(&path)?;
+                    ensure!(metadata.is_file(), "localized bank is not a file");
+                    let origin = source.roots.iter().position(|root| path.starts_with(root));
+                    return Ok(serde_json::json!({
+                        "plugin": index, "bank": bank, "state": "present", "origin": origin,
+                        "name": path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase(),
+                        "size": metadata.len(), "sha256": hash_file(&path)?,
+                    }));
                 }
                 Ok(serde_json::json!({"plugin": index, "bank": bank, "state": "absent"}))
             })();
@@ -200,6 +168,7 @@ pub(super) fn identity(
         "converter_schema": CONVERTER_SCHEMA_VERSION,
         "database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
         "reader": inhouse::reader_identity(config.record_reader),
+        "language": config.language.to_ascii_lowercase(),
         "native_sources_sha256": source_fingerprint(),
         "compiled_program_sha256": hash_file(&std::env::current_exe()?)?,
         "target": {"arch": std::env::consts::ARCH, "os": std::env::consts::OS,
@@ -644,6 +613,7 @@ mod tests {
             &staging.join("skyrim_world.db"),
             config.record_reader,
             &staging.join("vfs"),
+            &crate::pipeline::strings_source(&config, &staging.join("vfs")),
         )
         .unwrap();
         inhouse::write_terrain_caches(&records, &staging.join("skyrim_world.db"), &staging)

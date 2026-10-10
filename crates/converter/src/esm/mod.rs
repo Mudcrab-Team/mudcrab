@@ -32,7 +32,7 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         db_path: &Path,
         reader: crate::config::RecordReader,
-        strings_root: &Path,
+        _strings_root: &Path,
         strings: &StringsSource,
     ) -> Result<HashMap<u32, RawRecord>> {
         match reader {
@@ -40,7 +40,7 @@ impl EsmParser {
                 Self::convert_plugins_with_records(plugin_paths, db_path, strings)
             }
             crate::config::RecordReader::Inhouse => {
-                inhouse::convert_plugins(plugin_paths, db_path, strings_root)
+                inhouse::convert_plugins(plugin_paths, db_path, strings)
             }
         }
     }

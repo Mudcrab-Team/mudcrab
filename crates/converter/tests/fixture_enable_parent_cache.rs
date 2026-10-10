@@ -1,4 +1,4 @@
-//! A database-only producer migration preserves assets only with their original proof.
+//! The combined producer rebuilds older meshes while verifying retained script proofs.
 
 use converter::{
     AssetPipeline, PipelineConfig,
@@ -24,11 +24,10 @@ fn manifest(output: &Path) -> ConversionManifest {
     serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap()).unwrap()
 }
 
-/// Producer 24 meshes/scripts retain their contracts; all old textures rebuild.
-/// Configuration, source and
-/// output changes still force regeneration instead of being hidden by migration.
+/// Producer 24 meshes/textures rebuild; unchanged scripts retain their proofs.
+/// Configuration, source and output changes still force regeneration.
 #[tokio::test]
-async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
+async fn producer_twenty_four_meshes_regenerate_and_script_reuse_requires_valid_proof() {
     for changed in [
         "none",
         "configuration",
@@ -83,6 +82,12 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
             .values()
             .filter(|entry| entry.output.ends_with(".ktx2"))
             .count() as u64;
+        let meshes = original
+            .entries
+            .values()
+            .filter(|entry| entry.output.ends_with(".glb"))
+            .count() as u64;
+        let rebuilt_assets = textures + meshes;
         let report = convert(config).await;
         let current = manifest(&output);
         assert_eq!(current.schema_version, CONVERTER_SCHEMA_VERSION);
@@ -96,8 +101,11 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
         }
         match changed {
             "none" => {
-                assert_eq!(report.converted, textures);
-                assert_eq!(report.cache_hits, original.entries.len() as u64 - textures);
+                assert_eq!(report.converted, rebuilt_assets);
+                assert_eq!(
+                    report.cache_hits,
+                    original.entries.len() as u64 - rebuilt_assets
+                );
                 assert_eq!(current.entries, original.entries);
             }
             "configuration" => {
@@ -105,7 +113,7 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
                 assert_eq!(report.converted, original.entries.len() as u64);
             }
             "source" | "texture-source" | "output" => {
-                let converted = textures + u64::from(changed != "texture-source");
+                let converted = rebuilt_assets + u64::from(changed == "source");
                 assert_eq!(report.converted, converted, "{changed}");
                 assert_eq!(report.cache_hits, original.entries.len() as u64 - converted);
             }

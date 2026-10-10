@@ -709,11 +709,7 @@ mod tests {
         assert!(first.contains(&format!(" 50%  {overall}")), "{first:?}");
 
         batch.message = "Terrain LOD LargeWorld: 8/4673 chunks (4 reused)".into();
-        assert!(
-            renderer
-                .update(&batch, Duration::from_millis(50))
-                .is_none()
-        );
+        assert!(renderer.update(&batch, Duration::from_millis(50)).is_none());
         let tick = renderer.tick(Duration::from_millis(250)).unwrap();
         assert!(tick.contains(&batch.message), "{tick:?}");
         assert!(!tick.contains("4/4673 chunks"), "{tick:?}");

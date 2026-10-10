@@ -402,7 +402,7 @@ fn unknown_body_fields_are_ignored() {
 /// Matching source/configuration/output proof must not hide the changed mesh contract.
 /// Producer 24 and current have matching dynamics contracts and reuse proven GLBs.
 #[tokio::test]
-async fn schema23_cached_mesh_rebuilds_body_dynamics_and_compatible_meshes_reuse() {
+async fn older_cached_meshes_rebuild_body_dynamics_and_current_meshes_reuse() {
     use converter::{
         cache::{ConversionManifest, configuration_hash_for_schema, hash_bytes},
         config::PipelineConfig,
@@ -472,10 +472,14 @@ async fn schema23_cached_mesh_rebuilds_body_dynamics_and_compatible_meshes_reuse
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     compatible.schema_version = 24;
     compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+    fs::write(&mesh, &old_bytes).unwrap();
+    let entry = compatible.entries.get_mut("meshes/bodies.nif").unwrap();
+    entry.output_size = old_bytes.len() as u64;
+    entry.output_hash = hash_bytes(&old_bytes);
     compatible.save(&manifest_path).unwrap();
-    let reused = run(config.clone()).await;
-    assert_eq!(reused.converted, 0);
-    assert_eq!(reused.cache_hits, 1);
+    let rebuilt = run(config.clone()).await;
+    assert_eq!(rebuilt.converted, 1);
+    assert_eq!(rebuilt.cache_hits, 0);
     assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
     let current = run(config).await;
     assert_eq!(current.converted, 0);

@@ -734,12 +734,18 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
         let apply = args.iter().any(|argument| argument == "--apply");
+        let gpu_tuning = args
+            .iter()
+            .any(|argument| argument == "--gpu-quality" || argument == "--gpu-batch-mb");
         let cli = parse_cli(
             args.into_iter()
                 .skip(1)
                 .filter(|argument| argument != "--apply")
                 .collect(),
         )?;
+        if gpu_tuning && matches!(cli.texture_encoder, TextureEncoder::Cpu) {
+            bail!("repair-failed GPU settings require --texture-encoder gpu");
+        }
         if cli.resume_staging.is_some()
             || cli.reuse_assets.is_some()
             || cli.invalidate_cache
@@ -1154,7 +1160,7 @@ mod tests {
         .unwrap();
         let resume = resume_command("converter", &cli, Path::new("out.staging-1-2"));
         assert!(resume.contains("--mo2-instance"));
-        assert!(resume.ends_with("--mo2-profile \"Zed\""));
+        assert!(resume.contains("--mo2-profile \"Zed\""));
         assert!(parse_cli(args(&["Data", "--mo2-profile", "Zed"])).is_err());
         assert!(
             parse_cli(args(&[
@@ -1427,6 +1433,7 @@ mod tests {
             ("--texture-zstd-level", "-1"),
             ("--texture-uastc-level", "bad"),
             ("--gpu-quality", "2"),
+            ("--gpu-batch-mb", "64"),
             ("--resume-staging", "staging"),
             ("--cpu-jobs", "2"),
         ] {

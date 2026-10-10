@@ -10,7 +10,7 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, ConversionManifest, configuration_hash, hash_bytes, hash_file,
-        retained_configuration_matches,
+        retained_configuration_matches_with_reader,
     },
     esm::{
         EsmParser, cell_cache::write_cell_cache, exporter::validate_database,
@@ -81,15 +81,17 @@ impl AssetPipeline {
         let mut manifest: ConversionManifest = serde_json::from_slice(&source_manifest)?;
         let source_reader = source_reader_identity(&source)?;
         let retained_reader = retained_reader_identity(&source, &source_reader)?;
-        let source_settings = settings_for_source_reader(&config, &source_reader)?;
-        let retained_settings = settings_for_source_reader(&config, &retained_reader)?;
         ensure!(
-            (matches!(manifest.schema_version, 15 | 16 | 19..=24)
+            (matches!(manifest.schema_version, 15 | 16 | 19..=24 | 26)
                 || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && manifest.complete
                 && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15, 16, 19 through 24 or {} assets",
+            "metadata rebuild requires complete converter schema 15, 16, 19 through 24, 26 or {} assets",
             CONVERTER_SCHEMA_VERSION
+        );
+        ensure!(
+            manifest.schema_version != 26 || source.join("record-reader.json").is_file(),
+            "converter schema 26 requires explicit source reader provenance"
         );
         ensure!(
             manifest.retained_mesh_schema_version.is_some()
@@ -99,8 +101,12 @@ impl AssetPipeline {
         let mesh_schema = manifest
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
+        let source_settings =
+            settings_for_source_reader(&config, manifest.schema_version, &source_reader)?;
+        let retained_settings = settings_for_source_reader(&config, mesh_schema, &retained_reader)?;
         ensure!(
-            (matches!(mesh_schema, 15 | 16 | 19..=24) || mesh_schema == CONVERTER_SCHEMA_VERSION)
+            (matches!(mesh_schema, 15 | 16 | 19..=24 | 26)
+                || mesh_schema == CONVERTER_SCHEMA_VERSION)
                 && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );
@@ -110,10 +116,11 @@ impl AssetPipeline {
             "missing retained producer configuration; rebuild from verified original assets"
         );
         ensure!(
-            retained_configuration_matches(
+            retained_configuration_matches_with_reader(
                 &source_settings,
                 manifest.schema_version,
-                &manifest.configuration_hash
+                &manifest.configuration_hash,
+                Some(&source_reader)
             )?,
             "retained asset configuration does not match rebuild settings"
         );
@@ -122,10 +129,11 @@ impl AssetPipeline {
             .as_deref()
             .unwrap_or(&manifest.configuration_hash);
         ensure!(
-            retained_configuration_matches(
+            retained_configuration_matches_with_reader(
                 &retained_settings,
                 mesh_schema,
-                retained_configuration
+                retained_configuration,
+                Some(&retained_reader)
             )?,
             "retained producer configuration does not match rebuild settings"
         );
@@ -194,11 +202,18 @@ fn retained_reader_identity(
 /// Validate asset settings under their recorded reader without relabeling retained bytes.
 fn settings_for_source_reader(
     config: &PipelineConfig,
+    producer_schema: u32,
     identity: &serde_json::Value,
 ) -> Result<PipelineConfig> {
     let reader: crate::config::RecordReader = serde_json::from_value(identity["mode"].clone())?;
+    let current = crate::esm::inhouse::reader_identity(reader);
+    let mut previous = current.clone();
+    if reader == crate::config::RecordReader::Inhouse {
+        previous["adapter_version"] = serde_json::json!(4);
+        previous["language"] = serde_json::json!("english");
+    }
     ensure!(
-        identity == &crate::esm::inhouse::reader_identity(reader),
+        identity == &current || (producer_schema == 26 && identity == &previous),
         "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
     );
     let mut settings = config.clone();
