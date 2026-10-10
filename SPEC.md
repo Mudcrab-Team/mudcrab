@@ -311,6 +311,9 @@ V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; 
 
 V200: Real-output timing validation ! propagate full selected-set failure; missing configuration, empty selection & semantics collection errors fail; diagnostics never certify passing subset.
 
+V180: Mutagen comparison ! reject every placement lacking record/winning-plugin metadata before type filtering; same-source checksums, independent full/light slots, winning plugin & interpreted placement fields; deleted overrides absent, no unexplained REFR/ACHR difference; finite comparisons; game inputs external.
+V181: Mutagen JSON flags ! preserve32-bit bitmask from signed/unsigned integers; non-integer & out-of-range flags fail.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -382,6 +385,8 @@ T57|x|P0 human schema explorer: compact offline HTML, searchable candidate catal
 T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
 
 T100|x|Make validation timing fail on bad output; valid/broken generated artifact regression|V200
+
+T80|x|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V180,V181
 
 ## §B BUGS
 
@@ -529,3 +534,7 @@ B172|2026-10-09|Cached GLB forward node/mesh links used unchecked indexing, and 
 
 B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190
 B200|2026-10-05|Timing harness discarded invalid artifacts & asserted passing subset|V200
+B180|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan misclassified270 deleted overrides|V180
+B181|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V180; validate winner before deletion shortcut & require live position/rotation
+B182|2026-10-05|Mutagen exported high-bit record flags as negative JSON integers; unsigned-only test rejected real oracle at line12664|V181; bounded signed/unsigned32-bit deserialization
+B183|2026-10-09|Oracle inner joins hid placements missing record or winning-plugin metadata, allowing deleted-row resurrection to pass as absent|V180; left-joined metadata completeness guard, procedural orphan and REFR/ACHR resurrection regressions
