@@ -13,6 +13,7 @@ expression: manifest
           "size": 721
         }
       ],
+      "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
     "skyrim - misc.bsa": {
@@ -28,6 +29,7 @@ expression: manifest
           "size": 131
         }
       ],
+      "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
     "skyrim - textures.ba2": {
@@ -58,6 +60,7 @@ expression: manifest
           "size": 2876
         }
       ],
+      "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     }
   },
