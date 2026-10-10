@@ -258,13 +258,45 @@ async fn texture_semantic_migration_still_requires_matching_configuration() {
     let data = directory.path().join("Data");
     let output = directory.path().join("modern");
     convert_texture_set_semantics(&data, &output).await;
-    legacy_pack(&data, &output, 24);
+    let legacy = legacy_pack(&data, &output, 24);
     let mut changed = PipelineConfig::new(&data, &output);
     changed.no_lod = true;
     changed.texture_zstd_level = 0;
+    assert_ne!(
+        legacy.configuration_hash,
+        configuration_hash_for_schema(&changed, 24).unwrap()
+    );
+    let expected_configuration = configuration_hash(&changed).unwrap();
+    let raw_entries = legacy
+        .archives
+        .values()
+        .map(|archive| archive.files.len() as u64)
+        .sum::<u64>();
     let report = run_pipeline(changed).await;
-    assert_eq!(report.cache_hits, 0);
-    assert!(report.converted > 0);
+    assert_eq!(report.cache_hits, raw_entries);
+    assert_eq!(report.converted, legacy.entries.len() as u64);
+    let current = manifest(&output);
+    assert_eq!(current.configuration_hash, expected_configuration);
+    assert_eq!(
+        current.entries.keys().collect::<Vec<_>>(),
+        legacy.entries.keys().collect::<Vec<_>>()
+    );
+    for entry in current.entries.values() {
+        if entry.output.ends_with(".ktx2") {
+            let bytes = fs::read(output.join(&entry.output)).unwrap();
+            assert_eq!(
+                inspect_runtime_ktx2(&bytes).unwrap().supercompression,
+                "None"
+            );
+        }
+    }
+    for (slot, encoding) in [
+        (2, TextureEncoding::DataLinear),
+        (5, TextureEncoding::ColorSrgb),
+    ] {
+        let bytes = fs::read(output.join(&current.entries[SLOT_PATHS[slot]].output)).unwrap();
+        assert_eq!(inspect_runtime_ktx2(&bytes).unwrap().encoding, encoding);
+    }
 }
 
 /// Metadata retains honest producer-24 texture provenance until normal conversion.

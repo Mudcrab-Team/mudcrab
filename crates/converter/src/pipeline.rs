@@ -1,10 +1,13 @@
 use crate::{
-    archive::{ArchiveExtractor, ExtractionProgress},
+    archive::{
+        ArchiveExtractor, ExtractionProgress, ExtractionTimings, IngestionOptions,
+        RawIngestionSession,
+    },
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        can_reuse_scripts_and_archives, configuration_hash, configuration_hash_for_schema,
-        hash_bytes, hash_file, link_or_copy, load_staged_outputs,
+        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionSelection, StagedOutput,
+        StagingJournal, can_reuse_scripts_and_archives, configuration_hash,
+        configuration_hash_for_schema, hash_bytes, hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{
@@ -53,6 +56,9 @@ use tokio::{
 };
 use walkdir::WalkDir;
 
+#[path = "database_cache.rs"]
+mod database_cache;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineReport {
     pub complete: bool,
@@ -78,6 +84,25 @@ pub struct PipelineReport {
     /// an output. Excludes subsequent ingestion-cache persistence and pruning.
     #[serde(default)]
     pub publication_elapsed_ms: u128,
+    /// Exclusive publication operations within `publication_elapsed_ms`. Kept separate
+    /// from `phase_elapsed_ms`, whose publication entry already includes these spans.
+    #[serde(default)]
+    pub publication_phase_elapsed_ms: BTreeMap<String, u128>,
+    /// Wall-clock spans measured at the owning operation. These are separate from
+    /// the CLI's first and last progress events.
+    #[serde(default)]
+    pub phase_elapsed_ms: BTreeMap<String, u128>,
+    #[serde(default)]
+    pub archive_timings: BTreeMap<String, ExtractionTimings>,
+    #[serde(default)]
+    pub database_cache_hit: bool,
+    #[serde(default)]
+    pub database_cache_key: Option<String>,
+    #[serde(default)]
+    pub database_cache_files: u64,
+    /// Surviving runtime winners exported by a fresh frontend; zero on database reuse.
+    #[serde(default)]
+    pub database_runtime_records_built: u64,
     #[serde(default)]
     pub lod_warnings: Vec<String>,
     pub warnings: Vec<String>,
@@ -310,7 +335,13 @@ impl AssetPipeline {
         let previous_manifest = if configuration_is_compatible {
             loaded_manifest
         } else {
-            ConversionManifest::default()
+            // Producer settings invalidate derived assets, while archive ingestion still
+            // verifies its own source hash, cache bytes, and paths. The loader has already
+            // checked schema compatibility; explicit invalidation loaded no archives.
+            ConversionManifest {
+                archives: loaded_manifest.archives,
+                ..ConversionManifest::default()
+            }
         };
         let staging = config
             .resume_staging
@@ -325,6 +356,7 @@ impl AssetPipeline {
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
         // resumes from it. Only a successful publish removes it, once the runtime pack is out.
+        let setup_elapsed_ms = started.elapsed().as_millis();
         let run_result = Self::run_into(
             &config,
             &staging,
@@ -337,6 +369,9 @@ impl AssetPipeline {
             Ok(report) => report,
             Err(error) => return Err(failure(error, &staging, &cancellation)),
         };
+        report
+            .phase_elapsed_ms
+            .insert("run_setup".into(), setup_elapsed_ms);
         send(
             &progress_tx,
             ProgressStage::Publishing,
@@ -353,24 +388,48 @@ impl AssetPipeline {
             return Err(failure(Interrupted::new().into(), &staging, &cancellation));
         }
         let publication_started = Instant::now();
-        publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
-            .map_err(|error| failure(error, &staging, &cancellation))?;
+        report.publication_phase_elapsed_ms =
+            publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
+                .map_err(|error| failure(error, &staging, &cancellation))?;
         report.publication_elapsed_ms = publication_started.elapsed().as_millis();
+        report
+            .phase_elapsed_ms
+            .insert("runtime_publication".into(), report.publication_elapsed_ms);
+        let cache_persistence_started = Instant::now();
         let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
         if staging.join(".ingestion-cache").is_dir() {
             persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
                 .map_err(|error| failure(error, &staging, &cancellation))?;
         }
+        report.phase_elapsed_ms.insert(
+            "ingestion_cache_persistence".into(),
+            cache_persistence_started.elapsed().as_millis(),
+        );
+        let manifest_reload_started = Instant::now();
         let manifest =
             ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))
                 .map_err(|error| failure(error, &staging, &cancellation))?;
+        report.phase_elapsed_ms.insert(
+            "published_manifest_reload".into(),
+            manifest_reload_started.elapsed().as_millis(),
+        );
+        let cache_pruning_started = Instant::now();
         prune_stale_ingestion_blobs(&cache_root, &manifest)
             .map_err(|error| failure(error, &staging, &cancellation))?;
+        report.phase_elapsed_ms.insert(
+            "ingestion_cache_pruning".into(),
+            cache_pruning_started.elapsed().as_millis(),
+        );
         // Resumed or not, the staging folder has done its job: the pack links the published files,
         // so removing it frees only names. Kept, a resumed folder would be offered for resume
         // again (`find_resumable_staging`) while holding a full copy's worth of disk. The output is
         // already published, so a folder that cannot or must not be removed is only a warning.
+        let cleanup_started = Instant::now();
         remove_staging(&staging, &config.data_dir);
+        report.phase_elapsed_ms.insert(
+            "staging_cleanup".into(),
+            cleanup_started.elapsed().as_millis(),
+        );
         report.elapsed_ms = started.elapsed().as_millis();
         if report.complete {
             send(
@@ -396,6 +455,7 @@ impl AssetPipeline {
         cancellation: &Cancellation,
     ) -> Result<PipelineReport> {
         let mut report = PipelineReport::default();
+        let initialization_started = Instant::now();
         let expected_configuration = configuration_hash(config)?;
         // Provenance of the outputs already in `staging`, written by the run
         // that was interrupted. Invalidation drops it along with the published
@@ -424,6 +484,11 @@ impl AssetPipeline {
             archives: Default::default(),
             entries: Default::default(),
         };
+        report.phase_elapsed_ms.insert(
+            "conversion_initialization".into(),
+            initialization_started.elapsed().as_millis(),
+        );
+        let discovery_started = Instant::now();
         let files = discover(&config.data_dir)?;
         let plugins = plugin_paths(config, &files, &mut report.notices)?;
         // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
@@ -452,6 +517,11 @@ impl AssetPipeline {
             .filter(|archive| !extension(archive, &["ba2"]) || config.enable_ba2)
             .collect();
         sort_archives_by_load_order(&mut enabled_archives, &plugins);
+        report.phase_elapsed_ms.insert(
+            "input_discovery_and_plugin_hashes".into(),
+            discovery_started.elapsed().as_millis(),
+        );
+        let extraction_started = Instant::now();
         if !enabled_archives.is_empty() {
             send(
                 progress_tx,
@@ -473,6 +543,8 @@ impl AssetPipeline {
         // Bytes already extracted, so each archive reports progress against the whole run instead
         // of restarting at zero.
         let mut extracted_bytes = 0u64;
+        let raw_ingestion_session =
+            Arc::new(RawIngestionSession::new(&staging.join(".ingestion-cache")));
 
         for (index, archive) in enabled_archives.iter().enumerate() {
             interrupt(cancellation)?;
@@ -497,6 +569,16 @@ impl AssetPipeline {
                 .to_ascii_lowercase();
             let previous_entry = previous.archives.get(&archive_key).cloned();
             let verify_cache = config.verify_cache;
+            let ingestion_session_for_worker = Arc::clone(&raw_ingestion_session);
+            let ingestion_options = IngestionOptions {
+                selection: if config.extract_all_archive_files {
+                    IngestionSelection::All
+                } else {
+                    IngestionSelection::RuntimeEnglishV1
+                },
+                sync: config.ingestion_sync,
+                cpu_jobs: config.cpu_jobs,
+            };
 
             // The extractor reports file by file; the event keeps the archive count the launcher
             // reads and carries the smoother per-file fraction for the status line.
@@ -551,7 +633,7 @@ impl AssetPipeline {
             };
 
             let result = spawn_blocking(move || {
-                ArchiveExtractor::extract_cached(
+                ArchiveExtractor::extract_cached_with_session(
                     &archive_for_worker,
                     &vfs_for_worker,
                     &previous_cache_root,
@@ -560,6 +642,8 @@ impl AssetPipeline {
                     verify_cache,
                     Some(&progress),
                     Some(&stop),
+                    ingestion_session_for_worker.as_ref(),
+                    ingestion_options,
                 )
             })
             .await
@@ -587,6 +671,9 @@ impl AssetPipeline {
 
             match result {
                 Ok(outcome) => {
+                    report
+                        .archive_timings
+                        .insert(archive_key.clone(), outcome.timings);
                     let (_, bytes) = *archive_totals
                         .lock()
                         .expect("archive totals mutex poisoned");
@@ -612,6 +699,10 @@ impl AssetPipeline {
         }
 
         overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
+        report.phase_elapsed_ms.insert(
+            "archive_ingestion_and_loose_overlay".into(),
+            extraction_started.elapsed().as_millis(),
+        );
         interrupt(cancellation)?;
 
         if !plugins.is_empty() {
@@ -625,25 +716,175 @@ impl AssetPipeline {
             )
             .await;
             let db_path = staging.join("skyrim_world.db");
-            // SQLite writes in place; a resumed staging db may share an
-            // inode with a previous pack via hard link, so unlink first.
-            if db_path.is_file() {
-                fs::remove_file(&db_path)?;
-            }
-            let merged = EsmParser::convert_plugins_with_reader(
-                &plugins,
-                &db_path,
-                config.record_reader,
-                &staging.join("vfs"),
-            )?;
-            validate_database(&Connection::open(&db_path)?)?;
-            if config.record_reader == crate::config::RecordReader::Inhouse {
-                crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
+            let identity_started = Instant::now();
+            let cache_identity =
+                database_cache::identity(config, &plugins, &staging.join("vfs"), cancellation)?;
+            report.database_cache_key =
+                cache_identity.as_ref().map(|identity| identity.key.clone());
+            report.phase_elapsed_ms.insert(
+                "database_cache_identity".into(),
+                identity_started.elapsed().as_millis(),
+            );
+            let database_cache_root = config.ingestion_cache_dir().join(".database-cache");
+            let lookup_started = Instant::now();
+            let mut restored = if !config.invalidate_cache {
+                match &cache_identity {
+                    Some(identity) => database_cache::restore(
+                        &database_cache_root,
+                        identity,
+                        staging,
+                        cancellation,
+                    )?,
+                    None => None,
+                }
             } else {
-                write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+                None
+            };
+            let validation_ms = restored
+                .as_ref()
+                .map_or(0, |restored| restored.validation_elapsed_ms);
+            let restore_ms = lookup_started
+                .elapsed()
+                .as_millis()
+                .saturating_sub(validation_ms);
+            report
+                .phase_elapsed_ms
+                .insert("database_cache_lookup".into(), restore_ms);
+            if restored.is_some() {
+                let recheck_started = Instant::now();
+                let unchanged = database_cache::inputs_unchanged(
+                    cache_identity.as_ref().unwrap(),
+                    config,
+                    &plugins,
+                    &staging.join("vfs"),
+                    cancellation,
+                )?;
+                report.phase_elapsed_ms.insert(
+                    "database_cache_restore_input_recheck".into(),
+                    recheck_started.elapsed().as_millis(),
+                );
+                if !unchanged {
+                    restored = None;
+                    report
+                        .phase_elapsed_ms
+                        .insert("database_cache_rejected_validation".into(), validation_ms);
+                    report.notices.push("base database cache was not reused because its inputs changed during restore".into());
+                }
             }
-            crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
+            if let Some(restored) = restored {
+                report.database_cache_hit = true;
+                report.database_cache_files = restored.files;
+                send(
+                    progress_tx,
+                    ProgressStage::Database,
+                    plugins.len() as u64,
+                    plugins.len() as u64,
+                    None,
+                    "Reusing verified skyrim_world.db",
+                )
+                .await;
+                report
+                    .phase_elapsed_ms
+                    .insert("database_conversion".into(), 0);
+                report.phase_elapsed_ms.insert("terrain_caches".into(), 0);
+                report
+                    .phase_elapsed_ms
+                    .insert("database_validation".into(), validation_ms);
+                let artifacts_started = Instant::now();
+                database_cache::mark_reused_profile(
+                    staging,
+                    cache_identity.as_ref().unwrap(),
+                    restore_ms,
+                    validation_ms,
+                )?;
+                report.phase_elapsed_ms.insert(
+                    "database_artifacts_and_release".into(),
+                    artifacts_started.elapsed().as_millis(),
+                );
+            } else {
+                let database_started = Instant::now();
+                // SQLite writes in place. Every fresh build unlinks old names, and a restored
+                // bundle uses private copies, so neither can mutate the previous pack or cache.
+                database_cache::clear_outputs(staging)?;
+                let merged = EsmParser::convert_plugins_with_reader(
+                    &plugins,
+                    &db_path,
+                    config.record_reader,
+                    &staging.join("vfs"),
+                )?;
+                report.database_runtime_records_built = merged.len() as u64;
+                report.phase_elapsed_ms.insert(
+                    "database_conversion".into(),
+                    database_started.elapsed().as_millis(),
+                );
+                interrupt(cancellation)?;
+                let database_validation_started = Instant::now();
+                validate_database(&Connection::open(&db_path)?)?;
+                report.phase_elapsed_ms.insert(
+                    "database_validation".into(),
+                    database_validation_started.elapsed().as_millis(),
+                );
+                let terrain_caches_started = Instant::now();
+                if config.record_reader == crate::config::RecordReader::Inhouse {
+                    crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
+                } else {
+                    write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+                }
+                report.phase_elapsed_ms.insert(
+                    "terrain_caches".into(),
+                    terrain_caches_started.elapsed().as_millis(),
+                );
+                let database_artifacts_started = Instant::now();
+                crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
+                drop(merged);
+                report.phase_elapsed_ms.insert(
+                    "database_artifacts_and_release".into(),
+                    database_artifacts_started.elapsed().as_millis(),
+                );
+                interrupt(cancellation)?;
+                if let Some(identity) = &cache_identity {
+                    let recheck_started = Instant::now();
+                    let current = database_cache::identity(
+                        config,
+                        &plugins,
+                        &staging.join("vfs"),
+                        cancellation,
+                    )?;
+                    report.phase_elapsed_ms.insert(
+                        "database_cache_input_recheck".into(),
+                        recheck_started.elapsed().as_millis(),
+                    );
+                    if current
+                        .as_ref()
+                        .is_some_and(|current| current.key == identity.key)
+                    {
+                        let store_started = Instant::now();
+                        if let Err(error) = database_cache::store(
+                            &database_cache_root,
+                            identity,
+                            staging,
+                            cancellation,
+                        ) {
+                            if error.downcast_ref::<Interrupted>().is_some() {
+                                return Err(error);
+                            }
+                            report
+                                .notices
+                                .push(format!("base database cache was not stored: {error:#}"));
+                        }
+                        report.phase_elapsed_ms.insert(
+                            "database_cache_persistence".into(),
+                            store_started.elapsed().as_millis(),
+                        );
+                    } else {
+                        report.notices.push("base database cache was not stored because its inputs changed during conversion".into());
+                    }
+                }
+            }
             if config.record_reader == crate::config::RecordReader::Inhouse {
+                report
+                    .artifacts
+                    .push(PathBuf::from(crate::esm::inhouse::DATABASE_PROFILE_FILE));
                 report
                     .artifacts
                     .push(PathBuf::from("inhouse-reader-diagnostics.json"));
@@ -658,12 +899,18 @@ impl AssetPipeline {
             ]);
         }
 
+        let asset_setup_started = Instant::now();
         let vfs_files = discover(&staging.join("vfs"))?;
         // Canonical source texture keys, used to tell a failed publication from absent game data
         // and to detect a pruned texture whose source is back in the installed data.
         let source_textures = texture_source_keys(staging, &vfs_files);
         let restored_meshes = restored_mesh_outputs(previous, &source_textures);
         remove_orphan_staged_assets(staging, &vfs_files)?;
+        report.phase_elapsed_ms.insert(
+            "asset_discovery_and_setup".into(),
+            asset_setup_started.elapsed().as_millis(),
+        );
+        let meshes_started = Instant::now();
         {
             let mut batch = ConversionBatch {
                 config,
@@ -698,6 +945,11 @@ impl AssetPipeline {
             .collect();
         invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
         let texture_semantics = collect_texture_semantics(staging, &source_textures)?;
+        report.phase_elapsed_ms.insert(
+            "meshes_and_texture_semantics".into(),
+            meshes_started.elapsed().as_millis(),
+        );
+        let textures_started = Instant::now();
         {
             let mut batch = ConversionBatch {
                 config,
@@ -860,6 +1112,11 @@ impl AssetPipeline {
                 .map(|references| references.len() as u64)
                 .sum();
             batch.report.pruned_texture_references = recorded;
+            batch.report.phase_elapsed_ms.insert(
+                "textures_aliases_and_reference_repair".into(),
+                textures_started.elapsed().as_millis(),
+            );
+            let scripts_started = Instant::now();
             batch
                 .convert_kind(
                     &vfs_files,
@@ -869,6 +1126,10 @@ impl AssetPipeline {
                     &BTreeSet::new(),
                 )
                 .await?;
+            batch
+                .report
+                .phase_elapsed_ms
+                .insert("scripts".into(), scripts_started.elapsed().as_millis());
         }
         let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
@@ -883,6 +1144,7 @@ impl AssetPipeline {
         .await?;
         report.lod_elapsed_ms = lod_started.elapsed().as_millis();
         interrupt(cancellation)?;
+        let integration_started = Instant::now();
         if let Some(integration) = finalize_world_database(staging)? {
             if !integration.passed {
                 report.warnings.push(format!(
@@ -899,6 +1161,11 @@ impl AssetPipeline {
                 .artifacts
                 .push(PathBuf::from("integration-report.json"));
         }
+        report.phase_elapsed_ms.insert(
+            "database_asset_integration".into(),
+            integration_started.elapsed().as_millis(),
+        );
+        let runtime_support_started = Instant::now();
         let runtime_path = staging.join("scripts/papyrus_runtime.luau");
         if let Some(parent) = runtime_path.parent() {
             fs::create_dir_all(parent)?;
@@ -915,6 +1182,11 @@ impl AssetPipeline {
         report
             .artifacts
             .push(PathBuf::from("scripts/papyrus_runtime.luau"));
+        report.phase_elapsed_ms.insert(
+            "runtime_support".into(),
+            runtime_support_started.elapsed().as_millis(),
+        );
+        let artifact_validation_started = Instant::now();
         send(
             progress_tx,
             ProgressStage::Validating,
@@ -930,6 +1202,10 @@ impl AssetPipeline {
             &texture_semantics,
             config.cpu_jobs,
         )?;
+        report.phase_elapsed_ms.insert(
+            "artifact_validation".into(),
+            artifact_validation_started.elapsed().as_millis(),
+        );
         send(
             progress_tx,
             ProgressStage::Validating,
@@ -940,6 +1216,7 @@ impl AssetPipeline {
         )
         .await;
         interrupt(cancellation)?;
+        let manifest_save_started = Instant::now();
         manifest.complete = conversion_is_complete(&report);
         report.complete = manifest.complete;
         report.inputs_by_kind = manifest.inputs_by_kind.clone();
@@ -947,6 +1224,10 @@ impl AssetPipeline {
         report
             .artifacts
             .push(PathBuf::from("conversion-manifest.json"));
+        report.phase_elapsed_ms.insert(
+            "manifest_serialization".into(),
+            manifest_save_started.elapsed().as_millis(),
+        );
         Ok(report)
     }
 }
@@ -2161,6 +2442,7 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         "cell_cache_preserved.rkyv",
         "record-reader.json",
         "inhouse-reader-diagnostics.json",
+        crate::esm::inhouse::DATABASE_PROFILE_FILE,
         "integration-report.json",
         "lod-manifest.json",
         "metadata-rebuild.json",
@@ -2344,6 +2626,24 @@ fn staged_output(entry: &CacheEntry, configuration_hash: &str) -> StagedOutput {
     }
 }
 
+#[derive(Default)]
+struct PublicationTimings {
+    enabled: bool,
+    elapsed_ms: BTreeMap<String, u128>,
+}
+
+impl PublicationTimings {
+    fn measure<T>(&mut self, operation: &str, task: impl FnOnce() -> Result<T>) -> Result<T> {
+        if !self.enabled {
+            return task();
+        }
+        let started = Instant::now();
+        let result = task();
+        *self.elapsed_ms.entry(operation.to_owned()).or_default() += started.elapsed().as_millis();
+        result
+    }
+}
+
 /// Publishes only runtime artifacts. Staging keeps `vfs/` and
 /// `.ingestion-cache/` as build workspace; those never land in `output`.
 fn publish_runtime_pack(
@@ -2351,53 +2651,64 @@ fn publish_runtime_pack(
     output: &Path,
     report: &PipelineReport,
     lock: &AssetLock,
-) -> Result<()> {
+) -> Result<BTreeMap<String, u128>> {
+    let mut timings = PublicationTimings {
+        enabled: true,
+        ..Default::default()
+    };
     // Beside staging, not inside it: a resumed staging dir keeps the
     // previous pack's linked files, so the new pack must not share inodes
     // with anything a resumed run will later unlink and rewrite.
-    let pack_staging = staging.with_extension(format!(
-        "pack-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    if pack_staging.exists() {
-        fs::remove_dir_all(&pack_staging)?;
-    }
-    fs::create_dir_all(&pack_staging)?;
-    let published = (|| -> Result<()> {
-        for artifact in &report.artifacts {
-            let source = staging.join(artifact);
-            if !source.is_file() {
-                continue;
-            }
-            let destination = pack_staging.join(artifact);
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            link_or_copy(&source, &destination).wrap_err_with(|| {
-                format!(
-                    "failed to publish {} to {}",
-                    source.display(),
-                    destination.display()
-                )
-            })?;
+    let pack_staging = timings.measure("runtime_pack_preparation", || {
+        let path = staging.with_extension(format!(
+            "pack-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        if path.exists() {
+            fs::remove_dir_all(&path)?;
         }
-        ensure!(
-            pack_staging.join("conversion-manifest.json").is_file(),
-            "runtime pack is missing conversion-manifest.json"
-        );
-        publish_directory_locked(&pack_staging, output, true, lock)
+        fs::create_dir_all(&path)?;
+        Ok(path)
+    })?;
+    let published = (|| -> Result<()> {
+        timings.measure("runtime_pack_linking", || {
+            for artifact in &report.artifacts {
+                let source = staging.join(artifact);
+                if !source.is_file() {
+                    continue;
+                }
+                let destination = pack_staging.join(artifact);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                link_or_copy(&source, &destination).wrap_err_with(|| {
+                    format!(
+                        "failed to publish {} to {}",
+                        source.display(),
+                        destination.display()
+                    )
+                })?;
+            }
+            ensure!(
+                pack_staging.join("conversion-manifest.json").is_file(),
+                "runtime pack is missing conversion-manifest.json"
+            );
+            Ok(())
+        })?;
+        publish_directory_locked_with_timings(&pack_staging, output, true, lock, &mut timings)
     })();
     if published.is_err() {
         let _ = fs::remove_dir_all(&pack_staging);
     }
-    published
+    published?;
+    Ok(timings.elapsed_ms)
 }
 
-/// Copies new ingestion blobs into the persistent cache root outside the pack.
+/// Publishes ingestion blobs into the persistent cache, repairing corrupt copies.
 fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
     for entry in WalkDir::new(staging_cache).follow_links(false) {
         let entry = entry?;
@@ -2411,19 +2722,64 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
         }
         let relative = entry.path().strip_prefix(staging_cache)?;
         let destination = cache_root.join(relative);
-        if destination.is_file() {
-            continue;
+        let repair_existing = destination.is_file();
+        if repair_existing {
+            let source_metadata = fs::metadata(entry.path())?;
+            let destination_metadata = fs::metadata(&destination)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+
+                // Verified restores normally share the persistent blob's inode. Reading those
+                // bytes again would hash the entire ingestion cache after every cache hit.
+                if source_metadata.dev() == destination_metadata.dev()
+                    && source_metadata.ino() == destination_metadata.ino()
+                {
+                    continue;
+                }
+            }
+            let expected_hash = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if destination_metadata.len() == source_metadata.len()
+                && hash_file(&destination)? == expected_hash
+            {
+                continue;
+            }
+            ensure!(
+                hash_file(entry.path())? == expected_hash,
+                "staged ingestion blob {} does not match its SHA-256 filename",
+                entry.path().display()
+            );
         }
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        link_or_copy(entry.path(), &destination).wrap_err_with(|| {
-            format!(
-                "failed to persist cache blob {} to {}",
-                entry.path().display(),
-                destination.display()
+        let parent = destination
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("cache blob has no parent"))?;
+        fs::create_dir_all(parent)?;
+        // Repairs replace the name atomically, preserving any VFS/output links to the
+        // corrupt old inode.
+        let temporary = if repair_existing {
+            Some(
+                tempfile::Builder::new()
+                    .prefix(".ingestion-cache-")
+                    .tempfile_in(parent)?
+                    .into_temp_path(),
             )
-        })?;
+        } else {
+            None
+        };
+        link_or_copy(entry.path(), temporary.as_deref().unwrap_or(&destination)).wrap_err_with(
+            || {
+                format!(
+                    "failed to persist cache blob {} to {}",
+                    entry.path().display(),
+                    destination.display()
+                )
+            },
+        )?;
+        if let Some(temporary) = temporary {
+            temporary.persist(&destination).wrap_err_with(|| {
+                format!("failed to publish cache blob {}", destination.display())
+            })?;
+        }
     }
     Ok(())
 }
@@ -2849,41 +3205,75 @@ fn publish_directory_locked(
     replace: bool,
     lock: &AssetLock,
 ) -> Result<()> {
-    reject_symlink_output(output)?;
-    ensure!(
-        lock.mode() == AssetLockMode::Exclusive && lock.asset_dir() == resolve_asset_path(output)?,
-        "publication requires the exclusive destination lock"
-    );
+    publish_directory_locked_with_timings(
+        staging,
+        output,
+        replace,
+        lock,
+        &mut PublicationTimings::default(),
+    )
+}
+
+fn publish_directory_locked_with_timings(
+    staging: &Path,
+    output: &Path,
+    replace: bool,
+    lock: &AssetLock,
+    timings: &mut PublicationTimings,
+) -> Result<()> {
+    timings.measure("destination_lock_validation", || {
+        reject_symlink_output(output)?;
+        ensure!(
+            lock.mode() == AssetLockMode::Exclusive
+                && lock.asset_dir() == resolve_asset_path(output)?,
+            "publication requires the exclusive destination lock"
+        );
+        Ok(())
+    })?;
     // Checked again under the publication lock before the old output is moved.
-    crate::config::check_output_dir(output)?;
-    ensure!(
-        replace
-            || output
-                .symlink_metadata()
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
-        "metadata rebuild requires a new output directory: {}",
-        output.display()
-    );
+    timings.measure("destination_policy_validation", || {
+        crate::config::check_output_dir(output)?;
+        ensure!(
+            replace
+                || output
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+            "metadata rebuild requires a new output directory: {}",
+            output.display()
+        );
+        Ok(())
+    })?;
     if !replace {
-        return fs::rename(staging, output).wrap_err("failed to publish new metadata output");
+        return timings.measure("pack_swap", || {
+            fs::rename(staging, output).wrap_err("failed to publish new metadata output")
+        });
     }
-    recover_interrupted_publication(output)?;
-    let backup = output.with_file_name(format!(
-        "{}{}",
-        publication_backup_prefix(output)?,
-        std::process::id()
-    ));
-    if backup.exists() {
-        bail!("refusing to overwrite stale backup {}", backup.display());
-    }
-    let _backup_lock = AssetLock::acquire_exclusive(&backup)?;
-    let record_path = publication_record_path(output)?;
+    timings.measure("ownership_recovery", || {
+        recover_interrupted_publication(output)
+    })?;
+    let (backup, _backup_lock, record_path) = timings.measure("backup_setup", || {
+        let backup = output.with_file_name(format!(
+            "{}{}",
+            publication_backup_prefix(output)?,
+            std::process::id()
+        ));
+        if backup.exists() {
+            bail!("refusing to overwrite stale backup {}", backup.display());
+        }
+        let backup_lock = AssetLock::acquire_exclusive(&backup)?;
+        let record_path = publication_record_path(output)?;
+        Ok((backup, backup_lock, record_path))
+    })?;
     if output.exists() {
-        write_publication_record(output, &backup, staging)?;
-        fs::rename(output, &backup).wrap_err("failed to preserve previous asset output")?;
+        write_publication_record_with_timings(output, &backup, staging, timings)?;
+        timings.measure("previous_pack_rename", || {
+            fs::rename(output, &backup).wrap_err("failed to preserve previous asset output")
+        })?;
         // The folder is checked once more under its backup name: something written into it
         // between the check above and the rename would otherwise be deleted with it below.
-        if let Err(error) = crate::config::check_output_dir(&backup) {
+        if let Err(error) = timings.measure("previous_pack_policy_validation", || {
+            crate::config::check_output_dir(&backup).map_err(Into::into)
+        }) {
             if let Err(restore) = fs::rename(&backup, output) {
                 bail!(
                     "{error}; the previous output could not be moved back from {} to {}: {restore}",
@@ -2892,10 +3282,12 @@ fn publish_directory_locked(
                 );
             }
             fs::remove_file(&record_path)?;
-            return Err(error.into());
+            return Err(error);
         }
     }
-    if let Err(error) = fs::rename(staging, output) {
+    if let Err(error) = timings.measure("pack_swap", || {
+        fs::rename(staging, output).map_err(Into::into)
+    }) {
         if backup.exists()
             && let Err(restore_error) = fs::rename(&backup, output)
         {
@@ -2912,10 +3304,14 @@ fn publish_directory_locked(
         return Err(error).wrap_err("failed to publish converted assets");
     }
     if backup.exists() {
-        fs::remove_dir_all(backup)?;
+        timings.measure("previous_pack_cleanup", || {
+            fs::remove_dir_all(backup).map_err(Into::into)
+        })?;
     }
     if record_path.is_file() {
-        fs::remove_file(record_path)?;
+        timings.measure("ownership_record_cleanup", || {
+            fs::remove_file(record_path).map_err(Into::into)
+        })?;
     }
     Ok(())
 }
@@ -3002,25 +3398,70 @@ fn seal_generated_artifacts(output: &Path) -> Result<BTreeMap<String, ArtifactSe
     Ok(generated_artifacts)
 }
 
+#[cfg(test)]
 fn write_publication_record(output: &Path, backup: &Path, staging: &Path) -> Result<()> {
+    write_publication_record_with_timings(
+        output,
+        backup,
+        staging,
+        &mut PublicationTimings::default(),
+    )
+}
+
+fn write_publication_record_with_timings(
+    output: &Path,
+    backup: &Path,
+    staging: &Path,
+    timings: &mut PublicationTimings,
+) -> Result<()> {
     use std::io::Write;
+    let (destination, backup_name) = timings.measure("ownership_record_setup", || {
+        Ok((
+            resolve_asset_path(output)?,
+            backup
+                .file_name()
+                .ok_or_else(|| color_eyre::eyre::eyre!("backup has no name"))?
+                .to_string_lossy()
+                .into_owned(),
+        ))
+    })?;
+    let previous_manifest_hash =
+        timings.measure("previous_manifest_hash", || manifest_hash(output))?;
+    let next_manifest_hash = timings.measure("next_manifest_hash", || manifest_hash(staging))?;
+    let generated_artifacts = timings.measure("previous_generated_artifact_sealing", || {
+        seal_generated_artifacts(output)
+    })?;
+    let next_generated_artifacts = timings.measure("next_generated_artifact_sealing", || {
+        seal_generated_artifacts(staging)
+    })?;
     let record = PublicationRecord {
-        destination: resolve_asset_path(output)?,
-        backup_name: backup
-            .file_name()
-            .ok_or_else(|| color_eyre::eyre::eyre!("backup has no name"))?
-            .to_string_lossy()
-            .into_owned(),
-        previous_manifest_hash: manifest_hash(output)?,
-        next_manifest_hash: manifest_hash(staging)?,
-        generated_artifacts: seal_generated_artifacts(output)?,
-        next_generated_artifacts: seal_generated_artifacts(staging)?,
+        destination,
+        backup_name,
+        previous_manifest_hash,
+        next_manifest_hash,
+        generated_artifacts,
+        next_generated_artifacts,
     };
-    let record_path = publication_record_path(output)?;
-    let mut file = tempfile::NamedTempFile::new_in(record_path.parent().unwrap())?;
-    file.write_all(&serde_json::to_vec_pretty(&record)?)?;
-    file.as_file().sync_all()?;
-    file.persist_noclobber(record_path)?;
+    let (record_path, mut file) = timings.measure("ownership_record_file_creation", || {
+        let record_path = publication_record_path(output)?;
+        let file = tempfile::NamedTempFile::new_in(record_path.parent().unwrap())?;
+        Ok((record_path, file))
+    })?;
+    let bytes = timings.measure("ownership_record_serialization", || {
+        serde_json::to_vec_pretty(&record).map_err(Into::into)
+    })?;
+    timings.measure("ownership_record_write", || {
+        file.write_all(&bytes)?;
+        drop(bytes);
+        Ok(())
+    })?;
+    timings.measure("ownership_record_sync", || {
+        file.as_file().sync_all().map_err(Into::into)
+    })?;
+    timings.measure("ownership_record_publication", || {
+        file.persist_noclobber(record_path)?;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -3365,11 +3806,20 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("publication_elapsed_ms");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("publication_phase_elapsed_ms");
+        legacy.as_object_mut().unwrap().remove("phase_elapsed_ms");
+        legacy.as_object_mut().unwrap().remove("archive_timings");
         let report: super::PipelineReport = serde_json::from_value(legacy).unwrap();
         assert_eq!(report.lod_chunks, 0);
         assert!(report.lod_warnings.is_empty());
+        assert!(report.phase_elapsed_ms.is_empty());
+        assert!(report.archive_timings.is_empty());
         assert_eq!(report.lod_elapsed_ms, 0);
         assert_eq!(report.publication_elapsed_ms, 0);
+        assert!(report.publication_phase_elapsed_ms.is_empty());
     }
 
     use super::*;
@@ -4316,6 +4766,47 @@ mod tests {
                 .unwrap()
                 .complete
         );
+        for report in [&first, &second] {
+            assert!(
+                report
+                    .publication_phase_elapsed_ms
+                    .contains_key("runtime_pack_linking")
+            );
+            assert!(
+                report
+                    .publication_phase_elapsed_ms
+                    .contains_key("pack_swap")
+            );
+            assert_eq!(
+                report.phase_elapsed_ms["runtime_publication"],
+                report.publication_elapsed_ms
+            );
+            assert!(
+                report.publication_phase_elapsed_ms.values().sum::<u128>()
+                    <= report.publication_elapsed_ms
+            );
+            assert!(
+                report
+                    .publication_phase_elapsed_ms
+                    .keys()
+                    .all(|operation| { !report.phase_elapsed_ms.contains_key(operation) })
+            );
+        }
+        assert!(
+            !first
+                .publication_phase_elapsed_ms
+                .contains_key("ownership_record_sync")
+        );
+        for operation in [
+            "previous_generated_artifact_sealing",
+            "next_generated_artifact_sealing",
+            "ownership_record_write",
+            "ownership_record_sync",
+            "ownership_record_publication",
+            "previous_pack_cleanup",
+        ] {
+            assert!(second.publication_phase_elapsed_ms.contains_key(operation));
+        }
     }
 
     #[tokio::test]
@@ -4376,7 +4867,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let config = PipelineConfig::new(&data, &output);
+        let mut config = PipelineConfig::new(&data, &output);
+        config.extract_all_archive_files = true;
 
         let cache_root = config.ingestion_cache_dir();
         let first = run_without_progress(config.clone()).await;
@@ -4396,11 +4888,150 @@ mod tests {
         assert_eq!(second.converted, 0);
         assert_eq!(second.cache_hits, 1);
 
+        // Configuration changes must not bypass verification of retained archive blobs.
+        fs::write(blobs[0].path(), b"broken asset").unwrap();
+        let mut reader_changed = config.clone();
+        reader_changed.record_reader = crate::config::RecordReader::Inhouse;
+        let corrupted = run_without_progress(reader_changed.clone()).await;
+        assert_eq!(corrupted.converted, 1);
+        assert_eq!(corrupted.cache_hits, 0);
+        let manifest = published_manifest(&output);
+        assert_eq!(
+            manifest.archives.values().next().unwrap().files[0].hash,
+            hash_bytes(b"cached asset")
+        );
+
+        // Repair the fixture's persistent blob, then prove a reader switch can reuse it.
+        fs::write(blobs[0].path(), b"cached asset").unwrap();
+        let repaired = run_without_progress(config.clone()).await;
+        assert_eq!(repaired.converted, 0);
+        assert_eq!(repaired.cache_hits, 1);
+
+        let mut unsupported = published_manifest(&output);
+        unsupported.schema_version = CONVERTER_SCHEMA_VERSION + 1;
+        unsupported
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+        let rejected = run_without_progress(reader_changed.clone()).await;
+        assert_eq!(rejected.converted, 1);
+        assert_eq!(
+            rejected.cache_hits, 0,
+            "unsupported schemas must not be reused"
+        );
+
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(
+                &[dummy_content::Entry::new(
+                    "docs/readme.txt",
+                    b"changed asset",
+                )],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let source_changed = run_without_progress(reader_changed).await;
+        assert_eq!(source_changed.converted, 1);
+        assert_eq!(source_changed.cache_hits, 0);
+
         let mut invalidated = config;
         invalidated.invalidate_cache = true;
         let third = run_without_progress(invalidated).await;
         assert_eq!(third.converted, 1);
         assert_eq!(third.cache_hits, 0);
+    }
+
+    fn write_archived_script(data: &Path) {
+        fs::create_dir_all(data).unwrap();
+        let script = dummy_content::pex::minimal("One").unwrap();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(
+                &[dummy_content::Entry::new("scripts/one.pex", &script)],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn replace_script_with_verified_stale_output(output: &Path, manifest: &mut ConversionManifest) {
+        let stale = b"return { stale = true }";
+        fs::write(output.join("scripts/one.luau"), stale).unwrap();
+        let entry = manifest
+            .entries
+            .values_mut()
+            .find(|entry| entry.output == "scripts/one.luau")
+            .unwrap();
+        entry.output_size = stale.len() as u64;
+        entry.output_hash = hash_bytes(stale);
+    }
+
+    #[tokio::test]
+    async fn reader_changes_reuse_archive_ingestion_and_rebuild_derived_assets() {
+        use crate::config::RecordReader::{Inhouse, Legacy};
+
+        for schema in [24, CONVERTER_SCHEMA_VERSION] {
+            for (previous_reader, next_reader) in [(Legacy, Inhouse), (Inhouse, Legacy)] {
+                let temp = tempfile::tempdir().unwrap();
+                let data = temp.path().join("Data");
+                let output = temp.path().join("modern");
+                write_archived_script(&data);
+                let mut config = PipelineConfig::new(&data, &output);
+                config.record_reader = previous_reader;
+                let first = run_without_progress(config.clone()).await;
+                assert!(first.complete);
+                assert_eq!(first.converted, 2);
+                let expected = fs::read(output.join("scripts/one.luau")).unwrap();
+                let mut manifest = published_manifest(&output);
+                manifest.schema_version = schema;
+                manifest.configuration_hash =
+                    configuration_hash_for_schema(&config, schema).unwrap();
+                replace_script_with_verified_stale_output(&output, &mut manifest);
+                manifest
+                    .save(&output.join("conversion-manifest.json"))
+                    .unwrap();
+
+                config.record_reader = next_reader;
+                let report = run_without_progress(config).await;
+
+                assert!(report.complete);
+                assert_eq!(report.cache_hits, 1, "archive ingestion must be reused");
+                assert_eq!(report.converted, 1, "derived scripts must regenerate");
+                assert_eq!(fs::read(output.join("scripts/one.luau")).unwrap(), expected);
+                assert_eq!(published_manifest(&output).archives, manifest.archives);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_configuration_changes_reuse_archives_and_rebuild_derived_assets() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        write_archived_script(&data);
+        let config = PipelineConfig::new(&data, &output);
+        assert!(run_without_progress(config.clone()).await.complete);
+        let expected = fs::read(output.join("scripts/one.luau")).unwrap();
+        let mut manifest = published_manifest(&output);
+        let mut retained_config = config.clone();
+        retained_config.record_reader = crate::config::RecordReader::Inhouse;
+        manifest.retained_mesh_schema_version = Some(CONVERTER_SCHEMA_VERSION);
+        manifest.retained_asset_configuration_hash =
+            Some(configuration_hash(&retained_config).unwrap());
+        replace_script_with_verified_stale_output(&output, &mut manifest);
+        manifest
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+
+        let report = run_without_progress(config).await;
+
+        assert!(report.complete);
+        assert_eq!(report.cache_hits, 1, "archive ingestion must be reused");
+        assert_eq!(report.converted, 1, "derived scripts must regenerate");
+        assert_eq!(fs::read(output.join("scripts/one.luau")).unwrap(), expected);
+        assert_eq!(published_manifest(&output).archives, manifest.archives);
     }
 
     #[tokio::test]
@@ -5763,7 +6394,8 @@ mod tests {
 
     /// A stop pressed while one large archive is being extracted takes effect inside it, not
     /// when the whole archive is done, and ends the run as an interrupt rather than as a skipped
-    /// archive. Nothing of the archive is cached, so the resume extracts it again in full.
+    /// archive. Verified workspace blobs can survive, but no archive entry is committed; resume
+    /// extracts the complete archive and can reuse those blobs.
     #[tokio::test]
     async fn an_interrupt_inside_an_archive_stops_its_extraction_and_resumes() {
         let temp = tempfile::tempdir().unwrap();
@@ -5795,13 +6427,11 @@ mod tests {
         let cancellation = Cancellation::new();
         let (tx, mut rx) = mpsc::channel::<ProgressEvent>(64);
         let watcher = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let failure = AssetPipeline::run_async_with_cancel(
-            PipelineConfig::new(&data, &output),
-            tx,
-            cancellation,
-        )
-        .await
-        .unwrap_err();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.extract_all_archive_files = true;
+        let failure = AssetPipeline::run_async_with_cancel(config.clone(), tx, cancellation)
+            .await
+            .unwrap_err();
         watcher.await.unwrap();
 
         assert!(failure.cancelled, "a stop is reported as an interrupt");
@@ -5829,11 +6459,38 @@ mod tests {
             written.iter().all(|name| !name.ends_with(".partial")),
             "a stop left a half-written file behind"
         );
+        // Dedup writes complete workspace blobs before linking their VFS names. An interrupt
+        // may retain those blobs, but it must not leave partial or incorrectly keyed payloads.
+        let workspace = staging.join(".ingestion-cache/sha256");
+        let expected_payloads: BTreeMap<_, _> = contents
+            .iter()
+            .map(|content| (hash_bytes(content), content.as_slice()))
+            .collect();
+        let mut workspace_blobs = 0;
+        if workspace.exists() {
+            for entry in WalkDir::new(&workspace) {
+                let entry = entry.unwrap();
+                if entry.file_type().is_dir() {
+                    continue;
+                }
+                assert!(entry.file_type().is_file(), "unexpected workspace entry");
+                let hash = entry.file_name().to_str().unwrap();
+                let expected = expected_payloads
+                    .get(hash)
+                    .expect("workspace blob has an unexpected content hash");
+                assert_eq!(entry.path(), workspace.join(&hash[..2]).join(hash));
+                assert_eq!(fs::read(entry.path()).unwrap().as_slice(), *expected);
+                workspace_blobs += 1;
+            }
+        }
+        assert!(
+            workspace_blobs < entries,
+            "the whole archive was materialized despite the stop"
+        );
         // The archive's cache entry is only recorded once it is complete.
-        assert!(!staging.join(".ingestion-cache/sha256").exists());
         assert!(!staging.join("conversion-manifest.json").exists());
+        assert!(!config.ingestion_cache_dir().exists());
 
-        let mut config = PipelineConfig::new(&data, &output);
         config.resume_staging = Some(staging);
         let report = run_without_progress(config.clone()).await;
         assert!(report.complete);
@@ -5920,14 +6577,13 @@ mod tests {
             // Reading again lets the waiting events through.
             while rx.recv().await.is_some() {}
         };
-        let (report, ()) = tokio::join!(
-            AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx),
-            front_end
-        );
+        let mut config = PipelineConfig::new(&data, &output);
+        config.extract_all_archive_files = true;
+        let (report, ()) = tokio::join!(AssetPipeline::run_async(config.clone(), tx), front_end);
 
         let report = report.unwrap();
         assert!(report.complete);
-        let cache_root = PipelineConfig::new(&data, &output).ingestion_cache_dir();
+        let cache_root = config.ingestion_cache_dir();
         let blobs = WalkDir::new(cache_root.join(".ingestion-cache"))
             .into_iter()
             .filter_map(Result::ok)
@@ -5995,6 +6651,117 @@ mod tests {
         (report, collect.await.unwrap())
     }
 
+    #[tokio::test]
+    async fn database_cache_cold_warm_invalidation_and_corrupt_receipt_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        let plugin = data.join("Skyrim.esm");
+        let write_plugin = |author| {
+            fs::write(
+                &plugin,
+                dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                    author,
+                    worldspace: "CacheWorld",
+                    cells: &[dummy_content::esm::Cell {
+                        grid_x: 0,
+                        grid_y: 0,
+                    }],
+                    model_path: "test/cache.nif",
+                    diffuse: "test/cache.dds",
+                    normal_texture: "test/cache_n.dds",
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_plugin("CacheFixture");
+        let mut config = PipelineConfig::new(&data, &output);
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.no_lod = true;
+        let cold = run_without_progress(config.clone()).await;
+        assert!(cold.complete);
+        assert!(!cold.database_cache_hit);
+        assert!(cold.database_runtime_records_built > 0);
+        let source_count = |output: &Path| {
+            Connection::open(output.join("skyrim_world.db"))
+                .unwrap()
+                .query_row::<u64, _, _>("SELECT count(*) FROM inhouse_source_records", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        let winners = source_count(&output);
+        let diagnostics = fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap();
+        let (warm, events) = run_collecting_progress(config.clone()).await;
+        assert!(warm.complete && warm.database_cache_hit);
+        assert_eq!(warm.database_runtime_records_built, 0);
+        assert_eq!(warm.database_cache_files, 6);
+        assert_eq!(source_count(&output), winners);
+        assert_eq!(
+            fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap(),
+            diagnostics
+        );
+        assert!(warm.phase_elapsed_ms.contains_key("database_validation"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.message == "Reusing verified skyrim_world.db")
+        );
+        let profile: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.join(crate::esm::inhouse::DATABASE_PROFILE_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(profile["cache_hit"], true);
+        assert_eq!(profile["timing_source"], "cache_restore");
+        assert!(profile["producer_elapsed_seconds"]["total_reader"].is_number());
+        assert!(
+            !profile["elapsed_seconds"]
+                .as_object()
+                .unwrap()
+                .contains_key("total_reader")
+        );
+        let receipt = config
+            .ingestion_cache_dir()
+            .join(".database-cache")
+            .join(warm.database_cache_key.as_ref().unwrap())
+            .join("receipt.json");
+        fs::write(&receipt, b"{truncated").unwrap();
+        assert!(
+            !run_without_progress(config.clone())
+                .await
+                .database_cache_hit
+        );
+        assert!(
+            run_without_progress(config.clone())
+                .await
+                .database_cache_hit
+        );
+        let mut invalidated = config.clone();
+        invalidated.invalidate_cache = true;
+        assert!(!run_without_progress(invalidated).await.database_cache_hit);
+        write_plugin("ChangedPluginBytes");
+        assert!(
+            !run_without_progress(config.clone())
+                .await
+                .database_cache_hit
+        );
+        fs::create_dir(data.join("Strings")).unwrap();
+        fs::write(
+            data.join("Strings/Skyrim_english.strings"),
+            b"malformed bank bytes",
+        )
+        .unwrap();
+        assert!(
+            !run_without_progress(config.clone())
+                .await
+                .database_cache_hit
+        );
+        config.record_reader = crate::config::RecordReader::Legacy;
+        assert!(!run_without_progress(config).await.database_cache_hit);
+    }
+
     /// Loads the manifest published in an output directory.
     fn published_manifest(output: &Path) -> ConversionManifest {
         ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap()
@@ -6053,6 +6820,130 @@ mod tests {
     }
 
     #[test]
+    fn persisting_the_ingestion_cache_repairs_corruption_without_mutating_linked_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging-cache");
+        let root = directory.path().join("cache");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let expected = b"healthy blob";
+        let hash = hash_bytes(expected);
+        let source = staging.join(&hash);
+        let destination = root.join(&hash);
+        fs::write(&source, expected).unwrap();
+        fs::write(&destination, b"corrupt blob").unwrap();
+        let linked_output = directory.path().join("old-output");
+        link_or_copy(&destination, &linked_output).unwrap();
+
+        persist_ingestion_cache(&staging, &root).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+        assert_eq!(fs::read(&source).unwrap(), expected);
+        assert_eq!(fs::read(&linked_output).unwrap(), b"corrupt blob");
+        assert_eq!(hash_file(&destination).unwrap(), hash);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn persisting_the_ingestion_cache_preserves_healthy_blobs() {
+        for linked in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let staging = directory.path().join("staging-cache");
+            let root = directory.path().join("cache");
+            fs::create_dir_all(&staging).unwrap();
+            fs::create_dir_all(&root).unwrap();
+            let expected = b"healthy blob";
+            let hash = hash_bytes(expected);
+            let source = staging.join(&hash);
+            let destination = root.join(&hash);
+            fs::write(&source, expected).unwrap();
+            if linked {
+                link_or_copy(&source, &destination).unwrap();
+            } else {
+                fs::write(&destination, expected).unwrap();
+            }
+            let before = fs::metadata(&destination).unwrap();
+
+            persist_ingestion_cache(&staging, &root).unwrap();
+
+            let after = fs::metadata(&destination).unwrap();
+            assert_eq!(before.len(), after.len());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+
+                assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+            }
+            assert_eq!(fs::read(&destination).unwrap(), expected);
+            if !linked {
+                fs::write(&source, b"changed blob").unwrap();
+                assert_eq!(fs::read(&destination).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn persisting_the_ingestion_cache_rejects_a_corrupt_repair_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging-cache");
+        let root = directory.path().join("cache");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let hash = hash_bytes(b"healthy blob");
+        let destination = root.join(&hash);
+        fs::write(staging.join(&hash), b"invalid blob").unwrap();
+        fs::write(&destination, b"corrupt blob").unwrap();
+
+        let error = persist_ingestion_cache(&staging, &root).unwrap_err();
+
+        assert!(error.to_string().contains("SHA-256 filename"));
+        assert_eq!(fs::read(&destination).unwrap(), b"corrupt blob");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn persistent_archive_corruption_is_repaired_and_reused_on_the_next_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        write_archived_script(&data);
+        let config = PipelineConfig::new(&data, &output);
+        let first = run_without_progress(config.clone()).await;
+        assert!(first.complete);
+        assert_eq!(first.converted, 2);
+        let manifest = published_manifest(&output);
+        let file = &manifest.archives.values().next().unwrap().files[0];
+        let blob = config
+            .ingestion_cache_dir()
+            .join(".ingestion-cache/sha256")
+            .join(&file.hash[..2])
+            .join(&file.hash);
+        let expected = fs::read(&blob).unwrap();
+        fs::write(&blob, vec![b'x'; expected.len()]).unwrap();
+
+        let recovered = run_without_progress(config.clone()).await;
+
+        assert!(recovered.complete);
+        assert_eq!(
+            recovered.converted, 1,
+            "the archive must be extracted again"
+        );
+        assert_eq!(
+            recovered.cache_hits, 1,
+            "the unchanged script can be reused"
+        );
+        assert_eq!(fs::read(&blob).unwrap(), expected);
+        assert_eq!(hash_file(&blob).unwrap(), file.hash);
+
+        let reused = run_without_progress(config).await;
+
+        assert!(reused.complete);
+        assert_eq!(reused.converted, 0);
+        assert_eq!(reused.cache_hits, 2);
+        assert_eq!(fs::read(&blob).unwrap(), expected);
+    }
+
+    #[test]
     fn prune_removes_only_unreferenced_blobs_and_spills() {
         use crate::cache::{IngestedFile, IngestionCacheEntry};
 
@@ -6072,6 +6963,7 @@ mod tests {
             "assets.ba2".to_owned(),
             IngestionCacheEntry {
                 source_hash: "00".repeat(32),
+                selection: IngestionSelection::All,
                 files: vec![IngestedFile {
                     path: "textures/rock.dds".to_owned(),
                     size: 4,

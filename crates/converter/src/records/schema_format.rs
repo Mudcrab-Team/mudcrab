@@ -1,6 +1,9 @@
 //! The authored, versioned schema contract shared by build validation and decoding.
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 /// A complete schema, with reusable authored definitions and source citations.
 #[derive(Clone, Debug, Deserialize)]
@@ -228,6 +231,18 @@ impl Schema {
                 .any(|child| self.has_terminated_repeat(child))
     }
 
+    /// Borrow direct fields; named definitions retain the owned resolver's occurrence overrides.
+    pub fn resolve_borrowed<'a>(
+        &self,
+        field: &'a FieldSchema,
+    ) -> Result<Cow<'a, FieldSchema>, String> {
+        if field.definition.is_some() {
+            self.resolve(field).map(Cow::Owned)
+        } else {
+            Ok(Cow::Borrowed(field))
+        }
+    }
+
     /// Expand one shared entry, preserving its occurrence's signature and repetition.
     pub fn resolve(&self, field: &FieldSchema) -> Result<FieldSchema, String> {
         let Some(name) = &field.definition else {
@@ -435,4 +450,68 @@ fn check_signature(signature: &str) -> Result<(), String> {
         return Err(format!("invalid schema signature {signature:?}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_resolution_preserves_layout_and_occurrence_overrides() {
+        let direct = FieldSchema {
+            name: "base".into(),
+            kind: "struct".into(),
+            size: Some(4),
+            members: vec![FieldSchema {
+                name: "value".into(),
+                kind: "u32".into(),
+                flags: serde_json::json!({"1": "authored_flag"}),
+                enumeration: serde_json::json!({"2": "authored_value"}),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let schema = Schema {
+            version: 1,
+            sources: Default::default(),
+            definitions: BTreeMap::from([("layout".into(), direct.clone())]),
+            common_fields: vec![],
+            records: vec![],
+        };
+        let borrowed = schema.resolve_borrowed(&direct).unwrap();
+        assert!(matches!(&borrowed, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(borrowed.as_ref(), &direct));
+        assert_eq!(
+            format!("{:?}", borrowed.as_ref()),
+            format!("{:?}", schema.resolve(&direct).unwrap())
+        );
+
+        let occurrence = FieldSchema {
+            signature: Some("DATA".into()),
+            name: "occurrence".into(),
+            source: "occurrence-source".into(),
+            definition: Some("layout".into()),
+            offset: 8,
+            repeat: true,
+            repeat_terminated: true,
+            optional: true,
+            reject_record_on_error: true,
+            string_table: Some("dlstrings".into()),
+            ..Default::default()
+        };
+        let resolved = schema.resolve_borrowed(&occurrence).unwrap();
+        assert!(matches!(&resolved, Cow::Owned(_)));
+        assert_eq!(
+            format!("{:?}", resolved.as_ref()),
+            format!("{:?}", schema.resolve(&occurrence).unwrap())
+        );
+        let missing = FieldSchema {
+            definition: Some("missing".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            schema.resolve_borrowed(&missing).unwrap_err(),
+            schema.resolve(&missing).unwrap_err()
+        );
+    }
 }
