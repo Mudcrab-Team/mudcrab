@@ -15,6 +15,7 @@ pub mod mesh;
 mod metadata;
 pub mod pipeline;
 pub mod progress;
+pub mod repair;
 pub mod script;
 pub mod texture;
 pub mod texture_gpu;

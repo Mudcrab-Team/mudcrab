@@ -38,3 +38,6 @@ modern_assets.staging-*/
 transformed_data/
 mod_cache/
 /extracted/
+
+# Remove once an official .agents is introduced
+.agents

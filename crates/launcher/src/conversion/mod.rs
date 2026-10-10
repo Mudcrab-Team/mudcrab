@@ -162,9 +162,11 @@ pub struct RunHandle {
 pub struct ConversionLogicPlugin;
 
 impl Plugin for ConversionLogicPlugin {
+    /// Registers conversion and source-selection resources and orders the conversion logic systems.
     fn build(&self, app: &mut App) {
         app.init_resource::<ConversionStatus>()
             .init_resource::<GamePathConfig>()
+            .init_resource::<crate::mo2_settings::SourceSettings>()
             .init_resource::<CurrentConversion>()
             .init_resource::<PendingInputs>()
             .init_resource::<PendingEffects>()
@@ -302,13 +304,21 @@ pub fn actuate_effects(
     mut effects: ResMut<PendingEffects>,
     mut status: ResMut<ConversionStatus>,
     mut handle: ResMut<RunHandle>,
+    source: Res<crate::mo2_settings::SourceSettings>,
 ) {
     for effect in effects.drain() {
         match effect {
             Effect::None => {}
-            Effect::Begin(config) => {
+            Effect::Begin(mut config) => {
                 let (tx, rx) = crossbeam_channel::unbounded();
-                handle.cancellation = Some(runner::spawn(config, tx));
+                match source.apply(&mut config) {
+                    Ok(()) => handle.cancellation = Some(runner::spawn(*config, tx)),
+                    Err(reason) => {
+                        let _ = tx.send(RunMessage::Failed(state::FailureReport::before_start(
+                            reason,
+                        )));
+                    }
+                }
                 commands.insert_resource(RunChannel { receiver: rx });
                 status.begin_run();
             }

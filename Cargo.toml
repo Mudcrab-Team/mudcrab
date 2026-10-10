@@ -5,6 +5,7 @@ members = [
     "crates/dummy-content",
     "crates/engine",
     "crates/launcher",
+    "crates/mo2",
     "crates/shared",
 ]
 

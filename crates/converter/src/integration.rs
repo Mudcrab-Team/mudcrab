@@ -39,6 +39,15 @@ pub struct IntegrationReport {
 }
 
 pub fn finalize_world_database(staging: &Path) -> Result<Option<IntegrationReport>> {
+    let sources = source_file_index(staging)?;
+    finalize_world_database_with_sources(staging, &sources)
+}
+
+/// Audits against the merged winning source index, including loose files read outside staging.
+pub fn finalize_world_database_with_sources(
+    staging: &Path,
+    sources: &HashMap<String, PathBuf>,
+) -> Result<Option<IntegrationReport>> {
     let database_path = staging.join("skyrim_world.db");
     if !database_path.is_file() {
         return Ok(None);
@@ -72,7 +81,6 @@ pub fn finalize_world_database(staging: &Path) -> Result<Option<IntegrationRepor
         ..Default::default()
     };
     let files = converted_file_index(staging)?;
-    let sources = source_file_index(staging)?;
     let static_models = {
         let mut statement = connection.prepare(
             "SELECT id,model_path FROM statics WHERE model_path IS NOT NULL AND model_path <> '' ORDER BY id",
@@ -357,6 +365,45 @@ mod tests {
         assert!(report.passed);
         assert_eq!(report.unavailable_model_source_count, 1);
         assert_eq!(report.missing_model_count, 0);
+    }
+
+    #[test]
+    fn audits_winning_loose_model_and_texture_sources_outside_vfs() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO statics(id,model_path,flags) VALUES(1,'test/lost.nif',0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO texture_sets(id,diffuse_path) VALUES(2,'test/lost.dds')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        empty_cache(directory.path());
+        let loose = tempfile::tempdir().unwrap();
+        fs::write(loose.path().join("lost.nif"), b"source").unwrap();
+        fs::write(loose.path().join("lost.dds"), b"source").unwrap();
+        let sources = HashMap::from([
+            ("meshes/test/lost.nif".into(), loose.path().join("lost.nif")),
+            (
+                "textures/test/lost.dds".into(),
+                loose.path().join("lost.dds"),
+            ),
+        ]);
+        let report = finalize_world_database_with_sources(directory.path(), &sources)
+            .unwrap()
+            .unwrap();
+        assert!(!report.passed);
+        assert_eq!(report.missing_model_count, 1);
+        assert_eq!(report.missing_texture_count, 1);
+        assert_eq!(report.unavailable_model_source_count, 0);
+        assert_eq!(report.unavailable_texture_source_count, 0);
     }
 
     #[test]

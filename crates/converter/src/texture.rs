@@ -234,6 +234,9 @@ impl TextureConverter {
         )
     }
 
+    /// Converts DDS bytes to KTX2 with the requested texture encoding and compression settings.
+    ///
+    /// Preserves supported native formats where possible and rejects unsupported texture arrays.
     pub fn convert_with_options(
         dds_bytes: &[u8],
         encoding: TextureEncoding,
@@ -248,16 +251,38 @@ impl TextureConverter {
                 .header10
                 .as_ref()
                 .is_some_and(|header| header.misc_flag.contains(MiscFlag::TEXTURECUBE));
-        let layer_count = dds.get_num_array_layers();
+        // DX10 array_size counts cubes only when TEXTURECUBE is set.
+        let layer_count = if dds
+            .header10
+            .as_ref()
+            .is_some_and(|header| header.misc_flag.contains(MiscFlag::TEXTURECUBE))
+        {
+            dds.get_num_array_layers()
+                .checked_mul(6)
+                .ok_or_else(|| color_eyre::eyre::eyre!("DDS cube array size overflow"))?
+        } else {
+            dds.get_num_array_layers()
+        };
         ensure!(
             layer_count <= 1 || (is_cubemap && layer_count == 6),
             "DDS texture arrays are not supported"
         );
+        ensure!(
+            !is_cubemap || layer_count == 6,
+            "DDS cubemap does not contain exactly six faces"
+        );
+        if is_cubemap && dds.header10.is_none() {
+            ensure!(
+                dds.header.caps2.contains(Caps2::CUBEMAP_ALLFACES),
+                "DDS cubemap has missing face flags"
+            );
+        }
         if let Some(format) = native_ktx2_format(&dds, encoding) {
             let result = assemble_native_ktx2(&dds, format, is_cubemap, zstd_level)?;
             validate_ktx2_against_dds(&result, &dds, encoding, is_cubemap)?;
             return Ok(result);
         }
+
         // Uncompressed 8-bit-per-channel colour skips the UASTC encoder (the slow
         // path): its decoded mips are block-compressed on the CPU to native BC7
         // (see `convert_packed_to_native`). Cube maps and volumes of these
@@ -277,10 +302,7 @@ impl TextureConverter {
                 Err(error) => packed_failure = Some(format!("{error:#}")),
             }
         }
-        ensure!(
-            !is_cubemap || layer_count == 6,
-            "DDS cubemap does not contain exactly six faces"
-        );
+
         if depth > 1 {
             ensure!(!is_cubemap, "DDS cannot be both a volume and a cubemap");
             ensure!(layer_count <= 1, "volume DDS arrays are not supported");
@@ -2224,6 +2246,7 @@ mod tests {
         }
     }
 
+    /// Verifies cubemap faces are regrouped by mip level and invalid arrays or truncated data are rejected.
     #[test]
     fn native_cubemap_gathers_faces_per_mip_level() {
         let mut dds = Dds::new_dxgi(NewDxgiParams {
@@ -2232,15 +2255,14 @@ mod tests {
             depth: None,
             format: DxgiFormat::BC3_UNorm,
             mipmap_levels: Some(2),
-            array_layers: None,
+            array_layers: Some(6),
             caps2: None,
             is_cubemap: true,
             resource_dimension: D3D10ResourceDimension::Texture2D,
             alpha_mode: AlphaMode::Straight,
         })
         .unwrap();
-        let face = dds.data.clone();
-        dds.data = face.repeat(6);
+        assert_eq!(dds.header10.as_ref().unwrap().array_size, 1);
         for (index, byte) in dds.data.iter_mut().enumerate() {
             *byte = (index % 251) as u8;
         }
@@ -2271,6 +2293,38 @@ mod tests {
         let metadata = inspect_ktx2(&ktx, TextureEncoding::ColorSrgb).unwrap();
         assert_eq!(metadata.faces, 6);
         assert_eq!(metadata.levels, 2);
+        // Some DX10 files flag the cube only in caps2 and count faces directly.
+        dds.header.caps2 |= Caps2::CUBEMAP | Caps2::CUBEMAP_ALLFACES;
+        let header10 = dds.header10.as_mut().unwrap();
+        header10.misc_flag.remove(MiscFlag::TEXTURECUBE);
+        header10.array_size = 6;
+        bytes.clear();
+        dds.write(&mut bytes).unwrap();
+        let caps2_ktx = TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).unwrap();
+        assert_eq!(
+            inspect_ktx2(&caps2_ktx, TextureEncoding::ColorSrgb)
+                .unwrap()
+                .faces,
+            6
+        );
+        for (mip, expected) in levels.iter().enumerate() {
+            assert_eq!(&decode_zstd_level(&caps2_ktx, mip), expected);
+        }
+
+        dds.header10
+            .as_mut()
+            .unwrap()
+            .misc_flag
+            .insert(MiscFlag::TEXTURECUBE);
+        dds.header10.as_mut().unwrap().array_size = 2;
+        bytes.clear();
+        dds.write(&mut bytes).unwrap();
+        assert!(TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).is_err());
+        dds.header10.as_mut().unwrap().array_size = 1;
+        dds.data.truncate(face_stride * 5);
+        bytes.clear();
+        dds.write(&mut bytes).unwrap();
+        assert!(TextureConverter::convert(&bytes, TextureEncoding::ColorSrgb).is_err());
     }
 
     #[test]
