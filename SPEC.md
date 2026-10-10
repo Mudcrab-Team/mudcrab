@@ -309,6 +309,8 @@ V162: Dynamic ingestion: No-op archive-reopened output equals input bytes; compl
 
 V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
 
+V200: Real-output timing validation ! propagate full selected-set failure; missing configuration, empty selection & semantics collection errors fail; diagnostics never certify passing subset.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -378,6 +380,8 @@ T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qu
 T57|x|P0 human schema explorer: compact offline HTML, searchable candidate catalog/current SQL, selected field/variant labels from project + read-only mudcrab-re MCP; verify source data, navigation, citations & unknowns|V134,V138,V140,V141,V159,V160
 
 T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
+
+T100|x|Make validation timing fail on bad output; valid/broken generated artifact regression|V200
 
 ## §B BUGS
 
@@ -524,3 +528,4 @@ B171|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused 
 B172|2026-10-09|Cached GLB forward node/mesh links used unchecked indexing, and reuse refusal reasons were discarded|V171; checked links, matching-hash malformed-cache regression, refusal notices and per-world totals; V116 overall weights unchanged
 
 B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190
+B200|2026-10-05|Timing harness discarded invalid artifacts & asserted passing subset|V200
