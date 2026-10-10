@@ -61,6 +61,11 @@ impl TerrainMeshUploadReadiness {
         }
     }
 
+    pub(crate) fn outstanding(&self) -> usize {
+        let state = self.state();
+        state.pending.len() + state.ready.len()
+    }
+
     pub(crate) fn is_ready(&self, id: AssetId<Mesh>) -> bool {
         self.state().ready.contains(&id)
     }

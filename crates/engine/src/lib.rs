@@ -26,3 +26,6 @@ pub mod world;
 pub use app::run;
 
 mod mesh_residency_audit;
+
+mod matched_route;
+mod capture_frame;

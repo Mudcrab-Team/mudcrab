@@ -135,6 +135,14 @@ impl ProfilingState {
         *counter = counter.saturating_add(amount);
     }
 
+    pub(crate) fn terrain_gauges(&self) -> BTreeMap<String, f64> {
+        self.gauges.iter().filter(|(name, _)| name.starts_with("lod/")).map(|(name, value)| (name.clone(), *value)).collect()
+    }
+
+    pub(crate) fn gauge(&self, name: &str) -> Option<f64> {
+        self.gauges.get(name).copied()
+    }
+
     pub fn set_gauge(&mut self, name: impl Into<String>, value: f64) {
         self.gauges.insert(name.into(), value);
     }

@@ -27,7 +27,7 @@ use bevy::{
 };
 use serde::Deserialize;
 use std::{
-    collections::HashSet,
+    collections::{HashSet, BTreeSet},
     fmt, fs,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -99,7 +99,7 @@ impl ShotsFile {
         Ok(file)
     }
 
-    fn validate(&self) -> Result<(), ShotsError> {
+    pub(crate) fn validate(&self) -> Result<(), ShotsError> {
         if self.width == 0 || self.height == 0 {
             let frame = format!("{}x{}", self.width, self.height);
             let message = format!("the frame is {frame}: a screenshot of no pixels is not a shot");
@@ -275,7 +275,7 @@ fn is_reserved_device_name(name: &str) -> bool {
 
 /// A shots file that could not be read or is not a shots file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShotsError(String);
+pub struct ShotsError(pub(crate) String);
 
 impl fmt::Display for ShotsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -350,7 +350,7 @@ pub fn skip_reason(shot: &Shot, worldspace_id: u32) -> Option<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// What the settle rule reads, so that the rule is a pure function of the counts.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SettleCounts {
     /// Cells submitted to the database but not yet resident.
     pub loading_cells: usize,
@@ -377,6 +377,15 @@ pub struct SettleCounts {
     pub renderer_ready: bool,
     /// Frames the counts have been quiet for, before this frame.
     pub quiet_frames: u32,
+    pub pending_lod_queries: usize,
+    pub pending_lod_chunks: usize,
+    pub failed_lod_work: u64,
+    pub outstanding_terrain_uploads: usize,
+    pub pending_batch_cpu: usize,
+    pub pending_batch_initial: usize,
+    pub pending_batch_selection: usize,
+    pub pending_specializations: Option<usize>,
+    pub pending_render_transfers: Option<usize>,
 }
 
 /// The run-wide failure counters at one moment. They only ever grow, so a shot compares them with
@@ -432,6 +441,10 @@ impl SettleCounts {
                 .saturating_sub(baseline.validation_failures),
             renderer_ready,
             quiet_frames,
+            pending_lod_queries: streaming.pending_lod_queries,
+            pending_lod_chunks: streaming.pending_lod_chunks,
+            failed_lod_work: streaming.failed_lod_queries.saturating_add(streaming.failed_lod_chunks),
+            ..default()
         }
     }
 
@@ -439,7 +452,16 @@ impl SettleCounts {
     /// is drawn. A failure is not "still pending", it is a view that will never be right, so the
     /// shot is held back and given up on by the timeout rather than photographed as settled.
     pub fn is_quiet(&self) -> bool {
-        self.loading_cells == 0
+        self.pending_lod_queries == 0
+            && self.pending_lod_chunks == 0
+            && self.failed_lod_work == 0
+            && self.outstanding_terrain_uploads == 0
+            && self.pending_batch_cpu == 0
+            && self.pending_batch_initial == 0
+            && self.pending_batch_selection == 0
+            && self.pending_render_transfers == Some(0)
+            && self.pending_specializations == Some(0)
+            && self.loading_cells == 0
             && self.active_requests == 0
             && self.pending_asset_instances == 0
             && self.pending_surface_instances == 0
@@ -467,7 +489,7 @@ impl SettleCounts {
             self.asset_load_failures,
             self.validation_failures,
             self.renderer_ready
-        )
+        ) + &format!(" lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?}", self.pending_lod_queries, self.pending_lod_chunks, self.failed_lod_work, self.outstanding_terrain_uploads, self.pending_batch_cpu, self.pending_batch_initial, self.pending_batch_selection, self.pending_specializations, self.pending_render_transfers)
     }
 }
 
@@ -516,6 +538,8 @@ pub struct ShotsRun {
     pub output_dir: PathBuf,
     /// The worldspace the run streams; shots in another one are skipped.
     pub worldspace_id: u32,
+    pub(crate) route_checkpoints: Option<BTreeSet<usize>>,
+    transition_capture: bool,
     shot: usize,
     phase: Phase,
     /// Seconds in the current phase; the settle and capture timeouts read it.
@@ -548,6 +572,8 @@ pub struct ShotsRun {
 enum Phase {
     /// Pose the camera on the shot and start settling.
     Move,
+    /// Hold a non-checkpoint route step through an extraction before advancing.
+    Traverse,
     /// Wait for the view to settle (or time out), then ask for the screenshot.
     Settle,
     /// The screenshot has been asked for; wait for it on disk.
@@ -562,6 +588,8 @@ impl ShotsRun {
             file,
             output_dir,
             worldspace_id,
+            route_checkpoints: None,
+            transition_capture: false,
             shot: 0,
             phase: Phase::Move,
             timer: 0.0,
@@ -582,7 +610,8 @@ impl ShotsRun {
     }
 
     pub fn shot_path(&self, shot: &Shot) -> PathBuf {
-        self.output_dir.join(format!("{}.png", shot.name))
+        let suffix = if self.transition_capture { "-transition" } else { "" };
+        self.output_dir.join(format!("{}{suffix}.png", shot.name))
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -594,7 +623,9 @@ impl ShotsRun {
     /// A window that is not the file's frame is named too: the image is then not the shape the
     /// reference is, which a comparison tool reading the log has to know.
     pub fn log_line(&self, shot: &Shot, path: &Path) -> String {
-        let outcome = if self.timed_out {
+        let outcome = if self.transition_capture {
+            "transition".to_owned()
+        } else if self.timed_out {
             format!("timed_out ({})", self.counts.describe())
         } else {
             "settled".to_owned()
@@ -697,6 +728,11 @@ fn run_shots(
     renderer: Res<RendererMetrics>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
+    profiler: Res<crate::profiling::ProfilingState>,
+    uploads: Res<crate::terrain_upload::TerrainMeshUploadReadiness>,
+    retries: Res<crate::capture_frame::RetryReadiness>,
+    main_frame: Res<bevy::diagnostic::FrameCount>,
+    transfers: Res<crate::capture_frame::TransferReadiness>,
 ) {
     // Borrowed once: the shot is taken from the file without cloning it, and the arms below still
     // write the run's other fields, which the borrow checker allows field by field.
@@ -765,6 +801,19 @@ fn run_shots(
             );
             run.failure_baseline = Failures::read(&streaming, &renderer);
             run.start_settle();
+            if let Some(checkpoints) = &run.route_checkpoints {
+                if checkpoints.contains(&run.shot) {
+                    run.transition_capture = true;
+                    request_capture(&mut commands, run, main_frame.0);
+                } else {
+                    run.enter(Phase::Traverse);
+                }
+            }
+        }
+        Phase::Traverse => {
+            place_camera(shot, run.file.aspect(), origin.0, &mut transform, &mut projection);
+            run.note(format!("route_step={} main_frame={} position={:?} elapsed_seconds={}", run.shot, main_frame.0, shot.position, time.elapsed_secs_f64()));
+            run.advance();
         }
         Phase::Settle => {
             // Re-assert the pose every frame: a render-origin rebase moves the camera in render
@@ -780,13 +829,22 @@ fn run_shots(
             run.frames = run.frames.saturating_add(1);
             let renderer_ready =
                 renderer.final_path_active() && time.elapsed_secs() >= WARM_UP_SECONDS;
-            let counts = SettleCounts::read(
+            let mut counts = SettleCounts::read(
                 &streaming,
                 &renderer,
                 run.failure_baseline,
                 renderer_ready,
                 run.counts.quiet_frames,
             );
+            counts.pending_lod_queries = streaming.pending_lod_queries;
+            counts.pending_lod_chunks = streaming.pending_lod_chunks;
+            counts.failed_lod_work = streaming.failed_lod_queries + streaming.failed_lod_chunks;
+            counts.outstanding_terrain_uploads = uploads.outstanding();
+            counts.pending_batch_cpu = profiler.gauge("lod/pending_terrain_batch_chunks").unwrap_or(0.0) as usize;
+            counts.pending_batch_initial = profiler.gauge("lod/pending_initial_terrain_upload_chunks").unwrap_or(0.0) as usize;
+            counts.pending_batch_selection = profiler.gauge("lod/pending_terrain_selection_uploads").unwrap_or(0.0) as usize;
+            counts.pending_specializations = *retries.0.lock().unwrap();
+            counts.pending_render_transfers = *transfers.0.lock().unwrap();
             // The window is counted in before it is read, so a view that has been quiet for
             // `SETTLE_QUIET_FRAMES` frames running is photographed on that very frame: the log's
             // `frames=` is then the constant, not one more (the count read here is the previous
@@ -817,24 +875,12 @@ fn run_shots(
                     run.advance();
                     return;
                 }
-                run.capture = None;
-                let shot_index = run.shot;
-                commands
-                    .spawn(Screenshot::primary_window())
-                    // The path is fixed here, where the shot is known, and not looked up when the
-                    // image comes back: a capture that arrives after its shot was given up on must
-                    // not be taken for the next shot's image.
-                    .observe(
-                        move |trigger: On<ScreenshotCaptured>, mut run: ResMut<ShotsRun>| {
-                            if run.shot == shot_index {
-                                run.capture = Some(write_shot(trigger.image.clone(), &path));
-                            }
-                        },
-                    );
-                run.enter(Phase::Capture);
+                run.transition_capture = false;
+                request_capture(&mut commands, run, main_frame.0);
             }
         }
         Phase::Capture => {
+            place_camera(shot, run.file.aspect(), origin.0, &mut transform, &mut projection);
             run.timer += time.delta_secs();
             // The capture observer records the write's own result, so a save that failed - even
             // one that left a partial or empty file behind - is this shot's failure, not a
@@ -847,7 +893,12 @@ fn run_shots(
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
                 run.note(line);
-                run.advance();
+                if run.transition_capture {
+                    run.transition_capture = false;
+                    run.start_settle();
+                } else {
+                    run.advance();
+                }
             } else if run.timer >= CAPTURE_TIMEOUT_SECONDS {
                 let message = format!(
                     "shot \"{}\": no screenshot reached {} within {CAPTURE_TIMEOUT_SECONDS:.0} s",
@@ -860,6 +911,52 @@ fn run_shots(
         }
         Phase::Done => {}
     }
+}
+
+/// A serialized runner has one primary-window request in flight. Keep the ticket on that
+/// entity until its readback arrives; callback arrival time is deliberately not its frame ID.
+fn request_capture(commands: &mut Commands, run: &mut ShotsRun, request_frame: u32) {
+    let shot = &run.file.shots[run.shot];
+    let path = run.shot_path(shot);
+    if let Err(reason) = discard_previous_shot(&path) {
+        run.fail(reason);
+        run.advance();
+        return;
+    }
+    let ticket = crate::capture_frame::CaptureTicket::default();
+    let observed = ticket.clone();
+    let position = shot.position;
+    let rotation = shot_camera_rotation(shot.yaw, shot.pitch).to_array();
+    let fov = vertical_fov_degrees(shot.hfov, run.file.aspect()).to_radians();
+    let index = run.shot;
+    let transition = run.transition_capture;
+    let dimensions = (run.file.width, run.file.height);
+    let counts = run.counts;
+    run.capture = None;
+    commands.spawn((Screenshot::primary_window(), ticket)).observe(
+        move |trigger: On<ScreenshotCaptured>, mut run: ResMut<ShotsRun>| {
+            if run.shot != index || run.transition_capture != transition || run.phase != Phase::Capture { return; }
+            let result = crate::capture_frame::validate_receipt(&observed, position).and_then(|receipt| {
+                if receipt.main_frame < request_frame || receipt.rotation_runtime_xyzw != rotation || receipt.vertical_fov_radians != Some(fov) {
+                    return Err("captured frame precedes request or differs in camera orientation/projection".into());
+                }
+                let size = trigger.image.texture_descriptor.size;
+                if (size.width, size.height) != dimensions {
+                    return Err("captured image dimensions differ from requested dimensions".into());
+                }
+                if !transition && !run.timed_out && !receipt.work.is_quiet() {
+                    return Err("captured settled frame has pending or unavailable specialization work".into());
+                }
+                write_shot(trigger.image.clone(), &path)?;
+                let line = serde_json::json!({"capture": index, "kind": if transition { "transition" } else { "settled" }, "requested_main_frame": request_frame, "requested_camera_creation": position, "requested_rotation_runtime_xyzw": rotation, "requested_vertical_fov_radians": fov, "captured_frame": receipt, "settle_counts": counts, "timed_out": run.timed_out, "image": path, "dimensions": dimensions});
+                run.note(line.to_string());
+                if run.log_failed { return Err("capture receipt could not be saved".into()); }
+                Ok(())
+            });
+            run.capture = Some(result);
+        }
+    );
+    run.enter(Phase::Capture);
 }
 
 /// Writes one captured image to `path`, or says why the image is not there to be compared.
@@ -1014,6 +1111,7 @@ fn finish_log(run: &mut ShotsRun) {
         error!(target: "shots", "could not write {}: {error}", path.display());
         run.failed = true;
     } else {
+        run.note(serde_json::json!({"run_complete": !run.failed, "poses_finished": run.shot, "expected_poses": run.file.shots.len(), "expected_captures": run.route_checkpoints.as_ref().map_or(run.file.shots.len(), |checkpoints| checkpoints.len() * 2)}).to_string());
         info!(target: "shots", "shots log written to {}", path.display());
     }
 }
@@ -1420,6 +1518,7 @@ mod tests {
     fn the_settle_rule_needs_a_quiet_window_and_every_count_at_zero() {
         let ready = SettleCounts {
             renderer_ready: true,
+            pending_specializations: Some(0), pending_render_transfers: Some(0),
             ..SettleCounts::default()
         };
         assert!(
@@ -1533,6 +1632,7 @@ mod tests {
             validation_failures: 5,
             renderer_ready: true,
             quiet_frames: 7,
+            ..default()
         };
         assert_eq!(read, expected);
         assert!(!read.is_quiet(), "a failed cell is not a settled view");
@@ -1558,7 +1658,10 @@ mod tests {
             transform_bounds_validation_failures: metrics.transform_bounds_validation_failures,
             ..StreamingMetrics::default()
         };
-        assert!(SettleCounts::read(&idle, &renderer, baseline, true, 0).is_quiet());
+        let mut idle_counts = SettleCounts::read(&idle, &renderer, baseline, true, 0);
+        idle_counts.pending_specializations = Some(0);
+        idle_counts.pending_render_transfers = Some(0);
+        assert!(idle_counts.is_quiet());
         let later = StreamingMetrics {
             failed_cells: metrics.failed_cells + 1,
             ..idle
@@ -1566,6 +1669,74 @@ mod tests {
         let fresh = SettleCounts::read(&later, &renderer, baseline, true, 0);
         assert_eq!(fresh.failed_cells, 1);
         assert!(!fresh.is_quiet());
+    }
+
+    #[test]
+    fn settle_requires_lod_upload_and_render_retry_acknowledgments() {
+        let ready = SettleCounts { renderer_ready: true, pending_specializations: Some(0), pending_render_transfers: Some(0), quiet_frames: 10, ..default() };
+        assert!(shots_settled(&ready));
+        for counts in [
+            SettleCounts { pending_lod_queries: 1, ..ready },
+            SettleCounts { pending_lod_chunks: 1, ..ready },
+            SettleCounts { outstanding_terrain_uploads: 1, ..ready },
+            SettleCounts { pending_batch_cpu: 1, ..ready },
+            SettleCounts { pending_batch_initial: 1, ..ready },
+            SettleCounts { pending_batch_selection: 1, ..ready },
+            SettleCounts { pending_specializations: Some(1), ..ready },
+            SettleCounts { pending_specializations: None, ..ready },
+            SettleCounts { pending_render_transfers: Some(1), ..ready },
+            SettleCounts { pending_render_transfers: None, ..ready },
+        ] {
+            assert!(!shots_settled(&counts));
+            assert_eq!(advance_settle(counts).quiet_frames, 0);
+        }
+    }
+
+    #[test]
+    fn route_freezes_capture_pose_and_executes_every_step_after_rebase() {
+        let (mut file, _) = crate::matched_route::MatchedRoute::parse_for_test(include_str!("../../../scripts/profiling/fixtures/matched-route.json"));
+        file.shots.truncate(3);
+        let output = tempfile::tempdir().unwrap();
+        let mut run = ShotsRun::new(file, output.path().into(), 60);
+        run.route_checkpoints = Some(BTreeSet::from([0, 2]));
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<RendererMetrics>()
+            .init_resource::<crate::profiling::ProfilingState>()
+            .init_resource::<crate::terrain_upload::TerrainMeshUploadReadiness>()
+            .init_resource::<crate::capture_frame::RetryReadiness>()
+            .init_resource::<crate::capture_frame::TransferReadiness>()
+            .add_plugins(ShotsPlugin { run });
+        let camera = app.world_mut().spawn((Transform::default(), Projection::Perspective(default()), StreamingCamera)).id();
+        app.update();
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Capture);
+        assert!(app.world().resource::<ShotsRun>().transition_capture);
+        // Simulate a rebase and a delayed image while the capture is in flight.
+        app.world_mut().resource_mut::<RenderOrigin>().0 = IVec2::new(5, -11);
+        app.update();
+        assert_eq!(app.world().get::<Transform>(camera).unwrap().translation, Vec3::new(2048.0, 6000.0, 2048.0));
+        assert_eq!(app.world().resource::<ShotsRun>().shot, 0);
+        app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
+        app.update();
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Settle);
+        assert_eq!(app.world().resource::<ShotsRun>().shot, 0);
+        // A completed settled capture is the only path that releases this checkpoint.
+        {
+            let mut run = app.world_mut().resource_mut::<ShotsRun>();
+            run.enter(Phase::Capture);
+            run.capture = Some(Ok(()));
+        }
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Traverse);
+        assert_eq!(app.world().get::<Transform>(camera).unwrap().translation.x, 2112.0);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<ShotsRun>().shot, 2);
+        assert_eq!(app.world().get::<Transform>(camera).unwrap().translation.x, 2176.0);
+        assert!(app.world().resource::<ShotsRun>().transition_capture);
     }
 
     /// An image the size a shot's capture arrives at, so the writer can be exercised without a

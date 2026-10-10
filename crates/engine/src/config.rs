@@ -117,6 +117,8 @@ pub struct EngineConfig {
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
+    /// Exact, fixed-step profiling traversal. Mutually exclusive with other camera drivers.
+    pub matched_route: Option<PathBuf>,
     /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
     /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
     pub shots_out: Option<PathBuf>,
@@ -183,6 +185,7 @@ impl Default for EngineConfig {
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
             shots: None,
+            matched_route: None,
             shots_out: None,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
@@ -242,6 +245,7 @@ Benchmark and profiling:
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
+  --matched-route <file>                execute exact route steps with transition and settled checkpoints
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
@@ -397,6 +401,7 @@ impl EngineConfig {
             && self.benchmark_duration_secs.is_none()
             && self.acceptance_screenshot.is_none()
             && self.shots.is_none()
+            && self.matched_route.is_none()
             && self.auto_fly_speed <= 0.0
             && !self.material_fixture
             && !self.terrain_water_fixture
@@ -417,6 +422,8 @@ impl EngineConfig {
             Some("benchmark")
         } else if self.streaming_fixture {
             Some("streaming fixture")
+        } else if self.matched_route.is_some() {
+            Some("matched-route")
         } else if self.shots.is_some() {
             Some("shots")
         } else {
@@ -685,6 +692,9 @@ impl EngineConfig {
                 // A path left out is an error, and must not swallow the next option: a `--shots`
                 // with no path is no mode at all, and continuing would silently launch an ordinary
                 // interactive run.
+                "--matched-route" => {
+                    config.matched_route = Some(take_value("--matched-route", "a route fixture", args.next())?);
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
                 }

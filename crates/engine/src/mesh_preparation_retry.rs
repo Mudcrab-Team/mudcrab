@@ -74,7 +74,8 @@ impl Plugin for MeshPreparationRetryPlugin {
                         observe_late_shadow_preparation
                             .in_set(MeshPreparationRetrySystems::ObserveLateShadows),
                     ),
-                );
+                )
+                .add_systems(Render, publish_retry_readiness.after(RenderSystems::Queue).before(RenderSystems::Cleanup));
         }
     }
 }
@@ -931,4 +932,20 @@ mod tests {
         assert!(resident_ranges_match(4, Some(0), Some(10..14), None));
         assert!(!resident_ranges_match(4, Some(0), None, None));
     }
+}
+
+// Include Bevy's material/prepass/shadow pending queues as well as our missing-mesh retries.
+fn publish_retry_readiness(
+    pending: Res<PendingPreparations>,
+    resources: PreparationResources,
+    bridge: Option<Res<crate::capture_frame::RetryReadiness>>,
+    pipelines: Option<Res<bevy::render::render_resource::PipelineCache>>,
+) {
+    let Some(bridge) = bridge else { return; };
+    let mut candidates = HashSet::new();
+    for queues in [resources.material_pending.as_ref().map(|q| &q.0), resources.prepass_pending.as_ref().map(|q| &q.0), resources.shadow_pending.as_ref().map(|q| &q.0)].into_iter().flatten() {
+        add_queue_candidates(&mut candidates, queues);
+    }
+    candidates.extend(pending.meshes.keys().copied());
+    *bridge.0.lock().unwrap() = pipelines.map(|pipelines| candidates.len() + pipelines.waiting_pipelines().count());
 }

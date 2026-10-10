@@ -52,7 +52,7 @@ pub(crate) struct PendingLodTerrainBatching {
 
 #[derive(Component)]
 #[component(on_remove = remove_generated_meshes)]
-pub(super) struct LodTerrainBatches {
+pub(crate) struct LodTerrainBatches {
     batches: Vec<TerrainBatch>,
     source_children: Option<Vec<Entity>>,
     // Removing WorldAssetRoot unregisters the original instance before its hierarchy is flattened.
@@ -2372,5 +2372,19 @@ mod tests {
                 .is_some()
         );
         assert_eq!(app.world().resource::<StreamingCommitBudget>().commits, 1);
+    }
+}
+
+impl LodTerrainBatches {
+    pub(crate) fn coverage_receipt(&self) -> Vec<serde_json::Value> {
+        self.batches.iter().map(|batch| serde_json::json!({
+            "mesh_generation": format!("{:?}", batch.mesh.id()),
+            "selection_mask": batch.selected,
+            "pending_upload": batch.pending_upload,
+            "initial_upload": self.source_children.is_some(),
+            "selected_members": batch.members.iter().enumerate()
+                .filter(|(index, _)| batch.selected & (1 << index) != 0)
+                .map(|(_, member)| member.coverage.receipt()).collect::<Vec<_>>()
+        })).collect()
     }
 }

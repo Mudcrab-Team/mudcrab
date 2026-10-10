@@ -128,6 +128,7 @@ fn absolute_creation_position(transform: &Transform, origin: IVec2) -> Vec3 {
 
 fn record_scene(
     mut commands: Commands,
+    config: Res<EngineConfig>,
     mut evidence: ResMut<SceneEvidence>,
     time: Res<Time>,
     origin: Res<RenderOrigin>,
@@ -165,7 +166,7 @@ fn record_scene(
     let image = evidence
         .images
         .as_ref()
-        .filter(|_| crossed_cell || reversed)
+        .filter(|_| config.shots.is_none() && config.matched_route.is_none() && (crossed_cell || reversed))
         .map(|root| root.join(format!("handoff-{:06}.png", evidence.frame)));
     let record = SceneRecord {
         request_frame: evidence.frame,

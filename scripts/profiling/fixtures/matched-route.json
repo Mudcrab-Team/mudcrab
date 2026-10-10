@@ -19,5 +19,5 @@
   "cycles": 3,
   "movement_steps": 3072,
   "checkpoint_policy": "before and after each cell/tile boundary, every reversal, every return; transition plus settled captures",
-  "driver_status": "Protocol fixture only; existing auto-flight is time dependent and cannot execute this exact route. No deterministic route driver is included."
+  "driver_status": "Implemented by --matched-route: exact Creation-space steps, serialized transition/settled captures and frame receipts. Runtime Metal coverage and matched performance campaigns remain unverified."
 }

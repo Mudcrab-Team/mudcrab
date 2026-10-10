@@ -54,7 +54,7 @@ pub struct TerrainCollider;
 
 /// Grid cell and quadrant covered by a terrain surface at one LOD tier.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-struct TerrainCoverage {
+pub(crate) struct TerrainCoverage {
     grid: IVec2,
     quadrant: u8,
     tier: Option<LodTier>,
@@ -6430,5 +6430,11 @@ mod tests {
             Some(&FormId(0x100)),
             "and the reference is still spawned"
         );
+    }
+}
+
+impl TerrainCoverage {
+    pub(crate) fn receipt(&self) -> serde_json::Value {
+        serde_json::json!({"cell": self.grid.to_array(), "quadrant": self.quadrant, "tier": format!("{:?}", self.tier)})
     }
 }

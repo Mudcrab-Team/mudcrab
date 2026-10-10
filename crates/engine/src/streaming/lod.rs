@@ -35,7 +35,7 @@ const LOD_CHUNK_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 const LOD_CHUNK_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
 #[path = "terrain_batching.rs"]
-mod terrain_batching;
+pub(crate) mod terrain_batching;
 
 pub(crate) use terrain_batching::LodTerrainBatch;
 
