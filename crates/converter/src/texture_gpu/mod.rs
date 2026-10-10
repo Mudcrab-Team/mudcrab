@@ -1,4 +1,4 @@
-//! GPU texture encoder: DDS -> UASTC KTX2 with a wgpu compute shader
+//! GPU texture encoder: DDS or authored RGBA mips -> UASTC KTX2 with a wgpu compute shader
 //! (`uastc_encode.wgsl`), producing the same container and format as the CPU
 //! Basis Universal path in `texture.rs`. The converter uses it for the
 //! textures it neither preserves as native blocks nor has to encode on the
@@ -193,6 +193,61 @@ pub(crate) struct PreparedTexture {
 }
 
 impl PreparedTexture {
+    /// Prepares an authored 2D RGBA mip chain without regenerating its mips.
+    /// The caller can retain the original levels for CPU fallback.
+    pub(crate) fn from_rgba_mips(width: u32, height: u32, levels: &[Vec<u8>]) -> Result<Self> {
+        ensure!(
+            width > 0 && height > 0,
+            "RGBA texture has an empty dimension"
+        );
+        ensure!(!levels.is_empty(), "RGBA mip chain is empty");
+        ensure!(
+            levels.len() <= max_mip_levels(width, height, 1) as usize,
+            "RGBA mip chain exceeds its dimensions"
+        );
+        let mut images = Vec::with_capacity(levels.len());
+        let mut total = 0usize;
+        for (mip, rgba) in levels.iter().enumerate() {
+            let mip_width = (width >> mip).max(1);
+            let mip_height = (height >> mip).max(1);
+            let pitch = mip_width
+                .checked_mul(4)
+                .ok_or_else(|| eyre!("RGBA row size overflows"))?;
+            let len = (pitch as usize)
+                .checked_mul(mip_height as usize)
+                .ok_or_else(|| eyre!("RGBA mip size overflows"))?;
+            ensure!(
+                rgba.len() == len,
+                "RGBA mip {mip} has an invalid byte length"
+            );
+            images.push(SourceImage {
+                width: mip_width,
+                height: mip_height,
+                format: SourceFormat::Rgba8,
+                offset: total,
+                pitch,
+            });
+            total = total
+                .checked_add(len)
+                .ok_or_else(|| eyre!("RGBA mip chain size overflows"))?;
+        }
+        ensure!(
+            total <= isize::MAX as usize,
+            "RGBA mip chain exceeds allocation limits"
+        );
+        let mut bytes = Vec::with_capacity(total);
+        for level in levels {
+            bytes.extend_from_slice(level);
+        }
+        Ok(Self {
+            width,
+            height,
+            faces: 1,
+            images,
+            bytes,
+        })
+    }
+
     /// Bytes to upload (the DDS payload, or RGBA for CPU-decoded formats).
     pub(crate) fn upload(&self) -> &[u8] {
         &self.bytes
@@ -603,6 +658,8 @@ pub(crate) struct GpuUastc {
     /// Slots allocated by `new`, so a GPU that cannot provide them is known
     /// before any texture is queued; `run_batcher` takes them.
     slots: Mutex<Vec<Slot>>,
+    /// A shared encoder owns one stream of uploads, submissions and error scopes.
+    batcher_lock: Mutex<()>,
     health: Arc<Health>,
     pub(crate) adapter_name: String,
 }
@@ -666,6 +723,56 @@ struct InFlight<T> {
 }
 
 impl GpuUastc {
+    /// Encodes one caller-bounded batch through the existing three GPU slots.
+    /// Results retain input order; the producer closes the queue to flush a
+    /// partial final slot before this call returns.
+    pub(crate) fn encode_prepared_batch(
+        &self,
+        textures: Vec<PreparedTexture>,
+        encoding: TextureEncoding,
+        post_threads: usize,
+    ) -> Vec<Result<EncodedTexture>> {
+        if textures.is_empty() {
+            return Vec::new();
+        }
+        let results = Mutex::new(
+            (0..textures.len())
+                .map(|_| None)
+                .collect::<Vec<Option<Result<EncodedTexture>>>>(),
+        );
+        let (sender, receiver) = job_channel(self);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for (tag, texture) in textures.into_iter().enumerate() {
+                    if let Err(job) = sender.send(GpuJob {
+                        texture,
+                        encoding,
+                        tag,
+                    }) {
+                        results.lock().unwrap()[job.tag] =
+                            Some(Err(eyre!("GPU became unavailable while queuing RGBA mips")));
+                    }
+                }
+                drop(sender);
+            });
+            run_batcher(
+                self,
+                receiver,
+                post_threads,
+                || false,
+                |tag, result| {
+                    results.lock().unwrap()[tag] = Some(result);
+                },
+            );
+        });
+        results
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .map(|result| result.unwrap_or_else(|| Err(eyre!("GPU batch returned no result"))))
+            .collect()
+    }
+
     /// Opens the GPU, compiles the encoder shader and runs a warm-up dispatch. Fails when no
     /// hardware GPU is available or its buffer limits are too small; callers then use the CPU encoder.
     pub(crate) fn new(quality: u32, batch_mb: u64) -> Result<Self> {
@@ -754,6 +861,7 @@ impl GpuUastc {
             batch_bytes: (batch_mb << 20).clamp(1 << 20, batch_limit) & !3,
             binding_limit,
             slots: Mutex::new(Vec::new()),
+            batcher_lock: Mutex::new(()),
             health,
             adapter_name: format!("{} ({:?})", info.name, info.backend),
         };
@@ -855,7 +963,7 @@ impl GpuUastc {
         })
     }
 
-    /// The slots for a batcher: those allocated by `new`, or fresh ones when they are in use.
+    /// Takes the reusable slots; restores any slots missing after a failed allocation.
     fn take_slots(&self) -> Result<Vec<Slot>> {
         let mut slots = std::mem::take(&mut *self.slots.lock().unwrap());
         while slots.len() < SLOTS {
@@ -1037,21 +1145,24 @@ impl GpuUastc {
                 let _ = tx.send(result);
             },
         );
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(flight.submission.clone()),
-                timeout: None,
-            })
-            .map_err(|error| eyre!("GPU poll failed: {error}"))?;
-        rx.recv()
-            .map_err(|_| eyre!("GPU readback was dropped"))?
-            .map_err(|error| eyre!("GPU readback failed: {error}"))?;
-        // A device lost while the batch ran leaves the readback undefined.
-        if let Err(error) = self.health.check() {
+        let outcome = (|| {
+            self.device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(flight.submission.clone()),
+                    timeout: None,
+                })
+                .map_err(|error| eyre!("GPU poll failed: {error}"))?;
+            rx.recv()
+                .map_err(|_| eyre!("GPU readback was dropped"))?
+                .map_err(|error| eyre!("GPU readback failed: {error}"))?;
+            // A device lost while the batch ran leaves the readback undefined.
+            self.health.check()
+        })();
+        if outcome.is_err() {
+            // Also cancels a pending map when polling or its callback failed.
             readback.unmap();
-            return Err(error);
         }
-        Ok(())
+        outcome
     }
 }
 
@@ -1166,6 +1277,7 @@ pub(crate) fn run_batcher<T: Send>(
     stopped: impl Fn() -> bool + Sync,
     done: impl Fn(T, Result<EncodedTexture>) + Sync,
 ) -> BatchStats {
+    let _batcher = gpu.batcher_lock.lock().unwrap();
     let threads = threads.max(1);
     let post_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -1227,6 +1339,7 @@ pub(crate) fn run_batcher<T: Send>(
         // KTX2 files in parallel, return the slot at once, then queue the
         // files for the writers.
         let readback_write_tx = write_tx.clone();
+        let return_slot_tx = slot_tx.clone();
         scope.spawn(move || {
             for flight in flight_rx {
                 let waited = gpu.wait(&flight);
@@ -1326,17 +1439,120 @@ pub(crate) fn run_batcher<T: Send>(
         }
         if !batch.textures.is_empty() && !stopped() {
             let _ = flight_tx.send(gpu.dispatch(batch));
+        } else {
+            let _ = return_slot_tx.send(batch.slot);
         }
         drop(flight_tx);
         drop(write_tx);
         stats.lock().unwrap().source_bytes += source_bytes;
     });
+    *gpu.slots.lock().unwrap() = slot_rx.try_iter().collect();
     stats.into_inner().unwrap()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_rgba_mips_preserve_authored_levels_and_layout() {
+        let levels: Vec<_> = [128, 32, 8]
+            .into_iter()
+            .enumerate()
+            .map(|(mip, len)| vec![mip as u8 + 1; len])
+            .collect();
+        let texture = PreparedTexture::from_rgba_mips(8, 4, &levels).unwrap();
+        assert_eq!((texture.width, texture.height, texture.faces), (8, 4, 1));
+        assert_eq!(texture.upload(), levels.concat());
+        assert_eq!(
+            texture
+                .images
+                .iter()
+                .map(|image| (
+                    image.width,
+                    image.height,
+                    image.offset,
+                    image.pitch,
+                    image.format
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (8, 4, 0, 32, SourceFormat::Rgba8),
+                (4, 2, 128, 16, SourceFormat::Rgba8),
+                (2, 1, 160, 8, SourceFormat::Rgba8)
+            ]
+        );
+    }
+
+    #[test]
+    fn prepared_rgba_mips_reject_invalid_dimensions_and_levels() {
+        assert!(PreparedTexture::from_rgba_mips(0, 4, &[vec![]]).is_err());
+        assert!(PreparedTexture::from_rgba_mips(4, 4, &[]).is_err());
+        assert!(PreparedTexture::from_rgba_mips(4, 4, &[vec![0; 63]]).is_err());
+        assert!(PreparedTexture::from_rgba_mips(4, 4, &[vec![0; 64], vec![0; 15]]).is_err());
+        assert!(PreparedTexture::from_rgba_mips(1, 1, &[vec![0; 4], vec![0; 4]]).is_err());
+        assert!(PreparedTexture::from_rgba_mips(u32::MAX, 1, &[vec![]]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires an idle hardware GPU"]
+    fn prepared_gpu_batches_serialize_and_return_all_slots() {
+        let gpu = GpuUastc::new(DEFAULT_QUALITY, 1).unwrap();
+        let levels = [
+            [21, 45, 87, 255].repeat(64),
+            [21, 45, 87, 255].repeat(16),
+            [21, 45, 87, 255].repeat(4),
+        ];
+        let encode = || {
+            gpu.encode_prepared_batch(
+                vec![PreparedTexture::from_rgba_mips(8, 8, &levels).unwrap()],
+                TextureEncoding::ColorSrgb,
+                1,
+            )
+            .pop()
+            .unwrap()
+            .unwrap()
+        };
+        let expected = encode().bytes;
+        assert_eq!(gpu.slots.lock().unwrap().len(), SLOTS);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(encode);
+            let second = scope.spawn(encode);
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(first.bytes, expected);
+        assert_eq!(second.bytes, expected);
+        assert_eq!(gpu.slots.lock().unwrap().len(), SLOTS);
+        // Error cleanup must cancel a pending native map before a slot returns
+        // to rotation. Exercise wgpu directly, without a production test hook.
+        let slot = gpu.slots.lock().unwrap().pop().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        slot.readback
+            .slice(..16)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        slot.readback.unmap();
+        gpu.device.poll(wgpu::PollType::Poll).unwrap();
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .is_err(),
+            "unmap must cancel the pending readback"
+        );
+        gpu.slots.lock().unwrap().push(slot);
+        assert_eq!(encode().bytes, expected);
+        assert_eq!(gpu.slots.lock().unwrap().len(), SLOTS);
+        assert!(
+            gpu.encode_prepared_batch(Vec::new(), TextureEncoding::ColorSrgb, 1)
+                .is_empty()
+        );
+        assert_eq!(gpu.slots.lock().unwrap().len(), SLOTS);
+    }
 
     /// A minimal uncompressed A8R8G8B8 DDS header for `width` x `height` with `mips` levels,
     /// followed by `payload` bytes of pixel data.

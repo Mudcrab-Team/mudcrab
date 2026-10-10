@@ -28,6 +28,7 @@ struct Cli {
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
     texture_encoder: TextureEncoder,
+    lod_texture_encoder: TextureEncoder,
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
@@ -161,6 +162,7 @@ async fn main() -> Result<()> {
     config.verify_cache = cli.verify_cache;
     config.no_lod = cli.no_lod;
     config.texture_encoder = cli.texture_encoder;
+    config.lod_texture_encoder = cli.lod_texture_encoder;
     if let Some(cpu_jobs) = cli.cpu_jobs {
         config.cpu_jobs = cpu_jobs;
     }
@@ -445,6 +447,16 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
             " --texture-encoder gpu --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
         ));
     }
+    if let TextureEncoder::Gpu { quality, batch_mb } = cli.lod_texture_encoder {
+        command.push_str(" --lod-encoder gpu");
+        if !matches!(cli.texture_encoder, TextureEncoder::Gpu { .. }) {
+            command.push_str(&format!(
+                " --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
+            ));
+        }
+    } else {
+        command.push_str(" --lod-encoder cpu");
+    }
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
@@ -655,6 +667,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
+    let mut use_lod_gpu = true;
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
     let mut fail_fast = false;
@@ -694,6 +707,14 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     _ => bail!("--texture-encoder must be cpu or gpu"),
                 };
             }
+            Some("--lod-encoder") => {
+                let value = next_value(&mut args, "--lod-encoder")?;
+                use_lod_gpu = match value.to_str() {
+                    Some("cpu") => false,
+                    Some("gpu") => true,
+                    _ => bail!("--lod-encoder must be cpu or gpu"),
+                };
+            }
             Some("--gpu-quality") => {
                 gpu_quality = Some(parse_u32(
                     next_value(&mut args, "--gpu-quality")?,
@@ -719,15 +740,23 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     if positional.is_empty() || positional.len() > 2 {
         bail!(usage());
     }
+    let gpu_encoder = TextureEncoder::Gpu {
+        quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
+        batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
+    };
+    if !use_gpu && !use_lod_gpu && (gpu_quality.is_some() || gpu_batch_mb.is_some()) {
+        bail!(
+            "--gpu-quality and --gpu-batch-mb require --texture-encoder gpu or --lod-encoder gpu"
+        );
+    }
     let texture_encoder = if use_gpu {
-        TextureEncoder::Gpu {
-            quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
-            batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
-        }
+        gpu_encoder
     } else {
-        if gpu_quality.is_some() || gpu_batch_mb.is_some() {
-            bail!("--gpu-quality and --gpu-batch-mb require --texture-encoder gpu");
-        }
+        TextureEncoder::Cpu
+    };
+    let lod_texture_encoder = if use_lod_gpu {
+        gpu_encoder
+    } else {
         TextureEncoder::Cpu
     };
     Ok(Cli {
@@ -741,6 +770,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         cpu_jobs,
         io_jobs,
         texture_encoder,
+        lod_texture_encoder,
         fail_fast,
         invalidate_cache,
         verify_cache,
@@ -783,12 +813,15 @@ fn parse_u64(value: OsString, option: &str) -> Result<u64> {
 /// The help text printed for `--help` and after a usage error.
 fn usage() -> &'static str {
     "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
-                 [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
+                 [--texture-encoder cpu|gpu] [--lod-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
        converter check <output directory> [--full]
 
 Converts a Skyrim Data directory into runtime assets.
+
+Terrain LOD uses the GPU by default, with CPU fallback if GPU initialization fails.
+--lod-encoder cpu selects CPU LOD. Ordinary textures default to the CPU independently.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1036,6 +1069,7 @@ mod tests {
             cpu_jobs: None,
             io_jobs: None,
             texture_encoder: TextureEncoder::Cpu,
+            lod_texture_encoder: TextureEncoder::Cpu,
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
@@ -1045,12 +1079,12 @@ mod tests {
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
             resume_command("converter.exe", &cli, staging),
-            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu"
         );
         // A renamed binary is named as it is, quoted when its name has a space.
         assert_eq!(
             resume_command("mudcrab converter", &cli, staging),
-            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu"
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
@@ -1065,10 +1099,9 @@ mod tests {
             },
             ..cli
         };
-        assert!(
-            resume_command("converter.exe", &gpu, staging)
-                .ends_with(" --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256")
-        );
+        assert!(resume_command("converter.exe", &gpu, staging).ends_with(
+            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --lod-encoder cpu"
+        ));
     }
 
     /// Integration failures count as failures without skipped inputs and point to the
@@ -1212,6 +1245,80 @@ mod tests {
         );
     }
 
+    /// LOD defaults to GPU independently of ordinary textures, and explicit CPU survives resume.
+    #[test]
+    fn defaults_to_gpu_lod_and_preserves_explicit_cpu_on_resume() {
+        let cli = parse_cli(vec!["Data".into()]).unwrap();
+        assert_eq!(cli.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            cli.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: converter::texture_gpu::DEFAULT_QUALITY,
+                batch_mb: converter::texture_gpu::DEFAULT_BATCH_MB,
+            }
+        );
+        let tuned = parse_cli(
+            ["Data", "--gpu-quality", "3", "--gpu-batch-mb", "128"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(tuned.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            tuned.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: 3,
+                batch_mb: 128
+            }
+        );
+        let cpu = parse_cli(
+            ["Data", "output", "--lod-encoder", "cpu"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(cpu.lod_texture_encoder, TextureEncoder::Cpu);
+        assert!(
+            resume_command("converter", &cpu, Path::new("staging")).ends_with(" --lod-encoder cpu")
+        );
+        let resumed = parse_cli(
+            [
+                "Data",
+                "output",
+                "--resume-staging",
+                "staging",
+                "--lod-encoder",
+                "cpu",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(resumed.lod_texture_encoder, cpu.lod_texture_encoder);
+        for option in ["--gpu-quality", "--gpu-batch-mb"] {
+            assert!(
+                parse_cli(
+                    [
+                        "Data",
+                        "--texture-encoder",
+                        "cpu",
+                        "--lod-encoder",
+                        "cpu",
+                        option,
+                        "2"
+                    ]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                )
+                .is_err()
+            );
+        }
+    }
+
     /// The GPU encoder flags reach the parsed configuration.
     #[test]
     fn parses_gpu_texture_options() {
@@ -1239,13 +1346,32 @@ mod tests {
         );
         // GPU settings without the GPU encoder are a mistake, not a no-op.
         let error = parse_cli(
-            ["Data", "--gpu-quality", "3"]
+            ["Data", "--lod-encoder", "cpu", "--gpu-quality", "3"]
                 .into_iter()
                 .map(OsString::from)
                 .collect(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("--texture-encoder gpu"));
+        let lod = parse_cli(
+            ["Data", "--lod-encoder", "gpu", "--gpu-quality", "3"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(lod.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            lod.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: 3,
+                batch_mb: 256
+            }
+        );
+        assert!(
+            resume_command("converter", &lod, Path::new("staging"))
+                .ends_with(" --lod-encoder gpu --gpu-quality 3 --gpu-batch-mb 256")
+        );
     }
 
     #[test]

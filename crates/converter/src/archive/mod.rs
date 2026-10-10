@@ -1,10 +1,13 @@
 mod ba2;
+mod batched;
 mod bsa;
+
+pub(crate) use batched::{sync_directory, sync_pack_file};
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     cache::{
-        IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy,
+        IngestedFile, IngestionCacheEntry, SpillCache, hash_bytes, hash_file, link_or_copy,
         link_or_copy_spilling,
     },
     pipeline::Interrupted,
@@ -119,7 +122,97 @@ pub struct ExtractionOutcome {
 
 pub struct ArchiveExtractor;
 
+/// The inputs for which this converter has consumers. String tables are retained
+/// alongside the currently converted assets for localized plugin records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveSelection {
+    All,
+    ConverterInputs,
+}
+
+impl ArchiveSelection {
+    pub fn recipe(self) -> &'static str {
+        match self {
+            Self::All => "all-v1",
+            Self::ConverterInputs => "converter-inputs-v1",
+        }
+    }
+
+    fn includes(self, path: &Path) -> bool {
+        self == Self::All
+            || path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "dds" | "nif" | "pex" | "lod" | "strings" | "ilstrings" | "dlstrings"
+                    )
+                })
+    }
+
+    fn accepts_recipe(self, recipe: &str) -> bool {
+        recipe == self.recipe()
+            || (self == Self::ConverterInputs && matches!(recipe, "" | "all-v1"))
+            || (self == Self::All && recipe.is_empty())
+    }
+}
+
+/// CPU decompression and bounded I/O scheduling are independent. Completed
+/// batches are durable immutable packs; per-file cache blobs are derived copies.
+#[derive(Debug, Clone)]
+pub struct ExtractOptions {
+    pub cpu_jobs: usize,
+    pub io_jobs: usize,
+    pub selection: ArchiveSelection,
+    pub checkpoint_dir: Option<PathBuf>,
+    pub reuse_cache: bool,
+}
+
+impl ExtractOptions {
+    pub fn converter(cpu_jobs: usize, io_jobs: usize, checkpoint_dir: Option<PathBuf>) -> Self {
+        Self {
+            cpu_jobs,
+            io_jobs,
+            selection: ArchiveSelection::ConverterInputs,
+            checkpoint_dir,
+            reuse_cache: true,
+        }
+    }
+}
+
 impl ArchiveExtractor {
+    /// Extracts only the selected inputs, reusing verified durable batches left
+    /// by a previous run, including one interrupted before the archive completed.
+    /// The source inode must stay immutable while its bytes are memory-mapped.
+    /// A replaced or unreadable source path invalidates newly sealed checkpoints.
+    #[allow(clippy::too_many_arguments)]
+    pub fn extract_cached_with_options(
+        archive_path: &Path,
+        output_root: &Path,
+        previous_cache_root: &Path,
+        cache_root: &Path,
+        previous: Option<&IngestionCacheEntry>,
+        _verify_integrity: bool,
+        options: &ExtractOptions,
+        progress: Option<ExtractionProgressCallback<'_>>,
+        stop: Option<StopCheck<'_>>,
+    ) -> Result<ExtractionOutcome> {
+        // Packed recipes materialize ordinary blobs without per-file flushes.
+        // Every reused blob is checked even if legacy cache verification was disabled.
+        batched::extract(
+            archive_path,
+            output_root,
+            previous_cache_root,
+            cache_root,
+            previous,
+            options,
+            progress,
+            stop,
+            None,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn extract_cached(
         archive_path: &Path,
@@ -132,17 +225,17 @@ impl ArchiveExtractor {
         stop: Option<StopCheck<'_>>,
     ) -> Result<ExtractionOutcome> {
         let source_hash = hash_file(archive_path)?;
-        if let Some(entry) = previous.filter(|entry| entry.source_hash == source_hash)
-            && let Some(files) = restore_cached_files(
-                entry,
-                output_root,
-                previous_cache_root,
-                cache_root,
-                verify_integrity,
-                progress,
-                stop,
-            )?
-        {
+        if let Some(entry) = previous.filter(|entry| {
+            entry.source_hash == source_hash && ArchiveSelection::All.accepts_recipe(&entry.recipe)
+        }) && let Some(files) = restore_cached_files(
+            entry,
+            output_root,
+            previous_cache_root,
+            cache_root,
+            verify_integrity,
+            progress,
+            stop,
+        )? {
             return Ok(ExtractionOutcome {
                 files,
                 cache_entry: entry.clone(),
@@ -153,6 +246,7 @@ impl ArchiveExtractor {
         let files = extract_reporting(archive_path, output_root, progress, stop)?;
         let cache_entry = IngestionCacheEntry {
             source_hash,
+            recipe: ArchiveSelection::All.recipe().to_owned(),
             files: files
                 .iter()
                 .map(|file| IngestedFile {
@@ -371,6 +465,7 @@ fn restore_cached_files(
     if let Some(reporter) = &reporter {
         reporter.announce();
     }
+    let spill_cache = SpillCache::default();
     let mut restored = Vec::with_capacity(entry.files.len());
     for file in &entry.files {
         check_stop(stop)?;
@@ -379,7 +474,7 @@ fn restore_cached_files(
         let new_blob = blob_path(cache_root, &file.hash)?;
         copy_if_missing(&old_blob, &new_blob)?;
         let destination = output_root.join(&relative);
-        share_blob(&new_blob, &destination)?;
+        share_blob(&new_blob, &destination, &spill_cache)?;
         if let Some(reporter) = &reporter {
             reporter.advance(file.size);
         }
@@ -397,13 +492,14 @@ fn persist_cache_blobs(
     output_root: &Path,
     cache_root: &Path,
 ) -> Result<()> {
+    let spill_cache = SpillCache::default();
     for file in files {
         let extracted = output_root.join(&file.path);
         let blob = blob_path(cache_root, &file.sha256)?;
         if blob.is_file() {
             // Another entry with the same bytes stored this blob first: make this path a name for
             // it too, so duplicated content is held once.
-            share_blob(&blob, &extracted)?;
+            share_blob(&blob, &extracted, &spill_cache)?;
         } else {
             copy_file(&extracted, &blob)?;
         }
@@ -413,11 +509,11 @@ fn persist_cache_blobs(
 
 /// Makes `destination` a name for `blob`, a blob in this run's cache that many paths may share
 /// (see `link_or_copy_spilling`).
-fn share_blob(blob: &Path, destination: &Path) -> Result<()> {
+fn share_blob(blob: &Path, destination: &Path, spill_cache: &SpillCache) -> Result<()> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    link_or_copy_spilling(blob, destination).wrap_err_with(|| {
+    link_or_copy_spilling(blob, destination, spill_cache).wrap_err_with(|| {
         format!(
             "failed to restore cached asset {} to {}",
             blob.display(),
