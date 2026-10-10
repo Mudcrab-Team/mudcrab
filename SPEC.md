@@ -101,6 +101,8 @@ Q6|state-specific forms from earlier rows|identify exact links for mount, furnit
 - artifact: qualified oracle JSONL → before-merge major-record observations, tool/input provenance, typed values/references where exposed, explicit unavailable observations & errors. Existing placed-record command retains behavior.
 - document: `docs/roadmap/dynamic-schema-initiative.md` → complete phase/gate contracts; `docs/research/dynamic-schema/` → reproducible candidate evidence, not accepted schemas.
 
+- artifact: `docs/research/dynamic-schema/schema-explorer.html` → offline searchable source catalog, current SQL tables/columns, selected field/native evidence & labeled unknowns; generated from pinned project/MCP facts.
+
 ## §R RESEARCH
 
 id|topic|finding|src
@@ -277,16 +279,25 @@ V143: P0 input manifest ! executable SHA-256 alignment, explicit missing inputs,
 V144: P0 oracle observations ! exact package/runner + input hash; unavailable observations ≠ empty/absent; lazy major records materialized; failure/truncation → nonzero status & no completed verdict. Physical framing remains Mudcrab source authority.
 V145: P0 fixtures ! positive header counts/hierarchy match physical occurrences; unknown/repeated subrecords, valid full/light identities, overrides/deletions, localization & malformed/truncated negative cases as applicable to each pilot. Pilot agreement ≠ full-catalog or native-runtime acceptance.
 V146: P0 manifest dependency closure ! deep acyclic chains & cycles handled without Python stack recursion; missing/ambiguous/cyclic dependencies remain explicit failures. Long-chain & cycle fixtures guard traversal.
-V147: P0 oracle artifacts/temp/build/cache ! outside Mudcrab source, active RE checkout/store & supplied oracle roots; validate destination before any write. Protected-path fixtures guard both CLI & runner.
+V147: P0 oracle artifacts/temp/build/cache ! outside every registered Mudcrab worktree, active RE checkout/store & supplied oracle/tool roots; verify worktree discovery & validate destination before any write; tool temp env artifact-local. Protected-path fixtures guard both CLI & runner.
 V148: P0 oracle supervisor ! bounded external-command timeouts; timeout → nonzero/incomplete, retained diagnostics & no completed qualification verdict. Timeout fixtures guard status handling.
 
 V149: Standalone schema/dotnet tool options ! classified by existing script-option audit; every actual engine option remains checked against parser. Existing script/help/doc regressions guard ownership.
 
+V150: P0 corpus evidence ! bounded strict JSON + exact newest target + verified artifact hashes; supplied semantic claims remain unverified. Invalid/deep JSON → managed failure; output cannot overlap descriptor or evidence artifacts. Evidence CLI/deep-JSON regressions guard boundary.
+V151: P0 tool reports ! exact Python decision-runner/helper/fixture source hashes separate from external binary/package pins; release metadata ≠ verified source-to-binary build. Startup-report provenance regression + final executable artifacts guard identity.
 V152: P0 manifest API/CLI ! resolve containing directories before immediate-child checks; final executable/CCC filename remains unresolved so leaf symlinks rejected. Directory-alias/`..` and leaf-symlink regressions guard both routes.
 V153: P0 runtime-loadable plugin set ! Data top level only; nested plugins separately hashed/reported, never satisfy masters/base presence/CCC loadable matches. Loose string tables remain recursively observed; nested-master/base/duplicate regressions guard partition.
 V154: P0 Windows path/descriptor checks ! same device/inode/type/size; descriptor-before/after full metadata equality retained for drift. POSIX path/descriptor full metadata equality unchanged; platform-skew and existing drift regressions guard boundary.
 
+V155: P0 Git provenance reads ! deadline + inspected revision/path context; timeout → controlled nonzero, no new/replaced source report. Revision/file deadline & prior-report preservation regressions guard boundary.
+V156: P0 process output ! strict locale decoding before structured acceptance; invalid bytes → unavailable/incomplete, never replacement-text JSON. Oracle reports retain raw stream bytes/hash/size and failed case/startup; decode/timeout/report regressions guard availability.
 V157: P0 repository/Data-relative evidence path keys ! POSIX separators on every host; issue/source joins & decision-runner identity use same canonical path spelling. Windows-path & nested-issue regressions guard serialization.
+V158: P0 saved text logs/JSON ! explicit UTF-8 regardless host locale; strict child-output decoding separate. Non-CP1252 xEdit artifact regression guards writer encoding.
+
+V159: Schema explorer ! pinned code-derived catalog/SQL facts, source citations & distinct declaration/static/current/unknown labels; inferred relationships ≠ SQLite foreign keys; selected field evidence ≠ complete interpretation; future ingestion visibly planned; offline navigation/search & embedded text safety verified.
+
+V160: Explorer UTF-8 text identities ! explicit CRLF→LF normalization; LF/CRLF checkouts → identical facts/HTML; semantic source drift → managed failure. Hash labels state normalization; retail/archive byte identities retain existing raw-byte contracts.
 
 V161: Dynamic ingestion: Complete SE structural verdict includes TES4, all groups/record/subrecord occurrences and complete byte accounting. Unknown semantics never block supported framing, but do not satisfy interpretation acceptance.
 
@@ -338,7 +349,7 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 
-T58|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V161,V162,V128,V134,V138,V141,V142,V143,V146
+T58|~|Dynamic ingestion P0 pin newest SE, complete catalog/corpus ledger, consumer/time/RSS baselines, SE validator and archive contracts|V161,V162,V128,V134,V138,V141,V142,V143,V146,V150
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
 
 T59|.|Dynamic ingestion P1 extend existing 24-byte Skyrim scanner/arena; preserve all headers/groups/spans/compression/XXXX and bound failures|V161,V119,V120,V121,V136,V142
@@ -355,7 +366,9 @@ T52|.|Dynamic ingestion Each opened phase record exact commands/hashes/raw evide
 T53|.|Dynamic ingestion Deferred P7 after P6: earlier SE backwards and VR, complete per-profile interpretation and newest-SE non-regression|V122,V128,V133,V134,V135,V140
 T54|.|Dynamic ingestion Deferred P8 after P7: LE layouts/encoding/reference/corpus acceptance; preserve SE/VR compatibility|V122,V128,V133,V134,V135,V137
 T55|.|Dynamic ingestion Eventual P9 after P8: open separate other-game native ingestion plans using retained tes4skyrim research and applicable validators|V161,V128,V134,V135,V136,V137,V138
-T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V128,V134,V143,V144,V145,V147,V148,R26
+T56|~|Dynamic ingestion P0 extend existing Mutagen pilot at validation owner; qualify synthetic observations/error/availability contract and xEdit runner; missing capability remains gap|V128,V134,V143,V144,V145,V147,V148,V151,R26
+
+T57|x|P0 human schema explorer: compact offline HTML, searchable candidate catalog/current SQL, selected field/variant labels from project + read-only mudcrab-re MCP; verify source data, navigation, citations & unknowns|V134,V138,V140,V141,V159,V160
 
 ## §B BUGS
 
@@ -459,17 +472,41 @@ B94|2026-10-04|P0 positive HEDR counts omitted GRUP headers; typed-reader succes
 B95|2026-10-04|P0 report claimed typed localized-ID check even when both typed ID observations unavailable|V144; separate fixture wire-ID provenance, typed-ID availability & unresolved translated text
 B96|2026-10-04|same-tick same-size fixture rewrite retained mtime/ctime; source-drift regression depended on host timestamp advancement|V143; explicit timestamp drift in test; document stat-checked read ≠ immutable snapshot
 B97|2026-10-04|engine script-option audit treated standalone schema argparse/dotnet options as engine options; parent CI failed after 918/919 passing tests|V149; extend existing NON_ENGINE_FLAGS + script/help/doc regressions
+B98|2026-10-04|supplied load-order descriptor normalized artifact under `source`; CLI indexed nonexistent `evidence` key|V150; responsible source key + supplied-evidence CLI regression
+B99|2026-10-04|manifest output could alias or overlap external evidence input; source-only guard missed new descriptor artifacts|V150; resolved overlap guard before writes + alias/ancestor regressions
+B100|2026-10-04|deep evidence JSON escaped decode handler with `RecursionError` despite byte limit|V150; managed invalid-JSON failure + 20000-level input regression
+B101|2026-10-04|detached descendant retained stdout after process-group termination; final unbounded `communicate()` waited 60 seconds|V148; bounded final collection + pipe close; detached-pipe regression; escaped descendant cleanup separately limited
+B102|2026-10-04|oracle artifact guard protected only current Mudcrab worktree; primary dirty checkout remained writable destination|V147; timed registered-worktree discovery before writes + every-checkout/failure regressions
+B103|2026-10-04|xEdit console exited zero after Wine crash & tolerated malformed dump; exit code alone could masquerade as qualification|V144,V145; crash/completion/identity diagnostics; malformed dumps remain unqualified; original schema diagnostics retained
+B104|2026-10-04|tool reports omitted Python classification source identity; xEdit inherited potentially protected temp paths|V147,V151; decision-source hashes + artifact-local Wine temp env + startup/provenance regression
+B105|2026-10-04|static XESP summary omitted flag-write condition after zero-parent removes extra entry|native shard cross-check; flag write only when entry exists
+B106|2026-10-04|oracle artifact guard omitted custom SDK/Wine executable directories; temporary outputs could enter supplied runtime roots|V147; resolve runtime & guard directory before writes in runner/CLI; custom-runtime regressions
 B107|2026-10-05|P0 `.absolute()` normalized lexical `..` before resolving directory aliases; valid executable/CCC parents failed immediate-child checks|V152; normalize parent only, retain leaf symlink rejection; API/CLI regressions
 B108|2026-10-05|recursive Data plugin discovery let nested masters/base names satisfy runtime-loadable closure/presence|V153; separate loadable top-level set and hashed nested observations; nested master/base/duplicate regressions
 B109|2026-10-05|Windows lstat/fstat timestamp skew classified unchanged file as source drift|V154; cross-interface identity/size checks on Windows, full same-descriptor drift checks; synthetic platform regression + Windows CI
 B110|2026-10-05|synthetic corpus `plugins or defaults` treated explicit empty mapping as five base plugins|V145; only None selects defaults; empty-corpus regression
+B111|2026-10-05|P0 source evidence used unbounded Git reads; stalled child prevented controlled report outcome|V155; bounded reads with revision/path diagnostics; preserve previous report on timeout
+B112|2026-10-05|locale text-mode subprocess decoding raised before xEdit saved incomplete report; replacement decoding could corrupt accepted typed JSON|V156; binary capture, strict decoding and fail-closed exception; xEdit raw-byte logs/incomplete report regressions
+B113|2026-10-05|real timeout fixtures assumed Python startup/flush within 0.2 seconds; concurrent builds exposed empty diagnostic race|V148,V156; bounded post-flush readiness before supervised timeout; retain real-process diagnostic/deadline assertions; no new invariant
 B114|2026-10-05|source miner could count Pascal call text inside literals; initial portable regressions used malformed fixtures|mask literals before call detection; correct fixture syntax/markers; source-miner regressions; existing evidence contract sufficient, no new invariant
 B115|2026-10-05|alias fixture relied on POSIX symlink traversal before `..`; Windows canonicalization described different parent|V152; separate parent-alias and real-directory `..` API/CLI fixtures; leaf-link rejection retained
 B116|2026-10-05|Data-relative issue paths used native Windows separators unlike hashed source keys|V157; POSIX serialization + nested plugin/string/archive issue regressions
 B117|2026-10-05|parent final pipe drain unbounded; Windows reader-thread close can block; partial Unicode decode bypassed timeout diagnostics|V144,V148; bounded tree termination/drains/wait; POSIX-only pipe close; retain undecodable raw bytes; real detached-child + failed-Windows-cleanup + partial-Unicode regressions
+B118|2026-10-05|parent issue-path fixture mocked archive stat helper removed by next layer's hashed archive owner|V157; next fixture targets existing hashed-file read + archive source-drift outcome; no new invariant
+B119|2026-10-05|decision-runner provenance used Windows separators while report consumers keyed POSIX repository paths|V151,V157; POSIX relative serialization + PureWindowsPath and startup-report regressions
+B120|2026-10-05|extensionless SDK/Wine fixtures failed Windows executable lookup before protected-directory assertions|V147; platform-valid `.exe` fixture names; runtime resolution/guard order retained
+B121|2026-10-05|xEdit text artifact writes inherited host encoding; non-CP1252 diagnostics could prevent saved report|V158; explicit UTF-8 every text write + Unicode artifact regression; strict child decoding retained
+B122|2026-10-05|source-span lexer classified Rust lifetimes as character literals; matcher missed generic lifetime declarations|V134; bounded char-literal recognition + lifetime/declaration/character-brace regressions; no new invariant
+B123|2026-10-05|source report `--check` read errors escaped as tracebacks and mismatches used uncontrolled exit|V134,V155; managed exit 2 for missing/malformed reports and mismatches; report-read regression; no new invariant
+B124|2026-10-05|next Mutagen callers handled timeout text only; shared binary decode errors lost raw artifacts at generic failure summary|V144,V156; persist raw streams/hash/size + unavailable decoded-output metadata for checked/case/legacy/SDK commands; partial-Unicode artifact regression; no new invariant
+B125|2026-10-05|docs-owned source evidence tests placed under engine utility scan; next CI rejected test-only `--repo`|V149; move tests beside responsible script; existing portable CI discovery retains every regression and strict engine audit unchanged
+B126|2026-10-05|explorer hashed checkout text bytes; CRLF-only conversion falsely reported code drift & changed generated input identities|V160; explicit UTF-8 CRLF→LF source/evidence hashes + equivalent-checkout regression
+B127|2026-10-05|explorer skip link changed hash to `#detail`; route parser reset selected table/evidence to REFR|V159; prevent route mutation, focus/scroll existing detail; real browser route/focus check
 B128|2026-10-06|P0 leaf stat/O_NOFOLLOW checks did not bind ancestor directories; concurrent parent symlink swap could attribute external bytes to recorded Data path|V143; document ancestry limit in reader/report/docs; opened-byte hash ≠ unchanged-path proof; no new invariant, immutable source retention stays P1
+B129|2026-10-06|stacked CI included newer main converter bytes while local explorer checks used older branch; source-drift guard rejected stale pins|V134,V159,V160; normal main/parent integration + reviewed source-pin/anchor/projection refresh; retain historical MCP snapshot & fail-closed drift guard; no new invariant
 B130|2026-10-04|P0 manifest used recursive dependency DFS; 1500-node acyclic light-plugin chain raised `RecursionError`|V146; stdlib iterative dependency traversal + chain/cycle fixtures
 B131|2026-10-06|main CI-cache entries reused schema V117/T41/B79; integration conflicted at distinct semantic bindings|preserve main V117/T41/B79; schema V161/T58/B130; update references; unique-ID/source-row preservation checks; no new behavior invariant
+B132|2026-10-06|merge verifier demanded exact parent invariant text although child already strengthened artifact guards before integration|retain prior child rows modulo ID rebindings; preserve parent-only/main rows; V147 unchanged from child; no new behavior invariant
 B133|2026-10-04|P0 manifest success predicate omitted unresolved load order, locale & accepted corpus pins; valid base-only corpus could report success|V143; explicit completion blockers + matched-runtime base-only regression
 B134|2026-10-04|custom CCC missing/drift diagnostics hard-coded `Skyrim.ccc` instead of supplied descriptor path|V143; shared source provenance + custom missing-descriptor regression
 B135|2026-10-06|new main quaternion/performance entries reused schema V118/T42/B80/B81 before publication|preserve main V118/T42/B80/B81; schema V162/T59/B133/B134; three-way row/reference checks; no new behavior invariant

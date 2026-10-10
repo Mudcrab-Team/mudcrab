@@ -11,24 +11,25 @@ import argparse
 import hashlib
 import json
 import os
-import signal
 import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 
-import corpus_manifest
 import p0_fixtures
+from p0_tools import (
+    QualificationError, ProcessTimeout, ProcessOutputDecodeError, _read_verified_bytes,
+    validate_artifact_destination, _run_supervised,
+    RE_PROJECT_ROOT, MCRAB_STORE, REPO_ROOT,
+    runner_provenance,
+)
 
 
 PINNED_PROGRAM_SHA256 = "8e61a44f4f953c0491aab3c0519021fb67ca1b7528c607797cd4a2d948c06a06"
 PINNED_CSPROJ_SHA256 = "de51c55aa0b0d56e722cefc3b8b0b4505c28114537468ba3d7ae5c0ce69129be"
 PINNED_DOTNET = "9.0.318"
 PINNED_MUTAGEN = "0.54.4"
-RE_PROJECT_ROOT = Path("/home/dev/.t3/projects/mudcrab-reverse-engineering")
-MCRAB_STORE = Path("/home/dev/mcrab-store")
-REPO_ROOT = Path(__file__).resolve().parents[2]
 ORACLE_ENTRY = 'if (args.Length >= 3 && args[0] == "placed-lo")'
 INSPECT_ENTRY = b'if (args.Length == 2 && args[0] == "inspect")\n    return MutagenP0Inspect.Run(args[1]);\n'
 RESTORE_TIMEOUT_SECONDS = 240
@@ -37,73 +38,25 @@ ORACLE_TIMEOUT_SECONDS = 45
 CLI_TIMEOUT_SECONDS = 15
 
 
-class QualificationError(RuntimeError):
-    pass
-
-
-class ProcessTimeout(QualificationError):
-    def __init__(self, label: str, timeout: float, stdout: str, stderr: str):
-        super().__init__(f"{label} timed out after {timeout:g} seconds")
-        self.label = label
-        self.timeout = timeout
-        self.stdout = stdout
-        self.stderr = stderr
-        self.raw_output: tuple[bytes, bytes] | None = None
-        self.cleanup_errors: list[dict] = []
-
-
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _save_timeout_raw(exc: ProcessTimeout, stdout_path: Path, stderr_path: Path) -> dict:
-    """Retain undecodable partial timeout streams without inventing text."""
-    raw_output = getattr(exc, "raw_output", None)
-    if raw_output is None:
-        return {}
-    evidence = {"decoded_output": "unavailable"}
-    for name, path, raw in zip(("stdout", "stderr"), (stdout_path, stderr_path), raw_output):
-        path = path.with_suffix(".bin")
-        path.write_bytes(raw)
-        evidence[f"raw_{name}_file"] = path.name
-        evidence[f"raw_{name}_sha256"] = _sha256(raw)
-        evidence[f"raw_{name}_size_bytes"] = len(raw)
-    return evidence
-
-
-def _read_verified_bytes(path: Path) -> tuple[str, int, bytes]:
-    try:
-        requested = path.lstat().st_size
-    except OSError as exc:
-        raise QualificationError(f"cannot stat pinned source {path}: {exc}") from exc
-    try:
-        digest, size, raw = corpus_manifest._read_verified_file(path, capture_bytes=requested)
-    except (OSError, corpus_manifest.SourceDriftError) as exc:
-        raise QualificationError(f"pinned source verification failed for {path}: {exc}") from exc
-    if len(raw) != size:
-        raise QualificationError(
-            f"verified read did not capture the full source {path}: captured {len(raw)}, read {size}"
-        )
-    if _sha256(raw) != digest:
-        raise QualificationError(f"verified source bytes and digest differ for {path}")
-    return digest, size, raw
-
-
-def validate_artifact_destination(
-    candidate: Path,
-    oracle_source: Path,
-    *,
-    additional_protected: tuple[Path, ...] = (),
-) -> None:
-    candidate = candidate.expanduser().resolve()
-    protected = (REPO_ROOT, RE_PROJECT_ROOT, MCRAB_STORE, oracle_source.expanduser().resolve()) + tuple(
-        path.expanduser().resolve() for path in additional_protected
-    )
-    for protected_root in protected:
-        if _contains(candidate, protected_root) or _contains(protected_root, candidate):
-            raise QualificationError(
-                f"artifact directory overlaps protected path {protected_root}: {candidate}"
-            )
+def _save_decode_failure(exc: ProcessOutputDecodeError, base: Path) -> Path:
+    """Save unavailable text and its exact raw evidence at the report owner."""
+    stdout_path = base.with_suffix(".decode.stdout.bin")
+    stderr_path = base.with_suffix(".decode.stderr.bin")
+    stdout_path.write_bytes(exc.stdout_bytes)
+    stderr_path.write_bytes(exc.stderr_bytes)
+    report_path = base.with_suffix(".decode-error.json")
+    _save_json(report_path, {
+        "status": "incomplete", "completed_verdict_saved": False,
+        "decoded_output": "unavailable", "label": exc.label,
+        "timeout_seconds": exc.timeout,
+        "raw_stdout_file": stdout_path.name, "raw_stderr_file": stderr_path.name,
+        **exc.failure_record(),
+    })
+    return report_path
 
 
 def default_artifact_destination(env: dict[str, str] | None = None) -> Path:
@@ -114,14 +67,6 @@ def default_artifact_destination(env: dict[str, str] | None = None) -> Path:
         Path("/tmp"),
     )
     return base / f"mudcrab-p0-mutagen-{uuid.uuid4().hex}"
-
-
-def _contains(parent: Path, child: Path) -> bool:
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 def apply_inspect_extension(program: bytes, extension: bytes) -> bytes:
@@ -149,88 +94,6 @@ def _resolve_dotnet(explicit: str | None) -> Path:
     return path
 
 
-def _signal_owned_group(process, sig: int, cleanup_errors: list[dict]) -> None:
-    """Reap an exited leader, then still signal its original group for survivors."""
-    process.poll()
-    try:
-        os.killpg(process.pid, sig)
-    except ProcessLookupError:
-        pass
-    except OSError as exc:
-        cleanup_errors.append({
-            "operation": f"killpg({sig})", "errno": exc.errno,
-            "error": str(exc),
-        })
-
-
-def _run_supervised(
-    command: list[str], *, cwd: Path, env: dict[str, str], label: str, timeout: float
-) -> subprocess.CompletedProcess:
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=(os.name == "posix"),
-    )
-    cleanup_errors: list[dict] = []
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            _signal_owned_group(process, signal.SIGTERM, cleanup_errors)
-        else:
-            # Stop descendants before their parent so inherited pipe handles
-            # do not keep the timeout cleanup waiting for compiler workers.
-            try:
-                subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=2, check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            if process.poll() is None:
-                process.kill()
-        try:
-            stdout, stderr = process.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                _signal_owned_group(process, signal.SIGKILL, cleanup_errors)
-            else:
-                process.kill()
-            try:
-                stdout, stderr = process.communicate(timeout=2)
-            except subprocess.TimeoutExpired as exc:
-                stdout, stderr = exc.output, exc.stderr
-                # Windows communicate() has reader threads: closing a pipe
-                # still being read can itself block on the reader's lock.
-                if os.name == "posix":
-                    process.stdout.close()
-                    process.stderr.close()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-                raw_output = (stdout or b"", stderr or b"")
-                try:
-                    if isinstance(stdout, bytes):
-                        stdout = stdout.decode(process.stdout.encoding)
-                    if isinstance(stderr, bytes):
-                        stderr = stderr.decode(process.stderr.encoding)
-                except UnicodeDecodeError as exc:
-                    failure = ProcessTimeout(label, timeout, "", "")
-                    failure.raw_output = raw_output
-                    failure.cleanup_errors = cleanup_errors
-                    raise failure from exc
-        failure = ProcessTimeout(label, timeout, stdout or "", stderr or "")
-        failure.cleanup_errors = cleanup_errors
-        raise failure
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-
 def _run_checked(
     command: list[str],
     *,
@@ -243,13 +106,16 @@ def _run_checked(
     _save_json(log_dir / f"{label}.command.json", command)
     try:
         result = _run_supervised(command, cwd=cwd, env=env, label=label, timeout=timeout)
+    except ProcessOutputDecodeError as exc:
+        report_path = _save_decode_failure(exc, log_dir / label)
+        _save_json(log_dir / f"{label}.command.json", command)
+        raise QualificationError(f"{exc}; see {report_path}") from exc
     except ProcessTimeout as exc:
         (log_dir / f"{label}.stdout.txt").write_text(exc.stdout, encoding="utf-8")
         (log_dir / f"{label}.stderr.txt").write_text(exc.stderr, encoding="utf-8")
         _save_json(log_dir / f"{label}.timeout.json", {
             "timeout_seconds": timeout, "completed_verdict_saved": False,
             "cleanup_errors": exc.cleanup_errors,
-            **_save_timeout_raw(exc, log_dir / f"{label}.stdout.txt", log_dir / f"{label}.stderr.txt"),
         })
         _save_json(log_dir / f"{label}.command.json", command)
         raise QualificationError(f"{exc}; see {log_dir / (label + '.timeout.json')}") from exc
@@ -615,6 +481,15 @@ def _case_run(
             label=f"inspect-{Path(filename).stem}",
             timeout=ORACLE_TIMEOUT_SECONDS,
         )
+    except ProcessOutputDecodeError as exc:
+        case_base = observations_dir / Path(filename).stem
+        report_path = _save_decode_failure(exc, case_base)
+        _save_json(case_base.with_suffix(".command.json"), command)
+        return {
+            "status": "failed", "file_name": filename,
+            "failure": f"{exc}; see {report_path}",
+            "completed_verdict_saved": False,
+        }, None
     except ProcessTimeout as exc:
         case_base = observations_dir / Path(filename).stem
         (case_base.with_suffix(".raw.stdout.txt")).write_text(exc.stdout, encoding="utf-8")
@@ -625,7 +500,6 @@ def _case_run(
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
                 "cleanup_errors": exc.cleanup_errors,
-                **_save_timeout_raw(exc, case_base.with_suffix(".raw.stdout.txt"), case_base.with_suffix(".stderr.txt")),
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
                 "stderr_sha256": _sha256(exc.stderr.encode("utf-8")),
@@ -705,6 +579,11 @@ def _run_legacy_command(
             label=label,
             timeout=ORACLE_TIMEOUT_SECONDS,
         )
+    except ProcessOutputDecodeError as exc:
+        base = observations_dir / label
+        report_path = _save_decode_failure(exc, base)
+        _save_json(base.with_suffix(".command.json"), command)
+        raise QualificationError(f"{exc}; see {report_path}") from exc
     except ProcessTimeout as exc:
         base = observations_dir / label
         base.with_suffix(".timeout.stdout.txt").write_text(exc.stdout, encoding="utf-8")
@@ -716,7 +595,6 @@ def _run_legacy_command(
                 "status": "incomplete",
                 "timeout_seconds": ORACLE_TIMEOUT_SECONDS,
                 "cleanup_errors": exc.cleanup_errors,
-                **_save_timeout_raw(exc, base.with_suffix(".timeout.stdout.txt"), base.with_suffix(".timeout.stderr.txt")),
                 "stdout_sha256": _sha256(exc.stdout.encode("utf-8")),
                 "stdout_size_bytes": len(exc.stdout.encode("utf-8")),
                 "stderr_sha256": _sha256(exc.stderr.encode("utf-8")),
@@ -799,6 +677,9 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     )
     oracle_dir = Path(args.oracle_source).expanduser().resolve()
     validate_artifact_destination(artifact_dir, oracle_dir)
+    dotnet = _resolve_dotnet(args.dotnet)
+    validate_artifact_destination(artifact_dir, oracle_dir, additional_protected=(dotnet.parent,))
+    runner_source = runner_provenance(Path(__file__))
     if artifact_dir.exists() and any(artifact_dir.iterdir()):
         raise QualificationError(f"artifact directory must be empty: {artifact_dir}")
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -834,7 +715,6 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     (provenance_dir / "Program.base.txt").write_bytes(program_raw)
     (provenance_dir / "mutagen_inspect_extension.txt").write_bytes(extension_raw)
 
-    dotnet = _resolve_dotnet(args.dotnet)
     env = os.environ.copy()
     env.update(
         {
@@ -862,6 +742,10 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             label="dotnet-version",
             timeout=CLI_TIMEOUT_SECONDS,
         )
+    except ProcessOutputDecodeError as exc:
+        report_path = _save_decode_failure(exc, logs_dir / "dotnet-version")
+        _save_json(logs_dir / "dotnet-version.command.json", [str(dotnet), "--version"])
+        raise QualificationError(f"{exc}; see {report_path}") from exc
     except ProcessTimeout as exc:
         (logs_dir / "dotnet-version.stdout.txt").write_text(exc.stdout, encoding="utf-8")
         (logs_dir / "dotnet-version.stderr.txt").write_text(exc.stderr, encoding="utf-8")
@@ -870,7 +754,6 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
             {
                 "timeout_seconds": CLI_TIMEOUT_SECONDS, "completed_verdict_saved": False,
                 "cleanup_errors": exc.cleanup_errors,
-                **_save_timeout_raw(exc, logs_dir / "dotnet-version.stdout.txt", logs_dir / "dotnet-version.stderr.txt"),
             },
         )
         raise QualificationError(str(exc)) from exc
@@ -1013,6 +896,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
     )
     summary = {
         "pilot_status": "passed_bounded_synthetic_qualification",
+        "runner": runner_source,
         "acceptance_verdict": {
             "state": "unavailable",
             "reason": "P0 typed traversal does not establish full structural, catalog, corpus, or native-runtime acceptance",
@@ -1050,7 +934,7 @@ def run_suite(args: argparse.Namespace) -> tuple[dict, Path]:
         "legacy_command_smokes": legacy,
         "xedit": {
             "status": "not_run",
-            "reason": "No xEdit executable or qualified runner was available; the pinned xDump Delphi route remains unbuilt and unexecuted.",
+            "reason": "This suite executes Mutagen only; run_xedit_p0.py separately records xEdit capabilities and qualification gaps.",
         },
         "limits": [
             "Mutagen typed groups may collapse or skip source record occurrences.",
@@ -1080,6 +964,8 @@ def main(argv: list[str] | None = None) -> int:
     artifact_owned = False
     try:
         validate_artifact_destination(candidate, Path(args.oracle_source))
+        dotnet = _resolve_dotnet(args.dotnet)
+        validate_artifact_destination(candidate, Path(args.oracle_source), additional_protected=(dotnet.parent,))
         if candidate.exists() and (not candidate.is_dir() or any(candidate.iterdir())):
             raise QualificationError(f"artifact directory must be empty: {candidate}")
         candidate.mkdir(parents=True, exist_ok=True)

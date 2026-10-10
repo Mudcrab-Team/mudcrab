@@ -1,0 +1,580 @@
+{
+  "artifact_kind": "sanitized_read_only_schema_explorer_evidence_brief",
+  "observed_date_utc": "2026-10-05",
+  "purpose": "Human labels and provenance for an offline Skyrim plugin schema explorer. Evidence supports a selected REFR/CELL/STAT pilot; it does not establish full interpretation or retail runtime behavior.",
+  "pins": {
+    "mudcrab_evidence_worktree": {
+      "path": "/home/dev/Projects/mudcrab-dynamic-schema-p0-next",
+      "head_at_capture": "3853f919e76213a3bd99f1d9199bb4b672e7b296",
+      "cargo_lock_sha256": "84cab4a9feb8ec90c5e7f2143dc1f12598ad6d5986c41937df2f2a9209228ee6",
+      "evidence_file_sha256": {
+        "docs/research/dynamic-schema/native-field-ledger.md": "91525d196ce886cd7b180ad40ab9bc454fef2eb0d141ea370ab66045fdfb8c34",
+        "docs/research/dynamic-schema/candidate-inventory.json": "ca6e8d2982d8b9a9a759a96a539dc50d1e0d2c99bd464ddbdb98185f91138d3e",
+        "docs/research/dynamic-schema/pilot-code-evidence.json": "6da7df0e559d5f2b594d1d3ff1648488e76f79340d7aef85064a30e60d555e0d"
+      },
+      "source_code_pins_in_ledger": {
+        "task_base": "97ddf6966310061c859f9eb3db84e279121d23b4",
+        "observed_main": "db3a1dc3ed80795149e3a15a5047f4d313dd3e74",
+        "review_branch": "2ce397734fa59c1dd8749928376b439a99edff39"
+      }
+    },
+    "native_target": {
+      "edition": "AE",
+      "version": "1.7.104.0",
+      "steam_build": "24914197",
+      "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+      "evidence_tier": "static code review only; no VM/runtime observation"
+    },
+    "source_catalog": {
+      "xedit_commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "mutagen_commit": "4f533562ee0c70347d47c1979d5464d42b06ee6b",
+      "xedit_signatures_including_tes4_header": 134,
+      "xedit_plugin_signatures_excluding_tes4": 133,
+      "mutagen_unique_signatures": 127,
+      "shared_plugin_signatures": 127,
+      "xedit_only": [
+        "CLDC",
+        "PLYR",
+        "PWAT",
+        "RGDL",
+        "SCOL",
+        "SCPT"
+      ],
+      "scope_limit": "Source declarations only; not a qualified retail catalog or per-record applicability map. xEdit's Skyrim SE predicate also includes VR and Enderal SE."
+    }
+  },
+  "mcp_receipts": {
+    "workbench": {
+      "path": "/home/dev/.t3/projects/mudcrab-reverse-engineering",
+      "head": "7bbad5a782ceb32ff40b7f04fe394ad13e80b2b2",
+      "tools_lock_sha256": "e2c5a694a005eedfdba698276a903729a9b590897227b3e14ebe159c247aff8a",
+      "uv_lock_sha256": "969e4296147eb6a96087cfb553803764408f64695eb3312098982ca9b6ec6c6a",
+      "server": "mudcrab-re",
+      "transport": "stdio",
+      "command": [
+        "/home/dev/.t3/projects/mudcrab-reverse-engineering/.venv/bin/python",
+        "-m",
+        "mcrab.mcp_server"
+      ],
+      "server_env": {
+        "MCRAB_STORE": "/home/dev/mcrab-store"
+      },
+      "protocol_version": "2025-11-25",
+      "available_tools": [
+        "search",
+        "lookup",
+        "ledger_search",
+        "ledger_show",
+        "ledger_add",
+        "doctor"
+      ],
+      "called_tools": [
+        "ledger_search",
+        "ledger_show",
+        "lookup"
+      ],
+      "mutating_tools_called": [],
+      "exact_calls": [
+        {
+          "tool": "ledger_search",
+          "arguments": {
+            "regex": "REFR|XESP"
+          }
+        },
+        {
+          "tool": "ledger_search",
+          "arguments": {
+            "regex": "CELL|XCLC|XCLL|LTMP"
+          }
+        },
+        {
+          "tool": "ledger_search",
+          "arguments": {
+            "regex": "STAT|DNAM|MODS"
+          }
+        },
+        {
+          "tool": "ledger_show",
+          "finding_ids": [
+            "F0002",
+            "F0005",
+            "F0006",
+            "F0007",
+            "F0008",
+            "F0009",
+            "F0010",
+            "F0011",
+            "F0012"
+          ]
+        },
+        {
+          "tool": "lookup",
+          "arguments": {
+            "query": "rva:0x2de330",
+            "limit": 5
+          }
+        },
+        {
+          "tool": "lookup",
+          "arguments": {
+            "query": "rva:0x15b040",
+            "limit": 5
+          }
+        },
+        {
+          "tool": "lookup",
+          "arguments": {
+            "query": "rva:0x2b82b0",
+            "limit": 5
+          }
+        },
+        {
+          "tool": "lookup",
+          "arguments": {
+            "query": "rva:0x287520",
+            "limit": 5
+          }
+        }
+      ],
+      "receipt_files": [
+        {
+          "path": "/home/dev/.cache/mudcrab-schema-p0-review-evidence/mcp-ledger-search-receipts.json",
+          "observed_at_utc": "2026-10-05T14:23:46.429607+00:00"
+        },
+        {
+          "path": "/home/dev/.cache/mudcrab-schema-p0-review-evidence/mcp-ledger-show-receipts.json",
+          "observed_at_utc": "2026-10-05T14:24:24.293540+00:00"
+        },
+        {
+          "path": "/home/dev/.cache/mudcrab-schema-p0-review-evidence/mcp-lookup-receipts.json",
+          "observed_at_utc": "2026-10-05T14:25:44.302991+00:00"
+        }
+      ],
+      "receipt_scope": "Receipts contain actual MCP tool output and input schemas, with no decompiled source bodies. Field-level static descriptions below point to the P0 evidence ledger."
+    }
+  },
+  "schema_catalog": {
+    "current_code_source": "P0 worktree crates/converter/src/esm/exporter.rs create_tables DDL; executed in SQLite :memory: for schema introspection, not a populated world database.",
+    "world_database_schema_version": 7,
+    "cell_cache_version": 3,
+    "logical_objects": [
+      "cells",
+      "conversion_cache",
+      "exterior_spatial",
+      "formid_map",
+      "grass_types",
+      "land",
+      "landscape_texture_grasses",
+      "landscape_textures",
+      "lights",
+      "lod",
+      "lod_build",
+      "lod_chunks",
+      "lod_chunks_spatial",
+      "movement_game_settings",
+      "movement_types",
+      "npcs",
+      "plugins",
+      "race_movement_links",
+      "records",
+      "references",
+      "schema_info",
+      "scripts",
+      "statics",
+      "texture_sets",
+      "waters",
+      "worldspaces"
+    ],
+    "logical_object_count": 26,
+    "sqlite_master_table_count_with_rtree_shadows": 32,
+    "rtree_virtual_tables": [
+      "exterior_spatial",
+      "lod_chunks_spatial"
+    ],
+    "rtree_shadow_tables": [
+      "exterior_spatial_node",
+      "exterior_spatial_parent",
+      "exterior_spatial_rowid",
+      "lod_chunks_spatial_node",
+      "lod_chunks_spatial_parent",
+      "lod_chunks_spatial_rowid"
+    ],
+    "declared_foreign_key_count": 0,
+    "relationship_label_rule": "Show declared SQLite keys separately from relationships inferred in exporter/load-order code; no inferred/code link is a declared foreign key.",
+    "pilot_table_columns": {
+      "references": [
+        "id",
+        "cell_id",
+        "worldspace_id",
+        "base_form_id",
+        "is_exterior",
+        "pos_x",
+        "pos_y",
+        "pos_z",
+        "local_x",
+        "local_y",
+        "rot_x",
+        "rot_y",
+        "rot_z",
+        "scale",
+        "radius_override",
+        "header_flags",
+        "enable_parent_id",
+        "enable_parent_flags",
+        "data"
+      ],
+      "cells": [
+        "id",
+        "worldspace_id",
+        "grid_x",
+        "grid_y",
+        "interior_name",
+        "flags",
+        "data"
+      ],
+      "records": [
+        "form_id",
+        "record_type",
+        "cell_id",
+        "worldspace_id",
+        "load_order",
+        "data"
+      ],
+      "formid_map": [
+        "form_id",
+        "plugin_name",
+        "internal_id",
+        "record_type"
+      ],
+      "statics": [
+        "id",
+        "editor_id",
+        "model_path",
+        "flags",
+        "bounds_min_x",
+        "bounds_min_y",
+        "bounds_min_z",
+        "bounds_max_x",
+        "bounds_max_y",
+        "bounds_max_z",
+        "bounds_valid"
+      ]
+    },
+    "introspection_limit": "DDL structure only; no record counts, plugin coverage, current Data-folder corpus, or live DB row contents were inspected."
+  },
+  "projection_and_identity": {
+    "raw_vs_typed": "records.data stores serialized parsed subrecord tag/payload pairs; it is a recoverable projection, not original byte framing (for example XXXX/short-length framing is not preserved there). Show raw occurrence bytes, parsed subrecords, and typed projections as distinct evidence layers.",
+    "typed_pilot": {
+      "REFR": [
+        "NAME base FormID",
+        "DATA six position/rotation floats",
+        "XSCL scale (current default 1.0)",
+        "XRDS radius override",
+        "raw record header flags",
+        "XESP parent FormID plus a current four-byte tail projection"
+      ],
+      "CELL": [
+        "EDID",
+        "XCLC signed X/Y from first eight bytes",
+        "XCLW/XCWT in cell cache paths",
+        "record-header flags in cells.flags"
+      ],
+      "STAT": [
+        "EDID",
+        "MODL model path",
+        "record-header flags"
+      ]
+    },
+    "source_occurrence_and_overrides": "Current SQL records are keyed by resolved FormID and expose owner/local mapping through formid_map. Load-order code remaps full/light IDs and selects later winners; deleted winners remove effective records. This does not retain every source occurrence or its original ordinal. Keep source occurrence identity, plugin-local ID, resolved FormID, and winning occurrence separate; missing occurrence provenance must remain explicit.",
+    "important_distinction": "CELL.flags comes from the record header; CELL/DATA is a separate subrecord and remains raw. REFR/header_flags contains record-type-specific bits; do not apply one universal flag dictionary."
+  },
+  "field_labels": [
+    {
+      "record": "REFR",
+      "tag": "NAME",
+      "label": "Base record link",
+      "shape": "FormID; Mutagen labels Base",
+      "projection": "Typed base_form_id",
+      "units": null,
+      "evidence": "native-field-ledger.md:L29",
+      "uncertainty": "Native loader resolves through TESDataHandler and checks the target as a bound object; consumer behavior not audited."
+    },
+    {
+      "record": "REFR",
+      "tag": "DATA",
+      "label": "Placement transform",
+      "shape": "Six floats; sources label Position/Rotation",
+      "projection": "Typed position and rotation",
+      "units": null,
+      "evidence": "native-field-ledger.md:L29",
+      "uncertainty": "Loader branch exists, but the decompile does not prove exact destination mapping. No distance or angle units are established."
+    },
+    {
+      "record": "REFR",
+      "tag": "XSCL",
+      "label": "Scale",
+      "shape": "Scalar; source label Scale",
+      "projection": "Typed scale; current default 1.0",
+      "units": "No physical unit",
+      "evidence": "native-field-ledger.md:L29",
+      "uncertainty": "Native reader consumes the field; downstream scaling behavior not independently traced."
+    },
+    {
+      "record": "REFR",
+      "tag": "header flags / XESP",
+      "label": "Initial and parent-gated enable state inputs",
+      "shape": "Header bit 0x800 declared Initially Disabled; XESP = parent FormID + one flag byte + three trailing bytes. Flag bits 0/1 are declared opposite-of-parent and Pop In.",
+      "projection": "Raw header flags, typed parent ID, current four-byte tail column",
+      "units": null,
+      "evidence": "native-field-ledger.md:L30,L64; MCP F0002/F0010",
+      "uncertainty": "F0002 is declaration-only and runtime chain semantics are unproven. F0010 reports bytes 5-7 nonzero in 7,652/36,268 retail-master XESP rows. Expose byte 4 as the known flag and preserve bytes 5-7 unresolved; the current enable_parent_flags u32 conflates the flag and tail."
+    },
+    {
+      "record": "CELL",
+      "tag": "DATA",
+      "label": "Cell subrecord flags",
+      "shape": "xEdit and Mutagen declare 16-bit/two-byte flags",
+      "projection": "Not typed by cell helper; raw payload retained. cells.flags is record-header data.",
+      "units": null,
+      "evidence": "native-field-ledger.md:L20,L32,L67",
+      "uncertainty": "Native reader also has a short one-byte path; no evidence it occurs in target corpus. Never merge it with record-header flags."
+    },
+    {
+      "record": "CELL",
+      "tag": "XCLC",
+      "label": "Cell grid coordinates and trailing field",
+      "shape": "Signed X/Y in first eight bytes; xEdit declares one-byte Land Flags plus three bytes, Mutagen a four-byte flags enum.",
+      "projection": "Signed X/Y typed; tail not typed",
+      "units": "Grid coordinates; no physical distance unit established",
+      "evidence": "native-field-ledger.md:L21,L33,L67",
+      "uncertainty": "Native path includes a 12-byte form and stores one byte; exact tail semantics and source disagreement remain unresolved."
+    },
+    {
+      "record": "CELL",
+      "tag": "XCLL",
+      "label": "Interior cell lighting",
+      "shape": "Lighting structure; native 0x60-byte read path",
+      "projection": "Raw payload only",
+      "units": null,
+      "evidence": "native-field-ledger.md:L22,L34,L67",
+      "uncertainty": "Optional tails/source agreement and downstream consumers remain unverified."
+    },
+    {
+      "record": "CELL",
+      "tag": "LTMP",
+      "label": "Lighting template link",
+      "shape": "xEdit permits LGTM or null; Mutagen marks non-nullable",
+      "projection": "Raw payload only",
+      "units": null,
+      "evidence": "native-field-ledger.md:L23,L34,L67",
+      "uncertainty": "Loader consumes it and clears an adjacent runtime member; link resolution and nullability are unresolved."
+    },
+    {
+      "record": "STAT",
+      "tag": "DNAM",
+      "label": "Directional material and angle fields",
+      "shape": "12-byte SSE form in xEdit/Mutagen; native loader branches at FormVersion 0x2C and may read four extended bytes",
+      "projection": "Raw subrecord in records.data; not a typed statics column",
+      "units": "No angle unit established",
+      "evidence": "native-field-ledger.md:L19,L35,L68",
+      "uncertainty": "xEdit and Mutagen defaults disagree (90 vs 30); no per-record FormVersion/length census exists. Keep source labels qualified and values unresolved."
+    },
+    {
+      "record": "STAT",
+      "tag": "MODS",
+      "label": "Alternate model texture sets",
+      "shape": "Model texture payload; xEdit/Mutagen field names",
+      "projection": "Raw subrecord only",
+      "units": null,
+      "evidence": "native-field-ledger.md:L35,L68",
+      "uncertainty": "Native loader passes payload to the model-texture handler; downstream behavior is unestablished."
+    },
+    {
+      "record": "STAT",
+      "tag": "MNAM",
+      "label": "Distant LOD model link",
+      "shape": "xEdit labels Distant LOD; Mutagen has a model field",
+      "projection": "Raw subrecord only",
+      "units": null,
+      "evidence": "native-field-ledger.md:L35,L68",
+      "uncertainty": "No direct MNAM case in TESObjectSTAT::Load; this does not rule out another loader/consumer."
+    }
+  ],
+  "ledger_findings": [
+    {
+      "id": "F0002",
+      "kind": "declaration",
+      "confidence": "high",
+      "build": "unknown",
+      "edition": "unknown",
+      "provenance": [
+        "CommonLibSSE@2415cc998b",
+        "TES5Edit@9fb016884b"
+      ],
+      "use": "Labels REFR initially-disabled header bit and XESP parent/flag layout.",
+      "limit": "Not checked against current converter or live game; runtime parent-chain evaluation is open."
+    },
+    {
+      "id": "F0005",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "Mudcrab converter b2758e5",
+        "Skyrim.esm walk and Mutagen 0.54.4 cross-check"
+      ],
+      "use": "Historical visibility-conditional coverage context only.",
+      "limit": "Its converter read-set claim predates current XESP columns and is not current-code evidence."
+    },
+    {
+      "id": "F0006",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "Mudcrab converter b2758e5",
+        "historical Skyrim.esm walker artifact"
+      ],
+      "use": "No current count claim.",
+      "limit": "Historical occurrence counts are stale per native-field-ledger.md:L9."
+    },
+    {
+      "id": "F0007",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "Mudcrab converter b2758e5",
+        "historical Skyrim.esm walker artifact"
+      ],
+      "use": "Superseded by F0012; no current count claim.",
+      "limit": "Historical occurrence counts are stale; F0012 corrects the DNAM presence/use distinction."
+    },
+    {
+      "id": "F0008",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "unknown",
+      "edition": "AE",
+      "provenance": [
+        "Mutagen 0.54.4 placed-record oracle",
+        "world DB created 2026-09-27"
+      ],
+      "use": "Historical interpreted REFR field comparison only.",
+      "limit": "Producer converter commit absent; do not claim it validates current code."
+    },
+    {
+      "id": "F0009",
+      "kind": "static_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "Unrelated AbsorbEffect function-name reconciliation"
+      ],
+      "use": "Excluded from schema-field evidence.",
+      "limit": "Function-label conflict only."
+    },
+    {
+      "id": "F0010",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "$MCRAB_STORE/jobs/xesp_unused_bytes.json",
+        "TES5Edit@9fb016884b:wbDefinitionsTES5.pas:3075-3082"
+      ],
+      "use": "XESP byte 4 takes values 0-3; bytes 5-7 are nonzero in 7,652/36,268 rows across five retail masters.",
+      "limit": "Finding has no input-manifest hash; reproduce before using as a current acceptance count."
+    },
+    {
+      "id": "F0011",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "Ad-hoc TES4 walk over five retail masters, dated 2026-10-04"
+      ],
+      "use": "Default-order plugin-local ID remap diagnostic: 10,991 XESP, 295 XTEL, 23 LTMP links reported wrong.",
+      "limit": "No full input/load-order hash manifest in the finding; use as a targeted warning, not a current corpus result."
+    },
+    {
+      "id": "F0012",
+      "kind": "format_observation",
+      "confidence": "high",
+      "build": "1.7.104.0",
+      "edition": "AE",
+      "provenance": [
+        "Mudcrab read-set b2758e5; ledger says unchanged at 5579f00",
+        "record_field_coverage-skyrim.json",
+        "xEdit/Mutagen field declarations"
+      ],
+      "use": "Supersedes F0007 and distinguishes DNAM presence from nonzero material values; useful as a label candidate.",
+      "limit": "Bounded historical corpus job; no accepted full-corpus or runtime claim."
+    }
+  ],
+  "mcp_lookup_symbols": [
+    {
+      "rva": "0x2de330",
+      "label": "TESObjectREFR::Load",
+      "name_source": "CommonLibSSE fallback",
+      "address_library_id": 19506
+    },
+    {
+      "rva": "0x15b040",
+      "label": "FUN_14015b040",
+      "name_source": null,
+      "address_library_id": 11595,
+      "callers": [
+        "TESObjectCELL::Load",
+        "TESObjectREFR::Load"
+      ]
+    },
+    {
+      "rva": "0x2b82b0",
+      "label": "TESObjectCELL::Load",
+      "name_source": "CommonLibSSE fallback",
+      "address_library_id": 18880
+    },
+    {
+      "rva": "0x287520",
+      "label": "TESObjectSTAT::Load",
+      "name_source": "CommonLibSSE fallback",
+      "address_library_id": 18018
+    }
+  ],
+  "key_evidence_files": [
+    {
+      "path": "docs/research/dynamic-schema/native-field-ledger.md",
+      "anchors": [
+        "L3-L13",
+        "L19-L35",
+        "L41-L49",
+        "L58-L70"
+      ],
+      "role": "Pinned source, current projection, selected static observations, uncertainty."
+    },
+    {
+      "path": "docs/research/dynamic-schema/candidate-inventory.json",
+      "role": "Provisional 134-source-row signature inventory; not acceptance."
+    },
+    {
+      "path": "docs/research/dynamic-schema/pilot-code-evidence.json",
+      "role": "Bounded code-body hashes and anchors; not exhaustive field census."
+    },
+    {
+      "path": "docs/roadmap/dynamic-schema-initiative.md",
+      "anchors": [
+        "L95-L100",
+        "L142-L149"
+      ],
+      "role": "Raw-vs-typed, winner/occurrence, and byte-preservation boundaries."
+    }
+  ],
+  "overall_limit": "The catalog and pilot are provisional; no active acceptance load order or full occurrence denominator is established. Static decompilation is not runtime validation. Unknown or reserved labels remain explicit until reconciled."
+}

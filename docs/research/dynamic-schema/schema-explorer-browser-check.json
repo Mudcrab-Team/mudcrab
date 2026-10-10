@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "checks": [
+    "Initial record catalog and pinned facts",
+    "Record search and empty-state recovery",
+    "Six xEdit-only candidates remain labelled unresolved",
+    "Keyboard search shortcut",
+    "Native table navigation and DDL constraints",
+    "Column search",
+    "Skip link preserves selected route and focuses content",
+    "Column deep link and browser back",
+    "XESP evidence labels and project/MCP links",
+    "Historical MCP finding states its provenance limit",
+    "Native lookup states static evidence limit",
+    "Guide separates current and planned ingestion",
+    "Provenance exposes actual MCP calls and text hash policy",
+    "Unknown deep link has a recoverable message",
+    "390px mobile viewport has no page overflow",
+    "Standalone file works with HTTP and HTTPS blocked",
+    "Hostile labels render as literal text without execution or markup",
+    "No runtime JavaScript exceptions"
+  ],
+  "errors": [],
+  "version": {
+    "protocolVersion": "1.3",
+    "product": "Chrome/138.0.7204.49",
+    "revision": "@d2b48fd5f7813ed477a2d68fa232b8178fa4fb1e",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/138.0.0.0 Safari/537.36",
+    "jsVersion": "13.8.258.19"
+  },
+  "html_sha256": "3b7074d66c73126a3d3c540ed5aeee7b4c1280ab336c53ad914a503eefabd680",
+  "desktop": {
+    "width": 1440,
+    "height": 1000
+  },
+  "mobile": {
+    "width": 390,
+    "height": 844
+  },
+  "artifact_kind": "bounded_offline_schema_explorer_browser_smoke",
+  "observed_at_utc": "2026-10-05T15:16:14.055571+00:00",
+  "scope": "Viewer UI and text safety only; no retail plugin interpretation, game runtime or full P0 acceptance."
+}
