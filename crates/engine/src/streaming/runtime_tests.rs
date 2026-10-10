@@ -846,7 +846,9 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
         streaming::{CellStatus, StreamingCommitBudget, TerrainContinuity, collect_cells},
         world::{
             cache::CellCache,
-            database::{AssetCatalog, CellPayload, DatabaseRequest, DatabaseResponse, WorldDatabase},
+            database::{
+                AssetCatalog, CellPayload, DatabaseRequest, DatabaseResponse, WorldDatabase,
+            },
         },
     };
     use bevy::ecs::system::RunSystemOnce;
@@ -960,14 +962,18 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
         {
             break;
         }
-        assert!(Instant::now() < deadline, "cell response queues stopped making progress");
+        assert!(
+            Instant::now() < deadline,
+            "cell response queues stopped making progress"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     for _ in 0..3 {
-        let mut budget = app.world_mut().resource_mut::<StreamingCommitBudget>();
-        budget.remaining = 1;
-        budget.commits = 0;
-        drop(budget);
+        {
+            let mut budget = app.world_mut().resource_mut::<StreamingCommitBudget>();
+            budget.remaining = 1;
+            budget.commits = 0;
+        }
         app.world_mut().run_system_once(collect_cells).unwrap();
     }
     let metrics = app.world().resource::<StreamingMetrics>();

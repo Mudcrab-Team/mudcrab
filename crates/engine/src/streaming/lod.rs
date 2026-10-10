@@ -1615,6 +1615,146 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_shared_commit_budget_stops_lod_commits_but_drains_query_responses() {
+        use crate::{
+            streaming::{
+                admission::SceneAdmission,
+                runtime::{StreamingRuntime, update_streaming_control},
+            },
+            streaming_preparation::StreamingPreparationBridge,
+        };
+        use bevy::asset::{AssetApp, AssetPlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lod-collector.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER NOT NULL);
+                 INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+            ))
+            .unwrap();
+        drop(connection);
+        let first = retry_test_metadata();
+        let mut second = first.clone();
+        second.key.anchor.x = 1;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                file_path: directory.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+        ))
+        .init_asset::<WorldAsset>()
+        .insert_resource(EngineConfig {
+            assets_dir: directory.path().into(),
+            headless: true,
+            max_streaming_backlog: 256,
+            streaming_memory_mib: 64,
+            max_commit_micros_per_frame: 1_000,
+            ..default()
+        })
+        .insert_resource(WorldDatabase::open(&path).unwrap())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(LodStreaming {
+            generation: 7,
+            center: Some(IVec2::ZERO),
+            pending_queries: HashSet::from([LodTier::Tier4]),
+            pending_chunks: VecDeque::from([(7, first, None), (7, second, None)]),
+            ..default()
+        })
+        .insert_resource(StreamingCommitBudget {
+            frame_started: Instant::now() - Duration::from_secs(1),
+            remaining: 3,
+            commits: 1,
+            ..default()
+        })
+        .init_resource::<StreamingWorld>()
+        .init_resource::<StreamingMetrics>()
+        .init_resource::<SceneAdmission>()
+        .init_resource::<StreamingPreparationBridge>()
+        .init_resource::<ProfilingState>()
+        .init_resource::<StreamingRuntime>();
+        update_streaming_control(app.world_mut());
+        assert_eq!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .decision
+                .unwrap()
+                .budgets
+                .max_commit_micros,
+            1_000
+        );
+        app.world()
+            .resource::<WorldDatabase>()
+            .request_lod_chunks(
+                7,
+                LodChunkQuery {
+                    worldspace_id: 0x3c,
+                    tier: LodTier::Tier4,
+                    bounds_min: [0.0, 0.0],
+                    bounds_max: [10.0, 10.0],
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.world_mut().run_system_once(collect_lod_chunks).unwrap();
+            if app
+                .world()
+                .resource::<StreamingMetrics>()
+                .lod_query_responses
+                == 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "LOD query response was not reconciled"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let streaming = app.world().resource::<LodStreaming>();
+        assert!(!streaming.pending_queries.contains(&LodTier::Tier4));
+        assert_eq!(streaming.pending_chunks.len(), 2);
+        assert!(streaming.chunks.is_empty());
+        assert_eq!(app.world().resource::<StreamingCommitBudget>().remaining, 3);
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_chunks_requested,
+            0
+        );
+
+        // An expired clock still allows the first total commit of a frame.
+        app.world_mut()
+            .resource_mut::<StreamingCommitBudget>()
+            .commits = 0;
+        app.world_mut().run_system_once(collect_lod_chunks).unwrap();
+        assert_eq!(
+            app.world().resource::<LodStreaming>().pending_chunks.len(),
+            1
+        );
+        let budget = app.world().resource::<StreamingCommitBudget>();
+        assert_eq!((budget.remaining, budget.commits), (2, 1));
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_chunks_requested,
+            1
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&requests::SceneRequest>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn lod_asset_failures_separate_missing_payloads_from_transient_io() {
         let missing = AssetLoadError::AssetReaderError(AssetReaderError::NotFound(PathBuf::from(
             "missing.glb",
