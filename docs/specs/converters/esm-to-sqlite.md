@@ -2,6 +2,11 @@
 
 This document details the technical specification for parsing Skyrim Master (`.esm`) and Plugin (`.esp` / `.esl`) binary databases into an indexed **libSQL database (`skyrim_world.db`)** (Turso's open-source SQLite fork) paired with a **zero-copy `rkyv` hot storage cache**.
 
+The diagrams and storage architecture below describe the broader design. For
+the implemented SQLite DDL and compatibility contract, use
+[Database Schema](db-schema.md). The current world schema is 9 and the converter
+package schema is 26.
+
 ---
 
 ## 1. Overview & Objectives
@@ -48,6 +53,37 @@ Skyrim `.esm` files consist of 24-byte record headers (`TES4`, `CELL`, `LAND`, `
 ---
 
 ## 3. Database Schema DDL (`skyrim_world.db`)
+
+The implemented converter also exports `environment_records`, a typed
+projection of winning weather, climate, lighting, cell, worldspace, region,
+image-space, volumetric and fog-related game-setting inputs. Its UTF-8 JSON BLOB
+uses `shared::environment::EnvironmentRecord`; float fields encode binary32
+bits as integers, preserving NaNs and signed zero. Missing optional fields
+remain absent. Raw winning subrecords remain available in `records.data`.
+See the [environment table contract](db-schema.md#15-authored-environment-inputs-environment_records)
+for its DDL, versioning and transaction behavior.
+
+The same transaction exports the versioned lighting source catalog and raw
+record header versions/flags. Its six typed tables and complete-snapshot marker
+are described in [Authored Lighting Sources](db-schema.md#16-authored-lighting-sources).
+The finite-only lighting catalog and bit-preserving environment payload use
+separate serialization contracts. Plugin checksums publish with both projections;
+a malformed supported field in either rolls back the complete export.
+
+`environment-audit` checks these inputs without mesh or texture conversion:
+
+```sh
+cargo run --locked -p converter --bin environment-audit -- \
+  "$SKYRIM_DATA" "$ORDERED_PLUGIN_LIST" "$AUDIT_REPORT"
+```
+
+The list contains one plugin filename per line in the intended order; comments
+begin with `#` and a leading `*` is accepted. The tool preserves that order,
+validates master dependencies, decodes every supported environment record and
+checks selected projections through an in-memory SQLite export. Its report
+contains interpreted fields, plugin hashes, full/light slots and provenance,
+with floats still encoded as bits. Store the report outside Data. This audits
+the supplied package order; it does not prove a running game's active profile.
 
 ### A. Primary Record Table
 

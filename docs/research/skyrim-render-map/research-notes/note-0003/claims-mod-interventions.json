@@ -1,0 +1,1198 @@
+{
+ "schema": "mudcrab-research-note-claims/v1",
+ "note_id": "N003",
+ "domain": "mod-interventions",
+ "claims": [
+  {
+   "id": "N003-M04",
+   "supplied_statement": "A mesh partition can only be lit by 6 lightbulbs, the 7th flickers",
+   "subject_scope": "STEP anecdote about mesh partitioning",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "https://stepmodifications.org/wiki/User:Kesta/LightingWeathersPostProcessing",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 85",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Attributed observation, not engine-source limit.",
+   "next_query": "Reproduce with a documented mesh and controlled scene.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M29"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "resource-winners",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "\"A mesh partition can only be lit by 6 lightbulbs\", the 7th flickers"
+  },
+  {
+   "id": "N003-M05",
+   "supplied_statement": "Max 4 lights on any given mesh",
+   "subject_scope": "COTN split-mesh practice",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "https://www.nexusmods.com/skyrimspecialedition/mods/47245",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 86",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Asset practice does not prove a universal four-light renderer cap.",
+   "next_query": "Inspect exact distributed meshes and compare to target capture.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-M23"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M29"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "resource-winners",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "\"Max 4 lights on any given mesh\""
+  },
+  {
+   "id": "N003-M06",
+   "supplied_statement": "four used, chosen \"seemingly at random\", changing per frame",
+   "subject_scope": "User observation on light selection",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "https://lr.sudovanilla.org/r/skyrimmods/comments/166t7nm/light_limit_fix_released/jym6w8d",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 88",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Possible unstable ranking is not independently replicated.",
+   "next_query": "Log candidate lights and selected IDs each frame in a minimal cell.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M29"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "More than four emitters on part of an object: four used, chosen \"seemingly at random\", changing per frame"
+  },
+  {
+   "id": "N003-M08",
+   "supplied_statement": "In exteriors the sun reads .x, which plausibly leaves fewer channels for point shadow lights",
+   "subject_scope": "Sun and local shadow channel allocation",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/frame-topology.md",
+     "line_or_locus": "3, 13, 32-44, 69, 101-114",
+     "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "No evidence proves point selectors avoid or share the sun component in every pass.",
+   "next_query": "Capture exterior sun and local mask writes.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-L15"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "shadow-visibility",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "In exteriors the sun reads `.x`, which plausibly leaves fewer channels for point shadow lights."
+  },
+  {
+   "id": "N003-M15",
+   "supplied_statement": "Recent pre-releases add \"up to 16 shadows\", VRAM-aware shadow arrays and an Intellightent port",
+   "subject_scope": "CS prerelease shadow unlock",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "https://newreleases.io/project/github/community-shaders/skyrim-community-shaders/release/v1.6.0-pr1941",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 178",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/releases/tag/v1.9.1",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/web-evidence.md",
+     "line_or_locus": "lines 5-9",
+     "sha256": "c2c2e434def547f164e3a35ea2b03583ee041781cae47f6fc64dc5bd6a1527e5",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Official v1.9.1 notes do not establish this claim; Shadow Limit Fix reports unresolved defects.",
+   "next_query": "Resolve exact official prerelease tag/commit and source before asserting capacity.",
+   "relates_to": [
+    {
+     "relation": "related",
+     "claim_id": "N002-M14"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "Recent pre-releases add \"up to 16 shadows\", VRAM-aware shadow arrays and an Intellightent port"
+  },
+  {
+   "id": "N003-M18",
+   "supplied_statement": "Intellightent picks which 4 shadow casters stay active and demotes the rest to non-shadow lights",
+   "subject_scope": "Intellightent behavior/current integration",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "https://stepmodifications.org/forum/topic/21445-intellightent-by-meh321/",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 176",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "No pinned plugin source/current build inspected.",
+   "next_query": "Pin mod release/source and check overlap with CS shadow-limit feature.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M14"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "shadow-visibility",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "Intellightent picks which 4 shadow casters stay active and demotes the rest to non-shadow lights"
+  },
+  {
+   "id": "N003-M26",
+   "supplied_statement": "new work should assume CS plus Light Placer as the baseline rather than ENB particle lights or split meshes",
+   "subject_scope": "Ecosystem recommendation versus vanilla visual target",
+   "assessment": "unverified",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Deferred.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Deferred.cpp",
+     "line_or_locus": "lines 252-255",
+     "sha256": "2ed2514968700a0a5b291428152ae26735c9b3b263eb2aee773528f0e308cfe9",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp",
+     "revision": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp",
+     "line_or_locus": "lines 247-276",
+     "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "SkyrimLight marker and LightBudget",
+     "lines": "221-248",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    },
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "budget_lights",
+     "lines": "272-310",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    }
+   ],
+   "unresolved": "This is an attributed recommendation, not a claim established by source. It conflicts with the stated vanilla SE/AE visual-reference target if applied as an implementation baseline; neither mod activation nor visual parity is established.",
+   "next_query": "Keep CS and Light Placer as optional comparison interventions; decide fidelity only from paired captures against the vanilla target.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M26"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M29"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "new work should assume CS plus Light Placer as the baseline rather than ENB particle lights or split meshes."
+  },
+  {
+   "id": "N003-M01",
+   "supplied_statement": "up to 7 point lights, at most 4 of them shadowed",
+   "subject_scope": "SE/AE shader and selector representation",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/shader-families.md",
+     "line_or_locus": "3-5, 20-36",
+     "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/frame-topology.md",
+     "line_or_locus": "3, 13, 32-44, 69, 101-114",
+     "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "These establish array/selector capacity, not target 1.7.104 runtime assignment or overflow behavior.",
+   "next_query": "Inspect target-native setup or capture a draw with 5-8 unshadowed lights.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-L14"
+    },
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-L15"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    },
+    {
+     "node_id": "shadow-visibility",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "up to 7 point lights, at most 4 of them shadowed"
+  },
+  {
+   "id": "N003-M02",
+   "supplied_statement": "\"4 lights per object\", conflicts with the decompiled SE shader setup, which supports 7. That conflict remains unresolved.",
+   "subject_scope": "Per-object ranking versus shader slots",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "docs/research/skyrim-render-map/mod-rendering-hooks.json",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/mod-rendering-hooks.json",
+     "line_or_locus": "line 2229, source_contradictions_and_attribution_gaps",
+     "sha256": "864b01d97567b1a65fa8d29e6195f9312c7b9973d58c64c848a251d8b4217da9",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/shader-families.md",
+     "line_or_locus": "3-5, 20-36",
+     "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Seven is representation capacity; actual per-object candidate fill/truncation remains open.",
+   "next_query": "Capture candidate list and NumLightNumShadowLight in target 1.7.104.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M29"
+    },
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-L14"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "The most-repeated piece of modding lore, \"4 lights per object\", conflicts with the decompiled SE shader setup, which supports 7. That conflict remains unresolved."
+  },
+  {
+   "id": "N003-M03",
+   "supplied_statement": "The property's render-pass builder takes (technique, numLights, light0..light3)",
+   "subject_scope": "Builder signature versus shader slots",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/shader-families.md",
+     "line_or_locus": "3-5, 20-36",
+     "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "The CommonLibVR declaration does not prove how retail setup populates all slots.",
+   "next_query": "Trace builder call sites and executable implementation.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-L14"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "The property's render-pass builder takes `(technique, numLights, light0..light3)`"
+  },
+  {
+   "id": "N003-M07",
+   "supplied_statement": "only four can be visible at any given time",
+   "subject_scope": "Shadow-mask capacity versus scene arbitration",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+     "line_or_locus": 27,
+     "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "local prior audit",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/frame-topology.md",
+     "line_or_locus": "3, 13, 32-44, 69, 101-114",
+     "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Four selectors support representational capacity; active-light arbitration and sun-channel use are distinct.",
+   "next_query": "Trace activeShadowLights and mask indices for game 1.7.104.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N001-C09"
+    },
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-L15"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "shadow-visibility",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "\"only four can be visible at any given time\""
+  },
+  {
+   "id": "N003-M10",
+   "supplied_statement": "CS keeps direct lighting forward (clustered). The deferred pass only moves ambient, specular and indirect composition into screen space.",
+   "subject_scope": "CS hybrid lighting architecture",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Deferred.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Deferred.cpp",
+     "line_or_locus": "lines 252-255",
+     "sha256": "2ed2514968700a0a5b291428152ae26735c9b3b263eb2aee773528f0e308cfe9",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Deferred.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Deferred.cpp",
+     "line_or_locus": "M-A007–M-A016",
+     "sha256": "2ed2514968700a0a5b291428152ae26735c9b3b263eb2aee773528f0e308cfe9",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Code establishes capability/hooks, not feature configuration on an installed build.",
+   "next_query": "Capture exact release with feature settings and pass markers.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-M02"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M10"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    },
+    {
+     "node_id": "scene-accumulation",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "Even so, CS keeps direct lighting forward (clustered). The deferred pass only moves ambient, specular and indirect composition into screen space."
+  },
+  {
+   "id": "N003-M12",
+   "supplied_statement": "CLUSTER_MAX_LIGHTS = 128",
+   "subject_scope": "Pinned LLF index-list allocation capacity",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.cpp",
+     "line_or_locus": "lines 20-25",
+     "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/Common.hlsli",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/Common.hlsli",
+     "line_or_locus": "lines 1-10",
+     "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "SkyrimLight marker and LightBudget",
+     "lines": "221-248",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    },
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "budget_lights",
+     "lines": "272-310",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    }
+   ],
+   "unresolved": "Same commit declares shader MAX_CLUSTER_LIGHTS=256; interaction/runtime effects unresolved.",
+   "next_query": "Trace compile definitions, allocation, and culling shader writes.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M08"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "`CLUSTER_MAX_LIGHTS = 128`"
+  },
+  {
+   "id": "N003-M13",
+   "supplied_statement": "64x64 px tiles x 32 log-depth slices (near 1, far 16384)",
+   "subject_scope": "Pinned LLF cluster grid",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.cpp",
+     "line_or_locus": "lines 598-603",
+     "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/ClusterBuildingCS.hlsl",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/ClusterBuildingCS.hlsl",
+     "line_or_locus": "CS cluster construction; see M-A021 for dispatch/cull source",
+     "sha256": "2d0e8cabb472998b5f0d7772519c43bf70cf0389a71c55bf60cd557ccb9f74ac",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "SkyrimLight marker and LightBudget",
+     "lines": "221-248",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    },
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "budget_lights",
+     "lines": "272-310",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    }
+   ],
+   "unresolved": "Code computes 64-pixel x/y cells and 32 z slices; near/far are camera values, not universal constants.",
+   "next_query": "Capture target camera near/far and resolution.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M08"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "64x64 px tiles x 32 log-depth slices (near 1, far 16384)"
+  },
+  {
+   "id": "N003-M14",
+   "supplied_statement": "Strict lights (portal-strict or shadowed, up to 15) go through StrictLightDataCB at b3",
+   "subject_scope": "Strict payload and room/shadow semantics",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.h",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h",
+     "line_or_locus": "lines 146-154",
+     "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+     "line_or_locus": "lines 1-25",
+     "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "SkyrimLight marker and LightBudget",
+     "lines": "221-248",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    },
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "budget_lights",
+     "lines": "272-310",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    }
+   ],
+   "unresolved": "Fifteen is payload length, not scene shadow count; selection differs interior/exterior.",
+   "next_query": "Trace payload fill and shadow-bit selection in both scene types.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M14"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "Strict lights (portal-strict or shadowed, up to 15) go through `StrictLightDataCB` at b3"
+  },
+  {
+   "id": "N003-M17",
+   "supplied_statement": "These are real engine lights, so they are “subject to Skyrim’s light limit” unless LLF is present",
+   "subject_scope": "Native selection after Light Placer insertion",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp",
+     "revision": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp",
+     "line_or_locus": "lines 247-276",
+     "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.h",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h",
+     "line_or_locus": "lines 288-295",
+     "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Creation via ShadowSceneNode shows engine integration; exact acceptance depends on flags/version and LLF.",
+   "next_query": "Trace created BSLight flags through ValidLight in target version.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-M07"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M19"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "These are real engine lights, so they are \"subject to Skyrim's light limit\" unless LLF is present"
+  },
+  {
+   "id": "N003-M19",
+   "supplied_statement": "mesh partitioning to dodge per-geometry caps, hidden “Light Occluder” meshes, and “Just In Time” scripted light toggling",
+   "subject_scope": "Data-mod workarounds",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://www.nexusmods.com/skyrimspecialedition/mods/8586",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 174",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Supplied text reports practices, but distributed meshes/scripts were not audited; existence does not prove a four-light cap.",
+   "next_query": "Inspect exact assets/scripts and map each technique to a specific constraint.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-M20"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M23"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "resource-winners",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "These include mesh partitioning to dodge per-geometry caps ([COTN Morthal](https://www.nexusmods.com/skyrimspecialedition/mods/47245)), hidden \"Light Occluder\" meshes, \"Just In Time\" scripted light toggling, and region-linked emittance that tints window glows by time of day, all in Relighting Skyrim ([Relighting Skyrim SE](https://nexusmods.com/skyrimspecialedition/mods/8586))"
+  },
+  {
+   "id": "N003-M20",
+   "supplied_statement": "Lux split meshes dodge the “four-light-per-object limit”",
+   "subject_scope": "Lux and ELFX asset practices",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "docs/research/skyrim-render-map/mod-content-rendering.json",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/mod-content-rendering.json",
+     "line_or_locus": "line 2229, source_contradictions_and_attribution_gaps",
+     "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "docs/research/skyrim-render-map/mod-content-rendering.json",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/mod-content-rendering.json",
+     "line_or_locus": "line 2229, source_contradictions_and_attribution_gaps",
+     "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "General LLF or COTN evidence does not prove Lux/ELFX specifics or identify 4/6/7 as the limit.",
+   "next_query": "Inspect versioned Lux/ELFX meshes and room/portal data.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M23"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M25"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "resource-winners",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "Lux split meshes dodge the \"four-light-per-object limit\""
+  },
+  {
+   "id": "N003-M21",
+   "supplied_statement": "ENB replaces the tonemap draw and ignores vanilla grading by default",
+   "subject_scope": "ENB postprocess control",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://enbdev.com/doc_skyrim_effect_en.htm",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/web-evidence.md",
+     "line_or_locus": "lines 17-21",
+     "sha256": "c2c2e434def547f164e3a35ea2b03583ee041781cae47f6fc64dc5bd6a1527e5",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://enbdev.com/doc_skyrim_effect_en.htm",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/web-evidence.md",
+     "line_or_locus": "lines 17-21",
+     "sha256": "c2c2e434def547f164e3a35ea2b03583ee041781cae47f6fc64dc5bd6a1527e5",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "The author docs establish that UseOriginalPostProcessing can retain vanilla postprocessing, but do not establish the default. The supplied default claim remains unverified.",
+   "next_query": "Inspect the exact installed ENB version default configuration and active preset.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-M04"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "bloom-tone-grade",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "**ENB** replaces the tonemap draw and ignores vanilla grading by default. **[DOC]** It is a `d3d11.dll` + `d3dcompiler_46e.dll` proxy ([STEP SkyrimSE:ENB](https://stepmodifications.org/wiki/SkyrimSE:ENB)). Vanilla IMGS and IMAD values arrive as `Params01[]` constants, and presets re-apply them only through \"AGCC/AGIS\" options, otherwise \"These IS's get ignored by the ENB normally\""
+  },
+  {
+   "id": "N003-M22",
+   "supplied_statement": "skips the vanilla tonemap when UseOriginalPostProcessing is false",
+   "subject_scope": "CS tonemap interception condition",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/Effects11.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/Effects11.cpp",
+     "line_or_locus": "lines 680-695",
+     "sha256": "67c994dc6b5279bb847d63d767420183f32257bdc9625317fcde9e2903108eb3",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "The code has enableEffect guard and only swaps if the effect chain writes output; activation is unknown.",
+   "next_query": "Check feature flag/settings and capture output pass.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M04"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "bloom-tone-grade",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "It hooks `Main_HDRTonemapBlendCinematic_Render` (`RELOCATION_ID(99023, 105674)`) and skips the vanilla tonemap when `UseOriginalPostProcessing` is false"
+  },
+  {
+   "id": "N003-M23",
+   "supplied_statement": "ENB complex particle lights sit outside the engine’s light list",
+   "subject_scope": "Emitter versus engine lights and CS particle support",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://www.nexusmods.com/skyrimspecialedition/mods/22574",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 180",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.cpp",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.cpp",
+     "line_or_locus": "lines 938-975",
+     "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Pinned CS still exposes optional particle-light collection; compatibility with ENB Light emitters is unknown.",
+   "next_query": "Inspect ENB Light assets and CS particle configuration at matched releases.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M07"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    },
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "ENB complex particle lights sit **outside the engine's light list**: they are emitter-driven, invisible to NPCs, and not counted against the engine's light caps."
+  },
+  {
+   "id": "N003-M24",
+   "supplied_statement": "ReShade only sees the gamma-applied LDR backbuffer, plus depth if it is detected. It cannot change in-engine lighting",
+   "subject_scope": "ReShade final-frame scope",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://stepmodifications.org/wiki/Guide:Reshade",
+     "revision": "revision not captured in rendered corpus",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+     "line_or_locus": "line 182",
+     "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Guide text/current behavior were not independently captured.",
+   "next_query": "Pin official ReShade docs and scope claims to final-frame effects.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M03"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "output-display",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "**ReShade** only sees the gamma-applied LDR backbuffer, plus depth if it is detected. It cannot change in-engine lighting"
+  },
+  {
+   "id": "N003-M25",
+   "supplied_statement": "Skyrim gamma of 1.6, not 2.2",
+   "subject_scope": "CS fit versus vanilla mandate",
+   "assessment": "partially_supported",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/package/Shaders/Common/Color.hlsli",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/package/Shaders/Common/Color.hlsli",
+     "line_or_locus": "lines 1-10",
+     "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "CS-authored fit is not proof vanilla mandates exponent 1.6.",
+   "next_query": "Compare target shader bytecode and SRV formats; label 1.6 as fit.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-L22"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "surface-response",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "CS models vanilla irradiance with an empirical **\"Skyrim gamma\" of 1.6**, not 2.2"
+  },
+  {
+   "id": "N003-M09",
+   "supplied_statement": "It patches the ValidLight call sites so that non-strict lights inside portal graphs drop out of vanilla per-object lists, keeping a light only if portalStrict || !portalGraph || IsShadowLight()",
+   "subject_scope": "CS LLF filter of vanilla light candidates",
+   "assessment": "supported_static",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.h",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h",
+     "line_or_locus": "lines 288-295",
+     "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "This filter does not prove all geometry types become unlimited.",
+   "next_query": "Trace patched call sites across Lighting, Effect, and Water.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M07"
+    },
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M19"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "It patches the `ValidLight` call sites so that non-strict lights inside portal graphs drop out of vanilla per-object lists, keeping a light only if `portalStrict || !portalGraph || IsShadowLight()`."
+  },
+  {
+   "id": "N003-M11",
+   "supplied_statement": "MAX_LIGHTS = 1024",
+   "subject_scope": "LLF gathered-light buffer capacity",
+   "assessment": "supported_static",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.h",
+     "revision": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h",
+     "line_or_locus": "lines 4-8",
+     "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "SkyrimLight marker and LightBudget",
+     "lines": "221-248",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    },
+    {
+     "path": "crates/engine/src/lights.rs",
+     "symbol": "budget_lights",
+     "lines": "272-310",
+     "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+    }
+   ],
+   "unresolved": "Compile-time capacity is not 1024 useful visible lights.",
+   "next_query": "Trace gather truncation and consumer for selected release.",
+   "relates_to": [
+    {
+     "relation": "challenges",
+     "claim_id": "N002-M11"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "mod-overlays",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "verbatim_excerpt",
+   "supplied_excerpt_verbatim": "`MAX_LIGHTS = 1024`"
+  },
+  {
+   "id": "N003-M16",
+   "supplied_statement": "Light Placer creates an NiPointLight and fills diffuse, radius.x/.y and radius.z = size",
+   "subject_scope": "Light Placer engine object creation",
+   "assessment": "supported_static",
+   "evidence_anchors": [
+    {
+     "url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp",
+     "revision": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp",
+     "line_or_locus": "lines 192-217",
+     "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    },
+    {
+     "url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp",
+     "revision": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+     "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp",
+     "line_or_locus": "lines 247-276",
+     "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+     "hash_basis": "source file SHA-256 retained in rendered corpus"
+    }
+   ],
+   "current_implementation": [],
+   "unresolved": "Mechanism is source-supported; install/config activation and exact vanilla selection are unknown.",
+   "next_query": "Check selected plugin build, config, and loadout.",
+   "relates_to": [
+    {
+     "relation": "strengthens",
+     "claim_id": "N002-M07"
+    }
+   ],
+   "proposed_model_nodes": [
+    {
+     "node_id": "local-light-candidates",
+     "relation": "related"
+    }
+   ],
+   "supplied_source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe"
+   },
+   "statement_kind": "auditor_reformulation",
+   "supplied_excerpt_verbatim": "Light Placer creates an `NiPointLight` and fills `diffuse`, `radius.x/.y` and `radius.z = size`."
+  }
+ ]
+}

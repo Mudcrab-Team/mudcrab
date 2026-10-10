@@ -4,6 +4,10 @@ Comprehensive technical architecture specifications, asset converter pipelines, 
 
 ---
 
+Current Skyrim rendering integration: [lighting and shading](engine/lighting-and-shading.md).
+Native rendering evidence and remaining proof: [Skyrim rendering map](../research/skyrim-render-map/README.md).
+Implementation order and acceptance gates: [Skyrim rendering remediation and validation](engine/skyrim-rendering-remediation-plan.md).
+
 ## 📁 Specifications Directory Structure
 
 ```
@@ -50,6 +54,9 @@ Offline asset transpilation specs handled by the `converter` crate:
 
 Core runtime specifications handled by the `engine` and `scripting` crates:
 
+- **[`skyrim-lighting-and-shadows.md`](engine/skyrim-lighting-and-shadows.md)** — Authored scene lighting, native material response, shadow production, INI settings, implementation stages, and acceptance tests.
+- **[`skyrim-lighting-runtime.md`](engine/skyrim-lighting-runtime.md)** — Implemented source contracts, diagnostic mode, JSON inputs, coverage limits, and validation commands.
+- **[`skyrim-lighting-visual-testing.md`](engine/skyrim-lighting-visual-testing.md)** — Prepared scene launcher, camera controls, reproducible captures, and source-driven world testing.
 - **[`landscape-texture-scale.md`](engine/landscape-texture-scale.md)** — Shared default LAND texture frequency, evidence, and terrain LOD agreement.
 - 📄 **[`architecture.md`](engine/architecture.md)** — 4-crate Cargo workspace structure, Bevy ECS setup, and `crates/scripting` isolation.
 - 📄 **[`vercidium-optimizations.md`](engine/vercidium-optimizations.md)** — GPU instanced indirect rendering (`DrawMeshInstancedIndirect`) and GPU culling.

@@ -1,0 +1,248 @@
+{
+  "scope": "bounded static ordinary farmhouse tangent normal pipeline; no renderer, GPU, build, reencoding or new native query",
+  "conclusion": "No demonstrated double flip, missing sampled Y correction, source-normal reorder or doubled Creation basis transform. Authored T/B evaluation remains a concrete parity gap.",
+  "asset": {
+    "path": "/Users/taylor/.local/share/mudcrab-research/brightness-20261010/assets-native-views/meshes/architecture/farmhouse/farmhouse01.glb",
+    "sha256": "5d5c2d562cccbc4b85f5eaaf98ad1b09ea70dac0fd79909b83e7775eaee2fe7f",
+    "primitives": [
+      {
+        "mesh": 0,
+        "primitive": 0,
+        "gltf_material_index": 0,
+        "material_name": "Farmhouse01:1",
+        "shape_block": 8,
+        "vertex_count": 444,
+        "source_frame_vertex_count": 444,
+        "normal_f32_mismatches": 0,
+        "has_tangent_accessor": false,
+        "frame_metadata": {
+          "authoredFrameEvaluated": false,
+          "legacyFrameRetention": "not_applicable",
+          "meshBasis": "creation_local_with_scene_root_basis_transform",
+          "renderFrame": "generated_mikktspace",
+          "sampledNormalYCorrection": true,
+          "version": 1
+        },
+        "source_frame_channels": [
+          "bitangentStored",
+          "decodedNormals",
+          "encoding",
+          "tangentU8",
+          "vertexCount"
+        ],
+        "normal_convention": "directx",
+        "normal_uri": "../../../textures/architecture/farmhouse/stonewall01_n.ktx2",
+        "normal_ktx2_vk_format": 137,
+        "normal_sha256": "46be38a532500d15fc5beff2392407f7b92535a57444f78c7eb0498433461e77",
+        "sampler": {
+          "magFilter": 9729,
+          "minFilter": 9987,
+          "wrapS": 10497,
+          "wrapT": 10497
+        }
+      },
+      {
+        "mesh": 1,
+        "primitive": 0,
+        "gltf_material_index": 1,
+        "material_name": "Farmhouse01:4",
+        "shape_block": 11,
+        "vertex_count": 468,
+        "source_frame_vertex_count": 468,
+        "normal_f32_mismatches": 0,
+        "has_tangent_accessor": false,
+        "frame_metadata": {
+          "authoredFrameEvaluated": false,
+          "legacyFrameRetention": "not_applicable",
+          "meshBasis": "creation_local_with_scene_root_basis_transform",
+          "renderFrame": "generated_mikktspace",
+          "sampledNormalYCorrection": true,
+          "version": 1
+        },
+        "source_frame_channels": [
+          "bitangentStored",
+          "decodedNormals",
+          "encoding",
+          "tangentU8",
+          "vertexCount"
+        ],
+        "normal_convention": "directx",
+        "normal_uri": "../../../textures/architecture/farmhouse/thatch02_n.ktx2",
+        "normal_ktx2_vk_format": 137,
+        "normal_sha256": "fda62e43d8a3e733b52b2d0288705672a59890cb8596eac185ef7831f3dd24dd",
+        "sampler": {
+          "magFilter": 9729,
+          "minFilter": 9987,
+          "wrapS": 10497,
+          "wrapT": 10497
+        }
+      },
+      {
+        "mesh": 7,
+        "primitive": 0,
+        "gltf_material_index": 7,
+        "material_name": "Farmhouse01:25",
+        "shape_block": 31,
+        "vertex_count": 382,
+        "source_frame_vertex_count": 382,
+        "normal_f32_mismatches": 0,
+        "has_tangent_accessor": false,
+        "frame_metadata": {
+          "authoredFrameEvaluated": false,
+          "legacyFrameRetention": "not_applicable",
+          "meshBasis": "creation_local_with_scene_root_basis_transform",
+          "renderFrame": "generated_mikktspace",
+          "sampledNormalYCorrection": true,
+          "version": 1
+        },
+        "source_frame_channels": [
+          "bitangentStored",
+          "decodedNormals",
+          "encoding",
+          "tangentU8",
+          "vertexCount"
+        ],
+        "normal_convention": "directx",
+        "normal_uri": "../../../textures/architecture/farmhouse/thatch03_n.ktx2",
+        "normal_ktx2_vk_format": 137,
+        "normal_sha256": "6bb26b910e17cfb0c15af2d3048c0bc9dfd519e886b991936b6e21c1d5707288",
+        "sampler": {
+          "magFilter": 9729,
+          "minFilter": 9987,
+          "wrapS": 10497,
+          "wrapT": 10497
+        }
+      }
+    ]
+  },
+  "source_references": [
+    {
+      "path": "crates/converter/src/mesh.rs",
+      "lines": [
+        107,
+        1872
+      ],
+      "sha256": "756052ec52dd1f028e65a62a0adcfe5e55194418d90dde657ec2e558fe66c0a0"
+    },
+    {
+      "path": "crates/converter/src/material.rs",
+      "lines": [
+        491,
+        502
+      ],
+      "sha256": "013a93f071648512572e065c4f7d4c9d9be70eed1301b023c247cd1d3fb885ae"
+    },
+    {
+      "path": "crates/engine/src/nif_material.rs",
+      "lines": [
+        431,
+        439
+      ],
+      "sha256": "7fc499c80e556f68bbcc1891fe32d32017084a671e0691e0f05d79b5a7165709"
+    },
+    {
+      "path": "crates/engine/src/nif_material.rs",
+      "lines": [
+        965,
+        968
+      ],
+      "sha256": "7fc499c80e556f68bbcc1891fe32d32017084a671e0691e0f05d79b5a7165709"
+    },
+    {
+      "path": "crates/engine/src/nif_material.rs",
+      "lines": [
+        1190,
+        1218
+      ],
+      "sha256": "7fc499c80e556f68bbcc1891fe32d32017084a671e0691e0f05d79b5a7165709"
+    },
+    {
+      "path": "crates/engine/src/nif_material/native_common.wgsl",
+      "lines": [
+        60,
+        69
+      ],
+      "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+    },
+    {
+      "path": "crates/engine/src/shaders/fog_mesh.wgsl",
+      "lines": [
+        56,
+        61
+      ],
+      "sha256": "a6ec4a72c5a6362dca50e5fe5813f736c169cc59f118611470665f055819c410"
+    },
+    {
+      "path": "crates/engine/src/shaders/fog_mesh.wgsl",
+      "lines": [
+        89,
+        91
+      ],
+      "sha256": "a6ec4a72c5a6362dca50e5fe5813f736c169cc59f118611470665f055819c410"
+    },
+    {
+      "path": "crates/shared/src/coordinates.rs",
+      "lines": [
+        4,
+        17
+      ],
+      "sha256": "7da8c9ebfc9be72fdc408201878cb3c4abf313599241169c5deccb0c168ee423"
+    }
+  ],
+  "native_shader_evidence": [
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/fog-20261008/shaders/disassembly/Lighting/00000001.ps.asm",
+      "sha256": "42bd463bafe37c9192ac387419e3b36c224db55bb99e23fde0345bc0c77307c2",
+      "interpretation": "Ordinary tangent PS decodes all RGB as 2*c-1; combines independent interpolated frame vectors then normalizes; no unconditional green inversion."
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/fog-20261008/shaders/Lighting-00000000.vs.asm",
+      "sha256": "7b1bac81dbb7f8110ad5e625835ca57eafeabc219a825951fb6adda3264cad4e",
+      "interpretation": "Ordinary VS independently decodes and forwards authored B/T/N stored channels; does not replace B with cross(N,T)."
+    }
+  ],
+  "bevy_references": [
+    {
+      "path": "/Users/taylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_gltf-0.19.0/src/loader/mod.rs",
+      "lines": [
+        839,
+        849
+      ],
+      "interpretation": "Missing TANGENT accessor invokes mesh.generate_tangents for normal-mapped materials."
+    },
+    {
+      "path": "/Users/taylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_mesh-0.19.0/src/mikktspace.rs",
+      "lines": [
+        124,
+        128
+      ],
+      "interpretation": "After Mikk generation Bevy negates tangent.w."
+    },
+    {
+      "path": "/Users/taylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_pbr-0.19.0/src/render/mesh_functions.wgsl",
+      "lines": [
+        68,
+        82
+      ],
+      "interpretation": "Transforms and normalizes vertex normal once in shared vertex stage."
+    },
+    {
+      "path": "/Users/taylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_pbr-0.19.0/src/render/mesh_functions.wgsl",
+      "lines": [
+        101,
+        120
+      ],
+      "interpretation": "Transforms/normalizes tangent and multiplies handedness by model determinant sign."
+    }
+  ],
+  "known_boundaries": [
+    "NativeSurface flags.y enables exactly one decoded-Y negation for generated tangent-frame path.",
+    "StandardMaterial.flip_normal_map_y is copied fallback material state; active native WGSL does not read it.",
+    "All three checked normal containers use Vulkan BC3_UNORM format 137, not sRGB; current diffuse URI qualification does not replace normal handles.",
+    "Creation Z-up to runtime Y-up is a proper scene-root rotation, determinant positive; asset data stays Creation-local.",
+    "Native authored sourceFrame T/B metadata is retained but not evaluated. Runtime uses generated Mikk T and tangent.w*cross(N,T).",
+    "Native retail frame quantization/independent interpolation differs from normalized regenerated frame; this audit does not quantify actual captured-pixel effect.",
+    "Original DDS normal payload equality and complete original NIF input-layout binding were not independently revalidated here."
+  ],
+  "recommendation": "Do not toggle Y globally. If pursuing this owner, validate an opt-in authored T/B/N path against generated-frame and geometric-normal controls on the exact roof/stone; restore source frame fields independently with original vertex-layout proof."
+}

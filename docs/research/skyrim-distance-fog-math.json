@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "scope": "Original synthetic analytical fixtures for recovered fog arithmetic. Not retail GPU captures.",
+  "curve_cases": [
+    {"name": "before start", "parameters": [100, 4100, 1, 0.8], "distance": 50, "expected": 0},
+    {"name": "at start", "parameters": [100, 4100, 1, 0.8], "distance": 100, "expected": 0},
+    {"name": "quarter linear", "parameters": [100, 4100, 1, 0.8], "distance": 1100, "expected": 0.25},
+    {"name": "half linear", "parameters": [100, 4100, 1, 0.8], "distance": 2100, "expected": 0.5},
+    {"name": "linear cap", "parameters": [100, 4100, 1, 0.8], "distance": 4100, "expected": 0.8},
+    {"name": "beyond end", "parameters": [100, 4100, 1, 0.8], "distance": 8100, "expected": 0.8},
+    {"name": "square root", "parameters": [0, 4000, 0.5, 1], "distance": 1000, "expected": 0.5},
+    {"name": "power then cap", "parameters": [0, 4000, 0.5, 0.4], "distance": 1000, "expected": 0.4},
+    {"name": "large maximum", "parameters": [0, 4000, 0.5, 1000], "distance": 8000, "expected": 1},
+    {"name": "zero-fog equal", "parameters": [0, 0, 0.4, 0.85], "distance": 10000, "expected": 0},
+    {"name": "nonzero equal imagespace", "parameters": [25, 25, 0.4, 0.85], "distance": 10000, "expected": 0}
+  ],
+  "blend_cases": [
+    {"name": "unfogged", "source": [0.1, 0.2, 0.3], "near_rgb": [0.2, 0.4, 0.6], "far_rgb": [0.8, 0.6, 0.4], "amount": 0, "framebuffer_scale": 1, "expected_rgb": [0.1, 0.2, 0.3]},
+    {"name": "quarter nested blend", "source": [0.1, 0.2, 0.3], "near_rgb": [0.2, 0.4, 0.6], "far_rgb": [0.8, 0.6, 0.4], "amount": 0.25, "framebuffer_scale": 1, "expected_rgb": [0.1625, 0.2625, 0.3625]},
+    {"name": "half nested blend", "source": [0.1, 0.2, 0.3], "near_rgb": [0.2, 0.4, 0.6], "far_rgb": [0.8, 0.6, 0.4], "amount": 0.5, "framebuffer_scale": 1, "expected_rgb": [0.3, 0.35, 0.4]},
+    {"name": "capped nested blend", "source": [0.1, 0.2, 0.3], "near_rgb": [0.2, 0.4, 0.6], "far_rgb": [0.8, 0.6, 0.4], "amount": 0.75, "framebuffer_scale": 1, "expected_rgb": [0.5125, 0.4625, 0.4125]},
+    {"name": "complete far blend", "source": [0.1, 0.2, 0.3], "near_rgb": [0.2, 0.4, 0.6], "far_rgb": [0.8, 0.6, 0.4], "amount": 1, "framebuffer_scale": 1, "expected_rgb": [0.8, 0.6, 0.4]},
+    {"name": "scale after blend", "source": [0.1, 0.2, 0.3], "near_rgb": [0.2, 0.4, 0.6], "far_rgb": [0.8, 0.6, 0.4], "amount": 0.5, "framebuffer_scale": 2, "expected_rgb": [0.6, 0.7, 0.8]}
+  ],
+  "depth_cases": [
+    {"name": "near axial sample", "view_z": 100, "camera_near": 5, "camera_far": 100000},
+    {"name": "middle axial sample", "view_z": 16384, "camera_near": 5, "camera_far": 100000},
+    {"name": "far axial sample", "view_z": 80000, "camera_near": 5, "camera_far": 100000},
+    {"name": "different camera near", "view_z": 16384, "camera_near": 100, "camera_far": 100000}
+  ]
+}

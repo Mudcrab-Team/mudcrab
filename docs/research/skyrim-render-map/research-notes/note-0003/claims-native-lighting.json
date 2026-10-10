@@ -1,0 +1,1502 @@
+{
+  "schema": "mudcrab-research-note-claims/v1",
+  "note_id": "N003",
+  "domain": "native-lighting",
+  "claims": [
+    {
+      "id": "N003-L01",
+      "supplied_statement": "“forward renderer that has one deferred trick”",
+      "subject_scope": "vanilla SE opaque-lighting architecture",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9.cpp",
+          "lines": "732-743, 819-868",
+          "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+          "basis": "Nukem9 decompilation binds per-draw directional/DALC inputs and uploads local-light count and arrays; source reconstruction only."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "62-68",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target-pinned selected shader input/layout findings; a draw-to-pixel route remains open."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "28-56",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Earlier target map leaves complete local-light traversal and frame order unresolved."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "This is a supported architecture model from a reverse-engineered source, not a target-byte or selected retail frame proof.",
+        "Native selected draw and complete accumulation/pass ownership remain open."
+      ],
+      "next_query": "Trace a selected 1.7.104 draw and capture the active shader, constants, outputs and pass targets.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L01",
+          "relation": "challenges"
+        },
+        {
+          "claim_id": "N002-L05",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "scene-accumulation",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "forward renderer that has one deferred trick"
+    },
+    {
+      "id": "N003-L02",
+      "supplied_statement": "“Shadows are the deferred part.”",
+      "subject_scope": "shadow-mask resolve versus deferred light accumulation",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1105-1108, 1270-1292",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstructed HLSL applies selected mask channels in the per-pixel light loop; reconstructed shader is not shipped bytes."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/frame-topology.md",
+          "lines": "13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "Target-pinned conditional call graph is incomplete and does not establish a full light-accumulation timeline."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "Native shadow-mask producer/resource bindings and selected pixel reads are not closed as one retail draw trace."
+      ],
+      "next_query": "Capture mask target production and the consuming draw/resource binding on target retail.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L04",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "shadow-visibility",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "scene-accumulation",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Shadows are the deferred part."
+    },
+    {
+      "id": "N003-L03",
+      "supplied_statement": "“up to 7 point lights, at most 4 of them shadowed”",
+      "subject_scope": "per-draw local-light and shadow-light capacity",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9.cpp",
+          "lines": "834-868",
+          "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+          "basis": "Decompiled SetupGeometry decodes a 3-bit 0..7 count and passes it to seven-entry constant setup; reconstruction, not target byte proof."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1105-1108",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstruction clamps the loop to seven point lights and four shadowed channels."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "153-178",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Prior note retains per-object and shadow count behavior as unverified on target."
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "lines": "13-23, 93-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "Current Mudcrab diagnostic shader declares seven locals and loops over at most seven; it is project behavior only."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "85-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        },
+        {
+          "path": "crates/engine/src/nif_material/native.rs",
+          "symbol": "InjectedLighting::validate",
+          "lines": "78-107",
+          "sha256": "41b8b7f1bf3fc76f530e0e20323e2d7adb24755c1497ca9396c9f0bdd9b4ba7a"
+        }
+      ],
+      "unresolved": [
+        "The reverse-engineered CPU and hand-reconstructed HLSL agree, but target packaged shader bytes do not establish these array lengths or a selected draw.",
+        "Global active-light selection, ordering, overflow and live count are not established."
+      ],
+      "next_query": "Capture raw technique, count constants, local arrays and shadow selector for a selected retail draw.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L14",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N002-L15",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "local-light-candidates",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "shadow-visibility",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "up to 7 point lights, at most 4 of them shadowed"
+    },
+    {
+      "id": "N003-L04",
+      "supplied_statement": "“light counts are baked into the shader permutation key”",
+      "subject_scope": "raw, vertex and pixel shader key separation",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9.cpp",
+          "lines": "834-843, 1090-1125",
+          "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+          "basis": "Decompilation reads counts from raw descriptor and separately derives the pixel technique; confirms a raw descriptor/count link, not compiled-key selection."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "85-100",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target-native key masks are recovered; they do not prove which NIF or pass state supplied raw key."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "The exact distinction among raw technique, compiled VS key and compiled PS key must be preserved; not all count bits are necessarily part of both compiled shader identifiers."
+      ],
+      "next_query": "Capture raw key and native keyed-object lookup for one draw, including count fields before and after key derivation.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L09",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "shader-selection",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "The light counts are baked into the shader permutation key."
+    },
+    {
+      "id": "N003-L05",
+      "supplied_statement": "“Shadows are resolved beforehand into a screen-space RGBA shadow mask”",
+      "subject_scope": "mask storage, timing and shadow channel consumption",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1260-1292",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstruction indexes shadow values by selector and masks Lambert/specular; it does not prove target producer order."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/frame-topology.md",
+          "lines": "32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "Target call map has conditional shadow/depth branches and remains incomplete."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "Screen-space mask format, RGBA channel ownership, timing, and selected t14/SRV association are not all tied to original target bytes in the scoped evidence."
+      ],
+      "next_query": "Recover mask allocation, writer dispatch/draw and selected material shader binding from one retail frame.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L04",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "shadow-visibility",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Shadows are resolved beforehand into a screen-space RGBA shadow mask"
+    },
+    {
+      "id": "N003-L06",
+      "supplied_statement": "“The lighting math is non-PBR and runs in gamma space”",
+      "subject_scope": "surface response color domain",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1275-1315, 1355-1374, 1394-1433",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstruction contains direct diffuse/specular math but does not decode full typed SRV interpretation or prove a whole-pipeline gamma domain."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "53-60",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Native legacy DDS view creation is UNORM; the note explicitly says UNORM does not establish physical linear-light interpretation."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/embedded-shaders.md",
+          "lines": "3-16",
+          "sha256": "9b337bc0f1e32800f9288f8bd386a302a177e904e2b050ba498da0bcaa85fba0",
+          "basis": "Target embedded shader scan proves bytes/inventory and reflected interfaces, while assigning shader semantics and active selection remains separate."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "The broad whole-pipeline “gamma space” label exceeds the inspected native view and selected shader evidence.",
+        "No selected target shader path establishes all input/output transfer functions."
+      ],
+      "next_query": "Trace sampled resource formats, shader arithmetic, render-target format and output conversion for the same target draw.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L08",
+          "relation": "duplicates"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "texture-view",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "output-display",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "The lighting math is non-PBR and runs in gamma space"
+    },
+    {
+      "id": "N003-L07",
+      "supplied_statement": "“Lambert diffuse”",
+      "subject_scope": "ordinary direct diffuse response",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1294-1310",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstruction uses saturated N dot normalized L for direct local diffuse and leaves wrap terms separate."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "70-87",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target-native selected shader records and material inputs are partial; ordinary selected-key identity is conditional."
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "lines": "85-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "Current Mudcrab shader implements clamped N dot L for directional and local terms."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "85-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "The reconstruction and Mudcrab equation agree, but the target shipped pixel-byte arithmetic and selected key are not established."
+      ],
+      "next_query": "Compare decoded instruction arithmetic for one selected Lighting program against the reconstructed N dot L term.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L18",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Lambert diffuse"
+    },
+    {
+      "id": "N003-L08",
+      "supplied_statement": "“unnormalized Blinn-Phong specular”",
+      "subject_scope": "specular vector normalization, exponent and weighting",
+      "assessment": "unverified",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1230-1260, 1330-1342, 1394-1400",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstruction source is needed for exact view/light half-vector formula; no target byte equivalence is claimed."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "273-320",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Prior note leaves target directional specular equation and vector normalization unverified."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nifxml.xml",
+          "lines": "6601-6604",
+          "sha256": "d6b76a83ea5fbadd21da5f06348b236a1c43da6bb76d108a2e8b749c22618dd6",
+          "basis": "NIF format source names glossiness/specular strength fields but does not establish shader interpretation for selected target draw."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "91-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "No target shipped shader byte equation proves the exact unnormalized Blinn-Phong form.",
+        "Current Mudcrab shader normalizes the half vector, so it differs from the supplied reconstruction on this detail."
+      ],
+      "next_query": "Decode the selected target PS instructions and recover its inputs, exponent, vector normalization and material scales.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L19",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "shader-selection",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "unnormalized Blinn-Phong specular"
+    },
+    {
+      "id": "N003-L09",
+      "supplied_statement": "“a 1 - (d/r)^2 falloff”",
+      "subject_scope": "local light radial attenuation function",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1283-1288",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstructed pixel HLSL computes 1 - saturate(distance/radius)^2."
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "lines": "93-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "Mudcrab’s inspected native shader uses ratio=clamp(distance/radius,0,1) and attenuation=1-ratio^2."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "313-330",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Earlier N002-L21 calls another falloff equation unverified and explicitly says no target equation was established."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "93-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "The matching project equation and early reconstruction challenge N002-L21 but do not prove the target shipped shader formula.",
+        "Native selected local-light PS bytes and per-object light values remain open."
+      ],
+      "next_query": "Map the point-light distance/radius instruction sequence in a loader-associated target PS with a selected draw.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L21",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "local-light-candidates",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "a `1 - (d/r)^2` falloff"
+    },
+    {
+      "id": "N003-L10",
+      "supplied_statement": "“ignores Gamebryo’s attenuation fields”",
+      "subject_scope": "constant, linear and quadratic NiPointLight attenuation data",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-nipointlight.h",
+          "lines": "13-35",
+          "sha256": "a158e9479c336dfb304cf3c3463b016cc84c63cb72375b57089fbc89ff8d185b",
+          "basis": "Header identifies constant, linear and quadratic attenuation fields at the runtime data offset; field existence alone does not prove consumer absence."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1283-1288",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstructed HLSL uses position radius only in the attenuation term."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "313-330",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Prior native note leaves attenuation consumer behavior and target formula open."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "93-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "No target-native producer-to-shader read proof rules out these fields for all relevant light types or shader families."
+      ],
+      "next_query": "Search target-native reads/writes for NiPointLight attenuation data and compare to a selected PS input trace.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L21",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "local-light-candidates",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "that ignores Gamebryo's attenuation fields"
+    },
+    {
+      "id": "N003-L11",
+      "supplied_statement": "“Shadows multiply only Lambert and specular.”",
+      "subject_scope": "shadowed versus unshadowed direct-light terms",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1270-1315",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstruction copies light color to nsLightColor, shadows the detailed light color, and uses both in direct terms."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "66-68",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target map has selected soft directional arithmetic but specialized terms and active values remain open."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "88-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "Current Mudcrab supports directional visibility gating but has no separate reconstructed soft/rim/back accumulators.",
+        "The target bytecode shadow factor for every material feature and light type is not fully mapped."
+      ],
+      "next_query": "Compare shadow-mask multiplies and unshadowed color branches in each selected ordinary/specialized PS family.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L04",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "shadow-visibility",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Shadows multiply only Lambert and specular."
+    },
+    {
+      "id": "N003-L12",
+      "supplied_statement": "“wrap/rim/back terms for skin and foliage”",
+      "subject_scope": "soft, rim and back lighting term scope",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "600-612, 1294-1314",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstruction defines soft wrap and the local-light loops add soft/rim/back branches; this is not target-byte proof."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "62-68, 180-183",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target-native map has selected soft directional arithmetic; original flag translation, specialized texture transfer and active values remain open."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "The target native map does not close rim/back arithmetic or the per-material flag-to-object mapping."
+      ],
+      "next_query": "Connect original target flag bits and sampled texture slots to each decoded soft/rim/back arithmetic branch.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L24",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "material-geometry",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "wrap/rim/back terms for skin and foliage"
+    },
+    {
+      "id": "N003-L13",
+      "supplied_statement": "“Vanilla has no dedicated skin SSS. Skin ‘subsurface’ is just SOFT_LIGHTING”",
+      "subject_scope": "skin subsurface scattering classification",
+      "assessment": "unverified",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "600-612, 1294-1314",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstruction exposes soft-light terms; by itself it cannot exclude separate specialized skin shader behavior."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "395-432",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Earlier note correctly leaves skin/SSS family labels and PS28 semantics unverified against target shader identity."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "No selected target skin draw or specialized skin pixel program was connected to the reconstructed soft-light branch."
+      ],
+      "next_query": "Identify the selected skin key/program and trace all PS terms tied to SSS-related constants and textures.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L24",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "shader-selection",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Vanilla has no dedicated skin SSS"
+    },
+    {
+      "id": "N003-L14",
+      "supplied_statement": "“Emissive is added before the albedo multiply”",
+      "subject_scope": "ordinary-family emission and texture multiply order",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1355-1374",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstruction accumulates EmitColor before multiplying by base texture and vertex color."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "70-88",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target native map connects material RGB/scalar uploads to selected shader constants, but full material/output arithmetic remains family-dependent."
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "lines": "102-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "Current Mudcrab ordinary family adds emission before diffuse albedo and vertex RGB."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "102-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "The statement is reconstruction-supported and project-matched; target selected program bytes are not yet linked to this complete order.",
+        "Glow-map variants have a distinct texture multiplier and are not covered by ordinary-family evidence."
+      ],
+      "next_query": "Match the reconstructed ordinary-family key to target package bytes and verify add/multiply instruction order; inspect glow-map separately.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L08",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "material-geometry",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Emissive is added before the albedo multiply"
+    },
+    {
+      "id": "N003-L15",
+      "supplied_statement": "“Envmap reflections are scaled by received diffuse light”",
+      "subject_scope": "environment-map contribution order and multiplier",
+      "assessment": "unverified",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1348-1353, 1413-1415",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstruction samples environment and adds envColor multiplied by diffuseColor; not proof for a selected target package program."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "112-130",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Earlier note identifies the BSLighting family but leaves feature arithmetic and selection open."
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "lines": "104-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "Mudcrab’s current ibl input is accumulated as an independent additive term, so it does not reproduce this supplied order."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "104-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "No target selected envmap draw or bytecode proof establishes diffuseColor*envColor order.",
+        "Current Mudcrab IBL is an injected independent accumulator, not a retail envmap implementation."
+      ],
+      "next_query": "Decode and connect the target ENVMAP PS variant’s environment sample and diffuse accumulator instructions.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L08",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "texture-view",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Envmap reflections are scaled by received diffuse light"
+    },
+    {
+      "id": "N003-L16",
+      "supplied_statement": "“DALC is an affine function of the normal”",
+      "subject_scope": "directional ambient coefficient representation",
+      "assessment": "supported_static",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "41-46",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target-pinned native weather DALC preparation preserves six-face order and builds affine rows; active operand meaning remains unresolved."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-dalc.h",
+          "lines": "7-35",
+          "sha256": "0de8b1c6af36df24bbc3ab97bc6d45a1cff90019e6a8305f096c5849714997c9",
+          "basis": "CommonLib layout declares three max/min axis-color pairs, specular color, and Fresnel power."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1359-1363",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Early reconstruction evaluates a row-major 3x4 DALC against normal; source support is corroborative."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "102-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "Affine row construction is target-native static; active source precedence and selected runtime coefficients remain unresolved."
+      ],
+      "next_query": "Capture one selected target draw’s directional ambient constants and source owner, including the extra operand.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L20",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N001-C05",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "ambient-environment",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "DALC is an affine function of the normal, not an ambient cube."
+    },
+    {
+      "id": "N003-L17",
+      "supplied_statement": "“six axis colors (X+, X-, Y+, Y-, Z+, Z-)”",
+      "subject_scope": "authored DALC stored axis colors and four time blocks",
+      "assessment": "supported_static",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-dalc.h",
+          "lines": "7-35",
+          "sha256": "0de8b1c6af36df24bbc3ab97bc6d45a1cff90019e6a8305f096c5849714997c9",
+          "basis": "Pinned header lays out three MaxMin axis pairs and metadata fields."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+          "lines": "47-59, 175-181",
+          "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+          "basis": "Weather header declares four ColorTime values and one DALC block for each time slot."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-interior.h",
+          "lines": "26-43",
+          "sha256": "37cc1d081197cd51443ddaecae7253a0e2ce744e14376f935cad11e76df8fe64",
+          "basis": "Interior data carries a full DALC block."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "EnvironmentCatalog::weather_render_inputs",
+          "lines": "238-249",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        }
+      ],
+      "unresolved": [
+        "Authored layout is supported; which values are selected, interpolated, or overridden at runtime remains open."
+      ],
+      "next_query": "Record a selected weather or cell DALC source identity and its effective packed rows.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L20",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "ambient-environment",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "The data has six axis colors (X+, X-, Y+, Y-, Z+, Z-) per DALC block"
+    },
+    {
+      "id": "N003-L18",
+      "supplied_statement": "“NAM0 holds 17 colors x 4 slots”",
+      "subject_scope": "weather color category array and named categories",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+          "lines": "61-82, 173-176",
+          "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+          "basis": "CommonLib enum enumerates NAM0 color categories and declares the [ColorType][ColorTime] array."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-common.pas",
+          "lines": "8617-8648",
+          "sha256": "e616b6546f6df74d88ec98bb870906db380c985963d011e4931c5726682b7d26",
+          "basis": "xEdit shows WTHR color structures and later form-version-specific additions."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "EnvironmentCatalog::from_connection",
+          "lines": "95-163",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        }
+      ],
+      "unresolved": [
+        "The source layout supports 17x4 categories in this header; exact record-version gates and target winning record data remain separate."
+      ],
+      "next_query": "Compare the current converter WTHR decoder against target form version and all xEdit field-version gates.",
+      "relates_to": [
+        {
+          "claim_id": "N002-P01",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "resource-winners",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "NAM0 holds 17 colors x 4 slots"
+    },
+    {
+      "id": "N003-L19",
+      "supplied_statement": "“index 4 Sunlight drives the sun’s directional color”",
+      "subject_scope": "weather sunlight category to directional-light RGB",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+          "lines": "61-70, 175",
+          "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+          "basis": "CommonLib labels category 4 as kSunlight and stores it in NAM0."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "43-51",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target-native preparation/call data says prepared RGB is copied by the default Sun writer and consumed with dimmer and SunlightScale; other writers and active identity remain open."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-weather-current.cpp",
+          "lines": "215-230",
+          "sha256": "b2d17b78f6dff6d1f46c40677ee8050b8c8e2377663511c4dd74c9825ecd8c7f",
+          "basis": "Current Community Shaders code accesses skyColor[kSunlight] in its synchronization path; mod behavior is corroborative only."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "Target static evidence does not establish all RGB writers, the active sun identity, or a selected draw."
+      ],
+      "next_query": "Capture all target Sun RGB writes and effective light identity for a selected scene/time.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L17",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "sun-direction",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "index 4 Sunlight drives the sun's directional color"
+    },
+    {
+      "id": "N003-L20",
+      "supplied_statement": "“timed by the climate”",
+      "subject_scope": "CLMT schedule ownership of weather color transitions",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-climate.h",
+          "lines": "40-63, 69-78",
+          "sha256": "593c5c229d2fd6375996e6512195b07178e12acdb4f2851002b35dc21d15ff92",
+          "basis": "CommonLib models Sunrise/Sunset as byte intervals and exposes interval conversion helpers."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-common.pas",
+          "lines": "8710-8720",
+          "sha256": "e616b6546f6df74d88ec98bb870906db380c985963d011e4931c5726682b7d26",
+          "basis": "xEdit’s CLMT fields provide authored time intervals; this is record schema, not proof of the native interpolation curve."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "43-51, 151-158",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target map leaves automatic current/next weather transition and active climate selection open."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "climate_for_worldspace",
+          "lines": "251-265",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        }
+      ],
+      "unresolved": [
+        "The climate owns authored timing fields, but exact native color blend curve and active climate/override remain open."
+      ],
+      "next_query": "Trace the target weather-time update routine from selected CLMT timing through effective color weights.",
+      "relates_to": [
+        {
+          "claim_id": "N002-P02",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N002-P03",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "view-time",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "timed by the climate."
+    },
+    {
+      "id": "N003-L21",
+      "supplied_statement": "“the current weather’s four time-of-day slots”",
+      "subject_scope": "weather/time transition interpolation and active owner",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+          "lines": "47-59, 175-181",
+          "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+          "basis": "Schema establishes authored time slots."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-weather-current.cpp",
+          "lines": "210-228",
+          "sha256": "b2d17b78f6dff6d1f46c40677ee8050b8c8e2377663511c4dd74c9825ecd8c7f",
+          "basis": "CS hook references blended Sky weather state and kSunlight, which is mod source evidence, not target ownership proof."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "43-51, 151-158",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target static evidence has selected preparation segments; active weather, weights and exceptional branches remain open."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "EnvironmentCatalog::weather_render_inputs",
+          "lines": "238-248",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        }
+      ],
+      "unresolved": [
+        "No live selected weather, weight pair, source winner or blending curve has been captured."
+      ],
+      "next_query": "Record active current/last weather IDs, weights, time-slot weights, and resulting constants in one retail frame.",
+      "relates_to": [
+        {
+          "claim_id": "N002-P03",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "view-time",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "ambient-environment",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Exteriors take sun color, DALC and fog from the current weather's four time-of-day slots (Sunrise, Day, Sunset, Night), timed by the climate."
+    },
+    {
+      "id": "N003-L22",
+      "supplied_statement": "“fog from the current weather’s four time-of-day slots”",
+      "subject_scope": "weather fog color and fog scalar time-key cardinality",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-common.pas",
+          "lines": "8615-8650",
+          "sha256": "e616b6546f6df74d88ec98bb870906db380c985963d011e4931c5726682b7d26",
+          "basis": "Record definitions distinguish fog/color time fields; exact field scope follows the source definition and target version."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+          "lines": "165-176",
+          "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+          "basis": "CommonLib declares weather color and fog fields in the four ColorTime family but does not by itself establish native scalar interpolation."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/frame-topology.md",
+          "lines": "13, 32-44, 69",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "Native frame map does not close fog selection and effective values."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "The exact Fog Near/Far scalar slots and the engine’s fog-distance blend curve are not established by the sources cited in the supplied sentence."
+      ],
+      "next_query": "Map WTHR FNAM and NAM0 fog fields against target weather-update inputs and selected fog constants.",
+      "relates_to": [
+        {
+          "claim_id": "N002-P25",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "fog-effects",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Exteriors take sun color, DALC and fog from the current weather's four time-of-day slots (Sunrise, Day, Sunset, Night), timed by the climate."
+    },
+    {
+      "id": "N003-L23",
+      "supplied_statement": "“Interiors take a static set from the cell’s XCLL block and its Lighting Template”",
+      "subject_scope": "interior cell versus lighting-template ownership",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-interior.h",
+          "lines": "26-43",
+          "sha256": "37cc1d081197cd51443ddaecae7253a0e2ce744e14376f935cad11e76df8fe64",
+          "basis": "INTERIOR_DATA contains explicit ambient, directional, fog, DALC, fade and inheritance fields."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-tes5.pas",
+          "lines": "4226-4261, 6978-7001",
+          "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+          "basis": "xEdit defines cell XCLL, its LTMP link, template DATA, and template DALC source fields."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "151-160",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target map leaves effective cell/template inheritance and runtime room ownership open."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "EnvironmentCatalog::environment_for_cell",
+          "lines": "268-312",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        }
+      ],
+      "unresolved": [
+        "The records carry both cell and template data; the active cell/template override and static-versus-transition behavior are not proven by schema alone."
+      ],
+      "next_query": "Capture a target interior’s winning CELL XCLL, LGTM link, inheritance flags, room owner and effective shader constants.",
+      "relates_to": [
+        {
+          "claim_id": "N002-P02",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N002-P03",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N001-C01",
+          "relation": "duplicates"
+        },
+        {
+          "claim_id": "N001-C02",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "ambient-environment",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "view-time",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "Interiors take a static set from the cell's `XCLL` block and its Lighting Template."
+    },
+    {
+      "id": "N003-L24",
+      "supplied_statement": "“There is no inherit bit for the DALC block”",
+      "subject_scope": "serialized XCLL inheritance mask coverage for DALC",
+      "assessment": "supported_static",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-interior.h",
+          "lines": "11-23, 26-43",
+          "sha256": "37cc1d081197cd51443ddaecae7253a0e2ce744e14376f935cad11e76df8fe64",
+          "basis": "Inheritance enum lists ambient through light fade; the same structure separately carries directionalAmbientLightingColors without an associated enum bit."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-tes5.pas",
+          "lines": "4237-4254",
+          "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+          "basis": "XCLL DALC bytes precede the listed inheritance flags; the mask defines no DALC member."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "EnvironmentCatalog::environment_for_cell",
+          "lines": "268-312",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        }
+      ],
+      "unresolved": [
+        "No DALC bit exists in the serialized XCLL mask; runtime behavior and the effect of linking LGTM still require target-native owner tracing."
+      ],
+      "next_query": "Trace native cell/template initialization and compare effective DALC constants with and without a linked template.",
+      "relates_to": [
+        {
+          "claim_id": "N001-C02",
+          "relation": "challenges"
+        },
+        {
+          "claim_id": "N001-C05",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N002-P02",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "ambient-environment",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "There is no inherit bit for the DALC block"
+    },
+    {
+      "id": "N003-L25",
+      "supplied_statement": "“same shader permutations”",
+      "subject_scope": "interior/exterior permutation identity and constant-source distinction",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+          "lines": "1080-1120",
+          "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+          "basis": "Reconstruction exposes general lighting permutation flags and no interior discriminator in the shown ordinary evaluation block; absence from excerpt is not exhaustive proof."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9-header.h",
+          "lines": "66-120",
+          "sha256": "fee6b584673e02de748a61366546ff46b31908eeaac3f5584c6d13b471962a55",
+          "basis": "Nukem9 header lists lighting flag/permutation declarations but is source reconstruction."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/shader-selection.md",
+          "lines": "21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "Target-native raw-to-key functions are recovered but the active NIF, pass and geometry state are not tied to a selected draw."
+        }
+      ],
+      "current_implementation": [],
+      "unresolved": [
+        "The claim that no INTERIOR define exists requires a complete permutation define audit at the pinned shader source; this source extract only partially covers it.",
+        "The same executable program could still receive distinct per-view constants and shadow flags."
+      ],
+      "next_query": "Compare full pinned define sets and capture interior/exterior selected raw/VS/PS keys plus constants.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L08",
+          "relation": "duplicates"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "shader-selection",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "same shader permutations"
+    },
+    {
+      "id": "N003-L26",
+      "supplied_statement": "“All of its inputs come from data records”",
+      "subject_scope": "completeness of records as source for surface response inputs",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "148-190",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target input inventory includes serialized, native, project and open domains including settings, textures, runtime values, and view ownership."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+          "lines": "153-178",
+          "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+          "basis": "Prior note leaves selection, runtime and shader-material linking open."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/world/database.rs",
+          "symbol": "EnvironmentCatalog",
+          "lines": "38-54",
+          "sha256": "a08b792a8f3f7cda73c57c6ed8e9905610b36fec22a343606beb9aa03e266c31"
+        },
+        {
+          "path": "crates/engine/src/lighting_settings.rs",
+          "symbol": "REGISTRY",
+          "lines": "80-99",
+          "sha256": "354ec1f17a6ba6c388ff73d5d3a1ef695df118dbfbe9a4224679bccb62c902eb"
+        }
+      ],
+      "unresolved": [
+        "Records author many inputs but not every runtime, setting, scene, resource, or generated value; the statement is overbroad."
+      ],
+      "next_query": "For each selected draw, inventory authored record fields alongside engine settings, generated resources and runtime state.",
+      "relates_to": [
+        {
+          "claim_id": "N002-P01",
+          "relation": "challenges"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "resource-winners",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "world-weather-cell",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "material-geometry",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "view-time",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "All of its inputs come from data records."
+    },
+    {
+      "id": "N003-L27",
+      "supplied_statement": "“Ambient rows act on (world normal, 1)”",
+      "subject_scope": "current Mudcrab DALC response and authored coefficient source",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native.rs",
+          "lines": "45-55",
+          "sha256": "41b8b7f1bf3fc76f530e0e20323e2d7adb24755c1497ca9396c9f0bdd9b4ba7a",
+          "basis": "InjectedLighting describes caller-supplied, already linear world-space rows and no native source resolver."
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "lines": "102-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "Current ordinary shader dots ambient rows against normal with homogeneous one."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "43-46",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Target DALC rows are recovered from source values but extra RGB operand ownership remains unresolved."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native.rs",
+          "symbol": "InjectedLighting",
+          "lines": "45-61",
+          "sha256": "41b8b7f1bf3fc76f530e0e20323e2d7adb24755c1497ca9396c9f0bdd9b4ba7a"
+        },
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts",
+          "lines": "102-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "Project row layout matches the affine mathematical form, but input units, source resolution, weather/cell transitions and active native rows are not implied by that match."
+      ],
+      "next_query": "Verify the source-to-row adapter and record coefficients before any visual comparison; keep unknown owners explicit.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L20",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "ambient-environment",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "ambient = mul(DirectionalAmbient /*row_major float3x4*/, float4(N, 1))"
+    },
+    {
+      "id": "N003-L28",
+      "supplied_statement": "The early Community Shaders HLSL is a reconstruction, not Bethesda source.",
+      "subject_scope": "source boundary for reconstructed vanilla shader math",
+      "assessment": "supported_static",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/embedded-shaders.md",
+          "lines": "3-16, 84-90",
+          "sha256": "9b337bc0f1e32800f9288f8bd386a302a177e904e2b050ba498da0bcaa85fba0",
+          "basis": "Target executable scan is static; embedded bytes do not establish currently selected source/program/draw."
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "21-39, 62-68",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "Native and shader-static evidence is explicitly separated from live selected state and visual acceptance."
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native.rs",
+          "symbol": "InjectedLighting",
+          "lines": "45-61",
+          "sha256": "41b8b7f1bf3fc76f530e0e20323e2d7adb24755c1497ca9396c9f0bdd9b4ba7a"
+        }
+      ],
+      "unresolved": [
+        "The reconstruction does not establish target shader bytecode or the selected retail draw."
+      ],
+      "next_query": "Compare a selected Skyrim SE 1.7.104 shader and draw against the cited reconstruction.",
+      "relates_to": [
+        {
+          "claim_id": "N002-L14",
+          "relation": "strengthens"
+        },
+        {
+          "claim_id": "N002-L21",
+          "relation": "strengthens"
+        }
+      ],
+      "proposed_model_nodes": [
+        {
+          "node_id": "surface-response",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "view-time",
+          "relation": "strengthens"
+        },
+        {
+          "node_id": "resource-winners",
+          "relation": "strengthens"
+        }
+      ],
+      "supplied_excerpt_verbatim": "The earliest commits (Feb 2023 for `Lighting.hlsl`, Jul 2023 and Aug 2024 for `ISHDR.hlsl`) are transcribed from decompiled bytecode and still carry names like `UnknownPerFrame2[22]`. They are faithful in intent, but they are not Bethesda source."
+    }
+  ]
+}
