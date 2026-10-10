@@ -1,0 +1,213 @@
+{
+  "scope": "Recorded stop-on-conflict merge attempts. The initial PR122 resolution was not recorded in this format; absence of a row does not prove a conflict-free merge.",
+  "merges": [
+    {
+      "number": 124,
+      "before": "7fa255f6435b87c7913af37c6f1c6c4f10b91f9d",
+      "head": "b5ff86fe54acf4fae499c1ca29a75684d260205f",
+      "files": [
+        "crates/engine/src/app.rs"
+      ]
+    },
+    {
+      "number": 125,
+      "before": "5100c32cf7493d3c2796f5c1e8f422c75e59ca64",
+      "head": "7bd9cc0bb76ad463132b7e95472ca14a38b93d73",
+      "files": [
+        "crates/engine/src/streaming.rs"
+      ]
+    },
+    {
+      "number": 128,
+      "before": "4870ffb82b8da406f4ffdfd16355793e403e5fe5",
+      "head": "386267dc6569154036d6c45ebb04a91dc7c9e5aa",
+      "files": [
+        "crates/engine/src/app.rs",
+        "crates/engine/src/lib.rs",
+        "crates/engine/src/physics.rs",
+        "crates/engine/src/streaming.rs"
+      ]
+    },
+    {
+      "number": 167,
+      "before": "8813067a3fbeaa878500a172b1c5ab8468fd182d",
+      "head": "2983e96f25dd488858feec1f5b0cd22058e20ca1",
+      "files": [
+        "SPEC.md"
+      ]
+    },
+    {
+      "number": 171,
+      "before": "c9b83d4989801679d3492a18251213514492ddd6",
+      "head": "965215de2c680e817a37e740533b61846ea7077f",
+      "files": [
+        "SPEC.md"
+      ]
+    },
+    {
+      "number": 173,
+      "before": "9283d71467e0baa1bc9ddeffb32265d88006cb5c",
+      "head": "e40ec491ba2dae56543dc6e782327f11fa3dda1c",
+      "files": [
+        "SPEC.md"
+      ]
+    },
+    {
+      "number": 174,
+      "before": "452d721ad1cd21cad6c6af25cc930c327e1144ef",
+      "head": "0313ceb0f396db71e5e3d25566dbe45ae6af90d4",
+      "files": [
+        "SPEC.md"
+      ]
+    },
+    {
+      "number": 175,
+      "before": "39aa116fcba182ce5fee13aca453603a872e1c76",
+      "head": "9b2d58b3988fccd0a32fc060eb603602b314a350",
+      "files": [
+        "SPEC.md"
+      ]
+    },
+    {
+      "number": 189,
+      "before": "bb566f637e5351685b34cc66a8ec4ce4b34a67ea",
+      "head": "5e7ec14cc25732401e14678f6f8ae3df9e857551",
+      "files": [
+        ".github/workflows/run_tests.yml",
+        "crates/engine/src/streaming.rs",
+        "crates/engine/src/world/database.rs",
+        "docs/specs/converters/db-schema.md"
+      ]
+    },
+    {
+      "number": 198,
+      "before": "b188e610bf9236163faf321722fe2136dbaae715",
+      "head": "f319a96346c7513b41fc11dba88dedb3cc185d38",
+      "files": [
+        "crates/converter/src/esm/exporter.rs",
+        "crates/converter/src/main.rs"
+      ]
+    },
+    {
+      "number": 200,
+      "before": "8423c5ca9eee1d0dc92cd507800d7b84c6abd23b",
+      "head": "28dce5aecdf095407ae10f12843550e4af7902c8",
+      "files": [
+        ".github/workflows/run_tests.yml",
+        "crates/engine/src/config.rs",
+        "crates/engine/src/lib.rs"
+      ]
+    },
+    {
+      "number": 204,
+      "before": "501c9d9f3ccf7da96710d23db1e65e964bb3db1c",
+      "head": "7dcf13440641b8695e55ff7b0b7f3aa1b6781cf5",
+      "files": [
+        "SPEC.md",
+        "crates/converter/src/cache.rs",
+        "crates/converter/src/config.rs",
+        "crates/converter/src/esm/cell_cache.rs",
+        "crates/converter/src/esm/exporter.rs",
+        "crates/converter/src/lib.rs",
+        "crates/converter/src/main.rs",
+        "crates/converter/src/metadata.rs",
+        "crates/converter/src/pipeline.rs",
+        "crates/converter/tests/fixture_lod_pipeline.rs",
+        "crates/converter/tests/fixture_metadata_rebuild.rs",
+        "crates/converter/tests/plugin_references.rs",
+        "crates/converter/tests/snapshots/snapshots__conversion_manifest_matches_snapshot.snap",
+        "crates/engine/src/app.rs",
+        "crates/engine/src/config.rs",
+        "crates/shared/src/lib.rs",
+        "docs/specs/converters/db-schema.md",
+        "docs/specs/converters/dds-to-ktx2.md",
+        "docs/specs/converters/lod-compiler.md",
+        "docs/specs/engine/color-pipeline.md",
+        "docs/specs/modding/launcher-lod.md"
+      ]
+    },
+    {
+      "number": 206,
+      "before": "af7ad4ba72f56d695898b3ed17264513bb2d3708",
+      "head": "1fd08d70b945a1eab76a5259fc0cffefbff343da",
+      "files": [
+        "crates/engine/src/lib.rs",
+        "crates/engine/src/metrics.rs",
+        "crates/engine/src/profiling.rs"
+      ]
+    },
+    {
+      "number": 208,
+      "before": "70b79f1d2747633a7a3e5b561c66ddbcb62ba7e8",
+      "head": "119f8995012c8f8e3596f7797e52b3dd0370baaa",
+      "files": [
+        "crates/converter/src/asset_path.rs",
+        "crates/converter/src/cache.rs",
+        "crates/converter/src/main.rs",
+        "crates/converter/src/pipeline.rs",
+        "crates/converter/tests/physics_bodies.rs",
+        "crates/engine/src/config.rs"
+      ]
+    },
+    {
+      "number": 209,
+      "before": "d419d98f4a3943a7df8233d33ed669fff785bb92",
+      "head": "a19b95be0af9b9984fb8fe64c1ff08a662dcbfd4",
+      "files": [
+        "crates/converter/Cargo.toml",
+        "crates/converter/src/archive/mod.rs",
+        "crates/converter/src/cache.rs",
+        "crates/converter/src/main.rs",
+        "crates/converter/src/pipeline.rs",
+        "crates/converter/tests/snapshots/snapshots__conversion_manifest_matches_snapshot.snap",
+        "crates/converter/tests/snapshots/snapshots__pipeline_report_matches_snapshot.snap"
+      ]
+    },
+    {
+      "number": 210,
+      "before": "7414824894fc8c073192db0584dd98409cd874ad",
+      "head": "4db055d4b99411e4b313557240efd7f4f482984d",
+      "files": [
+        "crates/engine/src/profiling.rs",
+        "crates/engine/src/streaming.rs",
+        "crates/engine/src/streaming/lod.rs"
+      ]
+    },
+    {
+      "number": 211,
+      "before": "ff0a2e066aee73adcd680dcf72a17d528e210071",
+      "head": "eb44729e3b5f13efcf5dc3b280518667db2e03b0",
+      "files": [
+        "crates/engine/src/render.rs",
+        "crates/engine/src/streaming.rs"
+      ]
+    },
+    {
+      "number": 212,
+      "before": "676cc0dfc3f243ce4617782e0f6eabc8ebcf0572",
+      "head": "97be55d3cd9302b648854529e92ee43d384ae53c",
+      "files": [
+        "crates/engine/src/app.rs",
+        "crates/engine/src/config.rs",
+        "crates/engine/src/metrics.rs",
+        "crates/engine/src/profiling.rs"
+      ]
+    },
+    {
+      "number": 213,
+      "before": "ee2b2616b75bd0b16c7e2b66424a05d3ef8d0c6b",
+      "head": "68ec2dc296a87a90d8108026d39ca0096e0a2094",
+      "files": [
+        "crates/converter/src/archive/batched.rs",
+        "crates/converter/src/archive/mod.rs",
+        "crates/converter/src/cache.rs",
+        "crates/converter/src/esm/cell_cache.rs",
+        "crates/converter/src/esm/exporter.rs",
+        "crates/converter/src/main.rs",
+        "crates/converter/src/pipeline.rs",
+        "crates/converter/tests/snapshots/snapshots__conversion_manifest_matches_snapshot.snap",
+        "docs/specs/converters/db-schema.md"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,855 @@
+{
+  "recorded_at": "2026-10-10T12:16:30.146068+00:00",
+  "validated_code_head": "864cda965740dbd19f252b76a7441b93698bf49c",
+  "host": "aarch64-apple-darwin",
+  "rust": "1.98.1",
+  "python": "3.11",
+  "rust_tests": {
+    "passed": 1869,
+    "failed": 0,
+    "ignored": 28,
+    "targets": 86,
+    "method": "Complete full workspace target runs; replace the converter library target with its complete final recovery recheck. Target identity includes binary/crate and source path, so similarly named targets in different crates remain distinct. No repeated test counts.",
+    "target_results": {
+      "converter::unittests src/lib.rs": {
+        "status": "ok",
+        "passed": 554,
+        "failed": 0,
+        "ignored": 18,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "converter-lib-recovery-final.log"
+      },
+      "asset_closure::unittests src/bin/asset-closure.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "asset_closure_convert::unittests src/bin/asset-closure-convert.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "asset_closure_textures::unittests src/bin/asset-closure-textures.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "collision_annotate::unittests src/bin/collision-annotate.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "converter::unittests src/main.rs": {
+        "status": "ok",
+        "passed": 24,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "glb_audit::unittests src/bin/glb-audit.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_records::unittests src/bin/inhouse-records.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inspect_lip::unittests src/bin/inspect-lip.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "lip_check::unittests src/bin/lip-check.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "movement_profile_annotate::unittests src/bin/movement-profile-annotate.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "nif_audit::unittests src/bin/nif-audit.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "runtime_asset_audit::unittests src/bin/runtime-asset-audit.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "streaming_costs::unittests src/bin/streaming-costs.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "texture_sync::unittests src/bin/texture-sync.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "database_identity::tests/database_identity.rs": {
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_doors::tests/fixture_doors.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_enable_parent_cache::tests/fixture_enable_parent_cache.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_interior_pipeline::tests/fixture_interior_pipeline.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_lights::tests/fixture_lights.rs": {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_linked_extraction::tests/fixture_linked_extraction.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_lod_pipeline::tests/fixture_lod_pipeline.rs": {
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_metadata_rebuild::tests/fixture_metadata_rebuild.rs": {
+        "status": "ok",
+        "passed": 15,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_player_movement::tests/fixture_player_movement.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_progress_output::tests/fixture_progress_output.rs": {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_round_trip::tests/fixture_round_trip.rs": {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "fixture_texture_sets::tests/fixture_texture_sets.rs": {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "grass_export::tests/grass_export.rs": {
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_actors::tests/inhouse_actors.rs": {
+        "status": "ok",
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_ai::tests/inhouse_ai.rs": {
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_audio_extras::tests/inhouse_audio_extras.rs": {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_base_objects::tests/inhouse_base_objects.rs": {
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_conditions::tests/inhouse_conditions.rs": {
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_decoder::tests/inhouse_decoder.rs": {
+        "status": "ok",
+        "passed": 15,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_dialogue::tests/inhouse_dialogue.rs": {
+        "status": "ok",
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_identity::tests/inhouse_identity.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_info_groups::tests/inhouse_info_groups.rs": {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_items::tests/inhouse_items.rs": {
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_localization_retention::tests/inhouse_localization_retention.rs": {
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_magic::tests/inhouse_magic.rs": {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_perks::tests/inhouse_perks.rs": {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_phase2_core::tests/inhouse_phase2_core.rs": {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_phase3_core::tests/inhouse_phase3_core.rs": {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_publication::tests/inhouse_publication.rs": {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_reference_localization::tests/inhouse_reference_localization.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_schema_binary::tests/inhouse_schema_binary.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_terrain_selection::tests/inhouse_terrain_selection.rs": {
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_visual_extras::tests/inhouse_visual_extras.rs": {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_vmad::tests/inhouse_vmad.rs": {
+        "status": "ok",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "inhouse_world_extras::tests/inhouse_world_extras.rs": {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "input_discovery::tests/input_discovery.rs": {
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "localization_integration::tests/localization_integration.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "localized_strings::tests/localized_strings.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "mo2_profile::tests/mo2_profile.rs": {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "mutagen_oracle::tests/mutagen_oracle.rs": {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "output_check::tests/output_check.rs": {
+        "status": "ok",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "physics_bodies::tests/physics_bodies.rs": {
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "plugin_cache::tests/plugin_cache.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "plugin_discovery::tests/plugin_discovery.rs": {
+        "status": "ok",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "plugin_references::tests/plugin_references.rs": {
+        "status": "ok",
+        "passed": 24,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "repair_fixture::tests/repair_fixture.rs": {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "resume_pruned_provenance::tests/resume_pruned_provenance.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "resume_staging::tests/resume_staging.rs": {
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "snapshots::tests/snapshots.rs": {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "physics_census::unittests examples/physics_census.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "dummy_content::unittests src/lib.rs": {
+        "status": "ok",
+        "passed": 51,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "dummy_content::unittests src/main.rs": {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "performance::tests/performance.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 4,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "engine::unittests src/lib.rs": {
+        "status": "ok",
+        "passed": 724,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "engine::unittests src/main.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "world_inspect::unittests src/bin/world-inspect.rs": {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "cli::tests/cli.rs": {
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "native_ktx2_loads_in_bevy::tests/native_ktx2_loads_in_bevy.rs": {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "reference_enable_state::tests/reference_enable_state.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "color_pipeline_probe::unittests examples/color_pipeline_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "material_alpha_probe::unittests examples/material_alpha_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "material_depth_probe::unittests examples/material_depth_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "material_emission_probe::unittests examples/material_emission_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "material_normal_probe::unittests examples/material_normal_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "material_specular_probe::unittests examples/material_specular_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "wall_depth_probe::unittests examples/wall_depth_probe.rs": {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "launcher::unittests src/main.rs": {
+        "status": "ok",
+        "passed": 118,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "mo2::unittests src/lib.rs": {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "profiles::tests/profiles.rs": {
+        "status": "ok",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "project_wormhole_nif::unittests src/lib.rs": {
+        "status": "ok",
+        "passed": 25,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      },
+      "shared::unittests src/lib.rs": {
+        "status": "ok",
+        "passed": 29,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "evidence_log": "workspace-tests-post213.log"
+      }
+    }
+  },
+  "python_tests": {
+    "passed": 301,
+    "scripts": 178,
+    "schema": 85,
+    "research": 26,
+    "lod_helpers": 12,
+    "native_observer_tests_within_scripts": 14
+  },
+  "checks": {
+    "workspace_all_targets": "passed",
+    "workspace_clippy_all_targets_all_features_deny_warnings": "passed",
+    "rustfmt": "passed",
+    "schema_explorer_generation_check": "passed",
+    "workflow_yaml_and_all_11_jobs_aggregated": "passed",
+    "spec_unique_V_T_B_definitions": 366,
+    "spec_undefined_V_T_B_references": 0
+  },
+  "unrun": [
+    "retail conversion on the combined producer",
+    "installed-game visual and performance qualification",
+    "ignored GPU and external-oracle tests",
+    "Linux case-sensitive directory-alias fixture",
+    "current schema-explorer browser interaction",
+    "native Windows/Linux CI matrix"
+  ],
+  "local_logs": [
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/workspace-tests-post213.log",
+      "sha256": "fc5fd032acbe84f70fa78f8d9821709e948a6083e9a03aba704390af0510cf39"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/converter-lib-recovery-final.log",
+      "sha256": "e2ebcb9ca95225c93906cd822a222c2ff96457bbdf2c30dfc13ec1bf826b5944"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/workspace-check-post213-final.log",
+      "sha256": "9ee675d5660c71dbdba2784a030ab6be2b12b70d9003d9431b8b96fcf63b5e05"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/clippy-post213-final.log",
+      "sha256": "b18116485f4a43ee2264d180ba697a14b4424e201b2b81f22e1c7309d629d0ca"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/fmt-check-post213-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/tooling/integrated-script-tests-final.log",
+      "sha256": "a8f3591f0d8585208f4de9f01180c95080c191e35fd497c6371dd613c1df1edf"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/tooling/integrated-schema-tests.log",
+      "sha256": "78205d7ada81f27414c4c18500b4279cd5cafa76cac686b8d153eb110ca7476f"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/tooling/research-after-213-tests.log",
+      "sha256": "407b923ac0d7340c8ecf0de5d80dc2d46b0b677d64f7ef6fdd56bc11752d328d"
+    },
+    {
+      "path": "/private/tmp/mudcrab-integration-20261010-366adc03/tooling/integrated-lod-helper-tests.log",
+      "sha256": "d3b3bfc611c211082321e8b37cb09b2e9bfadba27c14174e5961ab920cab5ae7"
+    }
+  ],
+  "warm_restore_contract": "Verified warm restore keeps parallel per-hash ownership, stream-based measured materialization and PerFile flushes after None; fallback copies are measured. Tests do not establish power-loss or retail/performance acceptance.",
+  "schema_explorer_source_pin": "f3a6a5c2d43b7d25282889e433e14d93a7f414eb"
+}

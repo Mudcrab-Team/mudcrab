@@ -1,0 +1,320 @@
+{
+  "observed_at": "2026-10-10T12:21:04.276035+00:00",
+  "repository": "Mudcrab-Team/mudcrab",
+  "open_count": 31,
+  "draft_count": 12,
+  "heads_and_metadata_match_captured_inventory": true,
+  "origin_main": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+  "pull_requests": [
+    {
+      "baseRefName": "perf/converter-nonlod-cache",
+      "headRefName": "integration/converter-cache-208-209-20261010",
+      "headRefOid": "68ec2dc296a87a90d8108026d39ca0096e0a2094",
+      "isDraft": true,
+      "number": 213,
+      "title": "Reconcile converter ingestion and cache recovery from #208 and #209",
+      "updatedAt": "2026-10-10T11:38:01Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/213"
+    },
+    {
+      "baseRefName": "feat/adaptive-streaming-control",
+      "headRefName": "feat/streaming-comparison-benchmarks",
+      "headRefOid": "97be55d3cd9302b648854529e92ee43d384ae53c",
+      "isDraft": false,
+      "number": 212,
+      "title": "test(engine): compare static and adaptive streaming on real-time routes",
+      "updatedAt": "2026-10-10T11:05:05Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/212"
+    },
+    {
+      "baseRefName": "feat/streaming-demand-priority",
+      "headRefName": "feat/adaptive-streaming-control",
+      "headRefOid": "eb44729e3b5f13efcf5dc3b280518667db2e03b0",
+      "isDraft": true,
+      "number": 211,
+      "title": "feat(engine): add opt-in streaming reservations and adaptive pacing",
+      "updatedAt": "2026-10-10T11:05:03Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/211"
+    },
+    {
+      "baseRefName": "feat/adaptive-streaming-trace",
+      "headRefName": "feat/streaming-demand-priority",
+      "headRefOid": "4db055d4b99411e4b313557240efd7f4f482984d",
+      "isDraft": false,
+      "number": 210,
+      "title": "feat(engine): prioritize nearby demand and bound shared scene loads",
+      "updatedAt": "2026-10-10T11:05:01Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/210"
+    },
+    {
+      "baseRefName": "integration/pr-204-inhouse-reader",
+      "headRefName": "perf/converter-nonlod-cache",
+      "headRefOid": "a19b95be0af9b9984fb8fe64c1ff08a662dcbfd4",
+      "isDraft": true,
+      "number": 209,
+      "title": "perf(converter): reduce extraction and warm conversion work",
+      "updatedAt": "2026-10-10T11:05:13Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/209"
+    },
+    {
+      "baseRefName": "fix/lod-build-performance",
+      "headRefName": "t3/lod-conversion-performance",
+      "headRefOid": "119f8995012c8f8e3596f7797e52b3dd0370baaa",
+      "isDraft": false,
+      "number": 208,
+      "title": "perf(converter): default GPU LOD and batch archive ingestion",
+      "updatedAt": "2026-10-10T11:05:10Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/208"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "diagnostics/metal-profiling-evidence-200",
+      "headRefOid": "ccfcb2051e2f40c09772d549fd80ed6fd30ee721",
+      "isDraft": true,
+      "number": 207,
+      "title": "feat(profiling): separate Metal diagnostics and historical evidence",
+      "updatedAt": "2026-10-10T11:05:08Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/207"
+    },
+    {
+      "baseRefName": "t3/investigate-asset-loading",
+      "headRefName": "feat/adaptive-streaming-trace",
+      "headRefOid": "1fd08d70b945a1eab76a5259fc0cffefbff343da",
+      "isDraft": false,
+      "number": 206,
+      "title": "feat(engine): add bounded frame traces for streaming diagnostics",
+      "updatedAt": "2026-10-10T11:04:59Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/206"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "t3/detect-and-fix-z-fighting",
+      "headRefOid": "690a573c12308e7d69940f16bb9c39a82f9319b8",
+      "isDraft": false,
+      "number": 205,
+      "title": "fix(engine): stop authored decals flickering",
+      "updatedAt": "2026-10-10T11:04:57Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/205"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "feat/inhouse-record-reader",
+      "headRefOid": "7dcf13440641b8695e55ff7b0b7f3aa1b6781cf5",
+      "isDraft": true,
+      "number": 204,
+      "title": "feat(converter): add schema-driven in-house record reader",
+      "updatedAt": "2026-10-10T06:37:46Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/204"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "t3/investigate-asset-loading",
+      "headRefOid": "91b990b0529781e6fbe4ed6a040ca11ebb5f02e2",
+      "isDraft": false,
+      "number": 201,
+      "title": "fix(engine): retry meshes delayed by the GPU upload budget",
+      "updatedAt": "2026-10-10T06:37:50Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/201"
+    },
+    {
+      "baseRefName": "fix/apple-metal-terrain-sampler",
+      "headRefName": "perf/metal-terrain-profiling",
+      "headRefOid": "28dce5aecdf095407ae10f12843550e4af7902c8",
+      "isDraft": true,
+      "number": 200,
+      "title": "perf(engine): batch terrain and profile Metal rendering",
+      "updatedAt": "2026-10-10T07:06:02Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/200"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/195-localized-npc-names",
+      "headRefOid": "f319a96346c7513b41fc11dba88dedb3cc185d38",
+      "isDraft": false,
+      "number": 198,
+      "title": "fix(converter): read localized NPC names from string tables",
+      "updatedAt": "2026-10-10T06:37:53Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/198"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/apple-metal-terrain-sampler",
+      "headRefOid": "dcbe816c530a74fd142957df16af18e58a92a1e9",
+      "isDraft": true,
+      "number": 197,
+      "title": "fix(engine): share terrain sampler for Apple Metal",
+      "updatedAt": "2026-10-09T18:59:40Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/197"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/138-relative-asset-root",
+      "headRefOid": "4066ddf1f58a3851a0da881d80e08e849df9d497",
+      "isDraft": true,
+      "number": 191,
+      "title": "fix(engine): share one absolute asset root for relative paths",
+      "updatedAt": "2026-10-09T20:17:12Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/191"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/162-discovery-errors",
+      "headRefOid": "9ccf43f864e80f595871ddaacd152ca8bfa3d924",
+      "isDraft": false,
+      "number": 190,
+      "title": "fix(converter): fail on input discovery errors",
+      "updatedAt": "2026-10-09T20:11:14Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/190"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/165-disabled-reference-spawn",
+      "headRefOid": "5e7ec14cc25732401e14678f6f8ae3df9e857551",
+      "isDraft": true,
+      "number": 189,
+      "title": "fix(engine): filter initially disabled references before spawning",
+      "updatedAt": "2026-10-09T21:20:00Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/189"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "test/gpu-uastc-roundtrip",
+      "headRefOid": "9b2d58b3988fccd0a32fc060eb603602b314a350",
+      "isDraft": false,
+      "number": 175,
+      "title": "Run GPU UASTC encode and decode tests on lavapipe",
+      "updatedAt": "2026-10-10T06:38:20Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/175"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "test/mutagen-reference-oracle",
+      "headRefOid": "0313ceb0f396db71e5e3d25566dbe45ae6af90d4",
+      "isDraft": false,
+      "number": 174,
+      "title": "Add external Mutagen winning-reference comparison test",
+      "updatedAt": "2026-10-10T06:38:23Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/174"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/test-output-validation",
+      "headRefOid": "e40ec491ba2dae56543dc6e782327f11fa3dda1c",
+      "isDraft": false,
+      "number": 173,
+      "title": "Make real-output timing validation reject invalid artifacts",
+      "updatedAt": "2026-10-10T06:38:27Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/173"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/test-remap-coverage",
+      "headRefOid": "965215de2c680e817a37e740533b61846ea7077f",
+      "isDraft": false,
+      "number": 171,
+      "title": "Fix NPC faction remapping and cover single FormID fields",
+      "updatedAt": "2026-10-10T06:38:31Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/171"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "fix/lod-build-performance",
+      "headRefOid": "2983e96f25dd488858feec1f5b0cd22058e20ca1",
+      "isDraft": false,
+      "number": 167,
+      "title": "Reuse verified terrain LOD chunks and remove redundant compression",
+      "updatedAt": "2026-10-10T06:38:35Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/167"
+    },
+    {
+      "baseRefName": "feat/dynamic-schema-p0",
+      "headRefName": "feat/dynamic-schema-p0-next",
+      "headRefOid": "ff066139ff648556f67be4e606601b0b6c266946",
+      "isDraft": true,
+      "number": 163,
+      "title": "feat(schema): add P0 corpus evidence and offline explorer",
+      "updatedAt": "2026-10-09T20:21:36Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/163"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "feat/dynamic-schema-p0",
+      "headRefOid": "39f4cfaf5d5ccd33fb6a2d720c3d66aa3fbbf4fa",
+      "isDraft": false,
+      "number": 161,
+      "title": "feat(scripts): start newest Skyrim SE corpus and schema validation",
+      "updatedAt": "2026-10-09T19:12:12Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/161"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "MO2-Support",
+      "headRefOid": "2d78fc69ddea279229f1aa2b03785945e5a9a40d",
+      "isDraft": false,
+      "number": 154,
+      "title": "Add Mod Organizer 2 integration to the launcher and converter, alongside compatibility improvements for legacy assets.",
+      "updatedAt": "2026-10-10T06:45:03Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/154"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "phase2/door-preload",
+      "headRefOid": "386267dc6569154036d6c45ebb04a91dc7c9e5aa",
+      "isDraft": false,
+      "number": 128,
+      "title": "feat(engine): go through load doors (reads door links when the database has them)",
+      "updatedAt": "2026-10-08T19:36:18Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/128"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "phase1/physics-coverage",
+      "headRefOid": "24305f5f13f40090341269652f73a4d33a063d48",
+      "isDraft": true,
+      "number": 126,
+      "title": "feat(converter): convert sphere and cylinder collision shapes and more physical layers",
+      "updatedAt": "2026-10-09T02:42:10Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/126"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "phase2/physics-bodies-v2",
+      "headRefOid": "7bd9cc0bb76ad463132b7e95472ca14a38b93d73",
+      "isDraft": true,
+      "number": 125,
+      "title": "feat(engine): dynamic clutter bodies from authored rigid-body data",
+      "updatedAt": "2026-10-09T02:36:48Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/125"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "phase2/console-coc",
+      "headRefOid": "b5ff86fe54acf4fae499c1ca29a75684d260205f",
+      "isDraft": false,
+      "number": 124,
+      "title": "feat(engine): add the CenterOnExterior and CenterOnCell console commands",
+      "updatedAt": "2026-10-09T03:46:00Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/124"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "phase2/dev-console",
+      "headRefOid": "3a90e53e3f73c0a1972b9d812a5f971c0d000fba",
+      "isDraft": false,
+      "number": 123,
+      "title": "feat(engine): developer console with Skyrim's console commands and autofill",
+      "updatedAt": "2026-10-09T18:26:36Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/123"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "phase2/pacing-measure-v2",
+      "headRefOid": "2433ef4fa806772d39479716a7a2da1e0ea3aea6",
+      "isDraft": false,
+      "number": 122,
+      "title": "feat(engine): measure world load time and frame times while loading",
+      "updatedAt": "2026-10-09T02:21:43Z",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/122"
+    }
+  ]
+}
