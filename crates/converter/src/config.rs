@@ -66,7 +66,7 @@ pub struct PipelineConfig {
     /// Include archive entries beyond the runtime inputs and English string banks.
     #[serde(default)]
     pub extract_all_archive_files: bool,
-    /// Flush extracted inputs per file, after an archive, or rely on cache verification.
+    /// Use durable batch packs, additionally flush derived payloads, or skip extraction flushes.
     #[serde(default)]
     pub ingestion_sync: crate::archive::IngestionSync,
     /// Quality for the UASTC fallback path (uncompressed/legacy sources).
@@ -80,6 +80,10 @@ pub struct PipelineConfig {
     pub texture_zstd_level: i32,
     #[serde(default)]
     pub texture_encoder: TextureEncoder,
+    /// Encoder for generated terrain atlases. New configs use GPU encoding;
+    /// an omitted serialized field retains the legacy CPU recipe.
+    #[serde(default)]
+    pub lod_texture_encoder: TextureEncoder,
     pub script_abi_version: u32,
 }
 
@@ -106,11 +110,15 @@ impl PipelineConfig {
             invalidate_cache: false,
             verify_cache: true,
             extract_all_archive_files: false,
-            ingestion_sync: crate::archive::IngestionSync::PerFile,
+            ingestion_sync: crate::archive::IngestionSync::Archive,
             texture_fallback_quality: 192,
             texture_uastc_level: 2,
             texture_zstd_level: default_texture_zstd_level(),
             texture_encoder: TextureEncoder::Cpu,
+            lod_texture_encoder: TextureEncoder::Gpu {
+                quality: crate::texture_gpu::DEFAULT_QUALITY,
+                batch_mb: crate::texture_gpu::DEFAULT_BATCH_MB,
+            },
             script_abi_version: 1,
         }
     }
@@ -150,12 +158,14 @@ impl PipelineConfig {
             self.texture_uastc_level <= 4,
             "texture_uastc_level must be between 0 and 4"
         );
-        if let TextureEncoder::Gpu { quality, batch_mb } = self.texture_encoder {
-            color_eyre::eyre::ensure!(quality <= 8, "GPU quality must be between 0 and 8");
-            color_eyre::eyre::ensure!(
-                (1..=4096).contains(&batch_mb),
-                "GPU batch size must be between 1 and 4096 MiB"
-            );
+        for encoder in [self.texture_encoder, self.lod_texture_encoder] {
+            if let TextureEncoder::Gpu { quality, batch_mb } = encoder {
+                color_eyre::eyre::ensure!(quality <= 8, "GPU quality must be between 0 and 8");
+                color_eyre::eyre::ensure!(
+                    (1..=4096).contains(&batch_mb),
+                    "GPU batch size must be between 1 and 4096 MiB"
+                );
+            }
         }
         color_eyre::eyre::ensure!(
             (0..=22).contains(&self.texture_zstd_level),
@@ -375,6 +385,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_configs_default_to_gpu_lod_and_round_trip_the_selected_recipe() {
+        let config = PipelineConfig::new("Data", "modern_assets");
+        let expected = TextureEncoder::Gpu {
+            quality: crate::texture_gpu::DEFAULT_QUALITY,
+            batch_mb: crate::texture_gpu::DEFAULT_BATCH_MB,
+        };
+        assert_eq!(config.lod_texture_encoder, expected);
+        assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(TextureEncoder::default(), TextureEncoder::Cpu);
+        let restored: PipelineConfig =
+            serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
+        assert_eq!(restored.lod_texture_encoder, expected);
+        assert_eq!(restored.texture_encoder, TextureEncoder::Cpu);
+    }
+
+    #[test]
+    fn missing_lod_encoder_keeps_cpu_even_when_source_texture_encoding_is_gpu() {
+        let mut config = PipelineConfig::new("Data", "modern_assets");
+        config.texture_encoder = TextureEncoder::Gpu {
+            quality: 3,
+            batch_mb: 16,
+        };
+        let mut legacy = serde_json::to_value(&config).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("lod_texture_encoder");
+        let restored: PipelineConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.lod_texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(restored.texture_encoder, config.texture_encoder);
+
+        config.lod_texture_encoder = TextureEncoder::Cpu;
+        let explicit_cpu: PipelineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(explicit_cpu.lod_texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(explicit_cpu.texture_encoder, config.texture_encoder);
+    }
+
+    #[test]
     fn config_v90_accepts_legacy_configs_without_inventing_lod_origins() {
         let mut legacy = serde_json::json!({
             "data_dir": "Data",
@@ -400,6 +449,7 @@ mod tests {
             crate::archive::IngestionSync::PerFile
         );
         assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(config.lod_texture_encoder, TextureEncoder::Cpu);
         assert_eq!(config.data_dir, PathBuf::from("Data"));
         assert_eq!(config.cpu_jobs, 2);
 

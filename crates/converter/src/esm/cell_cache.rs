@@ -47,6 +47,7 @@ pub(crate) fn validate_inhouse_land(record: &RawRecord) -> Result<()> {
 /// Later winning load order takes precedence; same-plugin ties use FormID.
 /// In-house publication supplies native positions through `write_cell_cache_with_source_order`.
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
+    super::records::land_by_cell(records)?;
     write_cell_cache_with_source_order(records, &HashMap::new(), path)
 }
 
@@ -1243,6 +1244,106 @@ mod tests {
             )
             .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn land_winner_cache_and_database_use_plugin_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        // Deliberately invert FormID and plugin priority.
+        let mut earlier = record(
+            0x222222,
+            b"LAND",
+            None,
+            &[(b"VHGT", {
+                let mut bytes = 1.0f32.to_le_bytes().to_vec();
+                bytes.extend(vec![0; 33 * 33 + 3]);
+                bytes
+            })],
+        );
+        earlier.cell_form_id = Some(0x18df);
+        let mut later = earlier.clone();
+        later.form_id = 0x28df;
+        later.load_order = 2;
+        later.subrecords[0].1[..4].copy_from_slice(&9.0f32.to_le_bytes());
+        let mut proof = None;
+        for reverse in [false, true] {
+            for _ in 0..16 {
+                let mut records = HashMap::new();
+                let pair = if reverse {
+                    [&later, &earlier]
+                } else {
+                    [&earlier, &later]
+                };
+                for record in pair {
+                    records.insert(record.form_id, record.clone());
+                }
+                write_cell_cache(&records, &path).unwrap();
+                let bytes = std::fs::read(&path).unwrap();
+                if let Some(expected) = &proof {
+                    assert_eq!(&bytes, expected);
+                } else {
+                    proof = Some(bytes);
+                }
+                let mmap = validate_cell_cache(&path).unwrap();
+                let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+                assert_eq!(f32::from(cache.cells[0].heights[0]), 72.0);
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                super::super::exporter::create_tables(&conn).unwrap();
+                super::super::exporter::export_to_db(&conn, &records).unwrap();
+                let heightmap: Vec<u8> = conn
+                    .query_row(
+                        "SELECT heightmap FROM land WHERE cell_id=?1",
+                        [0x18df],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(decode_vhgt(&heightmap)[0], 72.0);
+                assert_eq!(
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM records WHERE record_type='LAND'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                    2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn land_winner_priority_ties_reject_before_replacing_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        std::fs::write(&path, b"existing cache").unwrap();
+        let mut a = record(1, b"LAND", None, &[]);
+        a.cell_form_id = Some(3);
+        let mut b = a.clone();
+        b.form_id = 2;
+        let records = HashMap::from([(1, a), (2, b)]);
+        assert!(
+            write_cell_cache(&records, &path)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous LAND")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing cache");
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::super::exporter::create_tables(&conn).unwrap();
+        conn.execute("INSERT INTO land(cell_id,heightmap) VALUES (3,X'0102')", [])
+            .unwrap();
+        assert!(super::super::exporter::export_to_db(&conn, &records).is_err());
+        assert_eq!(
+            conn.query_row("SELECT heightmap FROM land WHERE cell_id=3", [], |row| row
+                .get::<_, Vec<
+                u8,
+            >>(
+                0
+            ))
+            .unwrap(),
+            vec![1, 2]
         );
     }
 

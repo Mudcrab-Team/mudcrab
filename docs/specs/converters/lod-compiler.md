@@ -15,9 +15,15 @@ block, and shape.
 
 CLI `--no-lod` skips this compiler in both normal conversion and metadata rebuilds.
 It publishes full-detail terrain/world data with empty LOD tables and no LOD manifest
-or generated chunks. Default conversion still compiles LOD; previous chunks are not
-reused. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
+or generated chunks. Default conversion builds LOD and reuses unchanged chunks only
+when current input fingerprints and prior payloads verify. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
 for same-output locking, read-only installations and unowned backups.
+
+New CLI runs and `PipelineConfig::new` use GPU encoding for generated terrain
+atlases. `--lod-encoder cpu` selects CPU encoding. Ordinary source textures use
+the independent `--texture-encoder` setting, which still defaults to CPU.
+Deserializing a legacy config without `lod_texture_encoder` preserves CPU LOD
+encoding rather than changing its output recipe.
 
 ## Inputs
 
@@ -128,9 +134,42 @@ material contracts are unchanged (BUILD-02). Partial builds must equal
 clean builds semantically or be marked unsafe (BUILD-04); a dry-run impact
 report precedes expensive regeneration (BUILD-05).
 Resumes reconstruct the effective VFS and regenerate the world database,
-cell cache, integration report, and entire LOD generation. Journal-verified
-textures and scripts remain reusable; omitted worlds/chunks and removed
-settings cannot survive in staged metadata or payloads.
+cell cache, integration report, origins, chunk index and build identity. Chunk payloads
+may be reused from the prior published package, held under the existing asset lock.
+`lod-manifest.json` records an explicit terrain compiler revision and per-chunk input
+fingerprints. Fingerprints cover cell IDs/grids, exact height/VCLR/layer/opacity data,
+winning diffuse paths and DDS hashes, origin, tier, tiling and producer identity.
+Reuse also checks the old index against current source-derived bounds/cells and
+verifies the payload hash and GLB/KTX2 structure. Missing legacy proof, damaged
+payloads or changed consumed inputs rebuild the affected chunks. Unrelated plugin
+edits can preserve payloads, while the final identity still includes current ordered
+plugin hashes and settings. `--invalidate-cache` also bypasses LOD reuse.
+
+Every stage reads and validates one aligned cell-cache snapshot. Diffuse images
+share decoded authored mips and prepared tier images across worlds and FormIDs;
+source bytes are rechecked before publication. Chunks prepare geometry and
+atlas pixels in parallel, then encode one bounded batch of atlases. Each supplied mip is encoded
+once; a bounded atlas-local cache encodes identical 4x4 RGBA blocks once using
+the same upstream UASTC level-2 routine and transcode hints. The KTX2 writer is
+shared with the GPU path, and the level table uses the encoded base metadata.
+The default GPU path submits those same authored RGBA mips to the GPU UASTC
+encoder. The explicit CPU recipe preserves the existing fingerprints; the GPU
+recipe adds its encoder version and quality. GPU fallback chunks remain valid
+published payloads but omit reusable input proof, so a later GPU run retries
+them. Explicit CPU selection produces the CPU recipe and its reuse proof
+instead. Changing the LOD encoder does not invalidate ordinary meshes or textures.
+GLB assembly runs in parallel after atlas encoding, followed by serialized
+database publication.
+The terrain compiler revision changes when this output recipe changes. Only one
+CPU-worker-sized batch of payloads is retained at a time. World indexing is
+transactional: a later content failure removes earlier batch payloads and rolls
+back that whole world. Cancellation, source mutation and publication/database
+errors remain fatal. Progress messages expose chunk counts within a world, and
+`PipelineReport.lod_cache_hits` records verified reuse (default zero in old reports).
+
+Journal-verified ordinary assets remain reusable; omitted worlds/chunks and removed
+settings cannot survive in staged metadata or payloads. Compiler revisions belong
+to LOD build/fingerprint identity; ordinary producer 24 bytes retain their provenance.
 
 ## Regression invariants
 
