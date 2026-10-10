@@ -1,0 +1,1333 @@
+{
+  "schema": "mudcrab-research-note-model-associations/v1",
+  "associations": [
+    {
+      "claim_id": "N001-C01",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C02",
+      "node_ids": [
+        "resource-winners",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C03",
+      "node_ids": [
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C04",
+      "node_ids": [
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C05",
+      "node_ids": [
+        "ambient-environment"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C06",
+      "node_ids": [
+        "resource-winners",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C07",
+      "node_ids": [
+        "local-light-candidates",
+        "resource-winners"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C08",
+      "node_ids": [
+        "resource-winners",
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C09",
+      "node_ids": [
+        "local-light-candidates",
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C10",
+      "node_ids": [
+        "resource-winners",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C11",
+      "node_ids": [
+        "fog-effects",
+        "resource-winners"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C12",
+      "node_ids": [
+        "image-space-records",
+        "modifier-stack",
+        "view-time"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C13",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N001-C14",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L01",
+      "node_ids": [
+        "fog-effects",
+        "scene-accumulation",
+        "view-time"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L02",
+      "node_ids": [
+        "local-light-candidates",
+        "view-time"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L03",
+      "node_ids": [
+        "shadow-visibility",
+        "view-time"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L04",
+      "node_ids": [
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L05",
+      "node_ids": [
+        "scene-accumulation",
+        "shader-selection"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L06",
+      "node_ids": [
+        "scene-accumulation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L07",
+      "node_ids": [
+        "fog-effects",
+        "scene-accumulation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L08",
+      "node_ids": [
+        "material-geometry",
+        "shader-selection",
+        "surface-response",
+        "texture-view"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L09",
+      "node_ids": [
+        "shader-selection"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L10",
+      "node_ids": [
+        "shader-selection"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L11",
+      "node_ids": [
+        "shader-selection"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L12",
+      "node_ids": [
+        "material-geometry",
+        "shader-selection"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L13",
+      "node_ids": [
+        "local-light-candidates",
+        "material-geometry",
+        "shader-selection",
+        "texture-view"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L14",
+      "node_ids": [
+        "local-light-candidates",
+        "shader-selection"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L15",
+      "node_ids": [
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L16",
+      "node_ids": [
+        "sun-direction"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L17",
+      "node_ids": [
+        "sun-direction"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L18",
+      "node_ids": [
+        "ambient-environment",
+        "sun-direction",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L19",
+      "node_ids": [
+        "sun-direction",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L20",
+      "node_ids": [
+        "ambient-environment"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L21",
+      "node_ids": [
+        "local-light-candidates",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L22",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L23",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-L24",
+      "node_ids": [
+        "material-geometry",
+        "shader-selection",
+        "surface-response",
+        "texture-view"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M01",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M02",
+      "node_ids": [
+        "mod-overlays",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M03",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M04",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M05",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M06",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M07",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M08",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M09",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M10",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M11",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M12",
+      "node_ids": [
+        "bloom-tone-grade",
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M13",
+      "node_ids": [
+        "mod-overlays",
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M14",
+      "node_ids": [
+        "mod-overlays",
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M15",
+      "node_ids": [
+        "mod-overlays",
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M16",
+      "node_ids": [
+        "mod-overlays",
+        "shadow-visibility"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M17",
+      "node_ids": [
+        "mod-overlays",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M18",
+      "node_ids": [
+        "mod-overlays",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M19",
+      "node_ids": [
+        "mod-overlays",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M20",
+      "node_ids": [
+        "mod-overlays",
+        "surface-response"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M21",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M22",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M23",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M24",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M25",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M26",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M27",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M28",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-M29",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P01",
+      "node_ids": [
+        "fog-effects",
+        "image-space-records",
+        "sun-direction",
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P02",
+      "node_ids": [
+        "image-space-records",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P03",
+      "node_ids": [
+        "sun-direction",
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P04",
+      "node_ids": [
+        "image-space-records",
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P05",
+      "node_ids": [
+        "image-space-records",
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P06",
+      "node_ids": [
+        "image-space-records",
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P07",
+      "node_ids": [
+        "image-space-records",
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P08",
+      "node_ids": [
+        "bloom-tone-grade",
+        "image-space-records"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P09",
+      "node_ids": [
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P10",
+      "node_ids": [
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P11",
+      "node_ids": [
+        "luminance-adaptation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P12",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P13",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P14",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P15",
+      "node_ids": [
+        "bloom-tone-grade",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P16",
+      "node_ids": [
+        "bloom-tone-grade",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P17",
+      "node_ids": [
+        "bloom-tone-grade",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P18",
+      "node_ids": [
+        "bloom-tone-grade",
+        "image-space-records"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P19",
+      "node_ids": [
+        "modifier-stack"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P20",
+      "node_ids": [
+        "modifier-stack"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P21",
+      "node_ids": [
+        "modifier-stack"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P22",
+      "node_ids": [
+        "fog-effects",
+        "luminance-adaptation",
+        "scene-accumulation"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P23",
+      "node_ids": [
+        "bloom-tone-grade",
+        "luminance-adaptation",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P24",
+      "node_ids": [
+        "bloom-tone-grade",
+        "output-display"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N002-P25",
+      "node_ids": [
+        "sun-direction"
+      ],
+      "basis": "retained existing world-model association"
+    },
+    {
+      "claim_id": "N003-L01",
+      "node_ids": [
+        "scene-accumulation",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L02",
+      "node_ids": [
+        "scene-accumulation",
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L03",
+      "node_ids": [
+        "local-light-candidates",
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L04",
+      "node_ids": [
+        "shader-selection"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L05",
+      "node_ids": [
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L06",
+      "node_ids": [
+        "output-display",
+        "surface-response",
+        "texture-view"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L07",
+      "node_ids": [
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L08",
+      "node_ids": [
+        "shader-selection",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L09",
+      "node_ids": [
+        "local-light-candidates",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L10",
+      "node_ids": [
+        "local-light-candidates",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L11",
+      "node_ids": [
+        "shadow-visibility",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L12",
+      "node_ids": [
+        "material-geometry",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L13",
+      "node_ids": [
+        "shader-selection",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L14",
+      "node_ids": [
+        "material-geometry",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L15",
+      "node_ids": [
+        "surface-response",
+        "texture-view"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L16",
+      "node_ids": [
+        "ambient-environment",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L17",
+      "node_ids": [
+        "ambient-environment",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L18",
+      "node_ids": [
+        "resource-winners",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L19",
+      "node_ids": [
+        "sun-direction",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L20",
+      "node_ids": [
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L21",
+      "node_ids": [
+        "ambient-environment",
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L22",
+      "node_ids": [
+        "fog-effects",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L23",
+      "node_ids": [
+        "ambient-environment",
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L24",
+      "node_ids": [
+        "ambient-environment",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L25",
+      "node_ids": [
+        "shader-selection",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L26",
+      "node_ids": [
+        "material-geometry",
+        "resource-winners",
+        "view-time",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L27",
+      "node_ids": [
+        "ambient-environment",
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-L28",
+      "node_ids": [
+        "resource-winners",
+        "surface-response",
+        "view-time"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M01",
+      "node_ids": [
+        "local-light-candidates",
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M02",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M03",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M04",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M05",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M06",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M07",
+      "node_ids": [
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M08",
+      "node_ids": [
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M09",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M10",
+      "node_ids": [
+        "mod-overlays",
+        "scene-accumulation"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M11",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M12",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M13",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M14",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M15",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M16",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M17",
+      "node_ids": [
+        "local-light-candidates"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M18",
+      "node_ids": [
+        "shadow-visibility"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M19",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M20",
+      "node_ids": [
+        "resource-winners"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M21",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M22",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M23",
+      "node_ids": [
+        "local-light-candidates",
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M24",
+      "node_ids": [
+        "output-display"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M25",
+      "node_ids": [
+        "surface-response"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-M26",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P01",
+      "node_ids": [
+        "image-space-records"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P02",
+      "node_ids": [
+        "image-space-records"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P03",
+      "node_ids": [
+        "image-space-records"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P04",
+      "node_ids": [
+        "luminance-adaptation"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P05",
+      "node_ids": [
+        "luminance-adaptation"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P06",
+      "node_ids": [
+        "image-space-records",
+        "luminance-adaptation"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P07",
+      "node_ids": [
+        "luminance-adaptation"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P08",
+      "node_ids": [
+        "bloom-tone-grade",
+        "luminance-adaptation"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P09",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P10",
+      "node_ids": [
+        "bloom-tone-grade",
+        "output-display"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P11",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P12",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P13",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P14",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P15",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P16",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P17",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P18",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P19",
+      "node_ids": [
+        "bloom-tone-grade"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P20",
+      "node_ids": [
+        "output-display"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P21",
+      "node_ids": [
+        "output-display",
+        "surface-response",
+        "texture-view"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P22",
+      "node_ids": [
+        "modifier-stack"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P23",
+      "node_ids": [
+        "image-space-records"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P24",
+      "node_ids": [
+        "image-space-records",
+        "modifier-stack",
+        "world-weather-cell"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P25",
+      "node_ids": [
+        "output-display"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P26",
+      "node_ids": [
+        "mod-overlays"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes"
+    },
+    {
+      "claim_id": "N003-P27",
+      "node_ids": [
+        "surface-response",
+        "texture-view",
+        "output-display"
+      ],
+      "basis": "reviewed assignment from N003 proposed_model_nodes; preserves historical-fit recommendation separately from vanilla parity"
+    }
+  ]
+}

@@ -1,0 +1,727 @@
+{
+  "format_version": 1,
+  "review_date": "2026-10-10",
+  "source_issue": "https://github.com/Mudcrab-Team/mudcrab/issues/130",
+  "source_claim": "Skyrim SE launched directly through Steam AppID 489830 on 2026-10-02, using a downloaded post-Helgen save",
+  "source_claim_scope": "Attributed to the issue comment author; capture EXE, graphics configuration and load order were not recorded with this set",
+  "reference_state_unknown": [
+    "in-game weather",
+    "in-game time",
+    "camera pose",
+    "FOV",
+    "exposure-settling history",
+    "display transfer",
+    "compression history"
+  ],
+  "caption_times": "Capture timestamps; not recorded in-game hours",
+  "original_images_edited": false,
+  "reference_count": 18,
+  "references": [
+    {
+      "label": "Exterior at 17:04:49",
+      "url": "https://github.com/user-attachments/assets/f5ebf3fd-b849-4e27-89e4-97098c0a2fff",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 1,
+      "sha256": "1186b831173aa390cd04f75c728b69c704ea3ad49f3536813f07f3db4da09c44",
+      "bytes": 1400024,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:36.810914+00:00"
+    },
+    {
+      "label": "Exterior at 17:05:18",
+      "url": "https://github.com/user-attachments/assets/408f19f0-d330-4cb8-8bc5-ea86bf21be3f",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 2,
+      "sha256": "6118d07c7359e4f016ce904322bf0869d97e591dfca9363de375631e892184ef",
+      "bytes": 1545075,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:36.698691+00:00"
+    },
+    {
+      "label": "Exterior at 17:05:32",
+      "url": "https://github.com/user-attachments/assets/8b30018b-111b-4b04-86e9-3f9b86da43eb",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 3,
+      "sha256": "ab9ca08016b34cd827b50f03cfab5d8d5796887a908e7b3741259f3899ba682c",
+      "bytes": 1465807,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:36.760944+00:00"
+    },
+    {
+      "label": "Exterior at 17:05:57",
+      "url": "https://github.com/user-attachments/assets/e504157f-08ab-4002-85d6-8b95b025ae6b",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 4,
+      "sha256": "8d23cea8ce2bd1721d2bbd11c16a4a160335c8919d8dbb65fab20210000b7650",
+      "bytes": 1282400,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:36.713448+00:00"
+    },
+    {
+      "label": "Exterior at 17:06:08",
+      "url": "https://github.com/user-attachments/assets/439068a2-84ea-4c5d-9faf-0fbc7d19bc9d",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 5,
+      "sha256": "0306087bab3dd9b382fee34c5864810782fb6242c5f94884d4aedaea00453853",
+      "bytes": 1492936,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:37.464446+00:00"
+    },
+    {
+      "label": "Exterior at 17:06:24",
+      "url": "https://github.com/user-attachments/assets/b75dcd58-247a-4bda-9801-9960046ead3d",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 6,
+      "sha256": "ea32ad5be0f635d4a6e884377ed63a0fa4a13ba44732057b41e0ce18fd0fcbab",
+      "bytes": 1663579,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:37.407771+00:00"
+    },
+    {
+      "label": "Exterior at 17:06:29",
+      "url": "https://github.com/user-attachments/assets/555a0c82-7def-46d6-b797-0f4de9c6ad08",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 7,
+      "sha256": "38ee69a0903475460d81abfffe7ba7314130a4b7d8a55ff7951b62323f9c86a4",
+      "bytes": 1799190,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:37.608735+00:00"
+    },
+    {
+      "label": "Exterior at 17:06:33",
+      "url": "https://github.com/user-attachments/assets/e12fd1ae-64f9-4e3e-bfe6-47c1450400ee",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 8,
+      "sha256": "70efb90b70b4d25ae3882d10f1f9e185031ffa780f6d69d9c00fb5cef997a4b1",
+      "bytes": 1754577,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:37.734254+00:00"
+    },
+    {
+      "label": "Exterior at 17:06:37",
+      "url": "https://github.com/user-attachments/assets/42219f58-7f9c-47e5-be85-95888b9cc33b",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 9,
+      "sha256": "1bc9b4e6da2f44b28b193a2d24f3f08099f9dc07676829fa773bd233f0d6f806",
+      "bytes": 1647096,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.077515+00:00"
+    },
+    {
+      "label": "Exterior at 17:08:53",
+      "url": "https://github.com/user-attachments/assets/5455f456-cfe1-436f-b969-93b422de2fea",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 10,
+      "sha256": "31c58f3150bf87dbc5a7c4e7ade94d52b187b3023b436683458252dea81e3cec",
+      "bytes": 1642600,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.169698+00:00"
+    },
+    {
+      "label": "Exterior at 17:09:25",
+      "url": "https://github.com/user-attachments/assets/fd02e5a1-ea0d-4f2d-be1e-7995fc96a156",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 11,
+      "sha256": "d265e4725fa22236e400276960d0c5c578c50422cf95c71a1ac69a7f219324a8",
+      "bytes": 582693,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.292215+00:00"
+    },
+    {
+      "label": "Exterior at 17:09:29",
+      "url": "https://github.com/user-attachments/assets/789247d0-696b-49dd-b148-832189342ad1",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962439668",
+      "comment_id": 5962439668,
+      "category": "exterior",
+      "ordinal": 12,
+      "sha256": "2d3f05b384ff3da5251a4107486ac050b0287e44e8356837db4e8778b709f8b9",
+      "bytes": 568329,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.490175+00:00"
+    },
+    {
+      "label": "Interior at 17:14:46",
+      "url": "https://github.com/user-attachments/assets/a6bb931e-9fab-4302-80ec-563d695f78d6",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962440793",
+      "comment_id": 5962440793,
+      "category": "interior",
+      "ordinal": 1,
+      "sha256": "e26d6311d95d171b4dae99cb87f03e96b6f691187403e295ce983ec877f112ea",
+      "bytes": 942454,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.681324+00:00"
+    },
+    {
+      "label": "Interior at 17:14:53",
+      "url": "https://github.com/user-attachments/assets/b0e2f417-4d8b-4c15-8499-f58bc112b8db",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962440793",
+      "comment_id": 5962440793,
+      "category": "interior",
+      "ordinal": 2,
+      "sha256": "01d22ec300d8aa48941705e5c3fd4469f4f933d2a9fc393a74e38884bf4433bd",
+      "bytes": 824859,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.776416+00:00"
+    },
+    {
+      "label": "Interior at 17:16:26",
+      "url": "https://github.com/user-attachments/assets/c71ffa85-3d55-4f1e-ae43-151a45e13965",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962440793",
+      "comment_id": 5962440793,
+      "category": "interior",
+      "ordinal": 3,
+      "sha256": "3fbcea98e90179f8ed4850afc62d6c61896991468c12f306ee367db208cab9b6",
+      "bytes": 1042448,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:38.886843+00:00"
+    },
+    {
+      "label": "Interior at 17:16:29",
+      "url": "https://github.com/user-attachments/assets/d7989d90-4900-482c-a0b7-5793a5974ff2",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962440793",
+      "comment_id": 5962440793,
+      "category": "interior",
+      "ordinal": 4,
+      "sha256": "07264cdf273978754fddeb0610e0a469a09cd42f8fe2bf8307bc308a00e45264",
+      "bytes": 910362,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:39.126578+00:00"
+    },
+    {
+      "label": "Interior at 17:16:32",
+      "url": "https://github.com/user-attachments/assets/a3e9dccd-1dc7-4940-a76e-6ea20c438ca5",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962440793",
+      "comment_id": 5962440793,
+      "category": "interior",
+      "ordinal": 5,
+      "sha256": "8e8a7601e02c61a94049780b6795db7c9af27e25248b3ab81f0617296f12cd01",
+      "bytes": 845905,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:39.314545+00:00"
+    },
+    {
+      "label": "Interior at 17:16:42",
+      "url": "https://github.com/user-attachments/assets/db3074ea-e848-49b6-bbc2-83304d18d6dc",
+      "comment_url": "https://github.com/Mudcrab-Team/mudcrab/issues/130#issuecomment-5962440793",
+      "comment_id": 5962440793,
+      "category": "interior",
+      "ordinal": 6,
+      "sha256": "2d598d81a761c185b4ce9dda8e3205c0efdbe26133029f0d4b4ee9e3cd1f8b3b",
+      "bytes": 837678,
+      "dimensions": [
+        2560,
+        1440
+      ],
+      "format": "JPEG",
+      "mode": "RGB",
+      "icc_profile_present": false,
+      "exif_tag_count": 0,
+      "downloaded_utc": "2026-10-10T06:10:39.474938+00:00"
+    }
+  ],
+  "private_originals_manifest": "/Users/taylor/.local/share/mudcrab-research/l0-comparison-20261010/download-manifest.json",
+  "mudcrab_captures": [
+    {
+      "label": "fog-hdr",
+      "image_sha256": "b690e40c71495f542de096a448586711bad1b1717fdcfe2ace8f977c81f835b1",
+      "engine_sha256": "7860c796a0fba9f240c22aa830d9c16dc54424048359079400217943884a05c3",
+      "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+      "asset_manifest_sha256": "5109ab4009b427fd75a62d90620940130471b506d605f48e0ae4e2fc9f5c9ba6",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "fixture": {
+        "width": 1920,
+        "height": 1080,
+        "shots": [
+          {
+            "name": "riverwood-terrace",
+            "worldspace_id": 60,
+            "position": [
+              23400.0,
+              -47100.0,
+              400.0
+            ],
+            "yaw": 315.0,
+            "pitch": 7.0,
+            "hfov": 75.0,
+            "note": "Village facade, shaded wood, terrain and distant geometry."
+          }
+        ],
+        "settle_timeout_seconds": 90.0
+      },
+      "active_view": {
+        "epoch": 0,
+        "cell": {
+          "space": "exterior",
+          "worldspace": 60,
+          "grid": [
+            5,
+            -12
+          ]
+        },
+        "weather": 2074,
+        "game_hour": 12.0
+      },
+      "settled": true,
+      "all_recorded_dependencies_ready": true,
+      "image_space_record": 77704,
+      "fog_enabled": true
+    },
+    {
+      "label": "common-domain-fog-hdr",
+      "image_sha256": "e7cee0b55240f40269d3a923e2a38549f3aafe8084598419d7c90d5f2e2faa2f",
+      "engine_sha256": "6acf86f4fe73be0369c7992fd886a6e08285cfce9b148969dc25eb9b4281beef",
+      "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+      "asset_manifest_sha256": "5109ab4009b427fd75a62d90620940130471b506d605f48e0ae4e2fc9f5c9ba6",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "fixture": {
+        "width": 1920,
+        "height": 1080,
+        "shots": [
+          {
+            "name": "riverwood-terrace",
+            "worldspace_id": 60,
+            "position": [
+              23400.0,
+              -47100.0,
+              400.0
+            ],
+            "yaw": 315.0,
+            "pitch": 7.0,
+            "hfov": 75.0,
+            "note": "Village facade, shaded wood, terrain and distant geometry."
+          }
+        ],
+        "settle_timeout_seconds": 90.0
+      },
+      "active_view": {
+        "epoch": 0,
+        "cell": {
+          "space": "exterior",
+          "worldspace": 60,
+          "grid": [
+            5,
+            -12
+          ]
+        },
+        "weather": 2074,
+        "game_hour": 12.0
+      },
+      "settled": true,
+      "all_recorded_dependencies_ready": true,
+      "image_space_record": 77704,
+      "fog_enabled": true
+    },
+    {
+      "label": "common-domain-hdr-only",
+      "image_sha256": "f2a69e4d9178c7ec4770244e981f5b55eadc3530b689e96856d2dab864f42615",
+      "engine_sha256": "6acf86f4fe73be0369c7992fd886a6e08285cfce9b148969dc25eb9b4281beef",
+      "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+      "asset_manifest_sha256": "5109ab4009b427fd75a62d90620940130471b506d605f48e0ae4e2fc9f5c9ba6",
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "fixture": {
+        "width": 1920,
+        "height": 1080,
+        "shots": [
+          {
+            "name": "riverwood-terrace",
+            "worldspace_id": 60,
+            "position": [
+              23400.0,
+              -47100.0,
+              400.0
+            ],
+            "yaw": 315.0,
+            "pitch": 7.0,
+            "hfov": 75.0,
+            "note": "Village facade, shaded wood, terrain and distant geometry."
+          }
+        ],
+        "settle_timeout_seconds": 90.0
+      },
+      "active_view": {
+        "epoch": 0,
+        "cell": {
+          "space": "exterior",
+          "worldspace": 60,
+          "grid": [
+            5,
+            -12
+          ]
+        },
+        "weather": 2074,
+        "game_hour": 12.0
+      },
+      "settled": true,
+      "all_recorded_dependencies_ready": true,
+      "image_space_record": 77704,
+      "fog_enabled": false
+    }
+  ],
+  "current_common_domain_pair_checks": {
+    "same_engine": true,
+    "same_fixture": true,
+    "same_asset_manifest": true,
+    "same_args_except_fog_and_report_paths": true,
+    "same_runtime_view": true,
+    "same_hdr_state": true,
+    "same_fog_parameters_except_enabled": true,
+    "same_injected_native_inputs": true,
+    "opposite_fog_enabled": true,
+    "same_dependency_counts": true
+  },
+  "old_current_fog_hdr_checks": {
+    "engine_change_intended": true,
+    "same_fixture": true,
+    "same_asset_manifest": true,
+    "same_render_args": true,
+    "same_runtime_view": true,
+    "same_hdr_state": true,
+    "same_fog_state": true,
+    "same_injected_native_inputs": true
+  },
+  "retail_quantitative_calibration": false,
+  "retail_parity": false,
+  "review_scope": "Qualitative comparison of recognizable material families and lighting conditions; numeric deltas only within the controlled Mudcrab pair",
+  "source_coefficient_controls": {
+    "scope": "Pure arithmetic on captured inputs; not GPU pixels or retail calibration",
+    "input_report": "/Users/taylor/.local/share/mudcrab-research/saturation-20261010/captures/common-domain-hdr-only/lighting-runtime.json",
+    "input_report_sha256": "c70aebce6646f9c76ddcebc4378ba937853b3863b286ea7bb484e5cd7ba8b3b9",
+    "hdr_report": "/Users/taylor/.local/share/mudcrab-research/saturation-20261010/captures/common-domain-hdr-only/fog-runtime.json",
+    "hdr_report_sha256": "70d8f9dfb129877412d6f45de17f556bdb55278647d011ef84e57889d94ffc87",
+    "sun_direction": [
+      -4.371139e-08,
+      1.0,
+      0.0
+    ],
+    "effective_sun_rgb": [
+      2.0862746,
+      1.987451,
+      1.877647
+    ],
+    "sun_visibility": 1.0,
+    "ambient_rows_engine_world": [
+      [
+        -0.027450994,
+        0.22352941,
+        0.0019607842,
+        0.43856215
+      ],
+      [
+        -0.02352941,
+        0.16666669,
+        0.019607842,
+        0.59019613
+      ],
+      [
+        -0.043137252,
+        0.16666669,
+        -0.0019607842,
+        0.6352942
+      ]
+    ],
+    "minimum_ambient_over_unit_normals": [
+      0.21334492401314278,
+      0.42073850651140876,
+      0.4631243630936866
+    ],
+    "axis_controls": [
+      {
+        "unit_normal": [
+          0,
+          1,
+          0
+        ],
+        "ambient_before_material": [
+          0.66209156,
+          0.75686282,
+          0.80196089
+        ],
+        "direct_diffuse_before_material": [
+          2.0862746,
+          1.987451,
+          1.877647
+        ],
+        "combined_before_material": [
+          2.74836616,
+          2.7443138200000003,
+          2.67960789
+        ]
+      },
+      {
+        "unit_normal": [
+          0,
+          -1,
+          0
+        ],
+        "ambient_before_material": [
+          0.21503273999999997,
+          0.42352944000000003,
+          0.46862751
+        ],
+        "direct_diffuse_before_material": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "combined_before_material": [
+          0.21503273999999997,
+          0.42352944000000003,
+          0.46862751
+        ]
+      },
+      {
+        "unit_normal": [
+          1,
+          0,
+          0
+        ],
+        "ambient_before_material": [
+          0.411111156,
+          0.5666667200000001,
+          0.5921569480000001
+        ],
+        "direct_diffuse_before_material": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "combined_before_material": [
+          0.411111156,
+          0.5666667200000001,
+          0.5921569480000001
+        ]
+      },
+      {
+        "unit_normal": [
+          -1,
+          0,
+          0
+        ],
+        "ambient_before_material": [
+          0.466013144,
+          0.61372554,
+          0.678431452
+        ],
+        "direct_diffuse_before_material": [
+          9.119396268769399e-08,
+          8.687424576689e-08,
+          8.207456029933e-08
+        ],
+        "combined_before_material": [
+          0.4660132351939627,
+          0.6137256268742458,
+          0.6784315340745602
+        ]
+      },
+      {
+        "unit_normal": [
+          0,
+          0,
+          1
+        ],
+        "ambient_before_material": [
+          0.4405229342,
+          0.609803972,
+          0.6333334158
+        ],
+        "direct_diffuse_before_material": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "combined_before_material": [
+          0.4405229342,
+          0.609803972,
+          0.6333334158
+        ]
+      },
+      {
+        "unit_normal": [
+          0,
+          0,
+          -1
+        ],
+        "ambient_before_material": [
+          0.4366013658,
+          0.570588288,
+          0.6372549842
+        ],
+        "direct_diffuse_before_material": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "combined_before_material": [
+          0.4366013658,
+          0.570588288,
+          0.6372549842
+        ]
+      }
+    ],
+    "direct_visibility_assumption": "No directional-map occlusion in this arithmetic; scalar visibility taken from report",
+    "albedo_and_vertex_rgb_assumption": "Both one; actual draw inputs not sampled",
+    "contrast": 1.399999976158142,
+    "brightness": 1.1349999904632568,
+    "per_channel_pre_grade_H_over_adaptation_Ax_zero_clamp_threshold": 0.2517306396041962,
+    "unmeasured": [
+      "actual surface normals",
+      "source texture samples and vertex RGB",
+      "directional map visibility",
+      "GPU adaptation A.x/A.y",
+      "per-pixel pre-grading H",
+      "retail light coefficients",
+      "retail SRV/target/swapchain transfer"
+    ]
+  },
+  "source_control_scope": "Arithmetic on recorded inputs; actual surface samples, adaptation and retail light state remain unmeasured"
+}

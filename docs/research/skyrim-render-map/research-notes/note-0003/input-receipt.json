@@ -1,0 +1,22 @@
+{
+  "schema": "mudcrab-research-note-input/v1",
+  "created_at_utc": "2026-10-10T20:01:54.725210+00:00",
+  "notes": [
+    {
+      "id": "N003",
+      "origin": {
+        "kind": "user_file",
+        "path": "/Users/taylor/Downloads/Skyrim lighting and color grading.md",
+        "title": "Skyrim Forward-Shades, Then Grades in One Pass"
+      },
+      "artifacts": [
+        {
+          "path": "note-0003/supplied-notes.md",
+          "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+          "bytes": 65005
+        }
+      ]
+    }
+  ],
+  "research_notes_are_proof": false
+}

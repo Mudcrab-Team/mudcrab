@@ -1,0 +1,44 @@
+{
+  "schema": "mudcrab-research-note-input/v1",
+  "created_at_utc": "2026-10-10T19:35:44.402578+00:00",
+  "notes": [
+    {
+      "id": "N001",
+      "origin": {
+        "kind": "user_file",
+        "path": "/Users/taylor/Downloads/skyrim_lighting_technical_notes.md"
+      },
+      "artifacts": [
+        {
+          "path": "note-0001/supplied-notes.md",
+          "sha256": "b169c56c7222f7d22c801e08c802090f1295f2109917aa9146130a8007bb6ba2",
+          "bytes": 11647
+        }
+      ]
+    },
+    {
+      "id": "N002",
+      "origin": {
+        "kind": "t3_user_message",
+        "thread_id": "7be3ca4a-aa35-4aba-8c62-4d6d9881ba05",
+        "item_id": "turn-item:message:44e8f32d-66bc-49cf-b704-04923f13c71f",
+        "position": 3441,
+        "message_complete": true,
+        "article_extraction": "UTF-8 bytes after the first exact newline --- newline delimiter; no normalization or added newline."
+      },
+      "artifacts": [
+        {
+          "path": "note-0002/supplied-message.txt",
+          "sha256": "a69a5c14263664106f049c5d4c5c147c59f3a095ecfbd03fbeff47d2e232aa04",
+          "bytes": 28541
+        },
+        {
+          "path": "note-0002/supplied-notes.txt",
+          "sha256": "20589ecb5bd3892a4671143a9159ca190b701fc62850dcd87a8e545276c870a6",
+          "bytes": 28237
+        }
+      ]
+    }
+  ],
+  "research_notes_are_proof": false
+}

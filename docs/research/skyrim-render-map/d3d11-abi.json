@@ -1,0 +1,1730 @@
+{
+  "schema": "mudcrab-render-d3d11-abi/v1",
+  "pointer_size_bytes": 8,
+  "sources": [
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/abi/d3d11.h",
+      "upstream_path": "um/d3d11.h",
+      "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+      "bytes": 567298,
+      "sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/abi/dxgi.h",
+      "upstream_path": "shared/dxgi.h",
+      "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgi.h",
+      "bytes": 103833,
+      "sha256": "4ecb904265d79ef8abe13dcb36c4b06237e6ca5af12718483c8480b024380f98"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/abi/dxgiformat.h",
+      "upstream_path": "shared/dxgiformat.h",
+      "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgiformat.h",
+      "bytes": 7878,
+      "sha256": "48df2f31927ce6167597c6fb41046ca4d9d771de9e11dac80f44a900d66162dd"
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "ID3D11Device",
+      "source_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+      "methods": [
+        {
+          "slot": 0,
+          "x64_offset": "0x0",
+          "name": "QueryInterface",
+          "source_line": 14488
+        },
+        {
+          "slot": 1,
+          "x64_offset": "0x8",
+          "name": "AddRef",
+          "source_line": 14496
+        },
+        {
+          "slot": 2,
+          "x64_offset": "0x10",
+          "name": "Release",
+          "source_line": 14500
+        },
+        {
+          "slot": 3,
+          "x64_offset": "0x18",
+          "name": "CreateBuffer",
+          "source_line": 14504
+        },
+        {
+          "slot": 4,
+          "x64_offset": "0x20",
+          "name": "CreateTexture1D",
+          "source_line": 14514
+        },
+        {
+          "slot": 5,
+          "x64_offset": "0x28",
+          "name": "CreateTexture2D",
+          "source_line": 14524
+        },
+        {
+          "slot": 6,
+          "x64_offset": "0x30",
+          "name": "CreateTexture3D",
+          "source_line": 14534
+        },
+        {
+          "slot": 7,
+          "x64_offset": "0x38",
+          "name": "CreateShaderResourceView",
+          "source_line": 14544
+        },
+        {
+          "slot": 8,
+          "x64_offset": "0x40",
+          "name": "CreateUnorderedAccessView",
+          "source_line": 14554
+        },
+        {
+          "slot": 9,
+          "x64_offset": "0x48",
+          "name": "CreateRenderTargetView",
+          "source_line": 14564
+        },
+        {
+          "slot": 10,
+          "x64_offset": "0x50",
+          "name": "CreateDepthStencilView",
+          "source_line": 14574
+        },
+        {
+          "slot": 11,
+          "x64_offset": "0x58",
+          "name": "CreateInputLayout",
+          "source_line": 14584
+        },
+        {
+          "slot": 12,
+          "x64_offset": "0x60",
+          "name": "CreateVertexShader",
+          "source_line": 14598
+        },
+        {
+          "slot": 13,
+          "x64_offset": "0x68",
+          "name": "CreateGeometryShader",
+          "source_line": 14610
+        },
+        {
+          "slot": 14,
+          "x64_offset": "0x70",
+          "name": "CreateGeometryShaderWithStreamOutput",
+          "source_line": 14622
+        },
+        {
+          "slot": 15,
+          "x64_offset": "0x78",
+          "name": "CreatePixelShader",
+          "source_line": 14644
+        },
+        {
+          "slot": 16,
+          "x64_offset": "0x80",
+          "name": "CreateHullShader",
+          "source_line": 14656
+        },
+        {
+          "slot": 17,
+          "x64_offset": "0x88",
+          "name": "CreateDomainShader",
+          "source_line": 14668
+        },
+        {
+          "slot": 18,
+          "x64_offset": "0x90",
+          "name": "CreateComputeShader",
+          "source_line": 14680
+        },
+        {
+          "slot": 19,
+          "x64_offset": "0x98",
+          "name": "CreateClassLinkage",
+          "source_line": 14692
+        },
+        {
+          "slot": 20,
+          "x64_offset": "0xa0",
+          "name": "CreateBlendState",
+          "source_line": 14698
+        },
+        {
+          "slot": 21,
+          "x64_offset": "0xa8",
+          "name": "CreateDepthStencilState",
+          "source_line": 14706
+        },
+        {
+          "slot": 22,
+          "x64_offset": "0xb0",
+          "name": "CreateRasterizerState",
+          "source_line": 14714
+        },
+        {
+          "slot": 23,
+          "x64_offset": "0xb8",
+          "name": "CreateSamplerState",
+          "source_line": 14722
+        },
+        {
+          "slot": 24,
+          "x64_offset": "0xc0",
+          "name": "CreateQuery",
+          "source_line": 14730
+        },
+        {
+          "slot": 25,
+          "x64_offset": "0xc8",
+          "name": "CreatePredicate",
+          "source_line": 14738
+        },
+        {
+          "slot": 26,
+          "x64_offset": "0xd0",
+          "name": "CreateCounter",
+          "source_line": 14746
+        },
+        {
+          "slot": 27,
+          "x64_offset": "0xd8",
+          "name": "CreateDeferredContext",
+          "source_line": 14754
+        },
+        {
+          "slot": 28,
+          "x64_offset": "0xe0",
+          "name": "OpenSharedResource",
+          "source_line": 14761
+        },
+        {
+          "slot": 29,
+          "x64_offset": "0xe8",
+          "name": "CheckFormatSupport",
+          "source_line": 14771
+        },
+        {
+          "slot": 30,
+          "x64_offset": "0xf0",
+          "name": "CheckMultisampleQualityLevels",
+          "source_line": 14779
+        },
+        {
+          "slot": 31,
+          "x64_offset": "0xf8",
+          "name": "CheckCounterInfo",
+          "source_line": 14789
+        },
+        {
+          "slot": 32,
+          "x64_offset": "0x100",
+          "name": "CheckCounter",
+          "source_line": 14795
+        },
+        {
+          "slot": 33,
+          "x64_offset": "0x108",
+          "name": "CheckFeatureSupport",
+          "source_line": 14817
+        },
+        {
+          "slot": 34,
+          "x64_offset": "0x110",
+          "name": "GetPrivateData",
+          "source_line": 14825
+        },
+        {
+          "slot": 35,
+          "x64_offset": "0x118",
+          "name": "SetPrivateData",
+          "source_line": 14835
+        },
+        {
+          "slot": 36,
+          "x64_offset": "0x120",
+          "name": "SetPrivateDataInterface",
+          "source_line": 14845
+        },
+        {
+          "slot": 37,
+          "x64_offset": "0x128",
+          "name": "GetFeatureLevel",
+          "source_line": 14853
+        },
+        {
+          "slot": 38,
+          "x64_offset": "0x130",
+          "name": "GetCreationFlags",
+          "source_line": 14857
+        },
+        {
+          "slot": 39,
+          "x64_offset": "0x138",
+          "name": "GetDeviceRemovedReason",
+          "source_line": 14861
+        },
+        {
+          "slot": 40,
+          "x64_offset": "0x140",
+          "name": "GetImmediateContext",
+          "source_line": 14865
+        },
+        {
+          "slot": 41,
+          "x64_offset": "0x148",
+          "name": "SetExceptionMode",
+          "source_line": 14871
+        },
+        {
+          "slot": 42,
+          "x64_offset": "0x150",
+          "name": "GetExceptionMode",
+          "source_line": 14876
+        }
+      ]
+    },
+    {
+      "name": "ID3D11DeviceContext",
+      "source_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+      "methods": [
+        {
+          "slot": 0,
+          "x64_offset": "0x0",
+          "name": "QueryInterface",
+          "source_line": 8602
+        },
+        {
+          "slot": 1,
+          "x64_offset": "0x8",
+          "name": "AddRef",
+          "source_line": 8610
+        },
+        {
+          "slot": 2,
+          "x64_offset": "0x10",
+          "name": "Release",
+          "source_line": 8614
+        },
+        {
+          "slot": 3,
+          "x64_offset": "0x18",
+          "name": "GetDevice",
+          "source_line": 8618
+        },
+        {
+          "slot": 4,
+          "x64_offset": "0x20",
+          "name": "GetPrivateData",
+          "source_line": 8624
+        },
+        {
+          "slot": 5,
+          "x64_offset": "0x28",
+          "name": "SetPrivateData",
+          "source_line": 8634
+        },
+        {
+          "slot": 6,
+          "x64_offset": "0x30",
+          "name": "SetPrivateDataInterface",
+          "source_line": 8644
+        },
+        {
+          "slot": 7,
+          "x64_offset": "0x38",
+          "name": "VSSetConstantBuffers",
+          "source_line": 8652
+        },
+        {
+          "slot": 8,
+          "x64_offset": "0x40",
+          "name": "PSSetShaderResources",
+          "source_line": 8662
+        },
+        {
+          "slot": 9,
+          "x64_offset": "0x48",
+          "name": "PSSetShader",
+          "source_line": 8672
+        },
+        {
+          "slot": 10,
+          "x64_offset": "0x50",
+          "name": "PSSetSamplers",
+          "source_line": 8681
+        },
+        {
+          "slot": 11,
+          "x64_offset": "0x58",
+          "name": "VSSetShader",
+          "source_line": 8691
+        },
+        {
+          "slot": 12,
+          "x64_offset": "0x60",
+          "name": "DrawIndexed",
+          "source_line": 8700
+        },
+        {
+          "slot": 13,
+          "x64_offset": "0x68",
+          "name": "Draw",
+          "source_line": 8710
+        },
+        {
+          "slot": 14,
+          "x64_offset": "0x70",
+          "name": "Map",
+          "source_line": 8718
+        },
+        {
+          "slot": 15,
+          "x64_offset": "0x78",
+          "name": "Unmap",
+          "source_line": 8732
+        },
+        {
+          "slot": 16,
+          "x64_offset": "0x80",
+          "name": "PSSetConstantBuffers",
+          "source_line": 8740
+        },
+        {
+          "slot": 17,
+          "x64_offset": "0x88",
+          "name": "IASetInputLayout",
+          "source_line": 8750
+        },
+        {
+          "slot": 18,
+          "x64_offset": "0x90",
+          "name": "IASetVertexBuffers",
+          "source_line": 8756
+        },
+        {
+          "slot": 19,
+          "x64_offset": "0x98",
+          "name": "IASetIndexBuffer",
+          "source_line": 8770
+        },
+        {
+          "slot": 20,
+          "x64_offset": "0xa0",
+          "name": "DrawIndexedInstanced",
+          "source_line": 8780
+        },
+        {
+          "slot": 21,
+          "x64_offset": "0xa8",
+          "name": "DrawInstanced",
+          "source_line": 8794
+        },
+        {
+          "slot": 22,
+          "x64_offset": "0xb0",
+          "name": "GSSetConstantBuffers",
+          "source_line": 8806
+        },
+        {
+          "slot": 23,
+          "x64_offset": "0xb8",
+          "name": "GSSetShader",
+          "source_line": 8816
+        },
+        {
+          "slot": 24,
+          "x64_offset": "0xc0",
+          "name": "IASetPrimitiveTopology",
+          "source_line": 8825
+        },
+        {
+          "slot": 25,
+          "x64_offset": "0xc8",
+          "name": "VSSetShaderResources",
+          "source_line": 8831
+        },
+        {
+          "slot": 26,
+          "x64_offset": "0xd0",
+          "name": "VSSetSamplers",
+          "source_line": 8841
+        },
+        {
+          "slot": 27,
+          "x64_offset": "0xd8",
+          "name": "Begin",
+          "source_line": 8851
+        },
+        {
+          "slot": 28,
+          "x64_offset": "0xe0",
+          "name": "End",
+          "source_line": 8857
+        },
+        {
+          "slot": 29,
+          "x64_offset": "0xe8",
+          "name": "GetData",
+          "source_line": 8863
+        },
+        {
+          "slot": 30,
+          "x64_offset": "0xf0",
+          "name": "SetPredication",
+          "source_line": 8875
+        },
+        {
+          "slot": 31,
+          "x64_offset": "0xf8",
+          "name": "GSSetShaderResources",
+          "source_line": 8883
+        },
+        {
+          "slot": 32,
+          "x64_offset": "0x100",
+          "name": "GSSetSamplers",
+          "source_line": 8893
+        },
+        {
+          "slot": 33,
+          "x64_offset": "0x108",
+          "name": "OMSetRenderTargets",
+          "source_line": 8903
+        },
+        {
+          "slot": 34,
+          "x64_offset": "0x110",
+          "name": "OMSetRenderTargetsAndUnorderedAccessViews",
+          "source_line": 8913
+        },
+        {
+          "slot": 35,
+          "x64_offset": "0x118",
+          "name": "OMSetBlendState",
+          "source_line": 8931
+        },
+        {
+          "slot": 36,
+          "x64_offset": "0x120",
+          "name": "OMSetDepthStencilState",
+          "source_line": 8941
+        },
+        {
+          "slot": 37,
+          "x64_offset": "0x128",
+          "name": "SOSetTargets",
+          "source_line": 8949
+        },
+        {
+          "slot": 38,
+          "x64_offset": "0x130",
+          "name": "DrawAuto",
+          "source_line": 8959
+        },
+        {
+          "slot": 39,
+          "x64_offset": "0x138",
+          "name": "DrawIndexedInstancedIndirect",
+          "source_line": 8963
+        },
+        {
+          "slot": 40,
+          "x64_offset": "0x140",
+          "name": "DrawInstancedIndirect",
+          "source_line": 8971
+        },
+        {
+          "slot": 41,
+          "x64_offset": "0x148",
+          "name": "Dispatch",
+          "source_line": 8979
+        },
+        {
+          "slot": 42,
+          "x64_offset": "0x150",
+          "name": "DispatchIndirect",
+          "source_line": 8989
+        },
+        {
+          "slot": 43,
+          "x64_offset": "0x158",
+          "name": "RSSetState",
+          "source_line": 8997
+        },
+        {
+          "slot": 44,
+          "x64_offset": "0x160",
+          "name": "RSSetViewports",
+          "source_line": 9003
+        },
+        {
+          "slot": 45,
+          "x64_offset": "0x168",
+          "name": "RSSetScissorRects",
+          "source_line": 9011
+        },
+        {
+          "slot": 46,
+          "x64_offset": "0x170",
+          "name": "CopySubresourceRegion",
+          "source_line": 9019
+        },
+        {
+          "slot": 47,
+          "x64_offset": "0x178",
+          "name": "CopyResource",
+          "source_line": 9039
+        },
+        {
+          "slot": 48,
+          "x64_offset": "0x180",
+          "name": "UpdateSubresource",
+          "source_line": 9047
+        },
+        {
+          "slot": 49,
+          "x64_offset": "0x188",
+          "name": "CopyStructureCount",
+          "source_line": 9063
+        },
+        {
+          "slot": 50,
+          "x64_offset": "0x190",
+          "name": "ClearRenderTargetView",
+          "source_line": 9073
+        },
+        {
+          "slot": 51,
+          "x64_offset": "0x198",
+          "name": "ClearUnorderedAccessViewUint",
+          "source_line": 9081
+        },
+        {
+          "slot": 52,
+          "x64_offset": "0x1a0",
+          "name": "ClearUnorderedAccessViewFloat",
+          "source_line": 9089
+        },
+        {
+          "slot": 53,
+          "x64_offset": "0x1a8",
+          "name": "ClearDepthStencilView",
+          "source_line": 9097
+        },
+        {
+          "slot": 54,
+          "x64_offset": "0x1b0",
+          "name": "GenerateMips",
+          "source_line": 9109
+        },
+        {
+          "slot": 55,
+          "x64_offset": "0x1b8",
+          "name": "SetResourceMinLOD",
+          "source_line": 9115
+        },
+        {
+          "slot": 56,
+          "x64_offset": "0x1c0",
+          "name": "GetResourceMinLOD",
+          "source_line": 9122
+        },
+        {
+          "slot": 57,
+          "x64_offset": "0x1c8",
+          "name": "ResolveSubresource",
+          "source_line": 9128
+        },
+        {
+          "slot": 58,
+          "x64_offset": "0x1d0",
+          "name": "ExecuteCommandList",
+          "source_line": 9142
+        },
+        {
+          "slot": 59,
+          "x64_offset": "0x1d8",
+          "name": "HSSetShaderResources",
+          "source_line": 9149
+        },
+        {
+          "slot": 60,
+          "x64_offset": "0x1e0",
+          "name": "HSSetShader",
+          "source_line": 9159
+        },
+        {
+          "slot": 61,
+          "x64_offset": "0x1e8",
+          "name": "HSSetSamplers",
+          "source_line": 9168
+        },
+        {
+          "slot": 62,
+          "x64_offset": "0x1f0",
+          "name": "HSSetConstantBuffers",
+          "source_line": 9178
+        },
+        {
+          "slot": 63,
+          "x64_offset": "0x1f8",
+          "name": "DSSetShaderResources",
+          "source_line": 9188
+        },
+        {
+          "slot": 64,
+          "x64_offset": "0x200",
+          "name": "DSSetShader",
+          "source_line": 9198
+        },
+        {
+          "slot": 65,
+          "x64_offset": "0x208",
+          "name": "DSSetSamplers",
+          "source_line": 9207
+        },
+        {
+          "slot": 66,
+          "x64_offset": "0x210",
+          "name": "DSSetConstantBuffers",
+          "source_line": 9217
+        },
+        {
+          "slot": 67,
+          "x64_offset": "0x218",
+          "name": "CSSetShaderResources",
+          "source_line": 9227
+        },
+        {
+          "slot": 68,
+          "x64_offset": "0x220",
+          "name": "CSSetUnorderedAccessViews",
+          "source_line": 9237
+        },
+        {
+          "slot": 69,
+          "x64_offset": "0x228",
+          "name": "CSSetShader",
+          "source_line": 9249
+        },
+        {
+          "slot": 70,
+          "x64_offset": "0x230",
+          "name": "CSSetSamplers",
+          "source_line": 9258
+        },
+        {
+          "slot": 71,
+          "x64_offset": "0x238",
+          "name": "CSSetConstantBuffers",
+          "source_line": 9268
+        },
+        {
+          "slot": 72,
+          "x64_offset": "0x240",
+          "name": "VSGetConstantBuffers",
+          "source_line": 9278
+        },
+        {
+          "slot": 73,
+          "x64_offset": "0x248",
+          "name": "PSGetShaderResources",
+          "source_line": 9288
+        },
+        {
+          "slot": 74,
+          "x64_offset": "0x250",
+          "name": "PSGetShader",
+          "source_line": 9298
+        },
+        {
+          "slot": 75,
+          "x64_offset": "0x258",
+          "name": "PSGetSamplers",
+          "source_line": 9308
+        },
+        {
+          "slot": 76,
+          "x64_offset": "0x260",
+          "name": "VSGetShader",
+          "source_line": 9318
+        },
+        {
+          "slot": 77,
+          "x64_offset": "0x268",
+          "name": "PSGetConstantBuffers",
+          "source_line": 9328
+        },
+        {
+          "slot": 78,
+          "x64_offset": "0x270",
+          "name": "IAGetInputLayout",
+          "source_line": 9338
+        },
+        {
+          "slot": 79,
+          "x64_offset": "0x278",
+          "name": "IAGetVertexBuffers",
+          "source_line": 9344
+        },
+        {
+          "slot": 80,
+          "x64_offset": "0x280",
+          "name": "IAGetIndexBuffer",
+          "source_line": 9358
+        },
+        {
+          "slot": 81,
+          "x64_offset": "0x288",
+          "name": "GSGetConstantBuffers",
+          "source_line": 9368
+        },
+        {
+          "slot": 82,
+          "x64_offset": "0x290",
+          "name": "GSGetShader",
+          "source_line": 9378
+        },
+        {
+          "slot": 83,
+          "x64_offset": "0x298",
+          "name": "IAGetPrimitiveTopology",
+          "source_line": 9388
+        },
+        {
+          "slot": 84,
+          "x64_offset": "0x2a0",
+          "name": "VSGetShaderResources",
+          "source_line": 9394
+        },
+        {
+          "slot": 85,
+          "x64_offset": "0x2a8",
+          "name": "VSGetSamplers",
+          "source_line": 9404
+        },
+        {
+          "slot": 86,
+          "x64_offset": "0x2b0",
+          "name": "GetPredication",
+          "source_line": 9414
+        },
+        {
+          "slot": 87,
+          "x64_offset": "0x2b8",
+          "name": "GSGetShaderResources",
+          "source_line": 9422
+        },
+        {
+          "slot": 88,
+          "x64_offset": "0x2c0",
+          "name": "GSGetSamplers",
+          "source_line": 9432
+        },
+        {
+          "slot": 89,
+          "x64_offset": "0x2c8",
+          "name": "OMGetRenderTargets",
+          "source_line": 9442
+        },
+        {
+          "slot": 90,
+          "x64_offset": "0x2d0",
+          "name": "OMGetRenderTargetsAndUnorderedAccessViews",
+          "source_line": 9452
+        },
+        {
+          "slot": 91,
+          "x64_offset": "0x2d8",
+          "name": "OMGetBlendState",
+          "source_line": 9468
+        },
+        {
+          "slot": 92,
+          "x64_offset": "0x2e0",
+          "name": "OMGetDepthStencilState",
+          "source_line": 9478
+        },
+        {
+          "slot": 93,
+          "x64_offset": "0x2e8",
+          "name": "SOGetTargets",
+          "source_line": 9486
+        },
+        {
+          "slot": 94,
+          "x64_offset": "0x2f0",
+          "name": "RSGetState",
+          "source_line": 9494
+        },
+        {
+          "slot": 95,
+          "x64_offset": "0x2f8",
+          "name": "RSGetViewports",
+          "source_line": 9500
+        },
+        {
+          "slot": 96,
+          "x64_offset": "0x300",
+          "name": "RSGetScissorRects",
+          "source_line": 9508
+        },
+        {
+          "slot": 97,
+          "x64_offset": "0x308",
+          "name": "HSGetShaderResources",
+          "source_line": 9516
+        },
+        {
+          "slot": 98,
+          "x64_offset": "0x310",
+          "name": "HSGetShader",
+          "source_line": 9526
+        },
+        {
+          "slot": 99,
+          "x64_offset": "0x318",
+          "name": "HSGetSamplers",
+          "source_line": 9536
+        },
+        {
+          "slot": 100,
+          "x64_offset": "0x320",
+          "name": "HSGetConstantBuffers",
+          "source_line": 9546
+        },
+        {
+          "slot": 101,
+          "x64_offset": "0x328",
+          "name": "DSGetShaderResources",
+          "source_line": 9556
+        },
+        {
+          "slot": 102,
+          "x64_offset": "0x330",
+          "name": "DSGetShader",
+          "source_line": 9566
+        },
+        {
+          "slot": 103,
+          "x64_offset": "0x338",
+          "name": "DSGetSamplers",
+          "source_line": 9576
+        },
+        {
+          "slot": 104,
+          "x64_offset": "0x340",
+          "name": "DSGetConstantBuffers",
+          "source_line": 9586
+        },
+        {
+          "slot": 105,
+          "x64_offset": "0x348",
+          "name": "CSGetShaderResources",
+          "source_line": 9596
+        },
+        {
+          "slot": 106,
+          "x64_offset": "0x350",
+          "name": "CSGetUnorderedAccessViews",
+          "source_line": 9606
+        },
+        {
+          "slot": 107,
+          "x64_offset": "0x358",
+          "name": "CSGetShader",
+          "source_line": 9616
+        },
+        {
+          "slot": 108,
+          "x64_offset": "0x360",
+          "name": "CSGetSamplers",
+          "source_line": 9626
+        },
+        {
+          "slot": 109,
+          "x64_offset": "0x368",
+          "name": "CSGetConstantBuffers",
+          "source_line": 9636
+        },
+        {
+          "slot": 110,
+          "x64_offset": "0x370",
+          "name": "ClearState",
+          "source_line": 9646
+        },
+        {
+          "slot": 111,
+          "x64_offset": "0x378",
+          "name": "Flush",
+          "source_line": 9650
+        },
+        {
+          "slot": 112,
+          "x64_offset": "0x380",
+          "name": "GetType",
+          "source_line": 9654
+        },
+        {
+          "slot": 113,
+          "x64_offset": "0x388",
+          "name": "GetContextFlags",
+          "source_line": 9658
+        },
+        {
+          "slot": 114,
+          "x64_offset": "0x390",
+          "name": "FinishCommandList",
+          "source_line": 9662
+        }
+      ]
+    },
+    {
+      "name": "IDXGISwapChain",
+      "source_sha256": "4ecb904265d79ef8abe13dcb36c4b06237e6ca5af12718483c8480b024380f98",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgi.h",
+      "methods": [
+        {
+          "slot": 0,
+          "x64_offset": "0x0",
+          "name": "QueryInterface",
+          "source_line": 1918
+        },
+        {
+          "slot": 1,
+          "x64_offset": "0x8",
+          "name": "AddRef",
+          "source_line": 1926
+        },
+        {
+          "slot": 2,
+          "x64_offset": "0x10",
+          "name": "Release",
+          "source_line": 1930
+        },
+        {
+          "slot": 3,
+          "x64_offset": "0x18",
+          "name": "SetPrivateData",
+          "source_line": 1934
+        },
+        {
+          "slot": 4,
+          "x64_offset": "0x20",
+          "name": "SetPrivateDataInterface",
+          "source_line": 1944
+        },
+        {
+          "slot": 5,
+          "x64_offset": "0x28",
+          "name": "GetPrivateData",
+          "source_line": 1952
+        },
+        {
+          "slot": 6,
+          "x64_offset": "0x30",
+          "name": "GetParent",
+          "source_line": 1962
+        },
+        {
+          "slot": 7,
+          "x64_offset": "0x38",
+          "name": "GetDevice",
+          "source_line": 1970
+        },
+        {
+          "slot": 8,
+          "x64_offset": "0x40",
+          "name": "Present",
+          "source_line": 1978
+        },
+        {
+          "slot": 9,
+          "x64_offset": "0x48",
+          "name": "GetBuffer",
+          "source_line": 1986
+        },
+        {
+          "slot": 10,
+          "x64_offset": "0x50",
+          "name": "SetFullscreenState",
+          "source_line": 1996
+        },
+        {
+          "slot": 11,
+          "x64_offset": "0x58",
+          "name": "GetFullscreenState",
+          "source_line": 2004
+        },
+        {
+          "slot": 12,
+          "x64_offset": "0x60",
+          "name": "GetDesc",
+          "source_line": 2012
+        },
+        {
+          "slot": 13,
+          "x64_offset": "0x68",
+          "name": "ResizeBuffers",
+          "source_line": 2018
+        },
+        {
+          "slot": 14,
+          "x64_offset": "0x70",
+          "name": "ResizeTarget",
+          "source_line": 2032
+        },
+        {
+          "slot": 15,
+          "x64_offset": "0x78",
+          "name": "GetContainingOutput",
+          "source_line": 2038
+        },
+        {
+          "slot": 16,
+          "x64_offset": "0x80",
+          "name": "GetFrameStatistics",
+          "source_line": 2044
+        },
+        {
+          "slot": 17,
+          "x64_offset": "0x88",
+          "name": "GetLastPresentCount",
+          "source_line": 2050
+        }
+      ]
+    }
+  ],
+  "dxgi_formats": [
+    {
+      "name": "DXGI_FORMAT_UNKNOWN",
+      "value": 0,
+      "source_line": 13
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32A32_TYPELESS",
+      "value": 1,
+      "source_line": 14
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32A32_FLOAT",
+      "value": 2,
+      "source_line": 15
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32A32_UINT",
+      "value": 3,
+      "source_line": 16
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32A32_SINT",
+      "value": 4,
+      "source_line": 17
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32_TYPELESS",
+      "value": 5,
+      "source_line": 18
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32_FLOAT",
+      "value": 6,
+      "source_line": 19
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32_UINT",
+      "value": 7,
+      "source_line": 20
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32B32_SINT",
+      "value": 8,
+      "source_line": 21
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16B16A16_TYPELESS",
+      "value": 9,
+      "source_line": 22
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16B16A16_FLOAT",
+      "value": 10,
+      "source_line": 23
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16B16A16_UNORM",
+      "value": 11,
+      "source_line": 24
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16B16A16_UINT",
+      "value": 12,
+      "source_line": 25
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16B16A16_SNORM",
+      "value": 13,
+      "source_line": 26
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16B16A16_SINT",
+      "value": 14,
+      "source_line": 27
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32_TYPELESS",
+      "value": 15,
+      "source_line": 28
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32_FLOAT",
+      "value": 16,
+      "source_line": 29
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32_UINT",
+      "value": 17,
+      "source_line": 30
+    },
+    {
+      "name": "DXGI_FORMAT_R32G32_SINT",
+      "value": 18,
+      "source_line": 31
+    },
+    {
+      "name": "DXGI_FORMAT_R32G8X24_TYPELESS",
+      "value": 19,
+      "source_line": 32
+    },
+    {
+      "name": "DXGI_FORMAT_D32_FLOAT_S8X24_UINT",
+      "value": 20,
+      "source_line": 33
+    },
+    {
+      "name": "DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS",
+      "value": 21,
+      "source_line": 34
+    },
+    {
+      "name": "DXGI_FORMAT_X32_TYPELESS_G8X24_UINT",
+      "value": 22,
+      "source_line": 35
+    },
+    {
+      "name": "DXGI_FORMAT_R10G10B10A2_TYPELESS",
+      "value": 23,
+      "source_line": 36
+    },
+    {
+      "name": "DXGI_FORMAT_R10G10B10A2_UNORM",
+      "value": 24,
+      "source_line": 37
+    },
+    {
+      "name": "DXGI_FORMAT_R10G10B10A2_UINT",
+      "value": 25,
+      "source_line": 38
+    },
+    {
+      "name": "DXGI_FORMAT_R11G11B10_FLOAT",
+      "value": 26,
+      "source_line": 39
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8B8A8_TYPELESS",
+      "value": 27,
+      "source_line": 40
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8B8A8_UNORM",
+      "value": 28,
+      "source_line": 41
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8B8A8_UNORM_SRGB",
+      "value": 29,
+      "source_line": 42
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8B8A8_UINT",
+      "value": 30,
+      "source_line": 43
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8B8A8_SNORM",
+      "value": 31,
+      "source_line": 44
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8B8A8_SINT",
+      "value": 32,
+      "source_line": 45
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16_TYPELESS",
+      "value": 33,
+      "source_line": 46
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16_FLOAT",
+      "value": 34,
+      "source_line": 47
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16_UNORM",
+      "value": 35,
+      "source_line": 48
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16_UINT",
+      "value": 36,
+      "source_line": 49
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16_SNORM",
+      "value": 37,
+      "source_line": 50
+    },
+    {
+      "name": "DXGI_FORMAT_R16G16_SINT",
+      "value": 38,
+      "source_line": 51
+    },
+    {
+      "name": "DXGI_FORMAT_R32_TYPELESS",
+      "value": 39,
+      "source_line": 52
+    },
+    {
+      "name": "DXGI_FORMAT_D32_FLOAT",
+      "value": 40,
+      "source_line": 53
+    },
+    {
+      "name": "DXGI_FORMAT_R32_FLOAT",
+      "value": 41,
+      "source_line": 54
+    },
+    {
+      "name": "DXGI_FORMAT_R32_UINT",
+      "value": 42,
+      "source_line": 55
+    },
+    {
+      "name": "DXGI_FORMAT_R32_SINT",
+      "value": 43,
+      "source_line": 56
+    },
+    {
+      "name": "DXGI_FORMAT_R24G8_TYPELESS",
+      "value": 44,
+      "source_line": 57
+    },
+    {
+      "name": "DXGI_FORMAT_D24_UNORM_S8_UINT",
+      "value": 45,
+      "source_line": 58
+    },
+    {
+      "name": "DXGI_FORMAT_R24_UNORM_X8_TYPELESS",
+      "value": 46,
+      "source_line": 59
+    },
+    {
+      "name": "DXGI_FORMAT_X24_TYPELESS_G8_UINT",
+      "value": 47,
+      "source_line": 60
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8_TYPELESS",
+      "value": 48,
+      "source_line": 61
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8_UNORM",
+      "value": 49,
+      "source_line": 62
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8_UINT",
+      "value": 50,
+      "source_line": 63
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8_SNORM",
+      "value": 51,
+      "source_line": 64
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8_SINT",
+      "value": 52,
+      "source_line": 65
+    },
+    {
+      "name": "DXGI_FORMAT_R16_TYPELESS",
+      "value": 53,
+      "source_line": 66
+    },
+    {
+      "name": "DXGI_FORMAT_R16_FLOAT",
+      "value": 54,
+      "source_line": 67
+    },
+    {
+      "name": "DXGI_FORMAT_D16_UNORM",
+      "value": 55,
+      "source_line": 68
+    },
+    {
+      "name": "DXGI_FORMAT_R16_UNORM",
+      "value": 56,
+      "source_line": 69
+    },
+    {
+      "name": "DXGI_FORMAT_R16_UINT",
+      "value": 57,
+      "source_line": 70
+    },
+    {
+      "name": "DXGI_FORMAT_R16_SNORM",
+      "value": 58,
+      "source_line": 71
+    },
+    {
+      "name": "DXGI_FORMAT_R16_SINT",
+      "value": 59,
+      "source_line": 72
+    },
+    {
+      "name": "DXGI_FORMAT_R8_TYPELESS",
+      "value": 60,
+      "source_line": 73
+    },
+    {
+      "name": "DXGI_FORMAT_R8_UNORM",
+      "value": 61,
+      "source_line": 74
+    },
+    {
+      "name": "DXGI_FORMAT_R8_UINT",
+      "value": 62,
+      "source_line": 75
+    },
+    {
+      "name": "DXGI_FORMAT_R8_SNORM",
+      "value": 63,
+      "source_line": 76
+    },
+    {
+      "name": "DXGI_FORMAT_R8_SINT",
+      "value": 64,
+      "source_line": 77
+    },
+    {
+      "name": "DXGI_FORMAT_A8_UNORM",
+      "value": 65,
+      "source_line": 78
+    },
+    {
+      "name": "DXGI_FORMAT_R1_UNORM",
+      "value": 66,
+      "source_line": 79
+    },
+    {
+      "name": "DXGI_FORMAT_R9G9B9E5_SHAREDEXP",
+      "value": 67,
+      "source_line": 80
+    },
+    {
+      "name": "DXGI_FORMAT_R8G8_B8G8_UNORM",
+      "value": 68,
+      "source_line": 81
+    },
+    {
+      "name": "DXGI_FORMAT_G8R8_G8B8_UNORM",
+      "value": 69,
+      "source_line": 82
+    },
+    {
+      "name": "DXGI_FORMAT_BC1_TYPELESS",
+      "value": 70,
+      "source_line": 83
+    },
+    {
+      "name": "DXGI_FORMAT_BC1_UNORM",
+      "value": 71,
+      "source_line": 84
+    },
+    {
+      "name": "DXGI_FORMAT_BC1_UNORM_SRGB",
+      "value": 72,
+      "source_line": 85
+    },
+    {
+      "name": "DXGI_FORMAT_BC2_TYPELESS",
+      "value": 73,
+      "source_line": 86
+    },
+    {
+      "name": "DXGI_FORMAT_BC2_UNORM",
+      "value": 74,
+      "source_line": 87
+    },
+    {
+      "name": "DXGI_FORMAT_BC2_UNORM_SRGB",
+      "value": 75,
+      "source_line": 88
+    },
+    {
+      "name": "DXGI_FORMAT_BC3_TYPELESS",
+      "value": 76,
+      "source_line": 89
+    },
+    {
+      "name": "DXGI_FORMAT_BC3_UNORM",
+      "value": 77,
+      "source_line": 90
+    },
+    {
+      "name": "DXGI_FORMAT_BC3_UNORM_SRGB",
+      "value": 78,
+      "source_line": 91
+    },
+    {
+      "name": "DXGI_FORMAT_BC4_TYPELESS",
+      "value": 79,
+      "source_line": 92
+    },
+    {
+      "name": "DXGI_FORMAT_BC4_UNORM",
+      "value": 80,
+      "source_line": 93
+    },
+    {
+      "name": "DXGI_FORMAT_BC4_SNORM",
+      "value": 81,
+      "source_line": 94
+    },
+    {
+      "name": "DXGI_FORMAT_BC5_TYPELESS",
+      "value": 82,
+      "source_line": 95
+    },
+    {
+      "name": "DXGI_FORMAT_BC5_UNORM",
+      "value": 83,
+      "source_line": 96
+    },
+    {
+      "name": "DXGI_FORMAT_BC5_SNORM",
+      "value": 84,
+      "source_line": 97
+    },
+    {
+      "name": "DXGI_FORMAT_B5G6R5_UNORM",
+      "value": 85,
+      "source_line": 98
+    },
+    {
+      "name": "DXGI_FORMAT_B5G5R5A1_UNORM",
+      "value": 86,
+      "source_line": 99
+    },
+    {
+      "name": "DXGI_FORMAT_B8G8R8A8_UNORM",
+      "value": 87,
+      "source_line": 100
+    },
+    {
+      "name": "DXGI_FORMAT_B8G8R8X8_UNORM",
+      "value": 88,
+      "source_line": 101
+    },
+    {
+      "name": "DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM",
+      "value": 89,
+      "source_line": 102
+    },
+    {
+      "name": "DXGI_FORMAT_B8G8R8A8_TYPELESS",
+      "value": 90,
+      "source_line": 103
+    },
+    {
+      "name": "DXGI_FORMAT_B8G8R8A8_UNORM_SRGB",
+      "value": 91,
+      "source_line": 104
+    },
+    {
+      "name": "DXGI_FORMAT_B8G8R8X8_TYPELESS",
+      "value": 92,
+      "source_line": 105
+    },
+    {
+      "name": "DXGI_FORMAT_B8G8R8X8_UNORM_SRGB",
+      "value": 93,
+      "source_line": 106
+    },
+    {
+      "name": "DXGI_FORMAT_BC6H_TYPELESS",
+      "value": 94,
+      "source_line": 107
+    },
+    {
+      "name": "DXGI_FORMAT_BC6H_UF16",
+      "value": 95,
+      "source_line": 108
+    },
+    {
+      "name": "DXGI_FORMAT_BC6H_SF16",
+      "value": 96,
+      "source_line": 109
+    },
+    {
+      "name": "DXGI_FORMAT_BC7_TYPELESS",
+      "value": 97,
+      "source_line": 110
+    },
+    {
+      "name": "DXGI_FORMAT_BC7_UNORM",
+      "value": 98,
+      "source_line": 111
+    },
+    {
+      "name": "DXGI_FORMAT_BC7_UNORM_SRGB",
+      "value": 99,
+      "source_line": 112
+    },
+    {
+      "name": "DXGI_FORMAT_AYUV",
+      "value": 100,
+      "source_line": 113
+    },
+    {
+      "name": "DXGI_FORMAT_Y410",
+      "value": 101,
+      "source_line": 114
+    },
+    {
+      "name": "DXGI_FORMAT_Y416",
+      "value": 102,
+      "source_line": 115
+    },
+    {
+      "name": "DXGI_FORMAT_NV12",
+      "value": 103,
+      "source_line": 116
+    },
+    {
+      "name": "DXGI_FORMAT_P010",
+      "value": 104,
+      "source_line": 117
+    },
+    {
+      "name": "DXGI_FORMAT_P016",
+      "value": 105,
+      "source_line": 118
+    },
+    {
+      "name": "DXGI_FORMAT_420_OPAQUE",
+      "value": 106,
+      "source_line": 119
+    },
+    {
+      "name": "DXGI_FORMAT_YUY2",
+      "value": 107,
+      "source_line": 120
+    },
+    {
+      "name": "DXGI_FORMAT_Y210",
+      "value": 108,
+      "source_line": 121
+    },
+    {
+      "name": "DXGI_FORMAT_Y216",
+      "value": 109,
+      "source_line": 122
+    },
+    {
+      "name": "DXGI_FORMAT_NV11",
+      "value": 110,
+      "source_line": 123
+    },
+    {
+      "name": "DXGI_FORMAT_AI44",
+      "value": 111,
+      "source_line": 124
+    },
+    {
+      "name": "DXGI_FORMAT_IA44",
+      "value": 112,
+      "source_line": 125
+    },
+    {
+      "name": "DXGI_FORMAT_P8",
+      "value": 113,
+      "source_line": 126
+    },
+    {
+      "name": "DXGI_FORMAT_A8P8",
+      "value": 114,
+      "source_line": 127
+    },
+    {
+      "name": "DXGI_FORMAT_B4G4R4A4_UNORM",
+      "value": 115,
+      "source_line": 128
+    },
+    {
+      "name": "DXGI_FORMAT_P208",
+      "value": 130,
+      "source_line": 130
+    },
+    {
+      "name": "DXGI_FORMAT_V208",
+      "value": 131,
+      "source_line": 131
+    },
+    {
+      "name": "DXGI_FORMAT_V408",
+      "value": 132,
+      "source_line": 132
+    },
+    {
+      "name": "DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE",
+      "value": 189,
+      "source_line": 135
+    },
+    {
+      "name": "DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE",
+      "value": 190,
+      "source_line": 136
+    },
+    {
+      "name": "DXGI_FORMAT_A4B4G4R4_UNORM",
+      "value": 191,
+      "source_line": 138
+    },
+    {
+      "name": "DXGI_FORMAT_FORCE_UINT",
+      "value": 0,
+      "source_line": 141
+    }
+  ],
+  "limits": [
+    "Header ABI identifies method slots and enum values, not native receiver identity or runtime selection.",
+    "Native calls require a receiver/operand proof against the selected executable."
+  ]
+}

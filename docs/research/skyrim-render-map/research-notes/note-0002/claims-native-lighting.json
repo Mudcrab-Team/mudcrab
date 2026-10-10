@@ -1,0 +1,851 @@
+{
+  "schema": "mudcrab-research-note-claims/v1",
+  "note_id": "N002",
+  "domain": "native-lighting",
+  "claims": [
+    {
+      "id": "N002-L01",
+      "supplied_statement": "The engine executes a multi-stage submission sequence: Frustum Culling and Visibility Testing; Light Assignment and Shadow Sorting; Shadow Map Generation Pre-Pass; Forward Geometry Submission; Translucency, Volumetrics, and Water; Native Post-Processing.",
+      "subject_scope": "native frame ordering",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Call graph is partial; jobs, alternate routes, resource production, shader selection, effective target bindings, and retail order are not captured.",
+        "Some asserted stages are imported from common descriptions without target-native evidence."
+      ],
+      "next_query": "Capture one Windows retail frame with native draw/dispatch order, pass owners, effective targets, and branch predicates."
+    },
+    {
+      "id": "N002-L02",
+      "supplied_statement": "The engine identifies all point and spot lights whose spherical or conical volumes intersect visible geometry bounding spheres, clamping local light assignments to hardware-allocated slots.",
+      "subject_scope": "per-object light selection",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "No complete local-light candidate traversal, intersection predicate, ordering, or overflow policy is established in the native maps."
+      ],
+      "next_query": "Trace local-light list construction and per-object selection from original bytes; then capture selected list and overflow for a retail draw."
+    },
+    {
+      "id": "N002-L03",
+      "supplied_statement": "The directional sun or moon casts dynamic shadows via Cascaded Shadow Maps (CSM).",
+      "subject_scope": "directional shadow production",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Camera/shadow helper call is known, but cascade matrices, splits, target formats, caster draws, filtering, and active sun/moon selection remain open."
+      ],
+      "next_query": "Trace shadow helper inputs to depth draws and capture cascade resource descriptors and selected light."
+    },
+    {
+      "id": "N002-L04",
+      "supplied_statement": "Local shadow-casting lights render depth comparisons into a shared four-channel screen-space shadow mask texture.",
+      "subject_scope": "local shadow-mask architecture and scope",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Four mask selector rows or a four-component data shape alone would not prove a shared screen-space texture, depth production, per-channel routing, or a four-light runtime cap. Existing frame map leaves local shadow production/filtering open."
+      ],
+      "next_query": "Trace mask texture allocation, channel writes, pixel reads, mask selectors, and light identities from native producer through selected geometry draw."
+    },
+    {
+      "id": "N002-L05",
+      "supplied_statement": "The rendering executive constructs a linked list of BSRenderPass nodes. Each pass binds the target geometry, active shader, material properties, and an array of culled local lights.",
+      "subject_scope": "render submission representation",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Frame evidence covers selected call edges, not a BSRenderPass linked-list layout or the claimed field associations."
+      ],
+      "next_query": "Recover object layout and producer/consumer edges for render-pass nodes and selected light arrays."
+    },
+    {
+      "id": "N002-L06",
+      "supplied_statement": "Shaders are executed in state-sorted batches to minimize Direct3D pipeline state transitions.",
+      "subject_scope": "render ordering rationale",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "No batch sort key or performance rationale was recovered."
+      ],
+      "next_query": "Trace submission queue ordering and sort comparator from target bytes; label performance intent as inference unless comments/source establish it."
+    },
+    {
+      "id": "N002-L07",
+      "supplied_statement": "Translucency, Volumetrics, and Water are composited over the opaque HDR render target before native post-processing.",
+      "subject_scope": "frame pass order",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "There are conditional effect and image-space routes plus package names, not a complete producer/consumer order or active frame proof."
+      ],
+      "next_query": "Capture a selected retail frame’s resource producer/consumer chain for opaque, alpha, water, volumetric, and image-space stages."
+    },
+    {
+      "id": "N002-L08",
+      "supplied_statement": "The primary surface evaluation is executed by BSLightingShader, an uber-shader calculating diffuse, normal mapping, glossiness, parallax, environment cubemap reflections, skin subsurface scattering, and hair shading.",
+      "subject_scope": "shader family role and feature breadth",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/embedded-shaders.md",
+          "anchors": "3-5, 84-90",
+          "sha256": "9b337bc0f1e32800f9288f8bd386a302a177e904e2b050ba498da0bcaa85fba0",
+          "basis": "freshly decoded executable shader inventory; only two construction-linked occurrences, no semantic roles or selected draws",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Package group label Lighting and key transforms are static; feature/permutation selection and per-feature equations are incomplete. Family names alone do not prove every listed behavior."
+      ],
+      "next_query": "Associate selected Lighting programs with feature keys, texture views, constants, and bytecode arithmetic; separately trace specialized skin/hair families."
+    },
+    {
+      "id": "N002-L09",
+      "supplied_statement": "Uniform parameters are categorized into Technique (PER_TEC), Material (PER_MAT), and Geometry (PER_GEO) scopes.",
+      "subject_scope": "constant-buffer scope model",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Native input map establishes selected parameter remapping and a pixel constant buffer beginning at cb1, not the full three-scope taxonomy or universal update-frequency semantics."
+      ],
+      "next_query": "Trace each native constant-buffer allocation, stage binding, metadata class, producer, and update lifetime."
+    },
+    {
+      "id": "N002-L10",
+      "supplied_statement": "The table labels Technique VS12 HighDetailRange and VS13 FogParam.",
+      "subject_scope": "table parameter identifiers versus cbuffer/register slots",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "The table calls its numeric column Slot, but existing target evidence demonstrates native parameter metadata IDs are offsets remapped per shader; it does not establish these two exact field mappings."
+      ],
+      "next_query": "Resolve exact metadata IDs and stage remaps for the claimed HighDetailRange and FogParam fields; rename table column to distinguish metadata ID, byte offset, vector index, stage, and bound CB slot."
+    },
+    {
+      "id": "N002-L11",
+      "supplied_statement": "The table labels Technique PS11 VPOSOffset, PS19 FogColor, and PS20 ColourOutputClamp.",
+      "subject_scope": "table parameter identifiers versus cbuffer/register slots",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "The note does not identify package bytecode identities or distinguish parameter ID from actual cbuffer slot/vector. Image-space and geometry scopes are not interchangeable."
+      ],
+      "next_query": "Recover those field IDs and upload remaps for each selected Lighting shader identity and list CB slot plus vector offset separately."
+    },
+    {
+      "id": "N002-L12",
+      "supplied_statement": "The table labels Material PS21 EnvmapData, PS23 TintColor, PS25 SpecularColor, PS28 LightingEffectParams, and PS35 CharacterLightParams.",
+      "subject_scope": "material constant table mapping",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Native input segment I-N02 establishes parameter metadata entry 25 as a byte-offset source; associated Lighting PS 00006201 and 00006601 remap entry 25 to 16 floats, placing its four-float vector at pixel cb1[4]. It does not establish a cbuffer slot called PS25. I-N04 similarly maps entry 28 to cb1[7].xy for 00006601. Thus the supplied Slot column conflates source metadata parameter IDs with destination register/vector locations. Other listed IDs remain unverified."
+      ],
+      "next_query": "For each field, recover metadata entry ID and per-program offset, then report bound stage buffer slot and cbuffer vector/component destination. Start with IDs 21, 23, 25, 28, and 35."
+    },
+    {
+      "id": "N002-L13",
+      "supplied_statement": "The table labels Geometry PS0 NumLightNumShadowLight, PS1 PointLightPosition, PS2 PointLightColor, PS3 DirLightDirection, PS4 DirLightColor, PS5 DirectionalAmbient, PS8 EmitColor, and PS10 ShadowLightMaskSelect.",
+      "subject_scope": "geometry constant table mapping",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "Native evidence does not establish this whole semantic table, per-shader cbuffer destination vectors, declared array capacities, or selected draw contents. I-N01 identifies one sun packing path but leaves other writers and active light identity open."
+      ],
+      "next_query": "Trace each geometry parameter ID through upload metadata into exact keyed shader declarations, CB slot/vector, and captured draw constants."
+    },
+    {
+      "id": "N002-L14",
+      "supplied_statement": "PointLightPosition and PointLightColor are statically declared as 7-element arrays; a single forward pass is structurally incapable of computing illumination for more than seven point lights on one geometry.",
+      "subject_scope": "local light capacity and native overflow behavior",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/nif_material/native_common.wgsl",
+          "anchors": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "current Mudcrab WGSL implementation only; not Skyrim retail evidence",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "NativeLighting; native_response_parts",
+          "lines": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "Mudcrab’s current shader declares seven local-light entries, but that is implementation evidence, not Skyrim retail proof. The target-pinned package inventory has not established this array declaration, selected program, or per-object overflow behavior."
+      ],
+      "next_query": "Disassemble target-pinned Lighting bytecode declarations and arithmetic for keyed program identities; trace CPU upload count and overflow, then capture a retail draw."
+    },
+    {
+      "id": "N002-L15",
+      "supplied_statement": "Local shadow-casting lights are clamped to four through a shared four-channel shadow mask.",
+      "subject_scope": "shadow-light capacity",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/frame-topology.md",
+          "anchors": "3, 13, 32-44, 69, 101-114",
+          "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4",
+          "basis": "target-pinned original-byte call graph; conditional paths; explicitly not a complete frame timeline",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "No captured allocation/count limit or mask-channel writer/consumer chain establishes a global or per-object four-light cap."
+      ],
+      "next_query": "Trace shadow allocation and channel routing at original bytes and observe count/selection for the same retail frame."
+    },
+    {
+      "id": "N002-L16",
+      "supplied_statement": "Directional direction is computed from celestial trajectories using game time, negated, and optionally transformed by the inverse world transform.",
+      "subject_scope": "sun direction preparation",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "I-N01 verifies a selected pass entry’s light object, direction fields, sign flip, and conditional transform. The complete trajectory, object-space conditions, effective light identity, and game-time mapping are open; code symbol quoted in supplied note is not validated."
+      ],
+      "next_query": "Trace sun trajectory producers through weather/time preparation, light writers, transform branch, and captured shader input."
+    },
+    {
+      "id": "N002-L17",
+      "supplied_statement": "Effective directional color equals weather direction color multiplied by sun dimmer and SunlightScale.",
+      "subject_scope": "directional color equation",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        }
+      ],
+      "implementation_anchors": [],
+      "unresolved": [
+        "I-N01 verifies one consumer upload as light RGB fields times light dimmer and manager+0xE0; I-C05 describes additional preparation. It does not establish the supplied variable names, all multipliers, active identity, or universal equation."
+      ],
+      "next_query": "Close RGB writers, weather transition and SunlightScale producers, then compare the final packed vector for a selected draw."
+    },
+    {
+      "id": "N002-L18",
+      "supplied_statement": "Directional diffuse is max(N dot L, 0) times directional color.",
+      "subject_scope": "directional diffuse equation",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/nif_material/native_common.wgsl",
+          "anchors": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "current Mudcrab WGSL implementation only; not Skyrim retail evidence",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts directional diffuse",
+          "lines": "87-90",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "The input map records selected soft directional arithmetic; shader-family equations are not fully mapped and per-draw shader selection/value domain is open. Current Mudcrab shader uses clamp(dot(N,L),0,1), which is not retail evidence."
+      ],
+      "next_query": "Recover equations from exact target package bytecode and connect them to selected program, inputs, and output."
+    },
+    {
+      "id": "N002-L19",
+      "supplied_statement": "Directional specular uses a modified Blinn-Phong half-vector with the gloss exponent and directional/specular colors.",
+      "subject_scope": "directional specular equation",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/nif_material/native_common.wgsl",
+          "anchors": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "current Mudcrab WGSL implementation only; not Skyrim retail evidence",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts directional specular",
+          "lines": "87-92",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "Selected material color/gloss upload segments are partially mapped; the supplied full equation, view-vector normalization, exponent, and light/material color multiplication are not established for target bytecode."
+      ],
+      "next_query": "Decode exact Lighting pixel-program control/dataflow for specular-enabled permutations, trace cb1 material remap, and record active texture/mask."
+    },
+    {
+      "id": "N002-L20",
+      "supplied_statement": "Directional ambient is a 3x4 transform of (Nx, Ny, Nz, 1) that encodes six orthogonal directional colors; runtime updates interpolate weather, cell template, and time-of-day states.",
+      "subject_scope": "ambient representation and source selection",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "crates/engine/src/nif_material/native_common.wgsl",
+          "anchors": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "current Mudcrab WGSL implementation only; not Skyrim retail evidence",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/environment_preview.rs",
+          "anchors": "360-382, 502-515",
+          "sha256": "7d83b7370c61a4d16415ade2dcca60f5a5a2154f3777b84271df8fa12d120ade",
+          "basis": "current authored preview flow reports unresolved ambient source; current behavior only",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts ambient rows",
+          "lines": "102-109",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        },
+        {
+          "path": "crates/engine/src/environment_preview.rs",
+          "symbol": "apply_cube",
+          "lines": "502-515",
+          "sha256": "7d83b7370c61a4d16415ade2dcca60f5a5a2154f3777b84271df8fa12d120ade"
+        }
+      ],
+      "unresolved": [
+        "Weather DALC preparation preserves six-face order and builds affine rows, but ambient RGB operand meaning and active source precedence remain open. Runtime inputs note states live additive ambient and interior cube selection unresolved. The interpolation/source chain in supplied text is not proved."
+      ],
+      "next_query": "Trace weather DALC and interior CELL/LGTM ambient source selection through row construction, update timing, and selected draw constants."
+    },
+    {
+      "id": "N002-L21",
+      "supplied_statement": "Point attenuation is A(d)=max(0,1-d/R)^p_falloff, with vanilla exponents 1.0 or 2.0.",
+      "subject_scope": "point light attenuation equation and exponent",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/nif_material/native_common.wgsl",
+          "anchors": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "current Mudcrab WGSL implementation only; not Skyrim retail evidence",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/lights.rs",
+          "anchors": "53-69, 381-416",
+          "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040",
+          "basis": "current implementation documentation says game radius is reach and native attenuation is not inverse-square; it does not supply the retail equation",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts attenuation",
+          "lines": "93-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        },
+        {
+          "path": "crates/engine/src/lights.rs",
+          "symbol": "point-light budget and record semantics",
+          "lines": "53-69, 381-416",
+          "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+        }
+      ],
+      "unresolved": [
+        "No target-pinned shipped local-light equation or LIGH exponent-to-shader path appears in the audited map. Current Mudcrab native_common.wgsl computes 1-ratio^2; that describes current Mudcrab implementation only, not retail. The note gives no evidence for either vanilla exponent choice."
+      ],
+      "next_query": "Decode local-light arithmetic from exact shipped Lighting pixel bytecodes and trace native radius/fade/exponent fields to uploaded constants; sample multiple distances including cutoff."
+    },
+    {
+      "id": "N002-L22",
+      "supplied_statement": "The pixel shader’s PointLightColor[i] is diffuse color times Dimmer_i and LODDimmer_i.",
+      "subject_scope": "local light color preparation",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "crates/engine/src/nif_material/native_common.wgsl",
+          "anchors": "13-32, 85-110",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+          "basis": "current Mudcrab WGSL implementation only; not Skyrim retail evidence",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/lighting_runtime.rs",
+          "anchors": "968-975",
+          "sha256": "2639a785c15b997f29ef5669f2dc4d76afbf0d979510d9bfce0a00891803cfd4",
+          "basis": "current runtime audit explicitly leaves local-light selection unresolved",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "native_response_parts local color",
+          "lines": "93-100",
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "Target map does not establish these exact fields, LODDimmer multiplication, or per-index RGB uploads."
+      ],
+      "next_query": "Trace each local-light color writer and its dimmer/LOD multipliers to geometry constant packing and selected pixel inputs."
+    },
+    {
+      "id": "N002-L23",
+      "supplied_statement": "Spotlights multiply point attenuation by an inner/outer angular cone based on divergence from the spot direction and field-of-view cutoff.",
+      "subject_scope": "spotlight angular attenuation",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/input-contracts.md",
+          "anchors": "1-22",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "basis": "target-pinned original-byte CPU/shader segments; none closes an input-to-pixel trace",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "symbols": [
+            "0x14154B770",
+            "I-C05 sunlight preparation"
+          ]
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/lighting_runtime.rs",
+          "symbol": "unresolved native behavior report",
+          "lines": "968-975",
+          "sha256": "2639a785c15b997f29ef5669f2dc4d76afbf0d979510d9bfce0a00891803cfd4"
+        }
+      ],
+      "unresolved": [
+        "No native spotlight parameter/equation path is closed in the current input map."
+      ],
+      "next_query": "Recover spotlight shader arithmetic and CPU packing, including FOV, near clip, cone thresholds, and selected spot records."
+    },
+    {
+      "id": "N002-L24",
+      "supplied_statement": "The shader family calculates skin subsurface scattering and hair shading; PS28 controls scatter and PS35 controls character rim/directional accents.",
+      "subject_scope": "skin, hair, SSS and character-light parameters",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "file": "docs/research/skyrim-render-map/shader-families.md",
+          "anchors": "3-5, 20-36",
+          "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166",
+          "basis": "complete pinned package inventory and loader labels; equations and retail program selection remain open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/shader-selection.md",
+          "anchors": "5-13, 21-45",
+          "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474",
+          "basis": "original package loader, lighting-key masks and keyed object lookup/binding; live draw selection open",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "docs/research/skyrim-render-map/embedded-shaders.md",
+          "anchors": "3-5, 84-90",
+          "sha256": "9b337bc0f1e32800f9288f8bd386a302a177e904e2b050ba498da0bcaa85fba0",
+          "basis": "freshly decoded executable shader inventory; only two construction-linked occurrences, no semantic roles or selected draws",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        },
+        {
+          "file": "crates/engine/src/lighting_runtime.rs",
+          "anchors": "968-975",
+          "sha256": "2639a785c15b997f29ef5669f2dc4d76afbf0d979510d9bfce0a00891803cfd4",
+          "basis": "current runtime audit explicitly leaves unsupported shader families unresolved",
+          "target_identity": "SkyrimSE.exe 1.7.104.0 sha256:846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+        }
+      ],
+      "implementation_anchors": [
+        {
+          "path": "crates/engine/src/lighting_runtime.rs",
+          "symbol": "unresolved native behavior report",
+          "lines": "968-975",
+          "sha256": "2639a785c15b997f29ef5669f2dc4d76afbf0d979510d9bfce0a00891803cfd4"
+        }
+      ],
+      "unresolved": [
+        "Family/parameter labels in the note are not connected to bytecode hashes, selected material flags, or runtime values. Current audits list specialized families/features as remaining work."
+      ],
+      "next_query": "Identify skin/hair keyed programs and exact texture/constant dependencies; trace material selection, PS metadata remaps, and output arithmetic for each."
+    }
+  ]
+}

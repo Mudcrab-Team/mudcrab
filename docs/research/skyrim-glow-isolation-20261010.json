@@ -1,0 +1,4516 @@
+{
+  "format_version": 1,
+  "scope": "reported fog-enabled screenshot; render-stage isolation, no visual or retail acceptance",
+  "complaint_image_sha256": "1c4ae0e9feee61e7c63d4d292f7fea8d565724d5d8b0f82dde2e2ba50c3038d5",
+  "engine": {
+    "built_utc": "2026-10-10T07:48:45.153871+00:00",
+    "binaries": {
+      "engine-glow-controls": {
+        "sha256": "6f780f73cf13e1eba0aa50bf09b904f90fc89ce29ec9d457a6eb4e421b4dbdf6",
+        "bytes": 150647248
+      },
+      "image-space-scene-probe": {
+        "sha256": "b518671905dfa2be7c40b03c7d335b80e8e5b90633d5d5c2bb9e37c754c947ee",
+        "bytes": 134325152
+      }
+    }
+  },
+  "engine_library_tests": 450,
+  "strict_clippy": "passed engine lib,bins,examples",
+  "gpu_fixtures": {
+    "rgba16": {
+      "pass": true,
+      "composition_cases": 7,
+      "format": "Rgba16Float",
+      "diagnostic_checks": 40,
+      "diagnostic_pass": true
+    },
+    "packed": {
+      "pass": true,
+      "composition_cases": 7,
+      "format": "Rg11b10Ufloat",
+      "diagnostic_checks": 40,
+      "diagnostic_pass": true
+    }
+  },
+  "regions": {
+    "sunlit_thatch": {
+      "box": [
+        800,
+        190,
+        1100,
+        340
+      ],
+      "category": "building material",
+      "description": "Central thatch roof; includes its texture and baked/shadowed strands."
+    },
+    "shaded_wood": {
+      "box": [
+        930,
+        470,
+        1050,
+        600
+      ],
+      "category": "building material",
+      "description": "Central vertical wood wall below the roof; avoids window, beam, foliage and stone."
+    },
+    "stone_wall": {
+      "box": [
+        1080,
+        665,
+        1240,
+        730
+      ],
+      "category": "building material",
+      "description": "Right portion of central foundation; contains stone and mortar."
+    },
+    "foreground_grass_soil": {
+      "box": [
+        210,
+        960,
+        510,
+        1050
+      ],
+      "category": "foreground terrain",
+      "description": "Foreground grass/soil mixture; does not isolate a single material."
+    },
+    "foreground_fern": {
+      "box": [
+        1510,
+        980,
+        1610,
+        1060
+      ],
+      "category": "foreground foliage",
+      "description": "Foreground fern and a small amount of stone/ground behind its cutouts."
+    },
+    "sapling": {
+      "box": [
+        410,
+        680,
+        540,
+        765
+      ],
+      "category": "foliage",
+      "description": "Sapling in front of left building; cutout leaves include wood/ground background."
+    },
+    "distant_mountain": {
+      "box": [
+        170,
+        180,
+        340,
+        290
+      ],
+      "category": "distant landscape",
+      "description": "Left mountain face; no sky or tree geometry in the selected rectangle."
+    },
+    "sky": {
+      "box": [
+        440,
+        5,
+        530,
+        55
+      ],
+      "category": "sky",
+      "description": "Unobstructed upper sky; separate from geometry fog and material shading."
+    },
+    "roof_background_near": {
+      "box": [
+        1180,
+        112,
+        1240,
+        124
+      ]
+    },
+    "roof_background_far": {
+      "box": [
+        1180,
+        80,
+        1240,
+        96
+      ]
+    },
+    "eave_shadow": {
+      "box": [
+        930,
+        460,
+        1050,
+        470
+      ]
+    },
+    "stone_adjacent_wood": {
+      "box": [
+        1060,
+        630,
+        1140,
+        650
+      ]
+    }
+  },
+  "captures": {
+    "auto-bloom-on": {
+      "image_sha256": "5e0a7523575b301213f3ae9d8d0c4b1848e9fc24a2cb90443214457e0527199e",
+      "provenance": {
+        "started_utc": "2026-10-10T07:49:12.420858+00:00",
+        "mode": "auto-bloom-on",
+        "argv": [
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/bin/engine-glow-controls",
+          "--assets",
+          "/Users/taylor/.local/share/mudcrab-research/brightness-20261010/assets-native-views",
+          "--worldspace",
+          "0x3c",
+          "--grid-x",
+          "5",
+          "--grid-y",
+          "-12",
+          "--lights",
+          "--lighting-mode",
+          "authored-preview",
+          "--weather",
+          "0x81a",
+          "--game-hour",
+          "12",
+          "--fog",
+          "--image-space",
+          "--image-space-output",
+          "display-encoded",
+          "--image-space-bloom",
+          "on",
+          "--image-space-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-on/image-space-gpu.json",
+          "--shots",
+          "/Users/taylor/.local/share/mudcrab-research/saturation-20261010/riverwood-terrace.json",
+          "--shots-out",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-on",
+          "--lighting-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-on/lighting-runtime.json",
+          "--fog-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-on/fog-runtime.json"
+        ],
+        "engine_sha256": "6f780f73cf13e1eba0aa50bf09b904f90fc89ce29ec9d457a6eb4e421b4dbdf6",
+        "asset_manifest_sha256": "d7fa5d0016a2de36012e27049797106b9ce10cce440131166787b2eb0eebf753",
+        "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+        "fog_enabled": true,
+        "image_space_enabled": true,
+        "output_transfer": "display-encoded",
+        "bloom_enabled": true,
+        "adaptation_override": null,
+        "native_specular_fade_override": null,
+        "native_view_annotations_enabled": true,
+        "retail_parity": false,
+        "engine_pid": 24360,
+        "exit_code": 0,
+        "finished_utc": "2026-10-10T07:50:01.566494+00:00",
+        "images": {
+          "riverwood-terrace.png": {
+            "width": 1920,
+            "height": 1080,
+            "sha256": "5e0a7523575b301213f3ae9d8d0c4b1848e9fc24a2cb90443214457e0527199e",
+            "bytes": 3625412
+          }
+        },
+        "gpu_diagnostic_sha256": "ced040a0b4e752ba082043dd8b192e203b08d16b3ae599718924bfb91f2a9715"
+      },
+      "audit": {
+        "checks": {
+          "recorded_mode_matches": true,
+          "expected_mode_controls": true,
+          "exit_zero_and_settled": true,
+          "PNG_hash_matches": true,
+          "frozen_engine_matches": true,
+          "asset_manifest_matches": true,
+          "fixture_matches": true,
+          "annotated_native_pack_active": true,
+          "all_dependencies_ready": true,
+          "output_ready": true,
+          "fog_and_HDR_active": true,
+          "weather_and_hour": true,
+          "encoded_output_gamma_one": true,
+          "GPU_report_hash_matches": true,
+          "GPU_available_and_finite": true,
+          "GPU_viewport_matches": true,
+          "GPU_labels_unique_and_expected": true,
+          "GPU_pixel_locations_match": true,
+          "GPU_adaptation_domain_valid": true,
+          "history_mode_matches_control": true,
+          "bloom_mode_matches_control": true,
+          "disabled_bloom_is_zero": true,
+          "specular_override_matches_report": true
+        },
+        "all_checks_passed": true,
+        "dependencies": {
+          "main_views": 1,
+          "output_ready": true,
+          "visible_meshes": 15077,
+          "unavailable_meshes": 0,
+          "unavailable_materials": 0,
+          "pending_material_queues": 0,
+          "unavailable_pipelines": 0,
+          "pending_prepass_queues": 0,
+          "unavailable_prepass_pipelines": 0,
+          "shadow_views": 4,
+          "shadow_casters": 88,
+          "unavailable_shadow_views": 0,
+          "unavailable_shadow_meshes": 0,
+          "unavailable_shadow_materials": 0,
+          "unavailable_shadow_pipelines": 0,
+          "pending_shadow_queues": 0,
+          "pending_or_failed_pipelines": 0,
+          "pipeline_count": 115
+        },
+        "shot": "riverwood-terrace frames=521 settled settle_timeout_seconds=90 path=/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-on/riverwood-terrace.png"
+      },
+      "GPU_diagnostic": {
+        "auxiliary_format": "Rg11b10Ufloat",
+        "available": true,
+        "bloom_mode": "gpu",
+        "camera_entity": 4294966868,
+        "format_version": 1,
+        "history_mode": "gpu",
+        "main_world_frame": 510,
+        "packed_controls": {
+          "adaptation": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "bloom": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "bloom_settings": [
+            1.0,
+            7.0,
+            0.800000011920929,
+            4.0
+          ],
+          "cinematic": [
+            1.5,
+            0.0,
+            1.399999976158142,
+            1.1349999904632568
+          ],
+          "controls": [
+            1.0,
+            0.0,
+            1.0,
+            1.0
+          ],
+          "fade": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "history": [
+            0.7711172699928284,
+            0.996583878993988,
+            1.0,
+            1.0
+          ],
+          "resources": [
+            0.8333333134651184,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "tint": [
+            0.8941176533699036,
+            0.8392156958580017,
+            0.772549033164978,
+            0.41999998688697815
+          ],
+          "tone": [
+            0.800000011920929,
+            0.8264462351799011,
+            0.0,
+            0.0
+          ]
+        },
+        "sample_interval_frames": 30,
+        "scene_format": "Rgba16Float",
+        "scope": "GPU inputs before image-space; shared native tone equation and float display bridge. Named pixels belong to the Riverwood terrace fixture and are not material identification. Latest asynchronous sample; pair screenshots by frame and camera externally. No retail parity claim.",
+        "viewport_pixels": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "world_from_view": [
+          0.7071067094802856,
+          0.0,
+          -0.7071068286895752,
+          0.0,
+          -0.08617464452981949,
+          0.9925461411476135,
+          -0.0861746221780777,
+          0.0,
+          0.701836109161377,
+          0.12186934053897858,
+          0.7018360495567322,
+          0.0,
+          2920.0,
+          400.0,
+          -2052.0,
+          1.0
+        ]
+      },
+      "GPU_samples": {
+        "roof": {
+          "adaptation_rgba": [
+            0.25318095088005066,
+            0.25318095088005066,
+            0.2522237002849579,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            4.735589027404785e-05,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.03905992582440376,
+            0.04862593114376068,
+            0.04295250400900841,
+            1.239992618560791
+          ],
+          "finite": true,
+          "label": "roof",
+          "native_tone_rgba": [
+            0.21819570660591125,
+            0.2443050742149353,
+            0.22922636568546295,
+            1.239992618560791
+          ],
+          "pixel": [
+            950,
+            265
+          ],
+          "requested_uv": [
+            0.4950520694255829,
+            0.24583333730697632
+          ],
+          "sampled_uv": [
+            0.4950520694255829,
+            0.24583333730697632
+          ],
+          "source_rgba": [
+            0.2158203125,
+            0.2415771484375,
+            0.2379150390625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.23583978271484377,
+          "bloom_native_weighted_Y": 3.3878403902053835e-05,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 3.672999451809211e-08,
+          "mapped_luminance": 0.22802879419049207,
+          "bloom_weight": 0.5719712177304369,
+          "pre_clamp_adjusted_rgb": [
+            0.21819572679135965,
+            0.24430510202258016,
+            0.22922640241545747
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.21819309327264771,
+            0.24426573371950785,
+            0.2292253410387346
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            2.6335187119364e-06,
+            3.9368303072301325e-05,
+            1.0613767228717652e-06
+          ],
+          "screenshot_pixel_RGB8": [
+            56,
+            63,
+            59
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.7022060751914978
+        },
+        "wood": {
+          "adaptation_rgba": [
+            0.21689748764038086,
+            0.21689748764038086,
+            0.21585887670516968,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.0057481382973492146,
+            0.02045072801411152,
+            0.021457768976688385,
+            1.2686494588851929
+          ],
+          "finite": true,
+          "label": "wood",
+          "native_tone_rgba": [
+            0.06794818490743637,
+            0.15363208949565887,
+            0.15785276889801025,
+            1.2686494588851929
+          ],
+          "pixel": [
+            990,
+            535
+          ],
+          "requested_uv": [
+            0.5158854126930237,
+            0.4958333373069763
+          ],
+          "sampled_uv": [
+            0.5158854126930237,
+            0.49583330750465393
+          ],
+          "source_rgba": [
+            0.0994873046875,
+            0.1669921875,
+            0.175048828125,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.15322828369140626,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 8.608308149637978e-09,
+          "mapped_luminance": 0.14969485258502857,
+          "bloom_weight": 0.6503051593359004,
+          "pre_clamp_adjusted_rgb": [
+            0.06794817629912822,
+            0.15363209289539215,
+            0.15785277658672994
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.06794817629912822,
+            0.15363209289539215,
+            0.15785277658672994
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            18,
+            40,
+            41
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.823817178606987
+        },
+        "stone": {
+          "adaptation_rgba": [
+            0.19364582002162933,
+            0.19364582002162933,
+            0.19226133823394775,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.019939422607421875,
+            0.04024505615234375,
+            0.03255462646484375,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.1401252746582031
+          ],
+          "finite": true,
+          "label": "stone",
+          "native_tone_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.1401252746582031
+          ],
+          "pixel": [
+            1160,
+            697
+          ],
+          "requested_uv": [
+            0.6044270992279053,
+            0.6458333134651184
+          ],
+          "sampled_uv": [
+            0.6044270992279053,
+            0.6458333134651184
+          ],
+          "source_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "source_native_weighted_Y": 1.0,
+          "bloom_native_weighted_Y": 0.035375629043579104,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 0.0,
+          "mapped_luminance": 0.9132231175899506,
+          "bloom_weight": 0.0,
+          "pre_clamp_adjusted_rgb": [
+            1.3091213975505456,
+            1.2756604766601092,
+            1.235029358436008
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            254,
+            254,
+            254
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 1.0
+        },
+        "ground": {
+          "adaptation_rgba": [
+            0.18359375,
+            0.18359375,
+            0.18359375,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.012040538713335991,
+            0.023408696055412292,
+            0.012596160173416138,
+            1.2817654609680176
+          ],
+          "finite": true,
+          "label": "ground",
+          "native_tone_rgba": [
+            0.11230988800525665,
+            0.1657121777534485,
+            0.11548453569412231,
+            1.2817654609680176
+          ],
+          "pixel": [
+            360,
+            1005
+          ],
+          "requested_uv": [
+            0.18776041269302368,
+            0.9310185313224792
+          ],
+          "sampled_uv": [
+            0.18776041269302368,
+            0.9310185313224792
+          ],
+          "source_rgba": [
+            0.12237548828125,
+            0.166015625,
+            0.1337890625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.15441856079101562,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.964313948807586e-08,
+          "mapped_luminance": 0.15083372110184706,
+          "bloom_weight": 0.6491662908190818,
+          "pre_clamp_adjusted_rgb": [
+            0.1123098647678419,
+            0.165712128110309,
+            0.11548452268445178
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.1123098647678419,
+            0.165712128110309,
+            0.11548452268445178
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            29,
+            42,
+            30
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.5514433979988098
+        },
+        "fern": {
+          "adaptation_rgba": [
+            0.177734375,
+            0.177734375,
+            0.17578125,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.0,
+            0.0017454635817557573,
+            0.0025010849349200726,
+            1.3010954856872559
+          ],
+          "finite": true,
+          "label": "fern",
+          "native_tone_rgba": [
+            0.0,
+            0.022551389411091805,
+            0.03231401741504669,
+            1.3010954856872559
+          ],
+          "pixel": [
+            1560,
+            1020
+          ],
+          "requested_uv": [
+            0.8127604126930237,
+            0.9449074268341064
+          ],
+          "sampled_uv": [
+            0.8127604126930237,
+            0.9449073672294617
+          ],
+          "source_rgba": [
+            0.028289794921875,
+            0.06427001953125,
+            0.0732421875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.05727111511230469,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.450304708081276e-09,
+          "mapped_luminance": 0.05673269788130457,
+          "bloom_weight": 0.7432673140396244,
+          "pre_clamp_adjusted_rgb": [
+            -0.024642427257783373,
+            0.022551384960787096,
+            0.03231402139611447
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.0,
+            0.022551384960787096,
+            0.03231402139611447
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            0,
+            6,
+            8
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.24939570017158985
+        },
+        "sapling": {
+          "adaptation_rgba": [
+            0.1968858540058136,
+            0.1968858540058136,
+            0.1968858540058136,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.0011177671840414405,
+            0.007708141580224037,
+            0.006008310709148645,
+            1.2858301401138306
+          ],
+          "finite": true,
+          "label": "sapling",
+          "native_tone_rgba": [
+            0.014441551640629768,
+            0.08393602818250656,
+            0.07023700326681137,
+            1.2858301401138306
+          ],
+          "pixel": [
+            475,
+            722
+          ],
+          "requested_uv": [
+            0.24765625596046448,
+            0.6689814925193787
+          ],
+          "sampled_uv": [
+            0.24765624105930328,
+            0.6689814925193787
+          ],
+          "source_rgba": [
+            0.058624267578125,
+            0.11236572265625,
+            0.10552978515625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.10045279235839845,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 2.0635738062768638e-08,
+          "mapped_luminance": 0.0988613656236844,
+          "bloom_weight": 0.7011386462972445,
+          "pre_clamp_adjusted_rgb": [
+            0.014441540877038611,
+            0.08393601185974485,
+            0.07023698263107331
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.014441540877038611,
+            0.08393601185974485,
+            0.07023698263107331
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            4,
+            22,
+            18
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.5963128134608269
+        },
+        "background": {
+          "adaptation_rgba": [
+            0.265625,
+            0.265625,
+            0.265625,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.012536761350929737,
+            0.04486434534192085,
+            0.06819132715463638,
+            1.2373992204666138
+          ],
+          "finite": true,
+          "label": "background",
+          "native_tone_rgba": [
+            0.1151491329073906,
+            0.23443076014518738,
+            0.2895928621292114,
+            1.2373992204666138
+          ],
+          "pixel": [
+            255,
+            235
+          ],
+          "requested_uv": [
+            0.13307291269302368,
+            0.21805556118488312
+          ],
+          "sampled_uv": [
+            0.13307291269302368,
+            0.21805556118488312
+          ],
+          "source_rgba": [
+            0.1435546875,
+            0.238525390625,
+            0.286865234375,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.22182941894531252,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 3.375202028976787e-08,
+          "mapped_luminance": 0.2148396673073064,
+          "bloom_weight": 0.5851603446136225,
+          "pre_clamp_adjusted_rgb": [
+            0.11514914504170234,
+            0.2344307645581647,
+            0.2895928958812317
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.11514914504170234,
+            0.2344307645581647,
+            0.2895928958812317
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            29,
+            60,
+            74
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.3630288913846016
+        },
+        "sky": {
+          "adaptation_rgba": [
+            0.26547953486442566,
+            0.26547953486442566,
+            0.2654683291912079,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.02001953125,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.08955118805170059,
+            0.35182565450668335,
+            0.6277711391448975,
+            1.1931324005126953
+          ],
+          "finite": true,
+          "label": "sky",
+          "native_tone_rgba": [
+            0.331025093793869,
+            0.6276879906654358,
+            0.8139665126800537,
+            1.1931324005126953
+          ],
+          "pixel": [
+            485,
+            30
+          ],
+          "requested_uv": [
+            0.2528645694255829,
+            0.028240740299224854
+          ],
+          "sampled_uv": [
+            0.2528645694255829,
+            0.028240740299224854
+          ],
+          "source_rgba": [
+            0.287353515625,
+            0.52783203125,
+            0.67919921875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.4876439208984375,
+          "bloom_native_weighted_Y": 0.0014434082031249999,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 6.687174813890806e-08,
+          "mapped_luminance": 0.45990173508432397,
+          "bloom_weight": 0.340098276836605,
+          "pre_clamp_adjusted_rgb": [
+            0.33102509665863505,
+            0.627687945503156,
+            0.8139665795518018
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.3309583802142776,
+            0.6276392158872663,
+            0.8045272670416481
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            6.671644435746193e-05,
+            4.87296158896422e-05,
+            0.00943931251015373
+          ],
+          "screenshot_pixel_RGB8": [
+            84,
+            160,
+            208
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.4385392665863037
+        }
+      },
+      "regions": {
+        "sunlit_thatch": {
+          "pixels": 45000,
+          "mean_rgb8": [
+            139.911,
+            142.06953333333334,
+            117.00222222222222
+          ],
+          "linear_luminance": {
+            "mean": 0.2931947957067299,
+            "median": 0.2669946608233205,
+            "p10": 0.08657404891178784,
+            "p90": 0.5251214818294611,
+            "p99": 0.8551347852100557
+          },
+          "oklab_lightness": {
+            "mean": 0.6344784096985461,
+            "median": 0.6420317932156159,
+            "p10": 0.4404022091037015,
+            "p90": 0.8049590333834505,
+            "p99": 0.9475409428131152
+          },
+          "oklab_chroma": {
+            "mean": 0.03670013189097261,
+            "median": 0.036580224230624764,
+            "p10": 0.021880621997829235,
+            "p90": 0.05116610311529591,
+            "p99": 0.06334619089161189
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.05768962074019667,
+            "median": 0.0568168617814412,
+            "p10": 0.042722415111829413,
+            "p90": 0.07444896289922581,
+            "p99": 0.08676147724483939
+          },
+          "hsv_saturation": {
+            "mean": 0.18341986880022867,
+            "median": 0.17821782178217815,
+            "p10": 0.12925170068027206,
+            "p90": 0.24852071005917156,
+            "p99": 0.2953035387431364
+          },
+          "oklab_mean_a_b": [
+            -0.013293570469861422,
+            0.033279278311458625
+          ],
+          "oklab_mean_hue_degrees": 111.7744798742148,
+          "fraction_any_channel_255": 0.006066666666666666,
+          "fraction_all_channels_255": 0.00024444444444444443,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0064444444444444445,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "shaded_wood": {
+          "pixels": 15600,
+          "mean_rgb8": [
+            30.641025641025642,
+            54.144038461538464,
+            56.71980769230769
+          ],
+          "linear_luminance": {
+            "mean": 0.0341093348533661,
+            "median": 0.032151635969700644,
+            "p10": 0.01754054326155925,
+            "p90": 0.053669707498684875,
+            "p99": 0.07426513896010105
+          },
+          "oklab_lightness": {
+            "mean": 0.3144765710905686,
+            "median": 0.31478974574641516,
+            "p10": 0.25709867669612785,
+            "p90": 0.37353881658222987,
+            "p99": 0.4165061594267322
+          },
+          "oklab_chroma": {
+            "mean": 0.02990846255069206,
+            "median": 0.03000276230023215,
+            "p10": 0.025908479811720495,
+            "p90": 0.033882086189762226,
+            "p99": 0.03705950543790474
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.09605681314674205,
+            "median": 0.09515562940292405,
+            "p10": 0.08561413683308235,
+            "p90": 0.10737077072514677,
+            "p99": 0.12146083167310692
+          },
+          "hsv_saturation": {
+            "mean": 0.47316519029592735,
+            "median": 0.46296296296296297,
+            "p10": 0.39285714285714285,
+            "p90": 0.5625,
+            "p99": 0.7241379310344828
+          },
+          "oklab_mean_a_b": [
+            -0.0269923743614037,
+            -0.012407269398667846
+          ],
+          "oklab_mean_hue_degrees": 204.68627021284829,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 6.41025641025641e-05,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.000576923076923077
+        },
+        "stone_wall": {
+          "pixels": 10400,
+          "mean_rgb8": [
+            78.45961538461539,
+            102.43778846153846,
+            101.20634615384616
+          ],
+          "linear_luminance": {
+            "mean": 0.19656361792648785,
+            "median": 0.05607829016114038,
+            "p10": 0.022350132048253247,
+            "p90": 0.6556745476556072,
+            "p99": 1.0
+          },
+          "oklab_lightness": {
+            "mean": 0.4818836182691878,
+            "median": 0.37881340760352966,
+            "p10": 0.27840781233632206,
+            "p90": 0.8655070237089538,
+            "p99": 0.9999999934735462
+          },
+          "oklab_chroma": {
+            "mean": 0.030515750622263412,
+            "median": 0.032163246385255057,
+            "p10": 0.020626297313190243,
+            "p90": 0.03967348249013482,
+            "p99": 0.04609176961971712
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.0794580856526361,
+            "median": 0.08827761412702498,
+            "p10": 0.027818960162442823,
+            "p90": 0.12376787041071585,
+            "p99": 0.1322267901047502
+          },
+          "hsv_saturation": {
+            "mean": 0.3692854738998563,
+            "median": 0.39999999999999997,
+            "p10": 0.07999999999999997,
+            "p90": 0.6363636363636364,
+            "p99": 0.7291666666666667
+          },
+          "oklab_mean_a_b": [
+            -0.02760457389533676,
+            -0.006723590653890232
+          ],
+          "oklab_mean_hue_degrees": 193.6888731836755,
+          "fraction_any_channel_255": 0.017403846153846155,
+          "fraction_all_channels_255": 0.013076923076923076,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.020384615384615383,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "foreground_grass_soil": {
+          "pixels": 27000,
+          "mean_rgb8": [
+            30.970259259259258,
+            43.60337037037037,
+            30.525666666666666
+          ],
+          "linear_luminance": {
+            "mean": 0.02388895533076679,
+            "median": 0.019776487935733292,
+            "p10": 0.012139837230550532,
+            "p90": 0.036073343524411536,
+            "p99": 0.11609329353646025
+          },
+          "oklab_lightness": {
+            "mean": 0.27454231062666906,
+            "median": 0.2674401172088109,
+            "p10": 0.22731543110732672,
+            "p90": 0.3268780823735775,
+            "p99": 0.4826117031226969
+          },
+          "oklab_chroma": {
+            "mean": 0.029763195934155436,
+            "median": 0.02740083431497207,
+            "p10": 0.018275627066425965,
+            "p90": 0.04456147991304374,
+            "p99": 0.06537155712345159
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.10724031789344018,
+            "median": 0.10204439162998234,
+            "p10": 0.07615233315909042,
+            "p90": 0.14016802426697117,
+            "p99": 0.21104712778417528
+          },
+          "hsv_saturation": {
+            "mean": 0.35657617660462043,
+            "median": 0.3409090909090909,
+            "p10": 0.2608695652173913,
+            "p90": 0.4705882352941177,
+            "p99": 0.7222222222222222
+          },
+          "oklab_mean_a_b": [
+            -0.023519988912673928,
+            0.01679740887459024
+          ],
+          "oklab_mean_hue_degrees": 144.46648928442082,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0008518518518518519,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.009444444444444445
+        },
+        "foreground_fern": {
+          "pixels": 8000,
+          "mean_rgb8": [
+            11.914125,
+            22.286375,
+            21.204375
+          ],
+          "linear_luminance": {
+            "mean": 0.009035105479266548,
+            "median": 0.0076854501706966555,
+            "p10": 0.0010436471802343229,
+            "p90": 0.016388656835487708,
+            "p99": 0.04105180073197501
+          },
+          "oklab_lightness": {
+            "mean": 0.18647818047826759,
+            "median": 0.19573995842370825,
+            "p10": 0.1004436016232929,
+            "p90": 0.2521173337794012,
+            "p99": 0.3436398088645238
+          },
+          "oklab_chroma": {
+            "mean": 0.01996960113228976,
+            "median": 0.019520913482629094,
+            "p10": 0.012677520382052547,
+            "p90": 0.029166948664142937,
+            "p99": 0.04335088617162885
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.12224625462480679,
+            "median": 0.10447115590183069,
+            "p10": 0.055589571934282614,
+            "p90": 0.19334111392039724,
+            "p99": 0.22818361525018263
+          },
+          "hsv_saturation": {
+            "mean": 0.6328873866467614,
+            "median": 0.6099033816425121,
+            "p10": 0.2647058823529412,
+            "p90": 1.0,
+            "p99": 1.0
+          },
+          "oklab_mean_a_b": [
+            -0.0174516453450039,
+            -0.003563746021757308
+          ],
+          "oklab_mean_hue_degrees": 191.54150961910426,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.281875,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.37525
+        },
+        "sapling": {
+          "pixels": 11050,
+          "mean_rgb8": [
+            10.501628959276019,
+            28.768778280542985,
+            21.765429864253395
+          ],
+          "linear_luminance": {
+            "mean": 0.011559864181137925,
+            "median": 0.008805112787200087,
+            "p10": 0.003260069563432064,
+            "p90": 0.02233339262569194,
+            "p99": 0.045847306101249756
+          },
+          "oklab_lightness": {
+            "mean": 0.20947576650601302,
+            "median": 0.20293563657167132,
+            "p10": 0.14581916765136899,
+            "p90": 0.2767972640647471,
+            "p99": 0.3510632583029614
+          },
+          "oklab_chroma": {
+            "mean": 0.031613467092694324,
+            "median": 0.02748764118354492,
+            "p10": 0.022341138811358824,
+            "p90": 0.04734695798934789,
+            "p99": 0.06640615463974245
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.15109236575967555,
+            "median": 0.15339762019922512,
+            "p10": 0.11522855157707429,
+            "p90": 0.1808327001324896,
+            "p99": 0.20161352973899357
+          },
+          "hsv_saturation": {
+            "mean": 0.7181679871170943,
+            "median": 0.7037037037037037,
+            "p10": 0.4908747855917668,
+            "p90": 1.0,
+            "p99": 1.0
+          },
+          "oklab_mean_a_b": [
+            -0.02860299167680671,
+            0.005079106588185282
+          ],
+          "oklab_mean_hue_degrees": 169.93080004131076,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.13565610859728508,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.23429864253393665
+        },
+        "distant_mountain": {
+          "pixels": 18700,
+          "mean_rgb8": [
+            27.4224064171123,
+            57.02823529411765,
+            70.31021390374332
+          ],
+          "linear_luminance": {
+            "mean": 0.03713462945262219,
+            "median": 0.03883552421203343,
+            "p10": 0.018510825110636907,
+            "p90": 0.04832941282340325,
+            "p99": 0.054835383609828044
+          },
+          "oklab_lightness": {
+            "mean": 0.32750817553247985,
+            "median": 0.33608042599145194,
+            "p10": 0.26215384501797107,
+            "p90": 0.3614068450024958,
+            "p99": 0.37726655305293416
+          },
+          "oklab_chroma": {
+            "mean": 0.04253597812087666,
+            "median": 0.043467985668164864,
+            "p10": 0.03774903240926573,
+            "p90": 0.04499744352631749,
+            "p99": 0.04682481997929996
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.1306206162018867,
+            "median": 0.12940266664278974,
+            "p10": 0.12171831362146185,
+            "p90": 0.14358833642794566,
+            "p99": 0.15495250283828993
+          },
+          "hsv_saturation": {
+            "mean": 0.6183879803946745,
+            "median": 0.6027397260273973,
+            "p10": 0.5625,
+            "p90": 0.7346938775510203,
+            "p99": 0.7755102040816327
+          },
+          "oklab_mean_a_b": [
+            -0.027776196427211207,
+            -0.03212220943053881
+          ],
+          "oklab_mean_hue_degrees": 229.1499036917855,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "sky": {
+          "pixels": 4500,
+          "mean_rgb8": [
+            84.50866666666667,
+            159.95266666666666,
+            207.39244444444444
+          ],
+          "linear_luminance": {
+            "mean": 0.3156233784330797,
+            "median": 0.31580495805126135,
+            "p10": 0.3070804405094134,
+            "p90": 0.32420361918246643,
+            "p99": 0.3246950188054429
+          },
+          "oklab_lightness": {
+            "mean": 0.6765827883252391,
+            "median": 0.6767512233340665,
+            "p10": 0.6704791797392374,
+            "p90": 0.6825549171528151,
+            "p99": 0.6830061570054647
+          },
+          "oklab_chroma": {
+            "mean": 0.10284697195362034,
+            "median": 0.10372603785765788,
+            "p10": 0.09997908338556043,
+            "p90": 0.10485200383523163,
+            "p99": 0.10541705478339887
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.15203045074254917,
+            "median": 0.15327055833995196,
+            "p10": 0.14697029837281703,
+            "p90": 0.15628941147131323,
+            "p99": 0.15797243748719728
+          },
+          "hsv_saturation": {
+            "mean": 0.5925284724903059,
+            "median": 0.5961538461538461,
+            "p10": 0.5748792270531401,
+            "p90": 0.6067961165048544,
+            "p99": 0.6116504854368933
+          },
+          "oklab_mean_a_b": [
+            -0.053819951954221845,
+            -0.08763704877831816
+          ],
+          "oklab_mean_hue_degrees": 238.44494564387682,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "roof_background_near": {
+          "pixels": 720,
+          "mean_rgb8": [
+            34.87777777777778,
+            63.356944444444444,
+            73.33194444444445
+          ],
+          "linear_luminance": {
+            "mean": 0.045739168095823485,
+            "median": 0.04487912136870347,
+            "p10": 0.028002845593742123,
+            "p90": 0.06618774400303945,
+            "p99": 0.08051745031336811
+          },
+          "oklab_lightness": {
+            "mean": 0.35051669580536843,
+            "median": 0.35208692514174394,
+            "p10": 0.30102753086812645,
+            "p90": 0.4013501076382721,
+            "p99": 0.4292820927992077
+          },
+          "oklab_chroma": {
+            "mean": 0.03863803267338066,
+            "median": 0.03832770222034155,
+            "p10": 0.03551084453996181,
+            "p90": 0.04456716413443568,
+            "p99": 0.04832391187819991
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.11089269644931225,
+            "median": 0.11005455743937133,
+            "p10": 0.09746629397827539,
+            "p90": 0.12606647628484,
+            "p99": 0.13806972567996806
+          },
+          "hsv_saturation": {
+            "mean": 0.5304534723679498,
+            "median": 0.5205479452054794,
+            "p10": 0.4634146341463415,
+            "p90": 0.6190476190476191,
+            "p99": 0.6724137931034483
+          },
+          "oklab_mean_a_b": [
+            -0.028309624917036983,
+            -0.02593461426683546
+          ],
+          "oklab_mean_hue_degrees": 222.49298295581505,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "roof_background_far": {
+          "pixels": 960,
+          "mean_rgb8": [
+            35.036458333333336,
+            64.93854166666667,
+            79.28125
+          ],
+          "linear_luminance": {
+            "mean": 0.048604682704317316,
+            "median": 0.04571386045295752,
+            "p10": 0.024612256412451804,
+            "p90": 0.07408714284764277,
+            "p99": 0.08419119378433058
+          },
+          "oklab_lightness": {
+            "mean": 0.3576888404635485,
+            "median": 0.3549499741202703,
+            "p10": 0.28812071191816924,
+            "p90": 0.4171906517273747,
+            "p99": 0.4355458957592591
+          },
+          "oklab_chroma": {
+            "mean": 0.04351559679389935,
+            "median": 0.044021364931652054,
+            "p10": 0.04022944174031208,
+            "p90": 0.04601843527306798,
+            "p99": 0.047067008114209434
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.12274684553050363,
+            "median": 0.12365225037581845,
+            "p10": 0.10976923156507946,
+            "p90": 0.13814760198870632,
+            "p99": 0.14575700173204187
+          },
+          "hsv_saturation": {
+            "mean": 0.5672883985292108,
+            "median": 0.569620253164557,
+            "p10": 0.48977465986394564,
+            "p90": 0.6779661016949152,
+            "p99": 0.7142857142857143
+          },
+          "oklab_mean_a_b": [
+            -0.027677232181358414,
+            -0.03355024743483416
+          ],
+          "oklab_mean_hue_degrees": 230.47911852782988,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "eave_shadow": {
+          "pixels": 1200,
+          "mean_rgb8": [
+            17.4175,
+            38.055,
+            39.99166666666667
+          ],
+          "linear_luminance": {
+            "mean": 0.017422249494950144,
+            "median": 0.016533228993273412,
+            "p10": 0.009730147042797779,
+            "p90": 0.025747136226432342,
+            "p99": 0.03840395631010217
+          },
+          "oklab_lightness": {
+            "mean": 0.25194693277755664,
+            "median": 0.2517049953840379,
+            "p10": 0.2107445347363163,
+            "p90": 0.2923989545886555,
+            "p99": 0.33419491071498947
+          },
+          "oklab_chroma": {
+            "mean": 0.02700388104392749,
+            "median": 0.027043541348485398,
+            "p10": 0.02448381619979924,
+            "p90": 0.029454644958701613,
+            "p99": 0.03203390622022706
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.10843313045455877,
+            "median": 0.10714571042011087,
+            "p10": 0.09662449228312153,
+            "p90": 0.12083279580012278,
+            "p99": 0.14966814605538978
+          },
+          "hsv_saturation": {
+            "mean": 0.5827932631172459,
+            "median": 0.5675675675675677,
+            "p10": 0.4772727272727273,
+            "p90": 0.7,
+            "p99": 0.9048051948051947
+          },
+          "oklab_mean_a_b": [
+            -0.02463950189251579,
+            -0.010697124169678784
+          ],
+          "oklab_mean_hue_degrees": 203.46784913171334,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0025,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.008333333333333333
+        },
+        "stone_adjacent_wood": {
+          "pixels": 1600,
+          "mean_rgb8": [
+            35.473125,
+            58.030625,
+            59.4325
+          ],
+          "linear_luminance": {
+            "mean": 0.042445836583445244,
+            "median": 0.02769177204951151,
+            "p10": 0.019236266315706553,
+            "p90": 0.09290055761412501,
+            "p99": 0.15338492047122582
+          },
+          "oklab_lightness": {
+            "mean": 0.32897344912337984,
+            "median": 0.2994085223070778,
+            "p10": 0.26519990980247127,
+            "p90": 0.4497203765649556,
+            "p99": 0.532478902802729
+          },
+          "oklab_chroma": {
+            "mean": 0.028734752183789708,
+            "median": 0.029102241080229928,
+            "p10": 0.025362324353151017,
+            "p90": 0.031413647224809105,
+            "p99": 0.033146610218362155
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.09168665250966879,
+            "median": 0.09960918927990733,
+            "p10": 0.05833031219166625,
+            "p90": 0.11230656116142017,
+            "p99": 0.11859017356812014
+          },
+          "hsv_saturation": {
+            "mean": 0.44855228842302614,
+            "median": 0.5,
+            "p10": 0.23323232323232332,
+            "p90": 0.5869565217391305,
+            "p99": 0.6363636363636364
+          },
+          "oklab_mean_a_b": [
+            -0.02635715232660425,
+            -0.010287412250024013
+          ],
+          "oklab_mean_hue_degrees": 201.321108484132,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        }
+      }
+    },
+    "auto-bloom-off": {
+      "image_sha256": "7c6bd229d6a177deb999f9945612951617c8161c74dd96abbf7381c6d7986e56",
+      "provenance": {
+        "started_utc": "2026-10-10T07:50:10.165946+00:00",
+        "mode": "auto-bloom-off",
+        "argv": [
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/bin/engine-glow-controls",
+          "--assets",
+          "/Users/taylor/.local/share/mudcrab-research/brightness-20261010/assets-native-views",
+          "--worldspace",
+          "0x3c",
+          "--grid-x",
+          "5",
+          "--grid-y",
+          "-12",
+          "--lights",
+          "--lighting-mode",
+          "authored-preview",
+          "--weather",
+          "0x81a",
+          "--game-hour",
+          "12",
+          "--fog",
+          "--image-space",
+          "--image-space-output",
+          "display-encoded",
+          "--image-space-bloom",
+          "off",
+          "--image-space-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-off/image-space-gpu.json",
+          "--shots",
+          "/Users/taylor/.local/share/mudcrab-research/saturation-20261010/riverwood-terrace.json",
+          "--shots-out",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-off",
+          "--lighting-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-off/lighting-runtime.json",
+          "--fog-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-off/fog-runtime.json"
+        ],
+        "engine_sha256": "6f780f73cf13e1eba0aa50bf09b904f90fc89ce29ec9d457a6eb4e421b4dbdf6",
+        "asset_manifest_sha256": "d7fa5d0016a2de36012e27049797106b9ce10cce440131166787b2eb0eebf753",
+        "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+        "fog_enabled": true,
+        "image_space_enabled": true,
+        "output_transfer": "display-encoded",
+        "bloom_enabled": false,
+        "adaptation_override": null,
+        "native_specular_fade_override": null,
+        "native_view_annotations_enabled": true,
+        "retail_parity": false,
+        "engine_pid": 25726,
+        "exit_code": 0,
+        "finished_utc": "2026-10-10T07:50:46.904223+00:00",
+        "images": {
+          "riverwood-terrace.png": {
+            "width": 1920,
+            "height": 1080,
+            "sha256": "7c6bd229d6a177deb999f9945612951617c8161c74dd96abbf7381c6d7986e56",
+            "bytes": 3626335
+          }
+        },
+        "gpu_diagnostic_sha256": "01adbf971f61c376532e98b627d6a55c7f8cda95838374b5255a2173f1db71e3"
+      },
+      "audit": {
+        "checks": {
+          "recorded_mode_matches": true,
+          "expected_mode_controls": true,
+          "exit_zero_and_settled": true,
+          "PNG_hash_matches": true,
+          "frozen_engine_matches": true,
+          "asset_manifest_matches": true,
+          "fixture_matches": true,
+          "annotated_native_pack_active": true,
+          "all_dependencies_ready": true,
+          "output_ready": true,
+          "fog_and_HDR_active": true,
+          "weather_and_hour": true,
+          "encoded_output_gamma_one": true,
+          "GPU_report_hash_matches": true,
+          "GPU_available_and_finite": true,
+          "GPU_viewport_matches": true,
+          "GPU_labels_unique_and_expected": true,
+          "GPU_pixel_locations_match": true,
+          "GPU_adaptation_domain_valid": true,
+          "history_mode_matches_control": true,
+          "bloom_mode_matches_control": true,
+          "disabled_bloom_is_zero": true,
+          "specular_override_matches_report": true
+        },
+        "all_checks_passed": true,
+        "dependencies": {
+          "main_views": 1,
+          "output_ready": true,
+          "visible_meshes": 15077,
+          "unavailable_meshes": 0,
+          "unavailable_materials": 0,
+          "pending_material_queues": 0,
+          "unavailable_pipelines": 0,
+          "pending_prepass_queues": 0,
+          "unavailable_prepass_pipelines": 0,
+          "shadow_views": 4,
+          "shadow_casters": 88,
+          "unavailable_shadow_views": 0,
+          "unavailable_shadow_meshes": 0,
+          "unavailable_shadow_materials": 0,
+          "unavailable_shadow_pipelines": 0,
+          "pending_shadow_queues": 0,
+          "pending_or_failed_pipelines": 0,
+          "pipeline_count": 115
+        },
+        "shot": "riverwood-terrace frames=526 settled settle_timeout_seconds=90 path=/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-bloom-off/riverwood-terrace.png"
+      },
+      "GPU_diagnostic": {
+        "auxiliary_format": "Rg11b10Ufloat",
+        "available": true,
+        "bloom_mode": "constant",
+        "camera_entity": 4294966868,
+        "format_version": 1,
+        "history_mode": "gpu",
+        "main_world_frame": 510,
+        "packed_controls": {
+          "adaptation": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "bloom": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "bloom_settings": [
+            0.0,
+            7.0,
+            0.800000011920929,
+            4.0
+          ],
+          "cinematic": [
+            1.5,
+            0.0,
+            1.399999976158142,
+            1.1349999904632568
+          ],
+          "controls": [
+            1.0,
+            0.0,
+            1.0,
+            1.0
+          ],
+          "fade": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "history": [
+            0.7538700699806213,
+            0.9954808950424194,
+            1.0,
+            1.0
+          ],
+          "resources": [
+            0.8333333134651184,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "tint": [
+            0.8941176533699036,
+            0.8392156958580017,
+            0.772549033164978,
+            0.41999998688697815
+          ],
+          "tone": [
+            0.800000011920929,
+            0.8264462351799011,
+            0.0,
+            0.0
+          ]
+        },
+        "sample_interval_frames": 30,
+        "scene_format": "Rgba16Float",
+        "scope": "GPU inputs before image-space; shared native tone equation and float display bridge. Named pixels belong to the Riverwood terrace fixture and are not material identification. Latest asynchronous sample; pair screenshots by frame and camera externally. No retail parity claim.",
+        "viewport_pixels": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "world_from_view": [
+          0.7071067094802856,
+          0.0,
+          -0.7071068286895752,
+          0.0,
+          -0.08617464452981949,
+          0.9925461411476135,
+          -0.0861746221780777,
+          0.0,
+          0.701836109161377,
+          0.12186934053897858,
+          0.7018360495567322,
+          0.0,
+          2920.0,
+          400.0,
+          -2052.0,
+          1.0
+        ]
+      },
+      "GPU_samples": {
+        "roof": {
+          "adaptation_rgba": [
+            0.25318095088005066,
+            0.25318095088005066,
+            0.2522237002849579,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.03905899450182915,
+            0.048610568046569824,
+            0.042952120304107666,
+            1.239996075630188
+          ],
+          "finite": true,
+          "label": "roof",
+          "native_tone_rgba": [
+            0.21819303929805756,
+            0.24426567554473877,
+            0.2292253077030182,
+            1.239996075630188
+          ],
+          "pixel": [
+            950,
+            265
+          ],
+          "requested_uv": [
+            0.4950520694255829,
+            0.24583333730697632
+          ],
+          "sampled_uv": [
+            0.4950520694255829,
+            0.24583333730697632
+          ],
+          "source_rgba": [
+            0.2158203125,
+            0.2415771484375,
+            0.2379150390625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.23583978271484377,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 5.817476908531738e-08,
+          "mapped_luminance": 0.22802879419049207,
+          "bloom_weight": 0.5719712177304369,
+          "pre_clamp_adjusted_rgb": [
+            0.21819309327264771,
+            0.24426573371950785,
+            0.2292253410387346
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.21819309327264771,
+            0.24426573371950785,
+            0.2292253410387346
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            56,
+            63,
+            59
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.7122527360916138
+        },
+        "wood": {
+          "adaptation_rgba": [
+            0.21689748764038086,
+            0.21689748764038086,
+            0.21585887670516968,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.0057481382973492146,
+            0.02045072801411152,
+            0.021457768976688385,
+            1.2686494588851929
+          ],
+          "finite": true,
+          "label": "wood",
+          "native_tone_rgba": [
+            0.06794818490743637,
+            0.15363208949565887,
+            0.15785276889801025,
+            1.2686494588851929
+          ],
+          "pixel": [
+            990,
+            535
+          ],
+          "requested_uv": [
+            0.5158854126930237,
+            0.4958333373069763
+          ],
+          "sampled_uv": [
+            0.5158854126930237,
+            0.49583330750465393
+          ],
+          "source_rgba": [
+            0.0994873046875,
+            0.1669921875,
+            0.175048828125,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.15322828369140626,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 8.608308149637978e-09,
+          "mapped_luminance": 0.14969485258502857,
+          "bloom_weight": 0.6503051593359004,
+          "pre_clamp_adjusted_rgb": [
+            0.06794817629912822,
+            0.15363209289539215,
+            0.15785277658672994
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.06794817629912822,
+            0.15363209289539215,
+            0.15785277658672994
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            18,
+            40,
+            41
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.823817178606987
+        },
+        "stone": {
+          "adaptation_rgba": [
+            0.19364582002162933,
+            0.19364582002162933,
+            0.19226133823394775,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.1401252746582031
+          ],
+          "finite": true,
+          "label": "stone",
+          "native_tone_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.1401252746582031
+          ],
+          "pixel": [
+            1160,
+            697
+          ],
+          "requested_uv": [
+            0.6044270992279053,
+            0.6458333134651184
+          ],
+          "sampled_uv": [
+            0.6044270992279053,
+            0.6458333134651184
+          ],
+          "source_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "source_native_weighted_Y": 1.0,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 0.0,
+          "mapped_luminance": 0.9132231175899506,
+          "bloom_weight": 0.0,
+          "pre_clamp_adjusted_rgb": [
+            1.3091213975505456,
+            1.2756604766601092,
+            1.235029358436008
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            254,
+            254,
+            254
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 1.0
+        },
+        "ground": {
+          "adaptation_rgba": [
+            0.18359375,
+            0.18359375,
+            0.18359375,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.012040538713335991,
+            0.023408696055412292,
+            0.012596160173416138,
+            1.2817654609680176
+          ],
+          "finite": true,
+          "label": "ground",
+          "native_tone_rgba": [
+            0.11230988800525665,
+            0.1657121777534485,
+            0.11548453569412231,
+            1.2817654609680176
+          ],
+          "pixel": [
+            360,
+            1005
+          ],
+          "requested_uv": [
+            0.18776041269302368,
+            0.9310185313224792
+          ],
+          "sampled_uv": [
+            0.18776041269302368,
+            0.9310185313224792
+          ],
+          "source_rgba": [
+            0.12237548828125,
+            0.166015625,
+            0.1337890625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.15441856079101562,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.964313948807586e-08,
+          "mapped_luminance": 0.15083372110184706,
+          "bloom_weight": 0.6491662908190818,
+          "pre_clamp_adjusted_rgb": [
+            0.1123098647678419,
+            0.165712128110309,
+            0.11548452268445178
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.1123098647678419,
+            0.165712128110309,
+            0.11548452268445178
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            29,
+            42,
+            30
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.5514433979988098
+        },
+        "fern": {
+          "adaptation_rgba": [
+            0.177734375,
+            0.177734375,
+            0.17578125,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.0,
+            0.0017454635817557573,
+            0.0025010849349200726,
+            1.3010954856872559
+          ],
+          "finite": true,
+          "label": "fern",
+          "native_tone_rgba": [
+            0.0,
+            0.022551389411091805,
+            0.03231401741504669,
+            1.3010954856872559
+          ],
+          "pixel": [
+            1560,
+            1020
+          ],
+          "requested_uv": [
+            0.8127604126930237,
+            0.9449074268341064
+          ],
+          "sampled_uv": [
+            0.8127604126930237,
+            0.9449073672294617
+          ],
+          "source_rgba": [
+            0.028289794921875,
+            0.06427001953125,
+            0.0732421875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.05727111511230469,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.450304708081276e-09,
+          "mapped_luminance": 0.05673269788130457,
+          "bloom_weight": 0.7432673140396244,
+          "pre_clamp_adjusted_rgb": [
+            -0.024642427257783373,
+            0.022551384960787096,
+            0.03231402139611447
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.0,
+            0.022551384960787096,
+            0.03231402139611447
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            0,
+            6,
+            8
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.24939570017158985
+        },
+        "sapling": {
+          "adaptation_rgba": [
+            0.1968858540058136,
+            0.1968858540058136,
+            0.1968858540058136,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.0011177671840414405,
+            0.007708141580224037,
+            0.006008310709148645,
+            1.2858301401138306
+          ],
+          "finite": true,
+          "label": "sapling",
+          "native_tone_rgba": [
+            0.014441551640629768,
+            0.08393602818250656,
+            0.07023700326681137,
+            1.2858301401138306
+          ],
+          "pixel": [
+            475,
+            722
+          ],
+          "requested_uv": [
+            0.24765625596046448,
+            0.6689814925193787
+          ],
+          "sampled_uv": [
+            0.24765624105930328,
+            0.6689814925193787
+          ],
+          "source_rgba": [
+            0.058624267578125,
+            0.11236572265625,
+            0.10552978515625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.10045279235839845,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 2.0635738062768638e-08,
+          "mapped_luminance": 0.0988613656236844,
+          "bloom_weight": 0.7011386462972445,
+          "pre_clamp_adjusted_rgb": [
+            0.014441540877038611,
+            0.08393601185974485,
+            0.07023698263107331
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.014441540877038611,
+            0.08393601185974485,
+            0.07023698263107331
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            4,
+            22,
+            18
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.5963128134608269
+        },
+        "background": {
+          "adaptation_rgba": [
+            0.265625,
+            0.265625,
+            0.265625,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.012536761350929737,
+            0.04486434534192085,
+            0.06819132715463638,
+            1.2373992204666138
+          ],
+          "finite": true,
+          "label": "background",
+          "native_tone_rgba": [
+            0.1151491329073906,
+            0.23443076014518738,
+            0.2895928621292114,
+            1.2373992204666138
+          ],
+          "pixel": [
+            255,
+            235
+          ],
+          "requested_uv": [
+            0.13307291269302368,
+            0.21805556118488312
+          ],
+          "sampled_uv": [
+            0.13307291269302368,
+            0.21805556118488312
+          ],
+          "source_rgba": [
+            0.1435546875,
+            0.238525390625,
+            0.286865234375,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.22182941894531252,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 3.375202028976787e-08,
+          "mapped_luminance": 0.2148396673073064,
+          "bloom_weight": 0.5851603446136225,
+          "pre_clamp_adjusted_rgb": [
+            0.11514914504170234,
+            0.2344307645581647,
+            0.2895928958812317
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.11514914504170234,
+            0.2344307645581647,
+            0.2895928958812317
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            29,
+            60,
+            74
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.3630288913846016
+        },
+        "sky": {
+          "adaptation_rgba": [
+            0.26547953486442566,
+            0.26547953486442566,
+            0.2654683291912079,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "display_bridge_rgba": [
+            0.08951406925916672,
+            0.3517654240131378,
+            0.6115292310714722,
+            1.193221092224121
+          ],
+          "finite": true,
+          "label": "sky",
+          "native_tone_rgba": [
+            0.33095839619636536,
+            0.6276392340660095,
+            0.804527223110199,
+            1.193221092224121
+          ],
+          "pixel": [
+            485,
+            30
+          ],
+          "requested_uv": [
+            0.2528645694255829,
+            0.028240740299224854
+          ],
+          "sampled_uv": [
+            0.2528645694255829,
+            0.028240740299224854
+          ],
+          "source_rgba": [
+            0.287353515625,
+            0.52783203125,
+            0.67919921875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.4876439208984375,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.393144914516256e-08,
+          "mapped_luminance": 0.45990173508432397,
+          "bloom_weight": 0.340098276836605,
+          "pre_clamp_adjusted_rgb": [
+            0.3309583802142776,
+            0.6276392158872663,
+            0.8045272670416481
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.3309583802142776,
+            0.6276392158872663,
+            0.8045272670416481
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            84,
+            160,
+            205
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.3943910300731659
+        }
+      },
+      "regions": {
+        "sunlit_thatch": {
+          "pixels": 45000,
+          "mean_rgb8": [
+            138.56862222222222,
+            140.90855555555555,
+            116.81464444444444
+          ],
+          "linear_luminance": {
+            "mean": 0.28841211890041707,
+            "median": 0.26347476643325984,
+            "p10": 0.0839035431529711,
+            "p90": 0.5184110003914869,
+            "p99": 0.834902327089681
+          },
+          "oklab_lightness": {
+            "mean": 0.6306829949104049,
+            "median": 0.6391927357307723,
+            "p10": 0.4357019008917013,
+            "p90": 0.801539256216428,
+            "p99": 0.9404100757716118
+          },
+          "oklab_chroma": {
+            "mean": 0.03543598114530445,
+            "median": 0.03529442228983878,
+            "p10": 0.020764596484736515,
+            "p90": 0.049957190148562196,
+            "p99": 0.06205023235972546
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.05597227221810034,
+            "median": 0.05508784019625079,
+            "p10": 0.04099174930430293,
+            "p90": 0.07280879706324409,
+            "p99": 0.08486751504602859
+          },
+          "hsv_saturation": {
+            "mean": 0.17748069389419058,
+            "median": 0.17171717171717168,
+            "p10": 0.1242603550295857,
+            "p90": 0.24305555555555558,
+            "p99": 0.2916692546583856
+          },
+          "oklab_mean_a_b": [
+            -0.013093735073972991,
+            0.031959152463166364
+          ],
+          "oklab_mean_hue_degrees": 112.27902042153491,
+          "fraction_any_channel_255": 0.005088888888888889,
+          "fraction_all_channels_255": 0.00024444444444444443,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0054666666666666665,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "shaded_wood": {
+          "pixels": 15600,
+          "mean_rgb8": [
+            30.641025641025642,
+            54.144038461538464,
+            56.71980769230769
+          ],
+          "linear_luminance": {
+            "mean": 0.0341093348533661,
+            "median": 0.032151635969700644,
+            "p10": 0.01754054326155925,
+            "p90": 0.053669707498684875,
+            "p99": 0.07426513896010105
+          },
+          "oklab_lightness": {
+            "mean": 0.3144765710905686,
+            "median": 0.31478974574641516,
+            "p10": 0.25709867669612785,
+            "p90": 0.37353881658222987,
+            "p99": 0.4165061594267322
+          },
+          "oklab_chroma": {
+            "mean": 0.02990846255069206,
+            "median": 0.03000276230023215,
+            "p10": 0.025908479811720495,
+            "p90": 0.033882086189762226,
+            "p99": 0.03705950543790474
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.09605681314674205,
+            "median": 0.09515562940292405,
+            "p10": 0.08561413683308235,
+            "p90": 0.10737077072514677,
+            "p99": 0.12146083167310692
+          },
+          "hsv_saturation": {
+            "mean": 0.47316519029592735,
+            "median": 0.46296296296296297,
+            "p10": 0.39285714285714285,
+            "p90": 0.5625,
+            "p99": 0.7241379310344828
+          },
+          "oklab_mean_a_b": [
+            -0.0269923743614037,
+            -0.012407269398667846
+          ],
+          "oklab_mean_hue_degrees": 204.68627021284829,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 6.41025641025641e-05,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.000576923076923077
+        },
+        "stone_wall": {
+          "pixels": 10400,
+          "mean_rgb8": [
+            76.67298076923078,
+            99.18028846153847,
+            98.79451923076923
+          ],
+          "linear_luminance": {
+            "mean": 0.19041438913558026,
+            "median": 0.04941410801900741,
+            "p10": 0.019713237993720885,
+            "p90": 0.6482972213813938,
+            "p99": 1.0
+          },
+          "oklab_lightness": {
+            "mean": 0.471034869471982,
+            "median": 0.36326011351199494,
+            "p10": 0.2669624017809226,
+            "p90": 0.8624257974220321,
+            "p99": 0.9999999934735462
+          },
+          "oklab_chroma": {
+            "mean": 0.02919445438108792,
+            "median": 0.030805782955381757,
+            "p10": 0.019263332744486845,
+            "p90": 0.03808194735690842,
+            "p99": 0.0442549121785933
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.07913613130211872,
+            "median": 0.08661149443414999,
+            "p10": 0.026898963368815414,
+            "p90": 0.12597970040691622,
+            "p99": 0.13670455015831254
+          },
+          "hsv_saturation": {
+            "mean": 0.3757659703496972,
+            "median": 0.4046593051440883,
+            "p10": 0.07804878048780488,
+            "p90": 0.6607142857142857,
+            "p99": 0.7619047619047619
+          },
+          "oklab_mean_a_b": [
+            -0.025773645883009396,
+            -0.007739371851319208
+          ],
+          "oklab_mean_hue_degrees": 196.7140866200333,
+          "fraction_any_channel_255": 0.017115384615384616,
+          "fraction_all_channels_255": 0.012884615384615385,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.020192307692307693,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "foreground_grass_soil": {
+          "pixels": 27000,
+          "mean_rgb8": [
+            30.970259259259258,
+            43.60337037037037,
+            30.525666666666666
+          ],
+          "linear_luminance": {
+            "mean": 0.02388895533076679,
+            "median": 0.019776487935733292,
+            "p10": 0.012139837230550532,
+            "p90": 0.036073343524411536,
+            "p99": 0.11609329353646025
+          },
+          "oklab_lightness": {
+            "mean": 0.27454231062666906,
+            "median": 0.2674401172088109,
+            "p10": 0.22731543110732672,
+            "p90": 0.3268780823735775,
+            "p99": 0.4826117031226969
+          },
+          "oklab_chroma": {
+            "mean": 0.029763195934155436,
+            "median": 0.02740083431497207,
+            "p10": 0.018275627066425965,
+            "p90": 0.04456147991304374,
+            "p99": 0.06537155712345159
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.10724031789344018,
+            "median": 0.10204439162998234,
+            "p10": 0.07615233315909042,
+            "p90": 0.14016802426697117,
+            "p99": 0.21104712778417528
+          },
+          "hsv_saturation": {
+            "mean": 0.35657617660462043,
+            "median": 0.3409090909090909,
+            "p10": 0.2608695652173913,
+            "p90": 0.4705882352941177,
+            "p99": 0.7222222222222222
+          },
+          "oklab_mean_a_b": [
+            -0.023519988912673928,
+            0.01679740887459024
+          ],
+          "oklab_mean_hue_degrees": 144.46648928442082,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0008518518518518519,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.009444444444444445
+        },
+        "foreground_fern": {
+          "pixels": 8000,
+          "mean_rgb8": [
+            11.914125,
+            22.286375,
+            21.204375
+          ],
+          "linear_luminance": {
+            "mean": 0.009035105479266548,
+            "median": 0.0076854501706966555,
+            "p10": 0.0010436471802343229,
+            "p90": 0.016388656835487708,
+            "p99": 0.04105180073197501
+          },
+          "oklab_lightness": {
+            "mean": 0.18647818047826759,
+            "median": 0.19573995842370825,
+            "p10": 0.1004436016232929,
+            "p90": 0.2521173337794012,
+            "p99": 0.3436398088645238
+          },
+          "oklab_chroma": {
+            "mean": 0.01996960113228976,
+            "median": 0.019520913482629094,
+            "p10": 0.012677520382052547,
+            "p90": 0.029166948664142937,
+            "p99": 0.04335088617162885
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.12224625462480679,
+            "median": 0.10447115590183069,
+            "p10": 0.055589571934282614,
+            "p90": 0.19334111392039724,
+            "p99": 0.22818361525018263
+          },
+          "hsv_saturation": {
+            "mean": 0.6328873866467614,
+            "median": 0.6099033816425121,
+            "p10": 0.2647058823529412,
+            "p90": 1.0,
+            "p99": 1.0
+          },
+          "oklab_mean_a_b": [
+            -0.0174516453450039,
+            -0.003563746021757308
+          ],
+          "oklab_mean_hue_degrees": 191.54150961910426,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.281875,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.37525
+        },
+        "sapling": {
+          "pixels": 11050,
+          "mean_rgb8": [
+            10.501628959276019,
+            28.768778280542985,
+            21.765429864253395
+          ],
+          "linear_luminance": {
+            "mean": 0.011559864181137925,
+            "median": 0.008805112787200087,
+            "p10": 0.003260069563432064,
+            "p90": 0.02233339262569194,
+            "p99": 0.045847306101249756
+          },
+          "oklab_lightness": {
+            "mean": 0.20947576650601302,
+            "median": 0.20293563657167132,
+            "p10": 0.14581916765136899,
+            "p90": 0.2767972640647471,
+            "p99": 0.3510632583029614
+          },
+          "oklab_chroma": {
+            "mean": 0.031613467092694324,
+            "median": 0.02748764118354492,
+            "p10": 0.022341138811358824,
+            "p90": 0.04734695798934789,
+            "p99": 0.06640615463974245
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.15109236575967555,
+            "median": 0.15339762019922512,
+            "p10": 0.11522855157707429,
+            "p90": 0.1808327001324896,
+            "p99": 0.20161352973899357
+          },
+          "hsv_saturation": {
+            "mean": 0.7181679871170943,
+            "median": 0.7037037037037037,
+            "p10": 0.4908747855917668,
+            "p90": 1.0,
+            "p99": 1.0
+          },
+          "oklab_mean_a_b": [
+            -0.02860299167680671,
+            0.005079106588185282
+          ],
+          "oklab_mean_hue_degrees": 169.93080004131076,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.13565610859728508,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.23429864253393665
+        },
+        "distant_mountain": {
+          "pixels": 18700,
+          "mean_rgb8": [
+            27.421176470588236,
+            57.02620320855615,
+            70.30983957219252
+          ],
+          "linear_luminance": {
+            "mean": 0.037132997330389377,
+            "median": 0.03883552421203343,
+            "p10": 0.018510825110636907,
+            "p90": 0.04832941282340325,
+            "p99": 0.054835383609828044
+          },
+          "oklab_lightness": {
+            "mean": 0.32750137835647375,
+            "median": 0.33608042599145194,
+            "p10": 0.26215384501797107,
+            "p90": 0.3614068450024958,
+            "p99": 0.37726655305293416
+          },
+          "oklab_chroma": {
+            "mean": 0.04253684437367487,
+            "median": 0.043467985668164864,
+            "p10": 0.03774903240926573,
+            "p90": 0.04499744352631749,
+            "p99": 0.04682481997929996
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.13062732640323696,
+            "median": 0.12940266664278974,
+            "p10": 0.12171831362146185,
+            "p90": 0.14361425252426482,
+            "p99": 0.15495250283828993
+          },
+          "hsv_saturation": {
+            "mean": 0.6184107155845661,
+            "median": 0.6027397260273973,
+            "p10": 0.5625,
+            "p90": 0.7346938775510203,
+            "p99": 0.7755102040816327
+          },
+          "oklab_mean_a_b": [
+            -0.027774602462053058,
+            -0.032125079836498364
+          ],
+          "oklab_mean_hue_degrees": 229.15406348304845,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "sky": {
+          "pixels": 4500,
+          "mean_rgb8": [
+            84.4991111111111,
+            159.9471111111111,
+            204.80244444444443
+          ],
+          "linear_luminance": {
+            "mean": 0.31433962422353157,
+            "median": 0.31434207301939737,
+            "p10": 0.3056268340958283,
+            "p90": 0.32323145911585377,
+            "p99": 0.3237228587388302
+          },
+          "oklab_lightness": {
+            "mean": 0.6753841749640115,
+            "median": 0.675379456747785,
+            "p10": 0.6690905856786726,
+            "p90": 0.6816592497980041,
+            "p99": 0.6820904557187631
+          },
+          "oklab_chroma": {
+            "mean": 0.10022337185035854,
+            "median": 0.10067605800011495,
+            "p10": 0.09749079505034042,
+            "p90": 0.10229780460644125,
+            "p99": 0.10334981418219898
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.14841577282077095,
+            "median": 0.14906591693639804,
+            "p10": 0.1430198373736289,
+            "p90": 0.152890814481687,
+            "p99": 0.15509093341107133
+          },
+          "hsv_saturation": {
+            "mean": 0.5874254636271853,
+            "median": 0.5902439024390244,
+            "p10": 0.5707317073170732,
+            "p90": 0.6029411764705883,
+            "p99": 0.607843137254902
+          },
+          "oklab_mean_a_b": [
+            -0.054705741924220584,
+            -0.0839730522132292
+          ],
+          "oklab_mean_hue_degrees": 236.91705058663746,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "roof_background_near": {
+          "pixels": 720,
+          "mean_rgb8": [
+            33.31666666666667,
+            62.33611111111111,
+            73.2388888888889
+          ],
+          "linear_luminance": {
+            "mean": 0.04444243595344165,
+            "median": 0.04264681807140366,
+            "p10": 0.026929768403749676,
+            "p90": 0.06507927919824791,
+            "p99": 0.08051745031336811
+          },
+          "oklab_lightness": {
+            "mean": 0.346736039038646,
+            "median": 0.34654464061973944,
+            "p10": 0.2971284205794076,
+            "p90": 0.3994852170031973,
+            "p99": 0.4292820927992077
+          },
+          "oklab_chroma": {
+            "mean": 0.039821097359292026,
+            "median": 0.03973308876564142,
+            "p10": 0.03728113367604152,
+            "p90": 0.04461309053827175,
+            "p99": 0.04832391187819991
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.11579363309253735,
+            "median": 0.11496545577319472,
+            "p10": 0.10150279663963663,
+            "p90": 0.13225129082591097,
+            "p99": 0.14224674122434527
+          },
+          "hsv_saturation": {
+            "mean": 0.5538375765461914,
+            "median": 0.5416666666666666,
+            "p10": 0.4803921568627451,
+            "p90": 0.65,
+            "p99": 0.7017543859649122
+          },
+          "oklab_mean_a_b": [
+            -0.02837839025945619,
+            -0.027685831580987454
+          ],
+          "oklab_mean_hue_degrees": 224.29226394553305,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "roof_background_far": {
+          "pixels": 960,
+          "mean_rgb8": [
+            35.03854166666667,
+            64.93854166666667,
+            79.28229166666667
+          ],
+          "linear_luminance": {
+            "mean": 0.04860463122810303,
+            "median": 0.04571386045295752,
+            "p10": 0.024612256412451804,
+            "p90": 0.07408714284764277,
+            "p99": 0.08419119378433058
+          },
+          "oklab_lightness": {
+            "mean": 0.3576907057002401,
+            "median": 0.3549499741202703,
+            "p10": 0.28812071191816924,
+            "p90": 0.4171906517273747,
+            "p99": 0.4355458957592591
+          },
+          "oklab_chroma": {
+            "mean": 0.043514996110612686,
+            "median": 0.044021364931652054,
+            "p10": 0.04022944174031208,
+            "p90": 0.04601843527306798,
+            "p99": 0.047067008114209434
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.12274391055283917,
+            "median": 0.12365225037581845,
+            "p10": 0.10976923156507946,
+            "p90": 0.13814760198870632,
+            "p99": 0.14575700173204187
+          },
+          "hsv_saturation": {
+            "mean": 0.5672638753990097,
+            "median": 0.569620253164557,
+            "p10": 0.48977465986394564,
+            "p90": 0.6779661016949152,
+            "p99": 0.7142857142857143
+          },
+          "oklab_mean_a_b": [
+            -0.027674849992441675,
+            -0.03355142001639293
+          ],
+          "oklab_mean_hue_degrees": 230.48252233666008,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "eave_shadow": {
+          "pixels": 1200,
+          "mean_rgb8": [
+            17.4175,
+            38.055,
+            39.99166666666667
+          ],
+          "linear_luminance": {
+            "mean": 0.017422249494950144,
+            "median": 0.016533228993273412,
+            "p10": 0.009730147042797779,
+            "p90": 0.025747136226432342,
+            "p99": 0.03840395631010217
+          },
+          "oklab_lightness": {
+            "mean": 0.25194693277755664,
+            "median": 0.2517049953840379,
+            "p10": 0.2107445347363163,
+            "p90": 0.2923989545886555,
+            "p99": 0.33419491071498947
+          },
+          "oklab_chroma": {
+            "mean": 0.02700388104392749,
+            "median": 0.027043541348485398,
+            "p10": 0.02448381619979924,
+            "p90": 0.029454644958701613,
+            "p99": 0.03203390622022706
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.10843313045455877,
+            "median": 0.10714571042011087,
+            "p10": 0.09662449228312153,
+            "p90": 0.12083279580012278,
+            "p99": 0.14966814605538978
+          },
+          "hsv_saturation": {
+            "mean": 0.5827932631172459,
+            "median": 0.5675675675675677,
+            "p10": 0.4772727272727273,
+            "p90": 0.7,
+            "p99": 0.9048051948051947
+          },
+          "oklab_mean_a_b": [
+            -0.02463950189251579,
+            -0.010697124169678784
+          ],
+          "oklab_mean_hue_degrees": 203.46784913171334,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0025,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.008333333333333333
+        },
+        "stone_adjacent_wood": {
+          "pixels": 1600,
+          "mean_rgb8": [
+            35.466875,
+            58.02125,
+            59.426875
+          ],
+          "linear_luminance": {
+            "mean": 0.042437383099134814,
+            "median": 0.027654049805366863,
+            "p10": 0.019236266315706553,
+            "p90": 0.09290055761412501,
+            "p99": 0.15338492047122582
+          },
+          "oklab_lightness": {
+            "mean": 0.3289395709555923,
+            "median": 0.29926082256861186,
+            "p10": 0.26519990980247127,
+            "p90": 0.4497203765649556,
+            "p99": 0.532478902802729
+          },
+          "oklab_chroma": {
+            "mean": 0.02873211102910767,
+            "median": 0.029102241080229928,
+            "p10": 0.025362324353151017,
+            "p90": 0.031413647224809105,
+            "p99": 0.033084330212605075
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.09169128035961556,
+            "median": 0.09960918927990733,
+            "p10": 0.05833031219166625,
+            "p90": 0.11230656116142017,
+            "p99": 0.11859017356812014
+          },
+          "hsv_saturation": {
+            "mean": 0.4486368852589533,
+            "median": 0.5,
+            "p10": 0.23323232323232332,
+            "p90": 0.5869565217391305,
+            "p99": 0.6363636363636364
+          },
+          "oklab_mean_a_b": [
+            -0.02635214744634803,
+            -0.010293227310692694
+          ],
+          "oklab_mean_hue_degrees": 201.33576463607346,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        }
+      }
+    },
+    "auto-specular-zero": {
+      "image_sha256": "71ba422f765cf034222ae214f2c40b56e6a139e9efd98e768413e2094474f450",
+      "provenance": {
+        "started_utc": "2026-10-10T07:50:55.913850+00:00",
+        "mode": "auto-specular-zero",
+        "argv": [
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/bin/engine-glow-controls",
+          "--assets",
+          "/Users/taylor/.local/share/mudcrab-research/brightness-20261010/assets-native-views",
+          "--worldspace",
+          "0x3c",
+          "--grid-x",
+          "5",
+          "--grid-y",
+          "-12",
+          "--lights",
+          "--lighting-mode",
+          "authored-preview",
+          "--weather",
+          "0x81a",
+          "--game-hour",
+          "12",
+          "--fog",
+          "--image-space",
+          "--image-space-output",
+          "display-encoded",
+          "--image-space-bloom",
+          "on",
+          "--image-space-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-specular-zero/image-space-gpu.json",
+          "--shots",
+          "/Users/taylor/.local/share/mudcrab-research/saturation-20261010/riverwood-terrace.json",
+          "--shots-out",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-specular-zero",
+          "--lighting-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-specular-zero/lighting-runtime.json",
+          "--fog-report",
+          "/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-specular-zero/fog-runtime.json",
+          "--native-specular-fade",
+          "0"
+        ],
+        "engine_sha256": "6f780f73cf13e1eba0aa50bf09b904f90fc89ce29ec9d457a6eb4e421b4dbdf6",
+        "asset_manifest_sha256": "d7fa5d0016a2de36012e27049797106b9ce10cce440131166787b2eb0eebf753",
+        "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+        "fog_enabled": true,
+        "image_space_enabled": true,
+        "output_transfer": "display-encoded",
+        "bloom_enabled": true,
+        "adaptation_override": null,
+        "native_specular_fade_override": "0",
+        "native_view_annotations_enabled": true,
+        "retail_parity": false,
+        "engine_pid": 26772,
+        "exit_code": 0,
+        "finished_utc": "2026-10-10T07:51:39.482198+00:00",
+        "images": {
+          "riverwood-terrace.png": {
+            "width": 1920,
+            "height": 1080,
+            "sha256": "71ba422f765cf034222ae214f2c40b56e6a139e9efd98e768413e2094474f450",
+            "bytes": 3612217
+          }
+        },
+        "gpu_diagnostic_sha256": "d336f4028d3dce97ead85da0fda35e299561cb8929fec7bb1ab18031d284b2c3"
+      },
+      "audit": {
+        "checks": {
+          "recorded_mode_matches": true,
+          "expected_mode_controls": true,
+          "exit_zero_and_settled": true,
+          "PNG_hash_matches": true,
+          "frozen_engine_matches": true,
+          "asset_manifest_matches": true,
+          "fixture_matches": true,
+          "annotated_native_pack_active": true,
+          "all_dependencies_ready": true,
+          "output_ready": true,
+          "fog_and_HDR_active": true,
+          "weather_and_hour": true,
+          "encoded_output_gamma_one": true,
+          "GPU_report_hash_matches": true,
+          "GPU_available_and_finite": true,
+          "GPU_viewport_matches": true,
+          "GPU_labels_unique_and_expected": true,
+          "GPU_pixel_locations_match": true,
+          "GPU_adaptation_domain_valid": true,
+          "history_mode_matches_control": true,
+          "bloom_mode_matches_control": true,
+          "disabled_bloom_is_zero": true,
+          "specular_override_matches_report": true
+        },
+        "all_checks_passed": true,
+        "dependencies": {
+          "main_views": 1,
+          "output_ready": true,
+          "visible_meshes": 15077,
+          "unavailable_meshes": 0,
+          "unavailable_materials": 0,
+          "pending_material_queues": 0,
+          "unavailable_pipelines": 0,
+          "pending_prepass_queues": 0,
+          "unavailable_prepass_pipelines": 0,
+          "shadow_views": 4,
+          "shadow_casters": 88,
+          "unavailable_shadow_views": 0,
+          "unavailable_shadow_meshes": 0,
+          "unavailable_shadow_materials": 0,
+          "unavailable_shadow_pipelines": 0,
+          "pending_shadow_queues": 0,
+          "pending_or_failed_pipelines": 0,
+          "pipeline_count": 115
+        },
+        "shot": "riverwood-terrace frames=522 settled settle_timeout_seconds=90 path=/Users/taylor/.local/share/mudcrab-research/glow-20261010/captures/auto-specular-zero/riverwood-terrace.png"
+      },
+      "GPU_diagnostic": {
+        "auxiliary_format": "Rg11b10Ufloat",
+        "available": true,
+        "bloom_mode": "gpu",
+        "camera_entity": 4294966869,
+        "format_version": 1,
+        "history_mode": "gpu",
+        "main_world_frame": 510,
+        "packed_controls": {
+          "adaptation": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "bloom": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "bloom_settings": [
+            1.0,
+            7.0,
+            0.800000011920929,
+            4.0
+          ],
+          "cinematic": [
+            1.5,
+            0.0,
+            1.399999976158142,
+            1.1349999904632568
+          ],
+          "controls": [
+            1.0,
+            0.0,
+            1.0,
+            1.0
+          ],
+          "fade": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "history": [
+            0.8091480731964111,
+            0.9983033537864685,
+            1.0,
+            1.0
+          ],
+          "resources": [
+            0.8333333134651184,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "tint": [
+            0.8941176533699036,
+            0.8392156958580017,
+            0.772549033164978,
+            0.41999998688697815
+          ],
+          "tone": [
+            0.800000011920929,
+            0.8264462351799011,
+            0.0,
+            0.0
+          ]
+        },
+        "sample_interval_frames": 30,
+        "scene_format": "Rgba16Float",
+        "scope": "GPU inputs before image-space; shared native tone equation and float display bridge. Named pixels belong to the Riverwood terrace fixture and are not material identification. Latest asynchronous sample; pair screenshots by frame and camera externally. No retail parity claim.",
+        "viewport_pixels": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "world_from_view": [
+          0.7071067094802856,
+          0.0,
+          -0.7071068286895752,
+          0.0,
+          -0.08617464452981949,
+          0.9925461411476135,
+          -0.0861746221780777,
+          0.0,
+          0.701836109161377,
+          0.12186934053897858,
+          0.7018360495567322,
+          0.0,
+          2920.0,
+          400.0,
+          -2052.0,
+          1.0
+        ]
+      },
+      "GPU_samples": {
+        "roof": {
+          "adaptation_rgba": [
+            0.25023192167282104,
+            0.25023192167282104,
+            0.2482401430606842,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.03388042002916336,
+            0.04321858659386635,
+            0.03832275792956352,
+            1.2430832386016846
+          ],
+          "finite": true,
+          "label": "roof",
+          "native_tone_rgba": [
+            0.20247265696525574,
+            0.2299586534500122,
+            0.21603544056415558,
+            1.2430832386016846
+          ],
+          "pixel": [
+            950,
+            265
+          ],
+          "requested_uv": [
+            0.4950520694255829,
+            0.24583333730697632
+          ],
+          "sampled_uv": [
+            0.4950520694255829,
+            0.24583333730697632
+          ],
+          "source_rgba": [
+            0.2039794921875,
+            0.23046875,
+            0.227294921875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.22461094970703127,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 3.0151401431144365e-08,
+          "mapped_luminance": 0.21746108623336186,
+          "bloom_weight": 0.582538925687567,
+          "pre_clamp_adjusted_rgb": [
+            0.20247263545552815,
+            0.22995862329861078,
+            0.21603541743500135
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.20247263545552815,
+            0.22995862329861078,
+            0.21603541743500135
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            52,
+            59,
+            55
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.369472473859787
+        },
+        "wood": {
+          "adaptation_rgba": [
+            0.2154397815465927,
+            0.2154397815465927,
+            0.21399937570095062,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.005813779775053263,
+            0.02058817259967327,
+            0.02159910462796688,
+            1.2692326307296753
+          ],
+          "finite": true,
+          "label": "wood",
+          "native_tone_rgba": [
+            0.06853125989437103,
+            0.15421518683433533,
+            0.1584358513355255,
+            1.2692326307296753
+          ],
+          "pixel": [
+            990,
+            535
+          ],
+          "requested_uv": [
+            0.5158854126930237,
+            0.4958333373069763
+          ],
+          "sampled_uv": [
+            0.5158854126930237,
+            0.49583330750465393
+          ],
+          "source_rgba": [
+            0.0994873046875,
+            0.1669921875,
+            0.175048828125,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.15322828369140626,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 1.1536182342730683e-08,
+          "mapped_luminance": 0.14969485258502857,
+          "bloom_weight": 0.6503051593359004,
+          "pre_clamp_adjusted_rgb": [
+            0.06853125870188906,
+            0.15421517529815298,
+            0.15843585898949078
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.06853125870188906,
+            0.15421517529815298,
+            0.15843585898949078
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            18,
+            40,
+            41
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.6751273572444916
+        },
+        "stone": {
+          "adaptation_rgba": [
+            0.19312044978141785,
+            0.19312044978141785,
+            0.1917874664068222,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.007790565490722656,
+            0.027740478515625,
+            0.02099609375,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.1403354406356812
+          ],
+          "finite": true,
+          "label": "stone",
+          "native_tone_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.1403354406356812
+          ],
+          "pixel": [
+            1160,
+            697
+          ],
+          "requested_uv": [
+            0.6044270992279053,
+            0.6458333134651184
+          ],
+          "sampled_uv": [
+            0.6044270992279053,
+            0.6458333134651184
+          ],
+          "source_rgba": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "source_native_weighted_Y": 1.0,
+          "bloom_native_weighted_Y": 0.02301485185623169,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 0.0,
+          "mapped_luminance": 0.9132231175899506,
+          "bloom_weight": 0.0,
+          "pre_clamp_adjusted_rgb": [
+            1.3093315456341044,
+            1.275870624743668,
+            1.2352395065195667
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            254,
+            254,
+            254
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 1.0
+        },
+        "ground": {
+          "adaptation_rgba": [
+            0.18359375,
+            0.18359375,
+            0.18359375,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.012040538713335991,
+            0.023408696055412292,
+            0.012596160173416138,
+            1.2817654609680176
+          ],
+          "finite": true,
+          "label": "ground",
+          "native_tone_rgba": [
+            0.11230988800525665,
+            0.1657121777534485,
+            0.11548453569412231,
+            1.2817654609680176
+          ],
+          "pixel": [
+            360,
+            1005
+          ],
+          "requested_uv": [
+            0.18776041269302368,
+            0.9310185313224792
+          ],
+          "sampled_uv": [
+            0.18776041269302368,
+            0.9310185313224792
+          ],
+          "source_rgba": [
+            0.12237548828125,
+            0.166015625,
+            0.1337890625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.15441856079101562,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.964313948807586e-08,
+          "mapped_luminance": 0.15083372110184706,
+          "bloom_weight": 0.6491662908190818,
+          "pre_clamp_adjusted_rgb": [
+            0.1123098647678419,
+            0.165712128110309,
+            0.11548452268445178
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.1123098647678419,
+            0.165712128110309,
+            0.11548452268445178
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            29,
+            42,
+            30
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.5514433979988098
+        },
+        "fern": {
+          "adaptation_rgba": [
+            0.177734375,
+            0.177734375,
+            0.17578125,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.0,
+            0.0017454635817557573,
+            0.0025010849349200726,
+            1.3010954856872559
+          ],
+          "finite": true,
+          "label": "fern",
+          "native_tone_rgba": [
+            0.0,
+            0.022551389411091805,
+            0.03231401741504669,
+            1.3010954856872559
+          ],
+          "pixel": [
+            1560,
+            1020
+          ],
+          "requested_uv": [
+            0.8127604126930237,
+            0.9449074268341064
+          ],
+          "sampled_uv": [
+            0.8127604126930237,
+            0.9449073672294617
+          ],
+          "source_rgba": [
+            0.028289794921875,
+            0.06427001953125,
+            0.0732421875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.05727111511230469,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 4.450304708081276e-09,
+          "mapped_luminance": 0.05673269788130457,
+          "bloom_weight": 0.7432673140396244,
+          "pre_clamp_adjusted_rgb": [
+            -0.024642427257783373,
+            0.022551384960787096,
+            0.03231402139611447
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.0,
+            0.022551384960787096,
+            0.03231402139611447
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            0,
+            6,
+            8
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.24939570017158985
+        },
+        "sapling": {
+          "adaptation_rgba": [
+            0.19625289738178253,
+            0.19625289738178253,
+            0.19561994075775146,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.0011373618617653847,
+            0.007741893175989389,
+            0.006037500221282244,
+            1.2860833406448364
+          ],
+          "finite": true,
+          "label": "sapling",
+          "native_tone_rgba": [
+            0.014694714918732643,
+            0.08418918401002884,
+            0.07049015164375305,
+            1.2860833406448364
+          ],
+          "pixel": [
+            475,
+            722
+          ],
+          "requested_uv": [
+            0.24765625596046448,
+            0.6689814925193787
+          ],
+          "sampled_uv": [
+            0.24765624105930328,
+            0.6689814925193787
+          ],
+          "source_rgba": [
+            0.058624267578125,
+            0.11236572265625,
+            0.10552978515625,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.10045279235839845,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 1.3621841876698682e-08,
+          "mapped_luminance": 0.09886136562368444,
+          "bloom_weight": 0.7011386462972445,
+          "pre_clamp_adjusted_rgb": [
+            0.014694723511560176,
+            0.08418919449426647,
+            0.07049016526559493
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.014694723511560176,
+            0.08418919449426647,
+            0.07049016526559493
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            4,
+            22,
+            18
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.531758077442646
+        },
+        "background": {
+          "adaptation_rgba": [
+            0.26171875,
+            0.26171875,
+            0.2578125,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.012814842164516449,
+            0.04544782638549805,
+            0.06893575936555862,
+            1.2389616966247559
+          ],
+          "finite": true,
+          "label": "background",
+          "native_tone_rgba": [
+            0.11671162396669388,
+            0.23599325120449066,
+            0.2911553382873535,
+            1.2389616966247559
+          ],
+          "pixel": [
+            255,
+            235
+          ],
+          "requested_uv": [
+            0.13307291269302368,
+            0.21805556118488312
+          ],
+          "sampled_uv": [
+            0.13307291269302368,
+            0.21805556118488312
+          ],
+          "source_rgba": [
+            0.1435546875,
+            0.238525390625,
+            0.286865234375,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.22182941894531252,
+          "bloom_native_weighted_Y": 0.0,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 5.750074594246257e-08,
+          "mapped_luminance": 0.2148396673073064,
+          "bloom_weight": 0.5851603446136225,
+          "pre_clamp_adjusted_rgb": [
+            0.11671164494857009,
+            0.23599326446503244,
+            0.29115539578809946
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.11671164494857009,
+            0.23599326446503244,
+            0.29115539578809946
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "screenshot_pixel_RGB8": [
+            30,
+            60,
+            74
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.24461126327514648
+        },
+        "sky": {
+          "adaptation_rgba": [
+            0.26158446073532104,
+            0.26158446073532104,
+            0.2577005922794342,
+            1.0
+          ],
+          "bloom_rgba": [
+            0.0,
+            0.0,
+            0.02001953125,
+            1.0
+          ],
+          "display_bridge_rgba": [
+            0.09042109549045563,
+            0.35375574231147766,
+            0.6304759979248047,
+            1.194690465927124
+          ],
+          "finite": true,
+          "label": "sky",
+          "native_tone_rgba": [
+            0.33258312940597534,
+            0.6292459964752197,
+            0.8155245184898376,
+            1.194690465927124
+          ],
+          "pixel": [
+            485,
+            30
+          ],
+          "requested_uv": [
+            0.2528645694255829,
+            0.028240740299224854
+          ],
+          "sampled_uv": [
+            0.2528645694255829,
+            0.028240740299224854
+          ],
+          "source_rgba": [
+            0.287353515625,
+            0.52783203125,
+            0.67919921875,
+            1.0
+          ],
+          "source_native_weighted_Y": 0.4876439208984375,
+          "bloom_native_weighted_Y": 0.0014434082031249999,
+          "adaptation_y_over_x": 1.0,
+          "CPU_equation_max_abs_error": 9.062074013410637e-08,
+          "mapped_luminance": 0.4599017350843239,
+          "bloom_weight": 0.34009827683660504,
+          "pre_clamp_adjusted_rgb": [
+            0.33258312621741093,
+            0.629245975061932,
+            0.8155246091105778
+          ],
+          "counterfactual_same_source_A_without_bloom_native_rgb": [
+            0.3325164097730535,
+            0.6291972454460424,
+            0.8060852966004238
+          ],
+          "counterfactual_same_source_A_bloom_effect_native_rgb": [
+            6.671644435740642e-05,
+            4.87296158896422e-05,
+            0.009439312510153952
+          ],
+          "screenshot_pixel_RGB8": [
+            85,
+            160,
+            208
+          ],
+          "screenshot_vs_latest_sample_native_RGB8_max_abs_error": 0.4577291011810303
+        }
+      },
+      "regions": {
+        "sunlit_thatch": {
+          "pixels": 45000,
+          "mean_rgb8": [
+            130.2894222222222,
+            133.0761777777778,
+            108.85622222222223
+          ],
+          "linear_luminance": {
+            "mean": 0.25383259700672245,
+            "median": 0.22731613265336925,
+            "p10": 0.07808425758228951,
+            "p90": 0.45546652621166983,
+            "p99": 0.7791679810741556
+          },
+          "oklab_lightness": {
+            "mean": 0.6043175010384387,
+            "median": 0.6082786729401688,
+            "p10": 0.4253598490240303,
+            "p90": 0.7674502608224827,
+            "p99": 0.9182227132996927
+          },
+          "oklab_chroma": {
+            "mean": 0.03598401262886895,
+            "median": 0.03569450708540445,
+            "p10": 0.02141810519773716,
+            "p90": 0.05052974035509318,
+            "p99": 0.06310266737083169
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.059375756925742006,
+            "median": 0.05831274845013876,
+            "p10": 0.043440201343477966,
+            "p90": 0.07733905293954221,
+            "p99": 0.0910574789389421
+          },
+          "hsv_saturation": {
+            "mean": 0.18840496113464647,
+            "median": 0.18253968253968256,
+            "p10": 0.13114754098360654,
+            "p90": 0.25806451612903225,
+            "p99": 0.30827067669172936
+          },
+          "oklab_mean_a_b": [
+            -0.013799175668310001,
+            0.03227706906869134
+          ],
+          "oklab_mean_hue_degrees": 113.1478014043987,
+          "fraction_any_channel_255": 0.004244444444444445,
+          "fraction_all_channels_255": 0.00013333333333333334,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.004555555555555556,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "shaded_wood": {
+          "pixels": 15600,
+          "mean_rgb8": [
+            30.787692307692307,
+            54.29910256410256,
+            56.867628205128206
+          ],
+          "linear_luminance": {
+            "mean": 0.034292184805885355,
+            "median": 0.032212451704580036,
+            "p10": 0.017639031863405426,
+            "p90": 0.05374948341508543,
+            "p99": 0.07459052517054256
+          },
+          "oklab_lightness": {
+            "mean": 0.31507522718720854,
+            "median": 0.31502724861257686,
+            "p10": 0.2576381386938687,
+            "p90": 0.3738316997325046,
+            "p99": 0.4171988897107432
+          },
+          "oklab_chroma": {
+            "mean": 0.02991152431371664,
+            "median": 0.03001535383296119,
+            "p10": 0.025903376072495102,
+            "p90": 0.0338906104519568,
+            "p99": 0.037115605662224584
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.09587007480451394,
+            "median": 0.09507557676665644,
+            "p10": 0.0855078172294029,
+            "p90": 0.10711401528216624,
+            "p99": 0.12084478098514967
+          },
+          "hsv_saturation": {
+            "mean": 0.47180245700757834,
+            "median": 0.46153846153846145,
+            "p10": 0.3918918918918919,
+            "p90": 0.56,
+            "p99": 0.7142857142857143
+          },
+          "oklab_mean_a_b": [
+            -0.027001898869266346,
+            -0.012395518212271752
+          ],
+          "oklab_mean_hue_degrees": 204.6580088493462,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 6.41025641025641e-05,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.000576923076923077
+        },
+        "stone_wall": {
+          "pixels": 10400,
+          "mean_rgb8": [
+            76.11817307692307,
+            100.23875,
+            98.9573076923077
+          ],
+          "linear_luminance": {
+            "mean": 0.18690970862463188,
+            "median": 0.053253943193108055,
+            "p10": 0.02135344305367253,
+            "p90": 0.5966527741610211,
+            "p99": 0.9925167062083964
+          },
+          "oklab_lightness": {
+            "mean": 0.4742294995497156,
+            "median": 0.37253901657751626,
+            "p10": 0.2744143138646033,
+            "p90": 0.8388711203559966,
+            "p99": 0.9970251851547621
+          },
+          "oklab_chroma": {
+            "mean": 0.03082919563833741,
+            "median": 0.03211944779445429,
+            "p10": 0.021669313829964537,
+            "p90": 0.039418204407224954,
+            "p99": 0.04607249950714596
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.0807921750810259,
+            "median": 0.08903748713523281,
+            "p10": 0.029768573977143036,
+            "p90": 0.12555318284028963,
+            "p99": 0.13494367553370834
+          },
+          "hsv_saturation": {
+            "mean": 0.377111851304293,
+            "median": 0.4074074074074074,
+            "p10": 0.08749316939890715,
+            "p90": 0.65,
+            "p99": 0.7435897435897436
+          },
+          "oklab_mean_a_b": [
+            -0.02778947337098035,
+            -0.0067533870296159456
+          ],
+          "oklab_mean_hue_degrees": 193.65920913937998,
+          "fraction_any_channel_255": 0.011346153846153846,
+          "fraction_all_channels_255": 0.008653846153846154,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.013557692307692307,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "foreground_grass_soil": {
+          "pixels": 27000,
+          "mean_rgb8": [
+            30.930222222222223,
+            43.565777777777775,
+            30.491222222222223
+          ],
+          "linear_luminance": {
+            "mean": 0.023865182302140714,
+            "median": 0.019768862258055603,
+            "p10": 0.01209589589833264,
+            "p90": 0.036073343524411536,
+            "p99": 0.11609329353646025
+          },
+          "oklab_lightness": {
+            "mean": 0.27437614744427197,
+            "median": 0.2673360759636646,
+            "p10": 0.22722264643620632,
+            "p90": 0.3268431233310512,
+            "p99": 0.4826117031226969
+          },
+          "oklab_chroma": {
+            "mean": 0.029769854528731318,
+            "median": 0.02740083431497207,
+            "p10": 0.018275627066425965,
+            "p90": 0.04456147991304374,
+            "p99": 0.06537155712345159
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.10733965208297111,
+            "median": 0.10209908509930167,
+            "p10": 0.07631992898072294,
+            "p90": 0.14020622478290623,
+            "p99": 0.21104712778417528
+          },
+          "hsv_saturation": {
+            "mean": 0.35732219393840103,
+            "median": 0.3409090909090909,
+            "p10": 0.2619047619047619,
+            "p90": 0.4736842105263158,
+            "p99": 0.7272727272727273
+          },
+          "oklab_mean_a_b": [
+            -0.02352594195255279,
+            0.016790057363661643
+          ],
+          "oklab_mean_hue_degrees": 144.4852072113444,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.001,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.01074074074074074
+        },
+        "foreground_fern": {
+          "pixels": 8000,
+          "mean_rgb8": [
+            11.721875,
+            22.11225,
+            21.04725
+          ],
+          "linear_luminance": {
+            "mean": 0.008917493865138302,
+            "median": 0.00763037821638444,
+            "p10": 0.0010436471802343229,
+            "p90": 0.01622337401056929,
+            "p99": 0.03967802842575108
+          },
+          "oklab_lightness": {
+            "mean": 0.18570926583154282,
+            "median": 0.19431928040871357,
+            "p10": 0.1004436016232929,
+            "p90": 0.2511864538323206,
+            "p99": 0.3387422740179984
+          },
+          "oklab_chroma": {
+            "mean": 0.02000943488757487,
+            "median": 0.019520913482629094,
+            "p10": 0.012815090320294417,
+            "p90": 0.029166948664142937,
+            "p99": 0.043285789074282946
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.12275090612684358,
+            "median": 0.10545149577037281,
+            "p10": 0.05592581122663616,
+            "p90": 0.19334111392039724,
+            "p99": 0.22818361525018263
+          },
+          "hsv_saturation": {
+            "mean": 0.6364913366363127,
+            "median": 0.6190476190476191,
+            "p10": 0.26666666666666666,
+            "p90": 1.0,
+            "p99": 1.0
+          },
+          "oklab_mean_a_b": [
+            -0.01748687471688553,
+            -0.0036034693917475734
+          ],
+          "oklab_mean_hue_degrees": 191.6437878865681,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.283375,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.38
+        },
+        "sapling": {
+          "pixels": 11050,
+          "mean_rgb8": [
+            10.536923076923078,
+            28.818461538461538,
+            21.81900452488688
+          ],
+          "linear_luminance": {
+            "mean": 0.011586188701939256,
+            "median": 0.008825070882285577,
+            "p10": 0.003287903489637128,
+            "p90": 0.02237063959880733,
+            "p99": 0.045955946665248694
+          },
+          "oklab_lightness": {
+            "mean": 0.20969401330549536,
+            "median": 0.2030354790938678,
+            "p10": 0.1463758381746666,
+            "p90": 0.27699131595030846,
+            "p99": 0.35176168417602255
+          },
+          "oklab_chroma": {
+            "mean": 0.03160607545529559,
+            "median": 0.027448932938872444,
+            "p10": 0.022425277959087494,
+            "p90": 0.04733541012745602,
+            "p99": 0.06640615463974245
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.1508721042917024,
+            "median": 0.15320729920309675,
+            "p10": 0.11523545157840144,
+            "p90": 0.18073864889443716,
+            "p99": 0.20133351126883514
+          },
+          "hsv_saturation": {
+            "mean": 0.7171772637213534,
+            "median": 0.7037037037037037,
+            "p10": 0.4912280701754386,
+            "p90": 1.0,
+            "p99": 1.0
+          },
+          "oklab_mean_a_b": [
+            -0.028601960765533063,
+            0.005069865455279549
+          ],
+          "oklab_mean_hue_degrees": 169.94839156731842,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.13384615384615384,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.23248868778280543
+        },
+        "distant_mountain": {
+          "pixels": 18700,
+          "mean_rgb8": [
+            27.833422459893047,
+            57.4227807486631,
+            70.69417112299465
+          ],
+          "linear_luminance": {
+            "mean": 0.03763434700810034,
+            "median": 0.04002148991534682,
+            "p10": 0.019182547127801985,
+            "p90": 0.04847835325147126,
+            "p99": 0.05597685956131668
+          },
+          "oklab_lightness": {
+            "mean": 0.32901732780497617,
+            "median": 0.33936445562481404,
+            "p10": 0.26503872598163153,
+            "p90": 0.36189504707214165,
+            "p99": 0.37954401292566464
+          },
+          "oklab_chroma": {
+            "mean": 0.04250308201462195,
+            "median": 0.043467985668164864,
+            "p10": 0.03774903240926573,
+            "p90": 0.04495708789991279,
+            "p99": 0.04682481997929996
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.1299008253265419,
+            "median": 0.12808644201743125,
+            "p10": 0.12084831368033086,
+            "p90": 0.14358833642794566,
+            "p99": 0.15253579524839697
+          },
+          "hsv_saturation": {
+            "mean": 0.6144575867280849,
+            "median": 0.5945945945945946,
+            "p10": 0.5569620253164557,
+            "p90": 0.7254901960784313,
+            "p99": 0.7755102040816327
+          },
+          "oklab_mean_a_b": [
+            -0.02777764879984675,
+            -0.03207860054992568
+          ],
+          "oklab_mean_hue_degrees": 229.1099064376252,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "sky": {
+          "pixels": 4500,
+          "mean_rgb8": [
+            84.91977777777778,
+            160.3068888888889,
+            207.73555555555555
+          ],
+          "linear_luminance": {
+            "mean": 0.3172121006076728,
+            "median": 0.3162697282044985,
+            "p10": 0.3075255195479008,
+            "p90": 0.32469434414771775,
+            "p99": 0.3251931416346368
+          },
+          "oklab_lightness": {
+            "mean": 0.6777224393499226,
+            "median": 0.677165497439606,
+            "p10": 0.6708836052817123,
+            "p90": 0.6830061570054647,
+            "p99": 0.6834357774160514
+          },
+          "oklab_chroma": {
+            "mean": 0.10278828730515958,
+            "median": 0.1031879742099522,
+            "p10": 0.10049296588729734,
+            "p90": 0.10480849819384778,
+            "p99": 0.10537653355997856
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.15168798087228402,
+            "median": 0.15238220878073483,
+            "p10": 0.14713332355288458,
+            "p90": 0.15572729762396556,
+            "p99": 0.157166004171765
+          },
+          "hsv_saturation": {
+            "mean": 0.5912258921123069,
+            "median": 0.5913461538461539,
+            "p10": 0.5769230769230769,
+            "p90": 0.6038647342995169,
+            "p99": 0.6086956521739131
+          },
+          "oklab_mean_a_b": [
+            -0.053791764309236545,
+            -0.08758659753312893
+          ],
+          "oklab_mean_hue_degrees": 238.44361770068468,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "roof_background_near": {
+          "pixels": 720,
+          "mean_rgb8": [
+            35.05694444444445,
+            63.516666666666666,
+            73.57083333333334
+          ],
+          "linear_luminance": {
+            "mean": 0.04599450328095315,
+            "median": 0.0450179405026604,
+            "p10": 0.028791761819219223,
+            "p90": 0.06649553554033794,
+            "p99": 0.0817838987000666
+          },
+          "oklab_lightness": {
+            "mean": 0.3511636616322242,
+            "median": 0.3525182406890244,
+            "p10": 0.3036539023112609,
+            "p90": 0.40216832567330274,
+            "p99": 0.43134985473395054
+          },
+          "oklab_chroma": {
+            "mean": 0.038675016556679896,
+            "median": 0.03831365617989605,
+            "p10": 0.03560483583865904,
+            "p90": 0.04407106127245493,
+            "p99": 0.048368411822813054
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.11080061290632967,
+            "median": 0.10980570656202397,
+            "p10": 0.09714056247150864,
+            "p90": 0.12608264425776902,
+            "p99": 0.13806972567996806
+          },
+          "hsv_saturation": {
+            "mean": 0.5295476700200558,
+            "median": 0.52,
+            "p10": 0.46143724696356275,
+            "p90": 0.6155128205128205,
+            "p99": 0.6724137931034483
+          },
+          "oklab_mean_a_b": [
+            -0.02825520739934081,
+            -0.02605866783467136
+          ],
+          "oklab_mean_hue_degrees": 222.6841294825296,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "roof_background_far": {
+          "pixels": 960,
+          "mean_rgb8": [
+            35.26979166666667,
+            65.16666666666667,
+            79.51875
+          ],
+          "linear_luminance": {
+            "mean": 0.04894248363885089,
+            "median": 0.04571386045295752,
+            "p10": 0.0248625942082362,
+            "p90": 0.07426036327132435,
+            "p99": 0.08419119378433058
+          },
+          "oklab_lightness": {
+            "mean": 0.3585528174884682,
+            "median": 0.3549499741202703,
+            "p10": 0.28927030505998813,
+            "p90": 0.4176139769511146,
+            "p99": 0.4355458957592591
+          },
+          "oklab_chroma": {
+            "mean": 0.043512705129257395,
+            "median": 0.04395588260593224,
+            "p10": 0.040227104232832406,
+            "p90": 0.04606702647634014,
+            "p99": 0.047067008114209434
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.12242934995274934,
+            "median": 0.12306896922037738,
+            "p10": 0.10969037850490426,
+            "p90": 0.13814760198870632,
+            "p99": 0.1452812950109316
+          },
+          "hsv_saturation": {
+            "mean": 0.565538994611593,
+            "median": 0.5657894736842105,
+            "p10": 0.4895833333333333,
+            "p90": 0.6729690239625951,
+            "p99": 0.7017543859649122
+          },
+          "oklab_mean_a_b": [
+            -0.02767143916837748,
+            -0.03355149651675072
+          ],
+          "oklab_mean_hue_degrees": 230.48605292362944,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        },
+        "eave_shadow": {
+          "pixels": 1200,
+          "mean_rgb8": [
+            17.605833333333333,
+            38.23416666666667,
+            40.189166666666665
+          ],
+          "linear_luminance": {
+            "mean": 0.017568867416121917,
+            "median": 0.016585983364853386,
+            "p10": 0.009810606842187005,
+            "p90": 0.026144987865982815,
+            "p99": 0.03909566604216855
+          },
+          "oklab_lightness": {
+            "mean": 0.2527012233401903,
+            "median": 0.2520770528760087,
+            "p10": 0.2113930484867145,
+            "p90": 0.293411360056759,
+            "p99": 0.3357469932463732
+          },
+          "oklab_chroma": {
+            "mean": 0.026999862385020397,
+            "median": 0.027043265242726905,
+            "p10": 0.02448381619979924,
+            "p90": 0.029459301784679436,
+            "p99": 0.03215977216138417
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.1080916112255952,
+            "median": 0.10692964861360979,
+            "p10": 0.09645633682089107,
+            "p90": 0.12057297404352138,
+            "p99": 0.15021773708990843
+          },
+          "hsv_saturation": {
+            "mean": 0.5799539786606136,
+            "median": 0.5625,
+            "p10": 0.47262435677530024,
+            "p90": 0.696969696969697,
+            "p99": 0.9090909090909091
+          },
+          "oklab_mean_a_b": [
+            -0.024617241057308722,
+            -0.010726317154727103
+          ],
+          "oklab_mean_hue_degrees": 203.543901716484,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0025,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0075
+        },
+        "stone_adjacent_wood": {
+          "pixels": 1600,
+          "mean_rgb8": [
+            35.560625,
+            58.106875,
+            59.515625
+          ],
+          "linear_luminance": {
+            "mean": 0.042550033373924004,
+            "median": 0.02776014023061825,
+            "p10": 0.01942289715989182,
+            "p90": 0.09334764379007593,
+            "p99": 0.15338492047122582
+          },
+          "oklab_lightness": {
+            "mean": 0.3292779415448125,
+            "median": 0.29971737707263024,
+            "p10": 0.26616953457089704,
+            "p90": 0.45056967268738485,
+            "p99": 0.532478902802729
+          },
+          "oklab_chroma": {
+            "mean": 0.028721162250792628,
+            "median": 0.029081437378989945,
+            "p10": 0.02548556584338548,
+            "p90": 0.031413647224809105,
+            "p99": 0.03315390147919481
+          },
+          "oklab_chroma_over_lightness": {
+            "mean": 0.09155096453295318,
+            "median": 0.0992901500436256,
+            "p10": 0.05833031219166625,
+            "p90": 0.1122857166098206,
+            "p99": 0.11736315391292772
+          },
+          "hsv_saturation": {
+            "mean": 0.4477258292471696,
+            "median": 0.5,
+            "p10": 0.23372294372294367,
+            "p90": 0.5869565217391305,
+            "p99": 0.6316046213093709
+          },
+          "oklab_mean_a_b": [
+            -0.02634224425686668,
+            -0.010295058886352699
+          ],
+          "oklab_mean_hue_degrees": 201.34652010547543,
+          "fraction_any_channel_255": 0.0,
+          "fraction_all_channels_255": 0.0,
+          "fraction_any_channel_0": 0.0,
+          "fraction_all_channels_0": 0.0,
+          "fraction_any_channel_ge_254": 0.0,
+          "fraction_linear_luminance_lt_0_005": 0.0
+        }
+      }
+    }
+  },
+  "comparison_limits": [
+    "Eight named GPU points are not whole-material measurements.",
+    "GPU reports are the latest asynchronous sample every 30 frames; the screenshot frame is not explicitly recorded, so exact sample/frame correspondence is unproven.",
+    "Automatic adaptation channels are spatially sampled history. A constant override removes that spatial variation as well as temporal response.",
+    "CPU counterfactuals change only the bloom vector at the measured source and actual A; they do not predict all regional pixels or validate retail producers.",
+    "Changing specular can change scene inputs, bloom and automatic adaptation. Source and A deltas remain explicit.",
+    "Final endpoint counts do not locate clipping without corresponding GPU evidence; a single clamped point does not locate every regional hotspot.",
+    "The historical complaint comparison changes engine and adds diagnostics. It is a bounded repeat, not an isolated bloom/specular causal pair.",
+    "The user accepted old build brightness. These controls diagnose the complaint and do not imply visual acceptance or retail parity."
+  ],
+  "visual_acceptance": false,
+  "retail_parity": false,
+  "subsequent_source_corrections": {
+    "sun_report": "skyrim-native-sun-trajectory-20261010.json",
+    "coverage_report": "skyrim-native-diffuse-coverage-20261010.json",
+    "normal_frame_audit": "skyrim-native-normal-convention-20261010.json",
+    "engine_library_tests": 454,
+    "visual_acceptance": false,
+    "retail_parity": false,
+    "controls_above_preserved_as_historical_snapshot": true
+  }
+}

@@ -1,0 +1,505 @@
+{
+  "type": "array",
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "description": "",
+  "minItems": 1,
+  "uniqueItems": true,
+  "items": {
+    "oneOf": [
+      {
+        "type": "object",
+        "required": [
+          "lights",
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "\\.nif$"
+            },
+            "minItems": 1,
+            "description": "Full model path to object"
+          },
+          "lights": {
+            "$ref": "#/definitions/lightsArray"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "required": [ "lights" ],
+        "properties": {
+          "visualEffects": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "description": "Legacy field, prefer using formIDs"
+          },
+          "formIDs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "FormIDs of object/worn item/effect shader/art object"
+          },
+          "lights": {
+            "$ref": "#/definitions/lightsArray"
+          }
+        },
+        "oneOf": [
+          { "required": [ "visualEffects" ] },
+          { "required": [ "formIDs" ] }
+        ]
+      }
+    ]
+  },
+  "definitions": {
+    "lightsArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/pos"
+            },
+            "minItems": 1,
+            "description": "Lights can be attached to points (using their name) inside the nif."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "description": "Lights can be attached to any node or shape (using their name) inside the nif."
+          },
+          "whiteList": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "description": "whitelist lights from attaching to an object reference based on \n1. Model Path (only for addonNodes or visualEffects)\n2.Reference ID\n3.Base Object ID\n4.Parent cell ID\n5.Worldspace ID\n6.Location ID"
+          },
+          "blackList": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "description": "blacklist lights from attaching to an object reference based on \n1. Model Path (only for addonNodes or visualEffects)\n2.Reference ID\n3.Base Object ID\n4.Parent cell ID\n5.Worldspace ID\n6.Location ID"
+          },
+          "data": {
+            "$ref": "#/definitions/lightData"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "points"
+            ]
+          },
+          {
+            "required": [
+              "nodes"
+            ]
+          },
+          {
+            "properties": {
+              "points": false,
+              "nodes": false
+            }
+          }
+        ]
+      }
+    },
+    "lightData": {
+      "type": "object",
+      "properties": {
+        "light": {
+          "type": "string",
+          "minLength": 1,
+          "description": "EditorID of the lightbulb to be attached. Multiple editorIDs can be chained using \"|\" eg. (\"DefaultGreen01NS|WRCandleFlickerNS\"). The first valid form will be picked."
+        },
+        "color": {
+          "$ref": "#/definitions/color"
+        },
+        "fade": {
+          "$ref": "#/definitions/fade"
+        },
+        "radius": {
+          "$ref": "#/definitions/radius"
+        },
+        "fov": {
+          "type": "number",
+          "description": "Override lightbulb FOV (shadowcasting lights only)."
+        },
+        "cutoff": {
+          "type": "number",
+          "description": "Light cutoff (Inverse Square Lighting)"
+        },
+        "size": {
+          "type": "number",
+          "description": "Size of light source (Inverse Square Lighting)"
+        },
+        "shadowDepthBias": {
+          "type": "number",
+          "description": "Controls shadow depth bias"
+        },
+        "offset": {
+          "$ref": "#/definitions/pos",
+          "description": "Offset light position from the current point/node it is attached to."
+        },
+        "rotation": {
+          "$ref": "#/definitions/rot"
+        },
+        "emittanceForm": {
+          "type": "string",
+          "minLength": 1,
+          "description": "External emittance ID. Does not work on lights attached to actors."
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "You can add conditions to lights so they can be toggled on/off when needed. Conditions update every second."
+        },
+        "conditionalNodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "flags": {
+          "anyOf": [
+            {
+              "enum": [
+                "PortalStrict",
+                "Shadow",
+                "Simple",
+                "InverseSquare",
+                "UpdateOnWaiting",
+                "UpdateOnCellTransition",
+                "SyncAddonNodes",
+                "IgnoreScale",
+                "RandomAnimStart",
+                "NoExternalEmittance"
+              ]
+            },
+            {
+              "pattern": "^PortalStrict|Shadow|Simple|InverseSquare|UpdateOnWaiting|UpdateOnCellTransition|SyncAddonNodes|IgnoreScale|RandomAnimStart|NoExternalEmittance"
+            }
+          ],
+          "type": "string",
+          "minLength": 1,
+          "description": "Set of flags used to mark lights for rendering purposes. Can be multiple separated with \"|\" Flags should be written exactly as shown. \n- PortalStrict\n- Shadow\n- Simple\n- InverseSquare\n- UpdateOnWaiting\n- UpdateOnCellTransition\n- NeedsUpdate\n- SyncAddonNodes\n- IgnoreScale\n- RandomAnimStart\n- NoExternalEmittance"
+        },
+        "colorController": {
+          "type": "object",
+          "properties": {
+            "interpolation": {
+              "$ref": "#/definitions/interpolation"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "time": {
+                    "type": "number"
+                  },
+                  "color": {
+                    "$ref": "#/definitions/color"
+                  },
+                  "forward": {
+                    "$ref": "#/definitions/color"
+                  },
+                  "backward": {
+                    "$ref": "#/definitions/color"
+                  }
+                },
+                "required": [
+                  "time",
+                  "color"
+                ]
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "interpolation",
+            "keys"
+          ],
+          "description": "Lights can be animated similar to how nif animation controllers work. Animation will cycle between each keyframe and loop back when the final key is reached."
+        },
+        "radiusController": {
+          "$ref": "#/definitions/floatController"
+        },
+        "fadeController": {
+          "$ref": "#/definitions/floatController"
+        },
+        "positionController": {
+          "type": "object",
+          "properties": {
+            "interpolation": {
+              "$ref": "#/definitions/interpolation"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "time": {
+                    "type": "number"
+                  },
+                  "translation": {
+                    "$ref": "#/definitions/pos"
+                  },
+                  "forward": {
+                    "$ref": "#/definitions/pos"
+                  },
+                  "backward": {
+                    "$ref": "#/definitions/pos"
+                  }
+                },
+                "required": [
+                  "time",
+                  "translation"
+                ]
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "interpolation",
+            "keys"
+          ],
+          "description": "Lights can be animated similar to how nif animation controllers work. Animation will cycle between each keyframe and loop back when the final key is reached."
+        },
+        "lightController": {
+          "type": "object",
+          "properties": {
+            "interpolation": {
+              "$ref": "#/definitions/interpolation"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "time": {
+                    "type": "number"
+                  },
+                  "data": {
+                    "$ref": "#/definitions/lightControllerData"
+                  },
+                  "forward": {
+                    "$ref": "#/definitions/lightControllerData"
+                  },
+                  "backward": {
+                    "$ref": "#/definitions/lightControllerData"
+                  }
+                },
+                "required": [
+                  "time",
+                  "data"
+                ]
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "interpolation",
+            "keys"
+          ],
+          "description": "Lights can be animated similar to how nif animation controllers work. Animation will cycle between each keyframe and loop back when the final key is reached."
+        },
+        "rotationController": {
+          "type": "object",
+          "properties": {
+            "interpolation": {
+              "$ref": "#/definitions/interpolation"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "time": {
+                    "type": "number"
+                  },
+                  "rotation": {
+                    "$ref": "#/definitions/rot"
+                  },
+                  "forward": {
+                    "$ref": "#/definitions/rot"
+                  },
+                  "backward": {
+                    "$ref": "#/definitions/rot"
+                  }
+                },
+                "required": [
+                  "time",
+                  "rotation"
+                ]
+              },
+              "minItems": 2,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "interpolation",
+            "keys"
+          ],
+          "description": "Lights can be animated similar to how nif animation controllers work. Animation will cycle between each keyframe and loop back when the final key is reached."
+        }
+      },
+      "required": [
+        "light"
+      ]
+    },
+    "color": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": -1.0
+          },
+          {
+            "type": "integer",
+            "maximum": 255,
+            "minimum": 0
+          }
+        ]
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Override lightbulb color. Can be RGB (e.g., 255,0,0) or normalized RGB (e.g., 1.0,0.0,0.0)."
+    },
+    "pos": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "rot": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 360.0
+      },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Control lightbulb rotation (for spotlights). Unit is in degrees."
+    },
+    "floatController": {
+      "type": "object",
+      "properties": {
+        "interpolation": {
+          "$ref": "#/definitions/interpolation"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "time": {
+                "type": "number"
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0.0
+              },
+              "forward": {
+                "type": "number",
+                "minimum": 0.0
+              },
+              "backward": {
+                "type": "number",
+                "minimum": 0.0
+              }
+            },
+            "required": [
+              "time",
+              "value"
+            ]
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "interpolation",
+        "keys"
+      ],
+      "description": "Lights can be animated similar to how nif animation controllers work. Animation will cycle between each keyframe and loop back when the final key is reached."
+    },
+    "fade": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Override lightbulb fade."
+    },
+    "radius": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Override lightbulb radius."
+    },
+    "interpolation": {
+      "type": "string",
+      "enum": [
+        "Linear",
+        "Step",
+        "Cubic"
+      ]
+    },
+    "lightControllerData": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "$ref": "#/definitions/color"
+        },
+        "radius": {
+          "$ref": "#/definitions/radius"
+        },
+        "fade": {
+          "$ref": "#/definitions/fade"
+        },
+        "translation": {
+          "$ref": "#/definitions/pos"
+        },
+        "rotation": {
+          "$ref": "#/definitions/rot"
+        }
+      }
+    }
+  }
+}

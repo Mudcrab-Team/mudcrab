@@ -9,6 +9,12 @@ rather than a vague impression.
 engine --assets <converted assets> --shots review/riverwood.json [--shots-out review/out]
 ```
 
+Shots run without a window. The production world camera renders into an owned
+`Rgba8UnormSrgb` image at the file's exact dimensions, and the capture reads that
+same image. Display resolution, scaling and window visibility do not change the
+PNG dimensions. The runner uses a minimum frame interval of 16 ms; this is a
+visual capture mode, not a performance benchmark.
+
 ## The shots file
 
 ```json
@@ -33,7 +39,8 @@ engine --assets <converted assets> --shots review/riverwood.json [--shots-out re
 
 | Field | Meaning |
 | :-- | :-- |
-| `width`, `height` | The frame size in pixels, at most 8192 each. The window is opened at this size, so the PNG is too, unless the system gives the window a different size (a screen smaller than the frame, for example); that shot's `shots.log` line then records `window=<w>x<h>`. Use the size the reference screenshots were taken at. |
+| `width`, `height` | The render-target and PNG size in pixels, at most 8192 each. Use the size the reference screenshots were taken at. A capture with different dimensions fails the shot. |
+| `settle_timeout_seconds` | Optional per-shot settling budget in seconds, finite and greater than zero, up to 300. Omission retains the 30-second default. |
 | `name` | Output file stem: the image is `<out>/<name>.png`. A plain file name, unique in the file, that Windows can create (see below). |
 | `worldspace_id` | The worldspace of an exterior shot (60 is Tamriel). `null` or absent leaves it to `--worldspace`. |
 | `interior_cell_id` | An interior cell. Such a shot is skipped and logged: the streamer holds exterior cells only. |
@@ -50,7 +57,7 @@ an extension, and ignoring case, so `con.png` and `Nul.x` are refused too.
 
 A file that cannot be read, is not JSON of this shape, has no shots, a zero frame, a side over 8192
 pixels, a missing or non-numeric pose field, a field of view out of range, or a name that is empty,
-repeated or not a name Windows can create stops the run before a window opens, with a message that
+repeated or not a name Windows can create stops the run before rendering starts, with a message that
 names the file and the problem.
 
 ## What a run does
@@ -65,22 +72,33 @@ around it) and waits until the view has settled: no cell loading, no database re
 no model or surface waiting for its assets, no model waiting to be armed, no out-of-range cell
 still waiting to be unloaded, no new failed cells, asset-load failures or material, terrain,
 water, transform-bounds or renderer validation failures since the shot was posed, and the
-renderer's final path running, for `SETTLE_QUIET_FRAMES`
-(10) frames in a row, and not before `WARM_UP_SECONDS` (2 s) after start-up, while the first
-pipelines compile. The frame count is exact: a view that has been quiet for ten frames running is
+renderer's final path running. The current camera must also have a color output attachment,
+uploaded visible meshes, prepared material bind groups, compiled color/prepass pipelines, and no
+pending material queue or pipeline compilation. Its active shadow views must have prepared
+caster meshes, materials, and shadow pipelines too. These conditions must hold for `SETTLE_QUIET_FRAMES`
+(10) frames in a row, and not before `WARM_UP_SECONDS` (2 s) after start-up. The frame count is
+exact: a view that has been quiet for ten frames running is
 photographed on the tenth, and the `frames=` of its log line is then 10 - the count of quiet
 frames is advanced before it is read, so it is not one more than the constant. The run then saves
-the primary window to `<out>/<name>.png`. A shot that has not settled after
-`SETTLE_TIMEOUT_SECONDS` (30 s) is still captured, and the log says the timeout took it and what
-was still pending or which failures prevented settling. A new failure prevents that shot from
+the camera's owned image to `<out>/<name>.png`. A shot that has not settled within
+its `settle_timeout_seconds` budget (30 s when omitted) is still captured. The log
+records the budget, timeout, pending work and failures that prevented settling.
+A new failure prevents that shot from
 settling even after pending work drains; its timeout capture fails the run.
+
+The Riverwood lighting fixture explicitly allows 90 seconds per shot. The full
+asset pack exceeded 30 seconds while models were still waiting to be armed;
+the longer budget allows those queues to drain. The same ten quiet frames and
+zero pending or failed dependencies are required, and a timeout still fails the run.
+
+The engine log records the current GPU dependency counts when each screenshot is requested.
+`MUDCRAB_RENDER_OUTPUT_TRACE=1` also samples them during loading.
 
 `--shots-out` defaults to a `<file stem>-shots/` folder beside the shots file. `shots.log` there
 has one line per shot: its name, the frames it waited, whether it settled or timed out, the image's
-path, and, when the window was not the frame the file asked for, `window=<w>x<h>` - that image is
-not the shape the reference is, and the engine log warns about it once. Skipped shots have a line
-saying why. Each line is appended as its shot finishes, and the file is created with the first
-line, so a run that is killed keeps the shots it had already taken.
+path. Skipped shots have a line saying why. Each line is appended as its shot finishes,
+and the file is created with the first line, so a run that is killed keeps the shots it had
+already taken.
 
 The run exits with success once every shot is written, and exits non-zero - the process's exit code
 is not zero, and `main` reports the failure - when an image or the log could not be written, when a
@@ -89,6 +107,6 @@ acceptance run's gates did not pass. `scripts/phase2-acceptance.ps1` records tha
 command and marks the command failed on anything but 0, so a failed shots or acceptance run is now
 visible in a campaign report instead of being read as a pass.
 
-`--headless` is ignored during a shots run, since the image is taken of the window. `--shots`
-cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-speed` or a fixture.
-`--run-label` names the run in the window title (`Mudcrab - shots: <label>`).
+`--shots` always runs without a window, with or without `--headless`. It cannot be
+combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-speed` or a fixture.
+Interactive views and benchmark screenshots retain their window-backed paths.

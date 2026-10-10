@@ -1,0 +1,1691 @@
+{
+  "schema": "mudcrab.skyrim.mod-content-rendering.v1",
+  "date": "2026-10-10",
+  "scope": "Primary author documentation for content/record/geometry lighting modifications; no new vanilla native or runtime proof.",
+  "target_native_executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "method": {
+    "web_browsing_used": true,
+    "author_pages": 9,
+    "additional_public_file_listings": 3,
+    "archives_fetched": 0,
+    "assets_or_scripts_read": 0,
+    "mod_installations": 0,
+    "game_launches": 0,
+    "native_queries": 0,
+    "runtime_visual_comparisons": 0,
+    "documentation_retrieval_date_utc": "2026-10-10",
+    "source_snapshot_format": "Exact web-tool response text and concatenated per-URL extracts; hashes are text artifact hashes, not original HTML or archive hashes.",
+    "direct_http_fetches": "Seven unauthenticated requests returned HTTP 403. Error bodies are retained privately and explicitly rejected as documentation evidence.",
+    "public_download_routes": "RS main and Luminosity Light Editor manual links returned HTML landing pages, not payloads. No login or access circumvention was attempted."
+  },
+  "source_pins": [
+    {
+      "id": "MC-S01",
+      "mod_id": "lux",
+      "title": "Lux",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "GGUNIT",
+      "uploaded_by": "GGUNIT",
+      "page_version": "7.1",
+      "page_last_updated_display": "08 December 2025, 12:27PM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/lux.primary-excerpts.txt",
+      "artifact_sha256": "ef77494a20fdb1415b2a8225bd3156f24bd924e14cf73992562b3a31030b59f0",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S02",
+      "mod_id": "orbis",
+      "title": "Lux Orbis",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/56095",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "GGUNIT",
+      "uploaded_by": "GGUNIT",
+      "page_version": "4.5",
+      "page_last_updated_display": "29 November 2024, 9:45AM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/orbis.primary-excerpts.txt",
+      "artifact_sha256": "c5b042cd942af3c21bcf67fc226cbeacb7dc9d24b9b23a5f8df666b0e41975f1",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S03",
+      "mod_id": "via",
+      "title": "Lux Via",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/63588",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "GGUNIT",
+      "uploaded_by": "GGUNIT",
+      "page_version": "2.2",
+      "page_last_updated_display": "01 February 2025, 1:49PM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/via.primary-excerpts.txt",
+      "artifact_sha256": "26ccdbbf41489bf7a6b5c45c43dfa5f6f93292a6a4f025991f5902e5a3186ef3",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S04",
+      "mod_id": "wsrt",
+      "title": "Window Shadows RT",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/37831",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "HHaley and Dlizzio",
+      "uploaded_by": "deleted93399393",
+      "page_version": "RTbeta",
+      "page_last_updated_display": "27 July 2021, 9:12PM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/wsrt.primary-excerpts.txt",
+      "artifact_sha256": "1bbd71977ad2f274bad8a2135cc5a12ca3a764b27e4210e357aa1e71fc4c473e",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S05",
+      "mod_id": "wsrt-updated",
+      "title": "Window Shadows RT - Updated",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/111091",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "CarbonDice and Dlizzio",
+      "uploaded_by": "Zanderat",
+      "page_version": "1.4",
+      "page_last_updated_display": "07 December 2024, 7:52AM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/wsrt-updated.primary-excerpts.txt",
+      "artifact_sha256": "17a37236ed1c317e5090b210978a28fea3bdd8a26e85e0e37437982d9a87ca93",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S06",
+      "mod_id": "elfx",
+      "title": "Enhanced Lights and FX",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/2424",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "anamorfus",
+      "uploaded_by": "anamorfus",
+      "page_version": "3.06",
+      "page_last_updated_display": "06 October 2017, 5:35AM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/elfx.primary-excerpts.txt",
+      "artifact_sha256": "a6f2242d2812572f50c42eda44203265b1659e5020c15cdd45b05539866f931d",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S07",
+      "mod_id": "rs",
+      "title": "Relighting Skyrim SE",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/8586",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "NovakDalton-JawZ-Step Modifications",
+      "uploaded_by": "StepModifications",
+      "page_version": "3.1",
+      "page_last_updated_display": "16 March 2026, 10:58PM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/rs.primary-excerpts.txt",
+      "artifact_sha256": "2f71e2b5ce9cf899928c12c160aaf110c6c51703332507d3802cd8d5c0435d02",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S08",
+      "mod_id": "luminosity",
+      "title": "Luminosity Lighting Overhaul - The Cathedral Concept",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/16830",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "JonnyWang",
+      "uploaded_by": "DrJacopo",
+      "page_version": "4.2",
+      "page_last_updated_display": "11 April 2021, 1:05AM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/luminosity.primary-excerpts.txt",
+      "artifact_sha256": "d6199c9010173bb4aa1184cec12c96762e598097dfdb36c9ddf3f7f579ece0f5",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S09",
+      "mod_id": "ambiance",
+      "title": "Ambiance - A Vanilla(plus) Ambient Lighting Overhaul",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/46383",
+      "publisher_relation": "author or credited maintainer mod page",
+      "created_by": "TheMilesO",
+      "uploaded_by": "TheMilesO",
+      "page_version": "1.1",
+      "page_last_updated_display": "19 March 2021, 4:28PM",
+      "page_time_zone": null,
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/ambiance.primary-excerpts.txt",
+      "artifact_sha256": "3d9f34bcb727ffcb24c85968aa086524ce6de76ea5b4326d4c5b29b53a247b24",
+      "artifact_kind": "concatenated web-tool extracts with tool line references",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Page metadata pins the documentation, not a downloaded archive.",
+        "The author description is not a target-native instruction or record-diff proof."
+      ]
+    },
+    {
+      "id": "MC-S10",
+      "mod_id": "lux",
+      "title": "lux public file listing",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158?tab=files",
+      "publisher_relation": "author or maintainer upload listing",
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/lux.files-excerpts.txt",
+      "artifact_sha256": "e6f2ca83d83f8973ab8fd2892c0e124e7824d2d63050015a0948fba7c4ef8640",
+      "artifact_kind": "concatenated web-tool extracts",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Only file-listing metadata was obtained. No plugin, NIF, script or archive was read."
+      ]
+    },
+    {
+      "id": "MC-S11",
+      "mod_id": "rs",
+      "title": "rs public file listing",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/8586?tab=files",
+      "publisher_relation": "author or maintainer upload listing",
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/rs.files-excerpts.txt",
+      "artifact_sha256": "70e6b495e2d42efbed818db98306cf8d70f90067112fd9d82cfd6b7f92e3fc4b",
+      "artifact_kind": "concatenated web-tool extracts",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Only file-listing metadata was obtained. No plugin, NIF, script or archive was read."
+      ]
+    },
+    {
+      "id": "MC-S12",
+      "mod_id": "luminosity",
+      "title": "luminosity public file listing",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/16830?tab=files",
+      "publisher_relation": "author or maintainer upload listing",
+      "retrieval_date_utc": "2026-10-10",
+      "artifact_path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/luminosity.files-excerpts.txt",
+      "artifact_sha256": "b10d7cdb91a757a6ddd0f27bc35df2fdb05a444bed14ab550448e95bcfefbd2f",
+      "artifact_kind": "concatenated web-tool extracts",
+      "archive_version_verified": false,
+      "plugin_or_asset_payload_fetched": false,
+      "limits": [
+        "Only file-listing metadata was obtained. No plugin, NIF, script or archive was read."
+      ]
+    }
+  ],
+  "web_snapshot_manifest": [
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_access10.web.txt",
+      "sha256": "3cc70eff5cd7fd7e1db50ebf8931b0acbf0c274b6c4f530d7bfe06179430c092",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_files8.web.txt",
+      "sha256": "c41ca70e4a6810a7770859c6a793b7b5fdbc4ecd9d06dfd8791c1c62630744e7",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_files9.web.txt",
+      "sha256": "9f1e2c1dd4bd0e6f86ea6c9a61496ba4345da739b9791d065faeb8fdb8525b08",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_find2.web.txt",
+      "sha256": "161950a4a9370bbb1a8f5893e56fdf53146b36207d2b2d1a7131e174241e051b",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_open1.web.txt",
+      "sha256": "0eec71e239de261672c16ad189b79beedec77644bc7a237efd8f802bde202514",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_open3.web.txt",
+      "sha256": "8527c9083d694d454795fcf7e50c64452f5ac9f737392080512070e83d4094a9",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_open4.web.txt",
+      "sha256": "b8616061fa8433d77b81eef5a2c58151c006376428cd197a7bbd541e2cdd46a2",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_open5.web.txt",
+      "sha256": "0ab0fddb150a3ce3dce10f8557757fc58ccb00b7551a20c6fe24937bafd27db5",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_open6.web.txt",
+      "sha256": "29e0f771e2a2a5a6f9e54898e578d0b47aa4226a3032fa946fd6c907acf21990",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_scope11.web.txt",
+      "sha256": "70e57cdc91cf15945c3c637c321563f8d2ef0a54d42b466e9ab384bbe2039d8d",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_search0.web.txt",
+      "sha256": "376f7a347429d65ede25cca73747fec01540f06e11d508dee6177c61d94a9559",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-content/evidence/modweb_search7.web.txt",
+      "sha256": "236d507bd0279500f34411cfd632cbe8f4e8a28640077d0ccf534f1ff6fda99a",
+      "kind": "web_tool_extracted_text",
+      "retrieval_date_utc": "2026-10-10",
+      "complete_original_html": false
+    }
+  ],
+  "input_anchor_evidence": [
+    {
+      "path": "docs/research/skyrim-render-map/input-contracts.json",
+      "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e",
+      "revision_scope_note": "This pin follows the reviewed I-E06 hash/scope update for project diagnostic and FXAA/output-chain notes. Native equations, input edges, proof statuses and coverage counts are unchanged."
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-shader-loader.json",
+      "sha256": "702eed2ee843bf193eb0ba7e83ef302ea6b3b5e7fba1ef18fb2af151f2b697bc"
+    }
+  ],
+  "native_anchors": [
+    {
+      "id": "MC-A01",
+      "domain": "Record/resource selection",
+      "input_contract_edges": [
+        "I-C01-E1",
+        "I-C01-E2"
+      ],
+      "native_address_seeds": [],
+      "current_proof_limit": "Decoded candidates and static package associations do not capture active override or resource winners."
+    },
+    {
+      "id": "MC-A02",
+      "domain": "Local light inputs and selection",
+      "input_contract_edges": [
+        "I-C15-E1",
+        "I-C15-E2",
+        "I-C15-E3",
+        "I-C16-E1",
+        "I-C16-E2"
+      ],
+      "native_address_seeds": [
+        "0x14154B770",
+        "0x141548820"
+      ],
+      "current_proof_limit": "Selected local-light shader consumption is recovered; REFR/base preparation, list construction and shadow allocation remain open. The first address packs pass-list entry zero for directional light and is a caller-trace seed, not a proven local-light producer."
+    },
+    {
+      "id": "MC-A03",
+      "domain": "Interior ambient and distance fog",
+      "input_contract_edges": [
+        "I-C03-E2",
+        "I-C09-E1",
+        "I-C09-E2",
+        "I-C10-E1",
+        "I-C10-E2"
+      ],
+      "native_address_seeds": [
+        "0x1414EC3B0",
+        "0x14154B880",
+        "0x1402BC310",
+        "0x1402BC380",
+        "0x140415D50"
+      ],
+      "current_proof_limit": "Ambient builder/uploader and selected fog inheritance are static proof; interior cube precedence, directional parameters and live room ownership remain open. Extra RGB global 0x14331D6F0 has unresolved meaning."
+    },
+    {
+      "id": "MC-A04",
+      "domain": "Image-space base and modifiers",
+      "input_contract_edges": [
+        "I-C12-E1",
+        "I-C12-E2",
+        "I-C12-E3",
+        "I-C12-E4",
+        "I-C13-E2",
+        "I-C13-E4",
+        "I-C13-E5"
+      ],
+      "native_address_seeds": [
+        "0x1414EEC10",
+        "0x14153D860",
+        "0x1402A6FB0",
+        "0x1415370B0",
+        "0x14065A250"
+      ],
+      "current_proof_limit": "Stable packing and ordered modifier composition are static proof; active IMGS/base pointers, IMAD curves and stack values are unobserved."
+    },
+    {
+      "id": "MC-A05",
+      "domain": "Geometry/material and emission",
+      "input_contract_edges": [
+        "I-C17-E3",
+        "I-C17-E4",
+        "I-C17-E5",
+        "I-C18-E3",
+        "I-C18-E4",
+        "I-C23-E2",
+        "I-C25-E2",
+        "I-C38-E2"
+      ],
+      "native_address_seeds": [
+        "0x141548820",
+        "0x1415241D0",
+        "0x1415896A0",
+        "0x1415896D0",
+        "0x141011750"
+      ],
+      "current_proof_limit": "Selected material/key/layout segments are static; original mesh streams, full emission preparation, resource override and per-geometry light selection remain open."
+    },
+    {
+      "id": "MC-A06",
+      "domain": "Room visibility and portals",
+      "input_contract_edges": [
+        "I-C11-E1",
+        "I-C11-E2",
+        "I-C25-E2"
+      ],
+      "native_address_seeds": [],
+      "current_proof_limit": "Room links are retained in the project; native containment, portal-strict semantics, culling and light-list ownership remain open."
+    },
+    {
+      "id": "MC-A07",
+      "domain": "Effect fog and weather volumetrics",
+      "input_contract_edges": [
+        "I-C14-E2",
+        "I-C35-E1",
+        "I-C35-E2"
+      ],
+      "native_address_seeds": [
+        "0x141556840",
+        "0x141556C40",
+        "0x141557090"
+      ],
+      "current_proof_limit": "Selected Effect fog uploads are traced. Effect material/blending and VOLI selection/composition remain distinct open routes."
+    },
+    {
+      "id": "MC-A08",
+      "domain": "Terrain and light visibility settings",
+      "input_contract_edges": [
+        "I-C27-E2",
+        "I-C42-E1",
+        "I-C42-E2"
+      ],
+      "native_address_seeds": [],
+      "current_proof_limit": "Native terrain response and active INI/GMST settings are unresolved. Authored flags do not establish effective visibility or illumination."
+    }
+  ],
+  "findings": [
+    {
+      "id": "MC-F01",
+      "mod_id": "lux",
+      "status": "author_documented",
+      "claim": "Rebuilds interior light placements, lighting templates and image spaces.",
+      "scope": "Current description.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Description, tool lines 2093\u20132094",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A03",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q02",
+        "MC-Q04",
+        "MC-Q05"
+      ],
+      "unproved": "Exact records, values, inheritance masks and active image-space state are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F02",
+      "mod_id": "lux",
+      "status": "author_documented",
+      "claim": "Uses scripted light switching in patches; author cites a four-shadow-light limit.",
+      "scope": "Current description; patch dependent.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Description, tool line 2095",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q03"
+      ],
+      "unproved": "Neither script contents nor native cap/allocation are verified.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F03",
+      "mod_id": "lux",
+      "status": "author_documented",
+      "claim": "Dims fog/beam effects and removes selected fake glows.",
+      "scope": "Current description; visual FX.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Description, tool line 2098",
+      "native_anchor_ids": [
+        "MC-A05",
+        "MC-A07"
+      ],
+      "query_ids": [
+        "MC-Q06",
+        "MC-Q08"
+      ],
+      "unproved": "The edited material/geometry and pass-specific effect are unread; this is not distance-fog proof.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F04",
+      "mod_id": "lux",
+      "status": "author_documented",
+      "claim": "Offers optimized meshes and brighter templates for non-ENB users.",
+      "scope": "Current description; optional resources.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Description, tool lines 2107\u20132108",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q03",
+        "MC-Q04"
+      ],
+      "unproved": "Archive options, mesh partitions and exact template deltas are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F05",
+      "mod_id": "lux",
+      "status": "historical_author_documented",
+      "claim": "Portal-strict option may reduce drawcalls but omit object lighting.",
+      "scope": "Historical v6.9 optional plugin.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Changelog v6.9, tool line 448",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A06"
+      ],
+      "query_ids": [
+        "MC-Q07"
+      ],
+      "unproved": "No plugin flag diff, native branch or measured performance effect is attached.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F06",
+      "mod_id": "lux",
+      "status": "historical_author_documented",
+      "claim": "Changed window-shadow resources to planes; added Volkihar multibound and no-ENB fog shaders.",
+      "scope": "Historical v6.8 resources.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Changelog v6.8, tool lines 450, 468, 473",
+      "native_anchor_ids": [
+        "MC-A05",
+        "MC-A06",
+        "MC-A07"
+      ],
+      "query_ids": [
+        "MC-Q06",
+        "MC-Q07",
+        "MC-Q08"
+      ],
+      "unproved": "Plane alpha/material/occlusion and fog shader meanings are unverified.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F07",
+      "mod_id": "lux",
+      "status": "author_documented",
+      "claim": "Version 7.1 adjusts Dragonsreach window bias and a blocking plane.",
+      "scope": "Version 7.1 changelog.",
+      "primary_source_ids": [
+        "MC-S01"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/43158",
+      "source_locus": "Changelog v7.1, tool lines 426\u2013427",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q03"
+      ],
+      "unproved": "No changed field, numeric bias or actual shadow pass has been read.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F08",
+      "mod_id": "orbis",
+      "status": "author_documented",
+      "claim": "Reworks exterior artificial lights with hand-set radius, fade and placement.",
+      "scope": "Current description; Tamriel/Solstheim artificial lighting.",
+      "primary_source_ids": [
+        "MC-S02"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/56095",
+      "source_locus": "Description, tool lines 943\u2013950",
+      "native_anchor_ids": [
+        "MC-A02"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q02"
+      ],
+      "unproved": "Source records and native coefficient preparation are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F09",
+      "mod_id": "orbis",
+      "status": "author_documented",
+      "claim": "Adds shadow lights and changes window/light day-night emittance.",
+      "scope": "Current description; artificial exterior sources.",
+      "primary_source_ids": [
+        "MC-S02"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/56095",
+      "source_locus": "Description, tool lines 953\u2013954",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q03",
+        "MC-Q06"
+      ],
+      "unproved": "Active source identity, controllers and shadow selection are unobserved.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F10",
+      "mod_id": "orbis",
+      "status": "author_documented",
+      "claim": "Uses lower fades for ENB; author claims weather-mod compatibility.",
+      "scope": "Current description; ENB-dependent intensity and compatibility statement.",
+      "primary_source_ids": [
+        "MC-S02"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/56095",
+      "source_locus": "Description, tool lines 944\u2013945",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A02",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q10"
+      ],
+      "unproved": "No universally compatible combination or vanilla fade value is established.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F11",
+      "mod_id": "orbis",
+      "status": "author_documented",
+      "claim": "Improves meshes for lighting; requires Via resources and Orbis patches.",
+      "scope": "Current description and requirements.",
+      "primary_source_ids": [
+        "MC-S02"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/56095",
+      "source_locus": "Description, tool lines 940\u2013941, 957",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q03"
+      ],
+      "unproved": "Selected resources and mesh changes are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F12",
+      "mod_id": "via",
+      "status": "author_documented",
+      "claim": "Adds road lighting and rebuilds bridges/crossroads.",
+      "scope": "Current description; roads outside inner cities.",
+      "primary_source_ids": [
+        "MC-S03"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/63588",
+      "source_locus": "Description, tool lines 663\u2013666",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A02",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q02",
+        "MC-Q10"
+      ],
+      "unproved": "Exact placements, light fields and patched geometry are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F13",
+      "mod_id": "via",
+      "status": "author_documented",
+      "claim": "Version 2.2 changes fixture specular/environment maps, vertex colors and LOD resources.",
+      "scope": "Version 2.2 changelog; resource package.",
+      "primary_source_ids": [
+        "MC-S03"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/63588",
+      "source_locus": "Changelog v2.2, tool lines 445\u2013451",
+      "native_anchor_ids": [
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q06"
+      ],
+      "unproved": "Actual DDS transfer, NIF flags, vertex streams and reflected contribution are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F14",
+      "mod_id": "via",
+      "status": "author_documented",
+      "claim": "Version 2.2 adds linked enable controls for Via/Orbis references.",
+      "scope": "Version 2.2 changelog; Solitude compatibility.",
+      "primary_source_ids": [
+        "MC-S03"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/63588",
+      "source_locus": "Changelog v2.2, tool lines 452\u2013453",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A02"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q02"
+      ],
+      "unproved": "Enable-parent structure and runtime switching precedence are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F15",
+      "mod_id": "wsrt",
+      "status": "author_documented",
+      "claim": "Adds interior window sunlight shadows, light fading and brighter glow maps.",
+      "scope": "Current description; bundled options.",
+      "primary_source_ids": [
+        "MC-S04"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/37831",
+      "source_locus": "Description, tool lines 431\u2013437",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q03",
+        "MC-Q06"
+      ],
+      "unproved": "The advertised simulated-ray-tracing label does not identify native ray tracing or an algorithm.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F16",
+      "mod_id": "wsrt",
+      "status": "author_documented",
+      "claim": "Author excludes ELFX/RLO; supports specific RS variants and ordered ambient mods.",
+      "scope": "Current compatibility text; version-specific combinations.",
+      "primary_source_ids": [
+        "MC-S04"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/37831",
+      "source_locus": "Compatibility, tool lines 439\u2013443",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A03"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q10"
+      ],
+      "unproved": "Conflicting record/asset winners and complete compatibility are not verified.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F17",
+      "mod_id": "wsrt-updated",
+      "status": "author_documented",
+      "claim": "Version 1.4 warms sunlight/fire bulbs and revises ambient colors and shadow behavior.",
+      "scope": "Version 1.4 changelog.",
+      "primary_source_ids": [
+        "MC-S05"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/111091",
+      "source_locus": "Changelog v1.4, tool lines 393\u2013396",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A03"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q03",
+        "MC-Q04"
+      ],
+      "unproved": "The corresponding records, coefficients and native shadow behavior are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F18",
+      "mod_id": "wsrt-updated",
+      "status": "historical_author_documented",
+      "claim": "Earlier updates relocate imagespace tweaks to Enhancer and alter mists/window emittance.",
+      "scope": "Versions 1.34beta and 1.3 changelogs; separate historical changes.",
+      "primary_source_ids": [
+        "MC-S05"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/111091",
+      "source_locus": "Changelog v1.34beta line 401; v1.3 lines 423\u2013427",
+      "native_anchor_ids": [
+        "MC-A04",
+        "MC-A05",
+        "MC-A07"
+      ],
+      "query_ids": [
+        "MC-Q05",
+        "MC-Q06",
+        "MC-Q08"
+      ],
+      "unproved": "The packaged current options and persistence of each historical change need archive verification.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F19",
+      "mod_id": "wsrt-updated",
+      "status": "author_documented",
+      "claim": "Requires original Window Shadows RT; update must overwrite it.",
+      "scope": "Current requirements and description.",
+      "primary_source_ids": [
+        "MC-S05"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/111091",
+      "source_locus": "Requirements lines 367\u2013368; description lines 433\u2013434",
+      "native_anchor_ids": [
+        "MC-A01"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q10"
+      ],
+      "unproved": "Neither original/update archive identity nor final winner is captured.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F20",
+      "mod_id": "elfx",
+      "status": "author_documented",
+      "claim": "Main module adds source lights, selected shadow lights, smoke and translucent effects.",
+      "scope": "Main EnhancedLightsandFX.esp description.",
+      "primary_source_ids": [
+        "MC-S06"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/2424",
+      "source_locus": "Features, tool lines 470\u2013480",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05",
+        "MC-A07"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q03",
+        "MC-Q06",
+        "MC-Q08"
+      ],
+      "unproved": "The fixtures, source records, mesh/material response and blend states are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F21",
+      "mod_id": "elfx",
+      "status": "author_documented",
+      "claim": "Enhancer changes darkness, fog colors/ranges, ambient templates, contrast and saturation.",
+      "scope": "Optional ELFXEnhancer.esp; Hardcore carries these and deepens darkness.",
+      "primary_source_ids": [
+        "MC-S06"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/2424",
+      "source_locus": "Features, tool lines 481\u2013490",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q04",
+        "MC-Q05",
+        "MC-Q08"
+      ],
+      "unproved": "Exact CELL/LGTM/IMGS fields, inheritance and active modifiers are unverified.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F22",
+      "mod_id": "elfx",
+      "status": "author_documented",
+      "claim": "Exteriors changes placements/window shaders and landscape/no-fade light flags.",
+      "scope": "Optional ELFX - Exteriors.esp.",
+      "primary_source_ids": [
+        "MC-S06"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/2424",
+      "source_locus": "Features, tool lines 491\u2013498",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05",
+        "MC-A08"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q06",
+        "MC-Q09"
+      ],
+      "unproved": "Exact flag bits and their terrain/visibility branches are unverified.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F23",
+      "mod_id": "elfx",
+      "status": "author_documented",
+      "claim": "Weathers changes weather colors, rain, sun textures and fog density.",
+      "scope": "Optional ELFX - Weathers.esp, distinct from main/Enhancer.",
+      "primary_source_ids": [
+        "MC-S06"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/2424",
+      "source_locus": "Features, tool lines 499\u2013504",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A07"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q08",
+        "MC-Q10"
+      ],
+      "unproved": "Weather/VOLI fields and pass changes are unread; described fog is not an equation.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F24",
+      "mod_id": "rs",
+      "status": "author_documented",
+      "claim": "Moves light references to sources and adjusts reference fade/radius.",
+      "scope": "Current description.",
+      "primary_source_ids": [
+        "MC-S07"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/8586",
+      "source_locus": "Description, tool lines 795\u2013796",
+      "native_anchor_ids": [
+        "MC-A02"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q02"
+      ],
+      "unproved": "REFR versus base-field precedence and the effective list remain open.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F25",
+      "mod_id": "rs",
+      "status": "author_documented",
+      "claim": "Version 3.0 adds JITR switching; 3.1 corrects emittance and unlit fixtures.",
+      "scope": "Version 3.0/3.1 changelogs; scripted and asset changes.",
+      "primary_source_ids": [
+        "MC-S07"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/8586",
+      "source_locus": "Changelog v3.0 lines 499\u2013506; v3.1 lines 440\u2013449",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05"
+      ],
+      "query_ids": [
+        "MC-Q02",
+        "MC-Q03",
+        "MC-Q06"
+      ],
+      "unproved": "Scripts, controller fields, custom fixture content and runtime light membership are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F26",
+      "mod_id": "rs",
+      "status": "author_documented",
+      "claim": "Current compatibility text excludes base IMGS/LIGH/LGTM/WTHR edits and warns of placement conflicts.",
+      "scope": "Current description/compatibility; author record-scope statement.",
+      "primary_source_ids": [
+        "MC-S07"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/8586",
+      "source_locus": "Compatibility, tool lines 814\u2013819, 842\u2013858",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A02",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q10"
+      ],
+      "unproved": "This record-scope claim is not a plugin-wide record inventory; emittance links may still respond to weather.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F27",
+      "mod_id": "luminosity",
+      "status": "author_documented",
+      "claim": "Recolors vanilla lighting and uses consistent imagespace settings.",
+      "scope": "Current description.",
+      "primary_source_ids": [
+        "MC-S08"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/16830",
+      "source_locus": "Description, tool lines 444\u2013447, 455",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q04",
+        "MC-Q05"
+      ],
+      "unproved": "Declared CELL/LIGH/LGTM/interior-weather coverage is not a verified plugin inventory.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F28",
+      "mod_id": "luminosity",
+      "status": "author_documented",
+      "claim": "Version 4.2 changes fog/template inheritance, contrast, adaptation and brightness controls.",
+      "scope": "Version 4.2 changelog.",
+      "primary_source_ids": [
+        "MC-S08"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/16830",
+      "source_locus": "Changelog v4.2, tool lines 404\u2013411",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q04",
+        "MC-Q05"
+      ],
+      "unproved": "The exact fields, active base values and any override/modifier behavior are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F29",
+      "mod_id": "luminosity",
+      "status": "author_documented",
+      "claim": "No-new-bulb claim covers versions 1\u20133; files still expose a separate 3.1 release.",
+      "scope": "Versions 1\u20133 statement; separate 3.1 file.",
+      "primary_source_ids": [
+        "MC-S08",
+        "MC-S12"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/16830",
+      "source_locus": "Description line 446; Files lines 401\u2013425",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A02"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q10"
+      ],
+      "unproved": "Do not extend the v1\u20133 placement claim to v4.2 without a source diff.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F30",
+      "mod_id": "ambiance",
+      "status": "author_documented",
+      "claim": "Changes ambient/directional lighting, fog colors and maximum intensity.",
+      "scope": "Current description; optional fog-only and warmer-light files.",
+      "primary_source_ids": [
+        "MC-S09"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/46383",
+      "source_locus": "Description, tool lines 420\u2013434",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A02"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q02",
+        "MC-Q04",
+        "MC-Q08"
+      ],
+      "unproved": "Numeric percentages are mod-author choices, not vanilla defaults or recovered equations.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F31",
+      "mod_id": "ambiance",
+      "status": "author_documented",
+      "claim": "Version 1.1 adjusts CELL/templates and selected imagespaces.",
+      "scope": "Version 1.1 changelog.",
+      "primary_source_ids": [
+        "MC-S09"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/46383",
+      "source_locus": "Changelog v1.1, tool lines 399\u2013406",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A04"
+      ],
+      "query_ids": [
+        "MC-Q04",
+        "MC-Q05"
+      ],
+      "unproved": "Exact source fields, inheritance masks and active IMGS state are unread.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    },
+    {
+      "id": "MC-F32",
+      "mod_id": "ambiance",
+      "status": "author_documented",
+      "claim": "Author warns that competing CELL/template edits cause inconsistency.",
+      "scope": "Current compatibility; load after weather/light-bulb mods.",
+      "primary_source_ids": [
+        "MC-S09"
+      ],
+      "primary_source_url": "https://www.nexusmods.com/skyrimspecialedition/mods/46383",
+      "source_locus": "Compatibility, tool lines 438\u2013445",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A03"
+      ],
+      "query_ids": [
+        "MC-Q01",
+        "MC-Q10"
+      ],
+      "unproved": "Compatibility statements require exact winners; no runtime combination was tested.",
+      "record_or_asset_diff_verified": false,
+      "target_native_behavior_proved_by_this_finding": false,
+      "runtime_observed": false,
+      "native_anchor_association": "Research comparison only; no mod-record-to-native edge is proved."
+    }
+  ],
+  "scope_matrix": {
+    "legend": {
+      "D": "Author documents this input/effect/compatibility domain; exact record/asset diff unverified.",
+      "H": "Historical changelog documents this domain; current package persistence unverified.",
+      "U": "No qualifying specific author claim collected; absence of edits is not established.",
+      "X": "Author explicitly excludes these record types; plugin inventory unverified.",
+      "V": "Option/version limited claim; current whole-package scope cannot be generalized."
+    },
+    "rows": [
+      {
+        "mod_id": "lux",
+        "primary_source_ids": [
+          "MC-S01"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "D",
+          "cell_lgtm_ambient": "D",
+          "imgs": "D",
+          "imad": "U",
+          "geometry_material_emission": "D",
+          "portals_room_bounds_occlusion": "H",
+          "weather_emittance": "D",
+          "distance_fog": "U",
+          "effect_fog_beams": "D",
+          "enb_external_dependence": "D",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "orbis",
+        "primary_source_ids": [
+          "MC-S02"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "D",
+          "cell_lgtm_ambient": "U",
+          "imgs": "U",
+          "imad": "U",
+          "geometry_material_emission": "D",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "D",
+          "distance_fog": "U",
+          "effect_fog_beams": "U",
+          "enb_external_dependence": "D",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "via",
+        "primary_source_ids": [
+          "MC-S03"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "U",
+          "cell_lgtm_ambient": "U",
+          "imgs": "U",
+          "imad": "U",
+          "geometry_material_emission": "D",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "U",
+          "distance_fog": "U",
+          "effect_fog_beams": "U",
+          "enb_external_dependence": "H",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "wsrt",
+        "primary_source_ids": [
+          "MC-S04"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "D",
+          "cell_lgtm_ambient": "U",
+          "imgs": "U",
+          "imad": "U",
+          "geometry_material_emission": "D",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "U",
+          "distance_fog": "U",
+          "effect_fog_beams": "U",
+          "enb_external_dependence": "U",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "wsrt-updated",
+        "primary_source_ids": [
+          "MC-S05"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "D",
+          "cell_lgtm_ambient": "D",
+          "imgs": "H",
+          "imad": "U",
+          "geometry_material_emission": "H",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "U",
+          "distance_fog": "U",
+          "effect_fog_beams": "H",
+          "enb_external_dependence": "U",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "elfx",
+        "primary_source_ids": [
+          "MC-S06"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "D",
+          "cell_lgtm_ambient": "D",
+          "imgs": "U",
+          "imad": "U",
+          "geometry_material_emission": "D",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "D",
+          "distance_fog": "D",
+          "effect_fog_beams": "D",
+          "enb_external_dependence": "D",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "rs",
+        "primary_source_ids": [
+          "MC-S07"
+        ],
+        "domains": {
+          "placement_radius_fade": "D",
+          "local_shadow_selection": "D",
+          "cell_lgtm_ambient": "V",
+          "imgs": "X",
+          "imad": "U",
+          "geometry_material_emission": "D",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "D",
+          "distance_fog": "U",
+          "effect_fog_beams": "U",
+          "enb_external_dependence": "D",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "luminosity",
+        "primary_source_ids": [
+          "MC-S08"
+        ],
+        "domains": {
+          "placement_radius_fade": "V",
+          "local_shadow_selection": "U",
+          "cell_lgtm_ambient": "D",
+          "imgs": "D",
+          "imad": "U",
+          "geometry_material_emission": "U",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "D",
+          "distance_fog": "D",
+          "effect_fog_beams": "U",
+          "enb_external_dependence": "D",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      },
+      {
+        "mod_id": "ambiance",
+        "primary_source_ids": [
+          "MC-S09"
+        ],
+        "domains": {
+          "placement_radius_fade": "V",
+          "local_shadow_selection": "U",
+          "cell_lgtm_ambient": "D",
+          "imgs": "D",
+          "imad": "U",
+          "geometry_material_emission": "U",
+          "portals_room_bounds_occlusion": "U",
+          "weather_emittance": "U",
+          "distance_fog": "D",
+          "effect_fog_beams": "U",
+          "enb_external_dependence": "U",
+          "override_compatibility": "D"
+        },
+        "record_diff_verified": false,
+        "native_behavior_verified": false
+      }
+    ]
+  },
+  "query_queue": [
+    {
+      "id": "MC-Q01",
+      "native_anchor_ids": [
+        "MC-A01"
+      ],
+      "question": "Resolve exact records and resources before comparing visuals.",
+      "bounded_research_action": "For any later authorized archive study, hash the archive, selected optional plugins and every used NIF/texture/script; retain masters and winning FormIDs. Compare base and REFR fields separately.",
+      "acceptance": "A reproducible manifest plus a typed plugin/asset diff; no installation is required.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q02",
+      "native_anchor_ids": [
+        "MC-A02"
+      ],
+      "question": "Trace REFR/base light fields to the effective geometry list.",
+      "bounded_research_action": "Trace callers and pointer producers around 0x14154B770 and 0x141548820; find local-list construction, radius/fade/color overrides, transform/scale, enable-parent and scripted updates. Keep the directional entry-zero path separate.",
+      "acceptance": "One pinned source light and placement must match an effective object, list membership, shader constants and visibility for a selected draw.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q03",
+      "native_anchor_ids": [
+        "MC-A02",
+        "MC-A05"
+      ],
+      "question": "Recover shadow allocation and mesh-dependent light selection.",
+      "bounded_research_action": "Follow local-list count/order and shadow-channel allocation. Locate the actual cap, replacement policy and per-geometry selection. Do not adopt an author-stated four-light limit as a native coefficient.",
+      "acceptance": "Static bytes must identify the policy; later isolated geometry/partition and added-light controls must reproduce selection and flicker changes.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q04",
+      "native_anchor_ids": [
+        "MC-A03",
+        "MC-A06"
+      ],
+      "question": "Close interior template, room and ambient precedence.",
+      "bounded_research_action": "Continue CELL/LGTM and room-owner producers into 0x1414EC3B0 and 0x14154B880. Trace inheritance masks, explicit black/zero, six-face colors, directional angles/fade and source identity.",
+      "acceptance": "A cell plus room override must yield one proven ambient cube and fog owner, with source values and per-view constants retained.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q05",
+      "native_anchor_ids": [
+        "MC-A04"
+      ],
+      "question": "Separate base image-space changes from active modifiers.",
+      "bounded_research_action": "Trace manager +0xA8/+0xB0 writers and concrete curve owners through 0x1414EEC10, 0x14153D860 and 0x14065A250. Check adaptive state and final contrast/brightness/white-scale/tint values.",
+      "acceptance": "Effective IMGS identity, ordered IMAD instances, curve times/strengths and uploaded constants must be captured together before attributing brightness.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q06",
+      "native_anchor_ids": [
+        "MC-A05"
+      ],
+      "question": "Trace glowing fixtures independently of attached lights.",
+      "bounded_research_action": "Recover emission/glow-map, external emittance, vertex-color/controller and texture-set routes through material loader/setup and key selection. Distinguish a visible emissive fixture from an illuminating light object.",
+      "acceptance": "One fixture must have separate receipts for material emission and placed-light contribution, including day/night or weather controller inputs.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q07",
+      "native_anchor_ids": [
+        "MC-A06",
+        "MC-A02"
+      ],
+      "question": "Recover portal-strict and multibound behavior.",
+      "bounded_research_action": "Start from original LIGH/REFR/room-loader identities and scene-node participation; follow bit tests to room/portal traversal, light-list filtering and shadow geometry. No target behavior address is yet pinned for this flag.",
+      "acceptance": "Bytes must connect the flag to a branch; later same-room/adjacent-room controls must capture object visibility and light membership, including custom geometry.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q08",
+      "native_anchor_ids": [
+        "MC-A07",
+        "MC-A03"
+      ],
+      "question": "Separate distance fog, fog geometry and volumetrics.",
+      "bounded_research_action": "Trace Effect material/texture/blend producers around 0x141556840/0x141556C40/0x141557090, and VOLI selection independently. Preserve CELL/LGTM range/color evidence as its own route.",
+      "acceptance": "A later isolated comparison must identify which pass changed and record effect geometry, distance-fog constants, volumetric state and image-space output separately.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q09",
+      "native_anchor_ids": [
+        "MC-A08",
+        "MC-A02"
+      ],
+      "question": "Trace landscape-light and no-fade flags against active settings.",
+      "bounded_research_action": "Locate LIGH flag decoding and the owning geometry/terrain/list visibility branch; follow active fade-distance setting consumers. Do not substitute a settings catalog for applied INI state.",
+      "acceptance": "A source flag and active distance setting must match list membership and terrain contribution at measured distances.",
+      "executed": false
+    },
+    {
+      "id": "MC-Q10",
+      "native_anchor_ids": [
+        "MC-A01",
+        "MC-A03",
+        "MC-A04",
+        "MC-A07"
+      ],
+      "question": "Test author compatibility claims at the owning layers.",
+      "bounded_research_action": "For a later authorized comparison, fix native executable, load order, resources, cell, camera, time, weather, ENB/Community Shaders status and settled exposure. Change one documented mod control at a time.",
+      "acceptance": "Record/asset winners and effective constants must be explained before screenshot differences are used to propose renderer changes.",
+      "executed": false
+    }
+  ],
+  "cross_source_reconciliation": [
+    {
+      "id": "MC-R01",
+      "source_ids": [
+        "MC-S07",
+        "MC-S08"
+      ],
+      "issue": "Older Luminosity summary describes RS as changing colors; current RS page explicitly excludes base LIGH/IMGS/LGTM/WTHR records.",
+      "resolution": "Retain source date/version and distinguish REFR characteristics and weather/emittance links from base-record edits. No plugin absence proof is claimed."
+    },
+    {
+      "id": "MC-R02",
+      "source_ids": [
+        "MC-S08",
+        "MC-S12"
+      ],
+      "issue": "Luminosity has both v4.2 and a distinct v3.1 file; no-added-bulbs statement names only v1\u20133.",
+      "resolution": "Keep release identities separate and require an archive diff before extending the statement."
+    },
+    {
+      "id": "MC-R03",
+      "source_ids": [
+        "MC-S01",
+        "MC-S02",
+        "MC-S03"
+      ],
+      "issue": "Lux series exposes options/resources/patch hubs and ENB-dependent intensity choices.",
+      "resolution": "An author page version does not pin a complete installed resource or optional-plugin set."
+    },
+    {
+      "id": "MC-R04",
+      "source_ids": [
+        "MC-S04",
+        "MC-S05"
+      ],
+      "issue": "Window Shadows uses a simulated-ray-tracing product label without explaining a target-native algorithm.",
+      "resolution": "Record the label as author terminology only; algorithm and implementation are unproved."
+    }
+  ],
+  "guardrails": [
+    "Mod percentages, contrast choices, fade values and screenshots cannot be promoted to vanilla defaults.",
+    "No source establishes that fog compensates for Mudcrab lighting regressions.",
+    "Effect fog geometry, distance fog and weather volumetrics remain distinct producer/consumer routes.",
+    "No IMAD edit or absence claim is established for any studied archive.",
+    "Author compatibility and performance claims remain untested.",
+    "No mod archive, proprietary payload or third-party asset is published here."
+  ],
+  "counts": {
+    "mods_or_mod_variants": 9,
+    "primary_author_pages": 9,
+    "additional_file_listing_pages": 3,
+    "findings": 32,
+    "native_anchor_groups": 8,
+    "scope_cells": 108,
+    "research_questions": 10,
+    "native_proof_promotions": 0
+  }
+}

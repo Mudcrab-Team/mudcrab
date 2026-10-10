@@ -6,7 +6,7 @@ Tracks [L1 #131](https://github.com/Mudcrab-Team/mudcrab/issues/131), under [van
 
 Default target: unmodded Skyrim SE. Interior and exterior cases have equal priority. Mod research informs native behavior; addon lighting remains out of scope. L1 fixes output-domain inconsistencies and NIF surface inputs, with controlled probes. They do not establish Skyrim's image-space equations or select its final exposure/tone curve.
 
-Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source trace below describes actual runtime behavior. Claims in older sky notes about encoded weather interpolation and fog equations still require the L0/L2 retail evidence; this change preserves those inputs.
+L1 baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source trace below includes the subsequent [distance-fog implementation](distance-fog-implementation.md). Recovered weather interpolation and fog arithmetic now have native/static evidence; complete output-domain parity still requires L0 retail captures.
 
 ## Pipeline trace and ownership
 
@@ -15,19 +15,28 @@ Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source
 | `converter/src/texture.rs`, `material.rs` | DDS channels → semantic KTX2 transfer format; diffuse/glow use sRGB aliases, normals/data use linear views | Shared source bytes may have distinct views; preserve alpha as data. Existing round-trip tests cover encoded channels. |
 | `converter/src/material.rs` | Validated per-shape NIF values → glTF factors, extensions, source extras | #81: specular enable, normal-alpha mask and gloss exponent approximation. #82: static glow-slot eligibility and emission energy corrected; animated emission remains unsupported. #83: alpha/UV. #84: effect/editor surfaces. Remaining issues stay open; emission animation is outside #82. |
 | Bevy glTF / `StandardMaterial` | sRGB textures decoded once; material factors and data textures remain linear → material response | Bevy's PBR BRDF is an approximation, not recovered Skyrim shading. Tangent/model-space normals require distinct treatment. |
+| `nif_material.rs`, `native_material.wgsl` | Original DDS view transfer when explicitly source-qualified → effective injected coefficients → native ordinary response → recovered fog/clamps | Legacy DXT1/3/5 native views sample UNORM code values; explicit DX10 sRGB views retain decoding. Older packs still borrow the semantic PBR view. Supported world IMGS selects unexposed native output (scale 1, camera exposure bypassed). Actual retail light producers remain unresolved. |
 | `shaders/terrain.wgsl` | Linear layer samples and normal data → weighted material response → PBR lighting | Authored normal conventions, layer semantics and specular response remain separate material probes. |
-| Bevy `pbr_functions.wgsl` | Lights + material → exposure-scaled linear RGB | `Exposure.ev100` uses Bevy's `2^-EV100 / 1.2`. Current 9.7 is pinned from the prior default, not a Skyrim value. Emission's exposure weight is material-owned; default emission is exposure-independent. |
-| `sky.rs`, `shaders/sky.wgsl` | Encoded weather-row mixing → one sRGB decode → linear palette brightness | Existing palette is a fixed clear-day approximation. Sky/fog palette values already occupy the composition domain; do not multiply them by camera exposure a second time. L2 owns authored state and its units. |
-| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Existing exponential/Fog Far approximation stays explicit. Interior fog removal is current behavior, not complete Skyrim interior semantics. L2 owns the correction. |
+| Bevy `pbr_functions.wgsl` | Lights + material → exposure-scaled linear RGB | `Exposure.ev100` uses Bevy's `2^-EV100 / 1.2`. Authored preview with supported IMGS uses exposure `pi/12000` for its project diffuse reference; other photographic views retain EV100 9.7. Neither is a recovered retail light calibration. Emission's exposure weight is material-owned; default emission is exposure-independent. |
+| `environment.rs`, `sky.rs`, `shaders/sky.wgsl` | Authored four-key byte RGB mixing → normalized RGB without gamma decode → palette brightness | Winning weather/climate inputs and explicit state replace the clear-day defaults when available. Analytic dome interpolation and native Sky noise remain capture gates. |
+| `fog.rs`, material fog shaders | Native response units or normalized Bevy fallback RGB + two normalized authored fog colors → recovered fog arithmetic in the HDR scene buffer | Opaque depth pass runs before transparents; NIF and Water geometry paths preserve distinct distance metrics. Interior/template resolution is implemented. Approximate fallback responses and blend-state proxies still limit parity. Finite CELL Fog Clip visibility remains unimplemented. |
 | `render.rs` reflection camera | Scene at main-view exposure → `Rgba16Float`, tone mapping disabled | Floating linear target preserves values above 1. Reflection gate copies exposure even while inactive. Existing reflected layers and geometry selection remain unchanged. |
 | `shaders/water.wgsl` | Exposed water lighting + exposed linear reflection → blend → surface fog | Reflection receives neither a second lighting evaluation nor a display transform. Existing Fresnel/waves and reflection coverage are approximations. |
-| `color_pipeline.rs` / scene cameras | HDR composition → one full-view `TonyMcMapface` transform → display encoding | Includes sky, background, fog, opaque and transparent surfaces. Tone curve remains a pinned diagnostic baseline pending IMGS evidence; L4 owns adaptation/record-driven image-space behavior. |
+| `color_pipeline.rs`, `environment_render.rs`, `image_space.rs` / scene cameras | HDR composition → selected full-view transform → display encoding | The default keeps `TonyMcMapface`. Opt-in `--image-space` replaces it with the [recovered static-profile HDR graph](image-space.md) for supported authored IMGS inputs. Source PBR and retail output transfer remain parity limits. |
 
 The previous non-HDR mesh path tone-mapped in each material shader. The custom sky shader bypassed that operation, and reflection RGB passed through tone mapping in both the reflection and water passes. HDR composition moves the transform after composition without adding a new shader implementation. It changes images and consumes more render-target memory; target-hardware performance remains an acceptance requirement.
 
 ## Invariants
 
-- V1: Every production scene camera and existing visual fixture uses explicit `SceneColorPipeline`: HDR, EV100 9.7, TonyMcMapface. These values remain provisional; defaults are not evidence of vanilla parity.
+- V1: Every production scene camera and existing visual fixture uses explicit `SceneColorPipeline`: HDR with default EV100 9.7 and TonyMcMapface. A supported opt-in image-space path owns and disables that transform, then restores it when removed. Source light calibration remains provisional; defaults are not evidence of vanilla parity.
+
+  Native ordinary materials bypass the photographic adapter and camera exposure while supported
+  world IMGS is active. In authored preview, terrain, water and unsupported materials use
+  exposure `pi/12000` (EV100 approximately 11.636), derived from the project's face-on diffuse
+  reference under 12000 lux. The same exposure cancels the explicit ambient proxy scale.
+  World and reflection views switch together after transform propagation. Material output
+  selection restores the photographic preview if IMGS becomes unavailable, including newly
+  streamed materials. Bevy BRDFs and retail light producers remain distinct acceptance work.
 - V2: Reflection storage preserves linear values above 1; no tone map or sRGB target view before water sampling. Reflection exposure matches the main camera before rendering, including after exposure changes while water is invisible. Missing reflection exposure ! restore before rendering; pose/visibility updates continue.
 - V3: Sky, unlit mesh, fully fogged mesh, terrain emission and unit-reflecting water given equal composition-domain RGB produce matching output within 2/255 per channel. Exterior includes sky; interior has a black background. Test neutral gray and saturated HDR inputs.
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
@@ -39,7 +48,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
-- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Current producer 24 combines native BC textures, emission/specular and source-surface fixes. Rebuild all legacy GLB/KTX2/world outputs from schemas 12–23; retain only source/configuration/output-verified scripts/archive ingestion. Exact producer 24 required for staged meshes/textures; encoder mode and GPU quality participate in configuration identity. Runtime/launcher accept complete converter schemas 15–24 and world schemas 3–7. Schema 5 grass worlds need no LOD tables.
+- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Current producer 25 adds typed environment projections and raw NIF alpha metadata to native BC textures, emission/specular and source-surface fixes. Rebuild legacy staged GLB/KTX2/world outputs; retain only source/configuration/output-verified scripts/archive ingestion. Exact producer 25 is required for staged meshes/textures; encoder mode and GPU quality participate in configuration identity. Runtime/launcher accept complete converter schemas 15–25 and world schemas 3–8. Schema 5 grass worlds need no LOD tables. Older worlds without environment projections use the stated fog fallback.
 - V12: Scene-only glTF loads ! reach and retain recursively loaded state after unused subassets release. Native material override retains stock hook's recorded source dependency; scene cloning preserves source and native handles. Probe ! no root-glTF or explicit material loads that mask dependency lifetime failures.
 
 - V13: Converted tangent-space NIF normals ! DirectX Y convention exactly once at native material construction; generic glTF/model-space maps unchanged. Preserve linear RGB & source alpha. ±X/±Y/asymmetric GPU swatches ! match independent geometric normals ≤2/255; legacy no-flip control ! fail.
@@ -47,23 +56,43 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 - V15: Source UV offset/scale & four S/T clamp modes ! survive conversion. Conflicting wrap or transfer uses ! distinct asset paths; load order cannot change sampler. Alias source mapping ! cache/pruning/restoration consistency.
 - V16: Declared EditorMarker & unsupported Fire_Refraction ! excluded with reason; ordinary visible controls remain. Unsupported shader features ! explicit compatibility inventory, no silent parity claim.
 
+- V17: An explicit native diffuse view must retain original DDS format and SHA-256, select
+  the matching sampling transfer, and resolve to a different asset identity from the PBR
+  view. Preserve compressed blocks, alpha, mip chain and sampler. Incomplete, conflicting
+  or unknown native provenance rejects native selection; absent metadata retains the older
+  compatibility projection. UNORM sampling means code values, not physical linear-light
+  authorship. The [source-qualified frozen-pack test](../../research/skyrim-native-texture-transfer-20261010.md)
+  is separate from durable converter publication: native URI dependency, pruning, repair,
+  validation and cache identity still need integration.
+
 ## Supported response and remaining material work
 
 | Family / path | Current representation | L1 acceptance status |
 |---|---|---|
-| Ordinary lighting / opaque | glTF `StandardMaterial`, PBR lighting | Output consistency can be tested now; Specular enable, tangent mask and roughness corrected by T8; native BRDF/model-space parity remains open. Static emission corrected by T6. |
-| Alpha-tested / blended | NiAlphaProperty mode, shader-enabled vertex channels, PR #99 prepass | Synthetic color/depth/shadow silhouettes verified; additive and other nonstandard blend factors still approximated. |
+| Ordinary lighting / opaque | Converted NIF `NifFogMaterial` with a `StandardMaterial` base, PBR lighting and fog clamp proxy | Output consistency can be tested now; Specular enable, tangent mask and roughness corrected by T8; native BRDF/model-space parity remains open. Static emission corrected by T6. Lit/specular fog clamps currently use a combined-response proxy. |
+| Alpha-tested / blended | NiAlphaProperty mode/raw factors, shader-enabled vertex channels, native material shader and PR #99 prepass | Synthetic color/depth/shadow silhouettes and supported RGB blend routes verified; native descriptor selection and framebuffer alpha remain proxies. |
 | Tangent-space normal maps | Linear RGB/alpha; native material applies DirectX Y convention once | Asymmetric mesh directions match geometric-normal references; NIF authored tangents still regenerated. Terrain owns a separate tangent frame and needs separate native-direction evidence. |
 | Model-space normals | No established compatibility path in this slice | Named L1 gap; generic tangent interpretation cannot count as acceptance. |
 | Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | [Compatibility inventory](../../lighting-l1-compatibility.md) names per-family gaps; retained metadata alone is not shader support. |
-| Effect shader surfaces | Generic approximation with explicit exclusions | Declared EditorMarker and Fire_Refraction excluded with reasons; no general effect, refraction, particle or animation parity claim. |
+| Effect shader surfaces | Recovered ordinary/additive/multiplicative fog arithmetic with semantic route selection and explicit exclusions | Declared EditorMarker and Fire_Refraction excluded with reasons; special descriptors, refraction, particles and animation remain parity gaps. |
 | Water / sky | Custom Bevy shader paths | Output-domain test only; authored behavior and full-scene parity remain open. |
 
 ## Verification
 
 - `cargo test -p engine --lib`: explicit scene settings, production reflection format, reflection exposure lifecycle, existing renderer/sky regressions.
-- `cargo run -p engine --example color_pipeline_probe -- --output <dir> [--interior] [--gray]`: real GPU shader path and pixel comparison; uses headless GPU readback and requires a Vulkan adapter with at least 32 sampled-texture and sampler slots. The probe requests WebGPU features with terrain limits explicitly raised; it does not benchmark the full production device feature set. Software Vulkan is sufficient for functional validation, not performance acceptance.
+- `cargo run -p engine --example color_pipeline_probe -- --output <dir> [--interior] [--gray]`: real GPU shader path and pixel comparison; uses headless GPU readback and requires an adapter with 32 sampled-texture slots and the default 16 sampler slots. The probe requests WebGPU features with terrain texture limits explicitly raised; it does not benchmark the full production device feature set. Metal and software Vulkan provide functional validation; software Vulkan does not establish performance acceptance.
 - Run all four combinations: exterior/interior × gray/HDR. Each writes `probe.png` and `probe.json`. The probe fixes 800×600, orthographic camera `(0,0,10)`, EV100 9.7, TonyMcMapface, no dither/MSAA, full diagnostic fog on one swatch, unit reflectivity on water, and constant sky rows. All are isolated diagnostic settings, not shipping values.
+
+`color_pipeline_probe --native-hdr-reference --output <dir>` verifies the
+authored-preview fallback conversion before image-space grading. A face-on
+12000-lux diffuse reference with zero ambient, metallic, reflectance and
+transmission must match normalized fog, sky and reflected water. Samples are
+compared to an independent encoded RGB reference, at tolerance 2/255; mesh
+consistency is reported separately. Add `--gray` for the neutral reference or
+`--legacy-reference-exposure` to restore EV100 9.7 as a negative control.
+Colored and gray references pass within 1/255 on Apple M1 Pro Metal; the old
+exposure fails mesh, terrain and water while fog and sky pass. No retail light
+calibration or parity claim follows from this synthetic reference.
 - The probe uses the production reflection allocation and camera setup; its unlit source geometry, render layer and visibility are diagnostic. A clear-only reflection would not exercise material tone mapping. The HDR case includes blue = 2.0 to detect clipping and duplicate display transforms.
 - `--legacy-output` is a negative control: restore the previous non-HDR cameras and 8-bit reflection target inside the probe. It must fail the consistency check, with a nonzero status and saved pixel differences. This option does not exist on the game CLI.
 - Complete L1 acceptance additionally needs NIF-to-runtime material probes, integrated dependency fixes and matched vanilla neutral/material captures from L0. Leave #131 open until those gates pass.

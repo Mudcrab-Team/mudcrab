@@ -8,14 +8,18 @@ This specification details the canonical DDL schema, tables, indices, and column
 
 `skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, ESM-flagged plugins and `.esm`/`.esl` files take priority, keeping the listed order within each category except that regular dependencies are moved ahead of the master files that need them. The resulting order is validated before assigning full/light slots, ordering archive (BSA/BA2) priority, and merging database records and terrain caches. Unrelated regular plugins retain the user's order. This is not a general dependency sort: any inversions remaining after normalization, including a master file listed before another master it depends on, are rejected. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
 
-The database stamps its version in `schema_info`; the current version is **7**
+The database stamps its version in `schema_info`; the current version is **9**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`). Schema 4 added lights and
 `references.radius_override`. Schema 5 adds grass data in #152;
 the combined producer exports grass and LOD tables. Schema 6 adds LOD origins, chunk metadata,
-its spatial index, and a build identity. The engine, `world-inspect` and
-launcher accept world schemas **3 through 7**, using
+its spatial index, and a build identity. Schema 7 added movement provenance;
+schema 8 was used by separate environment and lighting work. Schema 9 combines
+both projections with raw header provenance and a lighting snapshot marker.
+The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 24**. Legacy worlds render full detail without
+support schemas **15 through 26**. Producer 26 combines the native surface
+contract with fog/HDR metadata; existing producer-25 packages are not relabeled.
+Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
 
 ```
@@ -58,19 +62,29 @@ CREATE TABLE IF NOT EXISTS plugins (
 
 ### 2. Primary Record Database (`records`)
 
-Stores unparsed raw subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character record type codes.
+Stores winning subrecord payloads indexed by resolved 32-bit Skyrim `FormID`
+and 4-character record type codes. Typed projections retain this archive.
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
-    id INTEGER PRIMARY KEY,
-    form_id INTEGER NOT NULL,
+    form_id INTEGER PRIMARY KEY,
     record_type TEXT NOT NULL,          -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMOR', 'SPEL', etc.
-    data BLOB NOT NULL                  -- Serialized subrecords payload
+    cell_id INTEGER,
+    worldspace_id INTEGER,
+    load_order INTEGER NOT NULL,        -- winning plugin priority
+    data BLOB NOT NULL,                 -- Serialized subrecords payload
+    form_version INTEGER NOT NULL DEFAULT 0, -- Serialized record-header version
+    header_flags INTEGER NOT NULL DEFAULT 0  -- Winning record-header flags
 );
 
-CREATE INDEX IF NOT EXISTS idx_records_formid ON records(form_id);
 CREATE INDEX IF NOT EXISTS idx_records_type ON records(record_type);
+CREATE INDEX IF NOT EXISTS idx_records_cell_id ON records(cell_id) WHERE cell_id IS NOT NULL;
 ```
+
+These two header columns are added to an existing `records` table when absent.
+Default zero preserves old annotation tools; it does not establish a native
+serialized layout for an older record. New plugin parsing copies the actual
+header values.
 
 ---
 
@@ -212,6 +226,42 @@ CREATE TABLE IF NOT EXISTS lod_build (
 The unused pre-schema-6 `lod` blob placeholder is retained. Terrain LOD
 uses `lod_chunks` for indexing and external GLB files for payloads. See
 [ADR-0010](../../adr/0010-lod-chunk-payload-format.md).
+
+The metadata-only rebuild can retain terrain payloads from producer 25/world
+schema 8 when upgrading to producer 26/world schema 9. This pair has the same
+terrain compiler, atlas encoder and cell-cache contract. Before copying, it
+requires identical plugin checksums, terrain/grid topology and material lookup
+tables. The complete source DDS set is derived from the source cache and checked
+against actual staged bytes. Current staged LOD settings and
+configuration normalized to producer 25 must reconstruct the source build
+identity. Every copied GLB must match its recorded hash, canonical chunk path,
+source-cell coordinates/IDs, scene graph, Creation-to-glTF root basis and indexed
+bounds computed from actual positions. Source RTree extents must match those
+indexed bounds.
+
+The rebuilt database and `lod-manifest.json` use a freshly computed current
+26/9 build identity with unchanged canonical fields. `metadata-rebuild.json`
+records `retained_lod`, including source producer 25/world schema 8, the original
+and current identities, both cache hashes and the changed terrain cell IDs.
+`chunks` and `payload_hashes` count only retained payloads;
+`regenerated_chunks` and `regenerated_payload_hashes` describe newly compiled
+payloads, while `total_chunks` and the pipeline report cover the complete build.
+
+Cache comparisons use actual terrain compiler inputs: binary32 height bits,
+vertex colors, ordered layers and layer-weight bits. A changed cell rebuilds
+every complete tier chunk containing it, including unchanged neighbors and
+their atlas data, through the existing compiler. Other chunks retain their
+verified bytes. Every advertised source payload is validated, including those
+being replaced. The current identity uses all final payload hashes and the
+complete current DDS set. Changed settings or other incompatible inputs use
+normal compilation; so does a build with no retainable chunks. Inconsistent
+advertised source closure fails publication. Normal conversion does not use
+this retention path.
+
+Distinct LAND FormIDs can own the same effective CELL. Cache and SQL export
+select the record with the highest load priority, then the highest FormID for
+an equal-priority tie. All raw LAND records remain in `records`. This avoids
+terrain changing with HashMap iteration order.
 
 ---
 
@@ -452,3 +502,174 @@ grass definitions. The subset export used by movement annotation preserves unrel
 grass rows; if it includes an LTEX, only that texture's association list is replaced.
 Movement annotation continues to accept schema 4 through the current schema and
 preserves the existing database version; it does not perform a full reconversion.
+
+### 15. Authored Environment Inputs (`environment_records`)
+
+Schema 9 retains a typed projection of winning `WTHR`, `CLMT`, `LGTM`, `CELL`,
+`WRLD`, `REGN`, `IMGS`, `VOLI` and selected fog-related `GMST` records.
+The raw winning subrecords remain in `records.data` for unprojected fields and
+diagnostics. Full and light plugin links use the same resolved FormIDs as the
+rest of the database. `load_order` identifies the winning override; stable
+owning-plugin/local-ID identity remains in `formid_map`.
+
+```sql
+CREATE TABLE IF NOT EXISTS environment_records (
+    form_id INTEGER PRIMARY KEY,
+    schema_version INTEGER NOT NULL,   -- ENVIRONMENT_RECORD_SCHEMA_VERSION, currently 1
+    record_type TEXT NOT NULL,
+    load_order INTEGER NOT NULL,
+    data BLOB NOT NULL                 -- UTF-8 JSON EnvironmentRecord
+);
+
+CREATE INDEX IF NOT EXISTS idx_environment_records_type ON environment_records(record_type);
+```
+
+The payload uses the `kind`/`record` tagged enum in
+[`shared::environment`](../../../crates/shared/src/environment.rs). Every float
+serializes as an unsigned IEEE-754 binary32 bit-pattern integer: `1.0` becomes
+`1065353216`. Consumers must deserialize through the shared types rather than
+interpret those integers as numerical values. This preserves signed zero,
+infinities and NaN payloads. Optional missing fields serialize as JSON `null`;
+missing links also remain absent. Colors retain all four authored bytes.
+
+This bit-preserving projection remains separate from the finite-only authored
+lighting catalog below. Lighting catalog validation can reject a non-finite
+shader input even when the environment projection can represent its raw bits.
+The combined transaction preserves the previous package on either failure;
+it never clamps or replaces the authored value.
+
+The projection retains day/night fog scalars and four weather color keys,
+climate timing and weighted weather links, room/template inheritance,
+worldspace climate flags, region weather headers and boundaries, image-space
+blocks and volumetric fields. Legacy LGTM defaults follow the recovered loader;
+modern IMGS blocks and legacy ENAM remain distinct. Projection is data export:
+it does not establish native weather selection or postprocessing behavior.
+
+A complete effective load-order export replaces the projection atomically and
+stamps schema 9. A malformed supported payload rolls back the export. A subset
+export replaces only its selected FormIDs, preserving unrelated environment
+rows and the database's existing version. At startup, `EnvironmentCatalog`
+loads and validates the projection, then closes its SQLite connection. Older
+databases remain readable and report `projection_available = false`; full
+conversion is required to supply their authored environment inputs.
+
+---
+
+### 16. Authored Lighting Sources
+
+Schema 9 includes six tables with the same DDL. Their payload types are defined in
+[`shared::lighting`](../../../crates/shared/src/lighting.rs); version-aware
+decoding and export live in
+[`esm::lighting`](../../../crates/converter/src/esm/lighting.rs).
+
+| Table | Source | JSON data type |
+| --- | --- | --- |
+| `weather_defs` | WTHR | `WeatherSource` |
+| `cell_lighting` | CELL | `CellLightingSource` |
+| `lighting_templates` | LGTM | `LightingTemplateSource` |
+| `image_spaces` | IMGS | `ImageSpaceSource` |
+| `light_defs` | LIGH with a supported full DATA layout | `LightSource` |
+| `placed_light_overrides` | REFR placing a winning LIGH, or carrying XLIG/LNAM/INAM | `PlacedLightSource` |
+
+For each table, replace `weather_defs` below with its listed name:
+
+```sql
+CREATE TABLE IF NOT EXISTS weather_defs (
+    form_id INTEGER PRIMARY KEY,
+    contract_version INTEGER NOT NULL,
+    form_version INTEGER NOT NULL,
+    header_flags INTEGER NOT NULL,
+    load_order INTEGER NOT NULL,
+    winning_plugin TEXT,
+    editor_id TEXT,
+    payload TEXT NOT NULL,
+    raw_subrecords BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lighting_schema (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    version INTEGER NOT NULL,
+    complete INTEGER NOT NULL CHECK(complete IN (0,1)),
+    source_record_count INTEGER NOT NULL
+);
+```
+
+`payload` serializes `SourceRecord<T>`: contract version, winning-record
+provenance, typed data and link diagnostics. The SQL provenance columns mirror
+the JSON provenance. Contract version 1 preserves absent fields separately
+from explicit zero values. Color bytes retain RGB and their fourth byte; no
+color transfer is applied. Ambient cubes retain Creation X+/X-/Y+/Y-/Z+/Z-
+order, WTHR retains all four repeated DALC payloads, and LGTM retains its
+separate DALC and embedded DATA cube. REFR positions and rotations remain in
+Creation coordinates and radians. Light radius/fade/falloff also remain in
+their authored units. `raw_subrecords` uses the existing ordered rkyv
+subrecord representation after scoped FormID remapping; undecoded bytes stay
+available there. IMAD remains in the generic `records` table. CLMT and REGN
+also have the separate bit-preserving `environment_records` projection.
+REFR XLIG keeps its first four documented floats finite; its optional final
+four bytes are stored as `unknown_tail_bits`, a lossless little-endian bit
+pattern with no assigned numeric meaning.
+
+The source rows describe serialized inputs, not resolved rendering values.
+They do not establish weather/color interpolation, cell/template inheritance,
+ambient cube-to-matrix production, active room selection, light animation or
+image-space equations. The existing `lights` and `references` columns continue
+to support approximate rendering independently.
+
+A complete winning load-order export clears and rebuilds all six tables in one
+transaction. It publishes `lighting_schema` row 1 with `version=1`,
+`complete=1`, and a count equal to the sum of rows in those six tables. Generic
+raw records do not contribute to that count. Public plugin conversion updates
+plugin checksums in the same transaction; a malformed supported source aborts
+the export and preserves the prior snapshot. A subset annotation preserves
+unrelated source rows, removes stale projections of each supplied FormID, and
+removes the snapshot marker when a lighting projection changes.
+It cannot claim a complete new lighting snapshot. Readers require a complete
+marker, the supported contract version and a matching source-row count.
+
+These additional links are remapped only in their owning record types:
+
+| Field | Record | Targets and serialized layout |
+| --- | --- | --- |
+| `IMSP` | WTHR | Four IMGS FormIDs, 16 bytes |
+| `HNAM` | WTHR | Four VOLI FormIDs, 16 bytes when version-applicable |
+| `MNAM`, `NNAM`, `GNAM`, repeated `TNAM` | WTHR | Precipitation, visual effect, lens flare and sky static; one FormID each |
+| `LNAM`, `INAM` | REFR | Room LGTM and IMGS; one FormID each |
+| `SNAM`, `LNAM` | LIGH | Sound and lens flare; one FormID each |
+
+Malformed lengths or invalid plugin-master/light-slot indices in these newly
+covered fields fail with plugin, record, field, form-version and size context.
+Existing optional CELL/reference-link behavior remains as described above.
+Post-merge source diagnostics distinguish null, resolved, unresolved and
+wrong-record-type targets. A resolved link is not a rendering-support claim.
+
+Producer 26 rebuilds older GLBs while allowing verified script/archive reuse.
+Producer-24 and producer-25 textures can be reused only when configuration, source, encoding,
+encoder and output hashes match and the KTX2 passes current validation. Earlier
+texture contracts require regeneration. Metadata-only rebuilds can retain verified
+producer-24/25 assets, but record their original mesh producer and configuration
+hash. They never add `nativeSurface` metadata to those retained bytes. A native
+material consumer must validate that per-material contract separately; a new
+world schema alone does not upgrade an old material.
+
+After verifying the original bytes, metadata rebuilds can correct a native
+texture view's runtime availability. A missing converted view is marked
+`pruned` only when its canonical DDS is absent from the complete source
+manifest inventory and the immutable source VFS. A present DDS with a missing
+converted file fails dependency validation before LOD work. This also covers
+native-only views and transfer/sampler aliases of previously pruned images.
+Authored material parameters, `uri`, `sourceUri` and the GLB binary payload stay
+unchanged. JSON serialization can normalize the decimal spelling of diagnostic
+`nativeFrame.sourceFrame.bitangentStored` values; their authored f32 bits must
+remain identical. All other JSON values are preserved exactly. Historical
+image-pruning replay still requires the original exact
+bytes; the current availability correction runs separately afterward.
+
+`metadata-rebuild.json.native_texture_view_corrections` records procedure
+producer 26, original and current hashes and sizes, affected material/slot/URI,
+the absent DDS, `reason=source_absent`, and whether the source's prior prune
+record names an alias of that DDS. `retained_asset_hashes` keeps original source
+hashes; each corrected output's current hash and size appear in both the
+correction record and current conversion manifest. Corrected models count as
+converted assets rather than cache hits. Dependency closure is checked again
+before publication.
