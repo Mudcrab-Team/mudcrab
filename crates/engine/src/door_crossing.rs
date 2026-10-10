@@ -74,7 +74,12 @@ impl Plugin for DoorCrossingPlugin {
             .add_message::<TeleportPlayer>()
             .add_systems(Startup, spawn_fade_overlay)
             // After the streaming chain in `Update`, so the pending counts are this frame's.
-            .add_systems(PostUpdate, drive_door_crossing);
+            .add_systems(
+                PostUpdate,
+                drive_door_crossing
+                    .after(crate::interaction::InteractionSet::Pickup)
+                    .after(crate::interaction::InteractionSet::Target),
+            );
     }
 }
 
@@ -258,7 +263,7 @@ fn spawn_fade_overlay(mut commands: Commands) {
     ));
 }
 
-fn fallback_bounds() -> ExpectedModelBounds {
+pub(crate) fn fallback_bounds() -> ExpectedModelBounds {
     ExpectedModelBounds {
         min: FALLBACK_DOOR_MIN,
         max: FALLBACK_DOOR_MAX,
@@ -282,7 +287,7 @@ fn describe_destination(key: &CellKey) -> String {
 ///
 /// The bounds are the converter's model-space box; the ray is taken into the door's local space
 /// so a rotated or scaled door is tested as the oriented box it is.
-fn ray_hits_door(
+pub(crate) fn ray_hits_door(
     origin: Vec3,
     direction: Vec3,
     door: &GlobalTransform,
@@ -318,7 +323,7 @@ fn ray_hits_door(
 
 /// Whether a collider the camera ray met first hides a door `door_distance` away: it must be
 /// nearer than the door by more than [`DOOR_BLOCKER_SLACK`]. No collider (`None`) never blocks.
-fn door_view_blocked(nearest_collider: Option<f32>, door_distance: f32) -> bool {
+pub(crate) fn door_view_blocked(nearest_collider: Option<f32>, door_distance: f32) -> bool {
     nearest_collider.is_some_and(|hit| hit < door_distance - DOOR_BLOCKER_SLACK)
 }
 
@@ -586,7 +591,7 @@ fn set_alpha(overlay: &mut Query<&mut BackgroundColor, With<FadeOverlay>>, alpha
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_door_crossing(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
@@ -598,7 +603,10 @@ fn drive_door_crossing(
     camera_space: Res<CameraSpace>,
     streaming: Res<StreamingWorld>,
     camera: Query<&Transform, With<StreamingCamera>>,
-    doors: Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
+    (doors, target): (
+        Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
+        Option<Res<crate::interaction::InteractionTarget>>,
+    ),
     (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
@@ -616,24 +624,44 @@ fn drive_door_crossing(
         if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
             return;
         }
+        if target.as_ref().is_some_and(|target| {
+            !matches!(
+                target.action,
+                Some(crate::interaction::InteractionAction::Door(_))
+            )
+        }) {
+            return;
+        }
         let Ok(view) = camera.single() else {
             return;
         };
         let direction = view.forward().as_vec3();
-        let Some((door, distance)) = doors
-            .iter()
-            .filter_map(|(door, transform, bounds)| {
-                let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
-                ray_hits_door(view.translation, direction, transform, &bounds, DOOR_REACH)
-                    .map(|distance| (door, distance))
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-        else {
+        let selected = target.as_ref().and_then(|target| match target.action {
+            Some(crate::interaction::InteractionAction::Door(entity)) => {
+                doors.get(entity).ok().map(|(door, _, _)| (door, 0.0))
+            }
+            _ => None,
+        });
+        let Some((door, distance)) = selected.or_else(|| {
+            if target.is_some() {
+                return None;
+            }
+            doors
+                .iter()
+                .filter_map(|(door, transform, bounds)| {
+                    let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
+                    ray_hits_door(view.translation, direction, transform, &bounds, DOOR_REACH)
+                        .map(|distance| (door, distance))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+        }) else {
             return;
         };
         // The same camera-ray test the tankard grab uses: a door behind a wall is not reachable.
         // Without a physics world (a run with no colliders) nothing can block.
-        if let Ok(physics) = physics.single() {
+        if target.is_none()
+            && let Ok(physics) = physics.single()
+        {
             let filter = match player.single() {
                 Ok(player) => QueryFilter::default().exclude_rigid_body(player),
                 Err(_) => QueryFilter::default(),
@@ -946,6 +974,36 @@ mod tests {
             app.update();
         }
         panic!("the space never switched");
+    }
+
+    #[test]
+    fn e_uses_the_shared_prompt_target_and_rejects_a_vanished_target() {
+        use crate::interaction::{InteractionAction, InteractionTarget};
+        let (mut app, _) = app_with(interior_door());
+        let selected = app
+            .world_mut()
+            .query_filtered::<Entity, With<LoadDoor>>()
+            .single(app.world())
+            .unwrap();
+        app.insert_resource(InteractionTarget { action: None });
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.world_mut().resource_mut::<InteractionTarget>().action = Some(InteractionAction::Drop);
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        // A stale prompt must not fall back to another reachable door.
+        let vanished = app.world_mut().spawn_empty().id();
+        app.world_mut().despawn(vanished);
+        app.world_mut().resource_mut::<InteractionTarget>().action =
+            Some(InteractionAction::Door(vanished));
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.world_mut().resource_mut::<InteractionTarget>().action =
+            Some(InteractionAction::Door(selected));
+        press_e(&mut app);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+        run_until_black(&mut app);
+        assert_eq!(app.world().resource::<ActiveSpace>().interior, Some(77));
     }
 
     #[test]

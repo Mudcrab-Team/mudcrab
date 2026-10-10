@@ -595,9 +595,12 @@ impl Plugin for WorldPlayerPlugin {
                     .before(overlay_system),
             )
             .add_systems(
-                Update,
+                PostUpdate,
                 (
-                    world_tankard_input.run_if(console_closed),
+                    world_tankard_input
+                        .run_if(console_closed)
+                        .after(crate::interaction::InteractionSet::Target)
+                        .in_set(crate::interaction::InteractionSet::Pickup),
                     move_held_tankard,
                 )
                     .chain(),
@@ -606,7 +609,7 @@ impl Plugin for WorldPlayerPlugin {
 }
 
 #[derive(Resource, Default)]
-struct HeldTankard(Option<Entity>);
+pub(crate) struct HeldTankard(pub(crate) Option<Entity>);
 
 #[derive(Resource)]
 struct TankardVisuals {
@@ -2511,8 +2514,8 @@ fn setup_controlled_player(
     ));
 }
 
-/// T spawns a test tankard and E grabs or drops one, only while the cursor is captured.
-/// Riverwood test objects stay in world coordinates and are never children of a streamed cell.
+/// T spawns a test tankard; E grabs or drops a tankard or authored dynamic clutter.
+/// Debug tankards are world roots; authored bodies keep their streamed-cell parent.
 #[allow(clippy::too_many_arguments)]
 fn world_tankard_input(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -2520,6 +2523,9 @@ fn world_tankard_input(
     camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
     terrain: Query<(), With<TerrainCollider>>,
     tankards: Query<(), With<DebugTankard>>,
+    interactables: Query<(), crate::interaction::PickupFilter>,
+    parents: Query<&ChildOf>,
+    target: Option<Res<crate::interaction::InteractionTarget>>,
     player: Query<Entity, With<PlayerBody>>,
     visuals: Option<Res<TankardVisuals>>,
     mut held: ResMut<HeldTankard>,
@@ -2556,12 +2562,29 @@ fn world_tankard_input(
     if !keyboard.just_pressed(KeyCode::KeyE) {
         return;
     }
+    if target.as_ref().is_some_and(|target| {
+        !matches!(
+            target.action,
+            Some(
+                crate::interaction::InteractionAction::Pickup(_)
+                    | crate::interaction::InteractionAction::Drop
+            )
+        )
+    }) {
+        return;
+    }
     if let Some(entity) = held.0.take() {
-        if tankards.get(entity).is_ok() {
+        if interactables.get(entity).is_ok() {
             commands
                 .entity(entity)
                 .remove::<(RigidBodyDisabled, ColliderDisabled)>();
-            commands.entity(entity).insert(Velocity::zero());
+            commands.entity(entity).insert((
+                Velocity::zero(),
+                Sleeping {
+                    sleeping: false,
+                    ..default()
+                },
+            ));
         }
         return;
     }
@@ -2570,14 +2593,24 @@ fn world_tankard_input(
     } else {
         QueryFilter::default()
     };
-    if let Some((entity, _)) = context.cast_ray(
-        camera.translation,
-        camera.forward().as_vec3(),
-        240.0,
-        true,
-        filter,
-    ) && tankards.get(entity).is_ok()
-    {
+    let selected = match target {
+        Some(target) => match target.action {
+            Some(crate::interaction::InteractionAction::Pickup(entity)) => Some(entity),
+            _ => None,
+        },
+        None => context
+            .cast_ray(
+                camera.translation,
+                camera.forward().as_vec3(),
+                240.0,
+                true,
+                filter,
+            )
+            .and_then(|(entity, _)| {
+                crate::interaction::pickup_root(entity, &parents, &interactables)
+            }),
+    };
+    if let Some(entity) = selected {
         commands
             .entity(entity)
             .insert((RigidBodyDisabled, ColliderDisabled, Velocity::zero()));
@@ -2594,16 +2627,34 @@ fn move_held_tankard(
             With<StreamingCamera>,
             With<ControlledCamera>,
             Without<DebugTankard>,
+            Without<DynamicClutter>,
         ),
     >,
-    mut tankards: Query<&mut Transform, (With<DebugTankard>, Without<StreamingCamera>)>,
+    mut tankards: Query<
+        (&mut Transform, Option<&ChildOf>),
+        (
+            Or<(With<DebugTankard>, With<DynamicClutter>)>,
+            Without<StreamingCamera>,
+        ),
+    >,
+    parents: Query<&GlobalTransform>,
 ) {
     let Some(entity) = held.0 else { return };
-    let (Ok(camera), Ok(mut tankard)) = (camera.single(), tankards.get_mut(entity)) else {
+    let (Ok(camera), Ok((mut tankard, parent))) = (camera.single(), tankards.get_mut(entity))
+    else {
         held.0 = None;
         return;
     };
-    tankard.translation = camera.translation + camera.forward().as_vec3() * 110.0;
+    let position = camera.translation + camera.forward().as_vec3() * 110.0;
+    tankard.translation = match parent {
+        Some(parent) => {
+            let Ok(transform) = parents.get(parent.parent()) else {
+                return;
+            };
+            transform.affine().inverse().transform_point3(position)
+        }
+        None => position,
+    };
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3200,6 +3251,109 @@ mod gate_tests {
             .query_filtered::<&Transform, With<PlayerBody>>();
         let pose = body.single(app.world()).expect("player body");
         assert!(pose.rotation.x.abs() < 0.001 && pose.rotation.z.abs() < 0.001);
+    }
+
+    #[test]
+    fn authored_compound_clutter_grab_uses_parent_space_and_wakes_on_drop() {
+        let mut app = headless::fixture_app();
+        app.init_resource::<HeldTankard>();
+        app.insert_resource(CursorCapture::Captured);
+        let parent = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(500.0, 0.0, 0.0),
+                GlobalTransform::default(),
+            ))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((
+                DynamicClutter {
+                    max_linear_velocity: 2000.0,
+                    max_angular_velocity: 20.0,
+                },
+                RigidBody::Dynamic,
+                Velocity::zero(),
+                Sleeping {
+                    sleeping: true,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 200.0, -160.0),
+                GlobalTransform::default(),
+                ChildOf(parent),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Collider::cuboid(10.0, 10.0, 10.0),
+            clutter_collision_groups(),
+            Transform::default(),
+            GlobalTransform::default(),
+            ChildOf(body),
+        ));
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<ControlledCamera>>()
+            .single(app.world())
+            .unwrap();
+        *app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap() = Transform::from_xyz(500.0, 200.0, 0.0);
+        app.update();
+        app.insert_resource(CursorCapture::Captured);
+        *app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap() = Transform::from_xyz(500.0, 200.0, 0.0);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        assert_eq!(app.world().resource::<HeldTankard>().0, Some(body));
+        assert!(app.world().entity(body).contains::<RigidBodyDisabled>());
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation
+            .x += 40.0;
+        app.world_mut().run_system_once(move_held_tankard).unwrap();
+        let position = app
+            .world()
+            .entity(body)
+            .get::<Transform>()
+            .unwrap()
+            .translation;
+        assert!(
+            position.abs_diff_eq(Vec3::new(40.0, 200.0, -110.0), 0.01),
+            "{position:?}"
+        );
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::KeyE);
+            keys.clear();
+            keys.press(KeyCode::KeyE);
+        }
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        assert_eq!(app.world().resource::<HeldTankard>().0, None);
+        assert!(!app.world().entity(body).contains::<RigidBodyDisabled>());
+        assert!(!app.world().entity(body).get::<Sleeping>().unwrap().sleeping);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .entity(body)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .y
+                < position.y
+        );
     }
 
     #[test]

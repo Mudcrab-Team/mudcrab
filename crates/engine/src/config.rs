@@ -110,6 +110,8 @@ pub struct EngineConfig {
     pub hidden_window: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
+    /// Include interactive world physics in a bounded stationary native benchmark.
+    pub benchmark_world_physics: bool,
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
     /// `--benchmark-jump <grid-x>,<grid-y>`: once the world around the camera is first fully
@@ -212,6 +214,7 @@ impl Default for EngineConfig {
             hidden_window: false,
             benchmark_only: false,
             benchmark_frames: None,
+            benchmark_world_physics: false,
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
             benchmark_jump: None,
@@ -302,6 +305,7 @@ Streaming:
 Benchmark and profiling:
   --benchmark-only                      run the synthetic benchmark; opens no world database
   --benchmark-frames <count>            stop after this many measured frames
+  --benchmark-world-physics             include player, doors and collision in a stationary benchmark
   --benchmark-duration <seconds>        stop after this many measured seconds
   --benchmark-warmup-frames <count>     frames discarded before measuring (default: 60)
   --benchmark-jump <x,y>                after the world first loads, jump to this grid cell and time the reload
@@ -516,8 +520,8 @@ impl EngineConfig {
             && self.benchmark_jump.is_none()
             && !self.hidden_window
             && !self.benchmark_only
-            && self.benchmark_frames.is_none()
-            && self.benchmark_duration_secs.is_none()
+            && (self.benchmark_world_physics || self.benchmark_frames.is_none())
+            && (self.benchmark_world_physics || self.benchmark_duration_secs.is_none())
             && self.acceptance_screenshot.is_none()
             && self.shots.is_none()
             && self.matched_route.is_none()
@@ -762,6 +766,7 @@ impl EngineConfig {
                         (millis * 1_000.0).round().clamp(1.0, u64::MAX as f64) as u64;
                 }
                 "--benchmark-only" => config.benchmark_only = true,
+                "--benchmark-world-physics" => config.benchmark_world_physics = true,
                 "--benchmark-frames" => {
                     config.benchmark_frames = Some(take_value(
                         "--benchmark-frames",
@@ -1022,6 +1027,15 @@ impl EngineConfig {
                 "--streaming-benchmark-route-secs",
                 Some(config.streaming_benchmark_route_secs.to_string()),
                 "a duration whose route distance and total duration remain finite",
+            ));
+        }
+        if config.benchmark_world_physics
+            && (!config.is_benchmark_run() || !config.interactive_world_physics())
+        {
+            return Err(ConfigError::invalid_value(
+                "--benchmark-world-physics",
+                None,
+                "a bounded, visible stationary world benchmark without automated camera paths or fixtures",
             ));
         }
         Ok(ConfigAction::Run(Box::new(config)))
@@ -2307,6 +2321,27 @@ mod tests {
             },
         ] {
             assert!(!config.interactive_world_physics());
+        }
+    }
+
+    #[test]
+    fn stationary_benchmark_can_include_the_interactive_physics_path() {
+        let config = run_config(&["--benchmark-duration", "10", "--benchmark-world-physics"]);
+        assert!(config.interactive_world_physics());
+        assert!(config.is_benchmark_run());
+        for extra in [
+            vec![],
+            vec!["--headless"],
+            vec!["--auto-fly-speed", "100"],
+            vec!["--benchmark-jump", "1,1"],
+            vec!["--shots", "poses.json"],
+        ] {
+            let mut args = vec!["--benchmark-world-physics"];
+            if !extra.is_empty() {
+                args.extend(["--benchmark-duration", "10"]);
+            }
+            args.extend(extra);
+            assert!(EngineConfig::from_args(args.into_iter().map(str::to_owned)).is_err());
         }
     }
 

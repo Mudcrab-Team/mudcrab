@@ -7,6 +7,7 @@ pub mod console;
 pub mod door_crossing;
 pub mod doors;
 pub mod indirect_metrics;
+mod interaction;
 pub mod lights;
 mod matched_route;
 pub mod mesh_preparation_retry;

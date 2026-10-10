@@ -733,6 +733,45 @@ fn parse_text_table(bytes: &[u8], length_prefixed: bool) -> Result<HashMap<u32, 
 mod tests {
     use super::*;
 
+    #[test]
+    fn inhouse_export_projects_reciprocal_named_doors() {
+        use dummy_content::{esm, layout};
+        let directory = tempfile::tempdir().unwrap();
+        let cells = [esm::PRESET_EXTERIOR_CELL];
+        let bytes = esm::plugin_with_interior(
+            &esm::Plugin {
+                author: layout::GENERATED_AUTHOR,
+                worldspace: layout::GENERATED_WORLDSPACE,
+                cells: &cells,
+                model_path: layout::GENERATED_MODEL_PATH,
+                diffuse: layout::GENERATED_DIFFUSE_PATH,
+                normal_texture: layout::GENERATED_NORMAL_PATH,
+            },
+            &esm::PRESET_INTERIOR,
+        )
+        .unwrap();
+        let path = directory.path().join("Skyrim.esm");
+        fs::write(&path, bytes).unwrap();
+        let database = directory.path().join("world.db");
+        convert_plugins(&[path], &database, &StringsSource::default()).unwrap();
+        let conn = Connection::open(database).unwrap();
+        let count: usize = conn
+            .query_row("SELECT count(*) FROM door_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let (name, x, y, z): (String, f32, f32, f32) = conn.query_row(
+            "SELECT destination_name,pos_x,pos_y,pos_z FROM door_links WHERE destination_worldspace_id IS NULL",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!(name, "Generated Interior");
+        assert_eq!([x, y, z], [128.0, 256.0, 0.0]);
+        let reciprocal: usize = conn.query_row(
+            "SELECT count(*) FROM door_links a JOIN door_links b ON a.destination_ref_id=b.ref_id AND b.destination_ref_id=a.ref_id",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(reciprocal, 2);
+    }
+
     /// A four-byte event code without a terminator keeps its width; padded and accented
     /// text become canonical UTF-8 with one NUL.
     #[test]

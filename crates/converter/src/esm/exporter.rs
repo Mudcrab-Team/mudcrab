@@ -656,6 +656,7 @@ fn export_records(
     }
     drop(record_insert);
     drop(identity_insert);
+    super::doors::project_door_links(&tx)?;
     tx.commit()
 }
 

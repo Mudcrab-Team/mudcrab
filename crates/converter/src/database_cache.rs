@@ -83,6 +83,7 @@ fn source_fingerprint() -> String {
         include_bytes!("esm/load_order.rs"),
         include_bytes!("esm/extractors.rs"),
         include_bytes!("esm/exporter.rs"),
+        include_bytes!("esm/doors.rs"),
         include_bytes!("esm/inhouse.rs"),
         include_bytes!("esm/cell_cache.rs"),
         include_bytes!("esm/types.rs"),

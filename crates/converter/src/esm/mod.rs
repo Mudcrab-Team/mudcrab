@@ -14,6 +14,7 @@ use std::{
 };
 pub mod binary;
 pub mod cell_cache;
+pub mod doors;
 pub mod exporter;
 pub mod extractors;
 pub mod inhouse;

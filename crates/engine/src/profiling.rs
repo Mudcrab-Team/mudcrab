@@ -373,6 +373,7 @@ impl ProfilingState {
                 start_grid: config.start_grid,
                 stream_radius: config.stream_radius,
                 synthetic_instances: config.synthetic_instances,
+                world_physics: config.interactive_world_physics(),
                 system,
             },
         )?;
@@ -568,6 +569,7 @@ struct Metadata<'a> {
     start_grid: (i32, i32),
     stream_radius: i32,
     synthetic_instances: usize,
+    world_physics: bool,
     system: Option<SystemMetadata>,
 }
 

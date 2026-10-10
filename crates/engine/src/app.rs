@@ -240,7 +240,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .add_plugins(StreamingPlugin);
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
-            app.add_plugins((WorldPlayerPlugin, crate::door_crossing::DoorCrossingPlugin));
+            app.add_plugins((
+                WorldPlayerPlugin,
+                crate::door_crossing::DoorCrossingPlugin,
+                crate::interaction::InteractionPlugin,
+            ));
             // `coc`/`coe` move the player, so they come with it, as `tcl` does: a run without a
             // player (a benchmark, `--shots`, headless) lists neither in Help.
             crate::cell_commands::register_cell_commands(&mut app);
