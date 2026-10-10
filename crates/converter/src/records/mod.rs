@@ -220,6 +220,23 @@ pub(crate) fn read_plugins_with_validation_and_observer(
                 });
                 return;
             }
+            // A torn override cannot show what its missing tail held, so it never
+            // replaces a complete earlier version; a first definition keeps its prefix.
+            if !record.payload_complete
+                && result
+                    .records
+                    .get(&record.form_id)
+                    .is_some_and(|previous| previous.payload_complete)
+            {
+                diagnostics.note("record", || {
+                    format!(
+                        "{} {:08X}: incomplete override keeps the earlier complete version",
+                        String::from_utf8_lossy(&record.record_type),
+                        record.form_id
+                    )
+                });
+                return;
+            }
             let source_id = record.source_form_id;
             if let Some(previous) = seen.insert(record.form_id, source_id) {
                 diagnostics.note("record", || {

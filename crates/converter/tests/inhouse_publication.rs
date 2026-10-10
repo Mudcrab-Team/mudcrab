@@ -623,6 +623,16 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
         ));
         baseline.extend(group(1, 1, &children));
     }
+    // A complete base static that a later torn override must not replace.
+    baseline.extend(record(
+        b"STAT",
+        0xC00,
+        0,
+        &[
+            (b"EDID", text("TornBase")),
+            (b"MODL", text(layout::GENERATED_MODEL_PATH)),
+        ],
+    ));
     fs::write(data.join("Skyrim.esm"), baseline).unwrap();
     for (name, bad_value) in [("BadNegative.esp", -1.0f32), ("BadNonfinite.esp", f32::NAN)] {
         let mut header = 1.7f32.to_le_bytes().to_vec();
@@ -740,6 +750,15 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
             ));
             worlds.extend(new_cell);
             patch.extend(group(1, 1, &worlds));
+            // The record boundary is intact, but its last subrecord runs past the payload:
+            // the readable prefix cannot show what the missing tail held.
+            let mut torn = b"EDID".to_vec();
+            torn.extend_from_slice(&(text("TornOverride").len() as u16).to_le_bytes());
+            torn.extend(text("TornOverride"));
+            torn.extend_from_slice(b"MODL");
+            torn.extend_from_slice(&200u16.to_le_bytes());
+            torn.extend_from_slice(&[b'x'; 10]);
+            patch.extend(framed_record(b"STAT", 0xC00, 0, &torn));
             // Real deletion retains normal override behavior.
             patch.extend(record(b"STAT", 0x900, 0x20, &[]));
         }
@@ -838,6 +857,24 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
     assert_eq!(heightless.heights, vec![0.0; 33 * 33]);
     assert_eq!(heightless.vertex_colors, vec![111; 33 * 33 * 3]);
     assert!(cache.cells.iter().any(|cell| cell.cell_id == 0xA00));
+    assert_eq!(
+        db.query_row(
+            "SELECT s.editor_id, s.model_path, r.load_order FROM statics s \
+             JOIN records r ON r.form_id = s.id WHERE s.id = 3072",
+            [],
+            |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?
+            ))
+        )
+        .unwrap(),
+        (
+            "TornBase".to_owned(),
+            layout::GENERATED_MODEL_PATH.to_owned(),
+            0
+        )
+    );
 }
 
 /// Repeated metadata rebuilds retain the original asset reader identity and verified bytes.

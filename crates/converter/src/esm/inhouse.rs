@@ -374,7 +374,7 @@ fn convert_plugins_with_dump(
         let mut localization = BTreeMap::new();
         for (index, field) in record.fields.iter().enumerate() {
             if let Value::String(text) = &field.value
-                && let Some(bytes) = runtime_text(text)
+                && let Some(bytes) = runtime_text(text, &raw.subrecords[index].1)
             {
                 raw.subrecords[index].1 = bytes;
             }
@@ -650,10 +650,10 @@ fn validate_candidate(record: &records::DecodedRecord) -> std::result::Result<()
 }
 
 /// Encode decoded text for the shared runtime extractor without changing original source bytes.
-/// Typed Windows-1252 decoding owns ordinary text; runtime bytes are UTF-8.
-/// ASCII is identical in both, so its source bytes (and any fixed slot width) stay as read.
-fn runtime_text(text: &str) -> Option<Vec<u8>> {
-    (!text.is_ascii()).then(|| runtime_string(text))
+/// Typed Windows-1252 decoding owns ordinary text; runtime bytes are UTF-8 with one NUL.
+/// A fixed-width ASCII code stored without a terminator keeps its exact source width.
+fn runtime_text(text: &str, source: &[u8]) -> Option<Vec<u8>> {
+    (!(text.is_ascii() && source == text.as_bytes())).then(|| runtime_string(text))
 }
 
 fn runtime_string(text: &str) -> Vec<u8> {
@@ -747,12 +747,14 @@ fn parse_text_table(bytes: &[u8], length_prefixed: bool) -> Result<HashMap<u32, 
 mod tests {
     use super::*;
 
-    /// A four-byte event code without a terminator keeps its width; accented text becomes UTF-8.
+    /// A four-byte event code without a terminator keeps its width; padded and accented
+    /// text become canonical UTF-8 with one NUL.
     #[test]
-    fn runtime_text_rewrites_only_non_ascii() {
-        assert_eq!(runtime_text("ADIA"), None);
+    fn runtime_text_keeps_unterminated_codes_and_canonicalizes_other_text() {
+        assert_eq!(runtime_text("ADIA", b"ADIA"), None);
+        assert_eq!(runtime_text("Bool", b"Bool\0\0"), Some(b"Bool\0".to_vec()));
         assert_eq!(
-            runtime_text("Caf\u{e9}"),
+            runtime_text("Caf\u{e9}", b"Caf\xe9\0"),
             Some("Caf\u{e9}\0".as_bytes().to_vec())
         );
     }
