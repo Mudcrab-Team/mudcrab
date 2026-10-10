@@ -16,17 +16,19 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 # An evidence revision, never the viewer's eventual HEAD (which would self-reference).
-CODE_PIN = "44499b22274e3e951f8aa5e630c833e39acf88cb"
+CODE_PIN = "62af074a01b9d43c22e5df0ef62d63ee682388bd"
 XEDIT_PIN = "9fb016884bec138ea6c7b872cec831537d464c3e"
 MUTAGEN_PIN = "4f533562ee0c70347d47c1979d5464d42b06ee6b"
 CODE_HASHES = {
-    "crates/converter/src/esm/exporter.rs": "cb3e83cc6c89d41666d6d21f471287e5bdf574d3a95c37fd2b35628b2361df4e",
-    "crates/shared/src/lib.rs": "691bde5cb1ace0287992aafe75b35ba8b340de80b1fd15cd020c2223ca175050",
-    "crates/converter/src/esm/records/mod.rs": "e4efc3290da5eb3e00794d20b8726763ef759353274bc67f05af69e5eba1eab6",
-    "crates/converter/src/esm/mod.rs": "5b420c29a06888c571d491bd4e9a643a224d1e5b429e9a76f65b5b58f3366126",
+    "crates/converter/src/esm/exporter.rs": "8920706b44c08fefb715f51ae728dc400c3e651ab621dd9ec352096b89c5cd05",
+    "crates/shared/src/lib.rs": "398fa1d1762c7e0bd7e3083d54997509cbc735bf2e45782a18de5ba04302f407",
+    "crates/converter/src/esm/records/mod.rs": "98c0b882617b196f24e8dc2864222b24e8d9a092b93bc387f516e3396fa71d45",
+    "crates/converter/src/esm/mod.rs": "dc0e865f8778954cad07a9f7ed7f886bb2b1668d368479e8bd69dd369a854ae3",
     "crates/converter/src/esm/load_order.rs": "d99a576a6a89fdb640ac9f2942bb26bae96453f73f0d0f74ecd9db6c4b074057",
     "crates/converter/src/esm/extractors.rs": "3df9d88db6a3e591d0f1f3833bfc50c21b6c8892144e2da4ab2b9e0acacac4a2",
-    "crates/converter/src/esm/cell_cache.rs": "b81172c62f74193a4e97167f9d742bb325a856d1e461face28173162c935bae7",
+    "crates/converter/src/esm/cell_cache.rs": "a9da47c302c5fa565951359815ae2f2f53e111099c5847fd402de0ed32d0098e",
+    "crates/converter/src/esm/records/achr.rs": "04dcbff7345e3b84063c7665cb8f2bd12a174de12c3dcf1f8db583b56b2d5beb",
+    "crates/converter/src/esm/inhouse.rs": "f54517684c06d1c9808b37a737652197e7cde12fd84c23dd83105c3ddf3df1e0"
 }
 REPOS = {
     "project": ("Mudcrab-Team/mudcrab", CODE_PIN),
@@ -63,6 +65,8 @@ def anchor(path: str, text: str, sources: dict[str, str], label: str = "") -> di
     matches = [i + 1 for i, row in enumerate(sources[path].splitlines()) if text in row]
     if not matches:
         raise ValueError(f"Missing code anchor {path}: {text}")
+    if len(matches) != 1:
+        raise ValueError(f"Ambiguous code anchor {path}: {text}")
     return source_link("project", path, matches[0], label)
 
 
@@ -147,13 +151,17 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
             raise ValueError(f"Code drift at {path}; review facts and update the explicit evidence pin")
         sources[path] = text
     input_names = ("candidate-inventory.json", "native-field-ledger.md", "pilot-code-evidence.json",
-                   "schema-explorer-annotations.json", "schema-explorer-re-evidence.json")
+                   "schema-explorer-annotations.json", "schema-explorer-re-evidence.json",
+                   "schema-explorer-integration-evidence.json")
     input_texts = {name: read_text_lf(here / name) for name in input_names}
     inventory = json.loads(input_texts["candidate-inventory.json"])
     if inventory["sources"]["xedit"]["pin"] != XEDIT_PIN or inventory["sources"]["mutagen"]["pin"] != MUTAGEN_PIN:
         raise ValueError("Candidate inventory source pin changed")
     annotations = json.loads(input_texts["schema-explorer-annotations.json"])
     evidence = json.loads(input_texts["schema-explorer-re-evidence.json"])
+    integration = json.loads(input_texts["schema-explorer-integration-evidence.json"])
+    if integration["code_commit"] != CODE_PIN or integration["source_hashes"] != CODE_HASHES:
+        raise ValueError("Integration source evidence does not match the reviewed code pin/hashes")
     for path, expected in evidence["pins"]["mudcrab_evidence_worktree"]["evidence_file_sha256"].items():
         text = input_texts.get(Path(path).name)
         if text is None or text_digest(text) != expected:
@@ -191,9 +199,16 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
     summary.update({"records": len(rows), "shared": sum(r["status"] == "shared" for r in rows),
                     "xedit_only": sum(r["status"] == "xedit-only" for r in rows), "headers": sum(r["status"] == "header" for r in rows)})
     expected_counts = {"records": 134, "shared": 127, "xedit_only": 6, "headers": 1,
-                       "logical_tables": 26, "rtree_tables": 2, "sqlite_tables_with_shadows": 32, "foreign_key_count": 0}
+                       "logical_tables": 26, "rtree_tables": 2, "sqlite_tables_with_shadows": 32,
+                       "foreign_key_count": 0, "column_count": 183}
     if any(summary[k] != v for k, v in expected_counts.items()):
         raise ValueError(f"Catalog/table denominator changed: {summary}")
+    versions = {"world_database": constant(sources, "WORLD_DATABASE_SCHEMA_VERSION"),
+                "runtime_min": constant(sources, "MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION"),
+                "cell_cache": constant(sources, "CELL_CACHE_VERSION")}
+    contracts = dict(versions, producer=constant(sources, "LOD_CONVERTER_SCHEMA_VERSION"))
+    if integration["contracts"] != contracts or integration["projection_summary"] != summary:
+        raise ValueError("Integration source evidence contracts/projection changed")
     record_ids = {r["id"] for r in rows}
     for table in tables:
         annotation = annotations["tables"][table["name"]]
@@ -206,7 +221,9 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
         if field["record"] not in record_ids:
             raise ValueError(f"Unknown field record {field['record']}")
         field["id"] = f"{field['record']}.{field['tag']}"
-        field["sources"] = [source_link(**s) for s in field.pop("anchors")]
+        field["sources"] = [anchor(s["path"], s["anchor"], sources, s.get("label", ""))
+                            if s["source"] == "project" else source_link(**s)
+                            for s in field.pop("anchors")]
         field["sources"].append(source_link("project", "docs/research/dynamic-schema/native-field-ledger.md", field["ledger_line"], "Historical field ledger (2026-10-05)"))
         for target in field["columns"]:
             tab, col = target.split(".")
@@ -220,11 +237,12 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
         link["source"] = anchor(link.pop("path"), link.pop("anchor"), sources, "Code relationship evidence")
     gates = [dict(a, link=source_link(source, a["path"], a["line"]))
              for source, anchors in inventory["source_gate_anchors"].items() for a in anchors]
+    for stage in annotations["dataflow"]["current"]:
+        stage["source"] = anchor(stage["path"], stage.pop("anchor"), sources, "Code anchor")
+        stage.pop("path")
     return {
         "title": "Mudcrab schema explorer", "summary": summary,
-        "versions": {"world_database": constant(sources, "WORLD_DATABASE_SCHEMA_VERSION"),
-                     "runtime_min": constant(sources, "MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION"),
-                     "cell_cache": constant(sources, "CELL_CACHE_VERSION")},
+        "versions": versions,
         "pins": {"code": CODE_PIN, "xedit": XEDIT_PIN, "mutagen": MUTAGEN_PIN},
         "hash_normalization": HASH_NORMALIZATION,
         "source_files": [{"path": path, "sha256": digest, "link": source_link("project", path, 1)} for path, digest in CODE_HASHES.items()],
@@ -234,6 +252,7 @@ def build_data(root: Path = ROOT, here: Path = HERE) -> dict:
         "glossary": annotations["glossary"], "dataflow": annotations["dataflow"],
         "source_gates": gates, "catalog_caveats": inventory["interpretive_caveats"],
         "mcp": evidence,
+        "integration_evidence": integration,
         "links": {
             "inventory": source_link("project", "docs/research/dynamic-schema/candidate-inventory.json", 1, "Candidate inventory"),
             "ledger": source_link("project", "docs/research/dynamic-schema/native-field-ledger.md", 1, "Historical field/native ledger"),

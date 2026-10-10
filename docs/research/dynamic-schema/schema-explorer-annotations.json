@@ -86,7 +86,7 @@
         "SCRL",
         "ARMO"
       ],
-      "note": "Shared partial model projection. ARMO uses MOD2 then MOD3; other listed types use MODL. Header flags are retained.",
+      "note": "Shared partial model projection. ARMO uses MOD2, then MOD4 with the in-house reader or MOD3 with the legacy reader; other listed types use MODL. Header flags are retained.",
       "anchor": "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\"",
       "path": "crates/converter/src/esm/exporter.rs"
     },
@@ -123,7 +123,7 @@
         "GMST"
       ],
       "note": "Only fMoveCharWalkBase and fJumpHeightMin, matched case-insensitively. Other GMST names have no typed row here.",
-      "anchor": "[\"fMoveCharWalkBase\", \"fJumpHeightMin\"]",
+      "anchor": "let movement_name = editor_id.as_deref().and_then(|name| {",
       "path": "crates/converter/src/esm/exporter.rs"
     },
     {
@@ -315,7 +315,7 @@
     "cells.data": "Parsed subrecord tag/payload projection; includes untyped DATA/XCLC tail/XCLL and remapped LTMP. Malformed optional link subrecords are removed.",
     "cells.worldspace_id": "Code-level worldspace link; SQLite declares no FK.",
     "references.header_flags": "Raw record-header u32; bit meanings depend on record type.",
-    "references.enable_parent_flags": "Current u32 from XESP bytes 4-7: one declared flag byte plus three unresolved bytes. Not established padding.",
+    "references.enable_parent_flags": "Only XESP byte 4 becomes the widened integer flag value. Bytes 5-7 remain in the serialized subrecord and do not contribute to this column; their native semantics remain unresolved.",
     "references.enable_parent_id": "Remapped XESP parent FormID, or 0 for an invalid optional link; malformed XESP subrecords are removed. Code link, no SQLite FK.",
     "references.base_form_id": "Selected NAME link; current helper uses 0 if absent. No SQLite FK.",
     "references.scale": "XSCL projection defaults to 1.0 in code and SQL.",
@@ -464,7 +464,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 678
+          "anchor": "let base_form_id = view.get_form_id(b\"NAME\").unwrap_or(0);"
         }
       ],
       "mcp_ids": []
@@ -500,7 +500,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 662
+          "anchor": "let transform = view.get_f32_slice(b\"DATA\").unwrap_or_default();"
         }
       ],
       "mcp_ids": []
@@ -531,7 +531,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 673
+          "anchor": "let scale = view"
         }
       ],
       "mcp_ids": []
@@ -557,12 +557,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 694
+          "anchor": "let radius_override = view"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 688
+          "anchor": "// `XRDS` is the reference's own radius, in the same Creation units as a"
         }
       ],
       "mcp_ids": []
@@ -570,11 +570,11 @@
     {
       "record": "REFR",
       "tag": "XESP",
-      "label": "Enable parent and unresolved tail",
+      "label": "Enable parent, flag byte and retained tail",
       "declaration": "Parent FormID (bytes 0-3), flag byte (byte 4), three bytes xEdit labels unused (bytes 5-7). Declared bits 0/1 mean opposite-of-parent and Pop In.",
-      "projection": "The remapper handles XESP only at exactly 8 bytes across the 11 placed kinds. The parent ID is remapped, or cleared to 0 if invalid; malformed XESP subrecords are removed. Bytes 4-7 stay unchanged and become the little-endian u32 enable_parent_flags in the typed reference path.",
+      "projection": "The remapper handles XESP only at exactly 8 bytes across the 11 placed kinds. The parent ID is remapped, or cleared to 0 if invalid; malformed XESP subrecords are removed. SubrecordXESP widens only byte 4 to u32 and the exporter stores that value in enable_parent_flags. Bytes 5-7 remain in the serialized subrecord and are excluded from the flag column.",
       "native": "RVA 0x15b040 passes the parent ID to RVA 0x165660, removes an entry for zero, creates/updates it for nonzero and writes the following single flag byte. Local shard-0011.c:20925-20943,27595-27640.",
-      "unknown": "The u32 column includes three unresolved bytes. F0010 reports those bytes often nonzero; its historical corpus lacks an input-manifest hash. Native parent-chain effects remain unobserved. F0011 is a historical FormID link-remap diagnostic, not evidence of current remap failure or flag width.",
+      "unknown": "The native meaning of retained bytes 5-7 and parent-chain effects remain unobserved. F0010 reports those bytes often nonzero; its historical corpus lacks an input-manifest hash. F0011 is a historical FormID link-remap diagnostic, not evidence of current remap failure or flag width.",
       "ledger_line": 30,
       "columns": [
         "references.enable_parent_id",
@@ -594,17 +594,22 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 704
+          "anchor": ".and_then(SubrecordXESP::parse)"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 366
+          "anchor": "b\"XESP\" if placed => Fixed(&[(8, &[0])]),"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 498
+          "anchor": "if let Some(layout) = form_id_layout(&record.record_type, tag) {"
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/records/achr.rs",
+          "anchor": "flags: u32::from(data[4]),"
         }
       ],
       "mcp_ids": [
@@ -699,12 +704,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 373
+          "anchor": "b\"XEMI\" if placed => Fixed(SINGLE),"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 498
+          "anchor": "if let Some(layout) = form_id_layout(&record.record_type, tag) {"
         }
       ],
       "mcp_ids": []
@@ -725,7 +730,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 290
+          "anchor": "flags: record.flags,"
         }
       ],
       "mcp_ids": []
@@ -746,7 +751,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/extractors.rs",
-          "line": 85
+          "anchor": "\"EDID\" => {"
         }
       ],
       "mcp_ids": []
@@ -778,12 +783,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/extractors.rs",
-          "line": 79
+          "anchor": "pub fn extract_cell_info("
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 290
+          "anchor": "flags: record.flags,"
         }
       ],
       "mcp_ids": []
@@ -816,7 +821,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/extractors.rs",
-          "line": 81
+          "anchor": "\"XCLC\" if data.len() >= 8 => {"
         }
       ],
       "mcp_ids": []
@@ -875,12 +880,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 381
+          "anchor": "b\"LTMP\" if matches!(record_type, b\"CELL\" | b\"WRLD\") => Fixed(SINGLE),"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/mod.rs",
-          "line": 498
+          "anchor": "if let Some(layout) = form_id_layout(&record.record_type, tag) {"
         }
       ],
       "mcp_ids": [
@@ -903,7 +908,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/cell_cache.rs",
-          "line": 145
+          "anchor": ".find(b\"XCLW\")"
         }
       ],
       "mcp_ids": []
@@ -924,7 +929,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/cell_cache.rs",
-          "line": 156
+          "anchor": "let water_type = view.get_form_id(b\"XCWT\").or(default.1);"
         }
       ],
       "mcp_ids": []
@@ -945,7 +950,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 399
+          "anchor": "params![form_id, view.get_string(b\"EDID\"), model, record.flags],"
         }
       ],
       "mcp_ids": []
@@ -966,7 +971,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 399
+          "anchor": "params![form_id, view.get_string(b\"EDID\"), model, record.flags],"
         }
       ],
       "mcp_ids": []
@@ -976,7 +981,7 @@
       "tag": "MODL",
       "label": "Model path",
       "declaration": "Generic source model includes MODL, MODT and MODS.",
-      "projection": "Typed statics.model_path for STAT. ARMO takes MOD2 then MOD3 in the shared projection path.",
+      "projection": "Typed statics.model_path for STAT. ARMO takes MOD2, then MOD4 with the in-house reader or MOD3 with the legacy reader.",
       "native": "This pilot traces MODS handling, not complete MODL consumers.",
       "unknown": "Full model selection and downstream behavior remain outside the selected scan.",
       "ledger_line": 35,
@@ -997,7 +1002,7 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 396
+          "anchor": "let model = if type_str == \"ARMO\" {"
         }
       ],
       "mcp_ids": []
@@ -1028,12 +1033,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 301
+          "anchor": "let blob = serialize_subrecords(&record.subrecords);"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 386
+          "anchor": "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\" | \"FLOR\" | \"CONT\" | \"DOOR\" | \"ACTI\" | \"WEAP\""
         }
       ],
       "mcp_ids": [
@@ -1066,12 +1071,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 301
+          "anchor": "let blob = serialize_subrecords(&record.subrecords);"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 386
+          "anchor": "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\" | \"FLOR\" | \"CONT\" | \"DOOR\" | \"ACTI\" | \"WEAP\""
         }
       ],
       "mcp_ids": []
@@ -1102,12 +1107,12 @@
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 301
+          "anchor": "let blob = serialize_subrecords(&record.subrecords);"
         },
         {
           "source": "project",
           "path": "crates/converter/src/esm/exporter.rs",
-          "line": 386
+          "anchor": "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\" | \"FLOR\" | \"CONT\" | \"DOOR\" | \"ACTI\" | \"WEAP\""
         }
       ],
       "mcp_ids": []
@@ -1197,25 +1202,31 @@
         "label": "Plugin bytes + conversion order",
         "text": "read_plugins_txt normalizes master priority through order_explicit_plugins; regular dependencies stay ahead of their masters. Direct convert_plugins consumes caller order. LoadOrder::read rejects dependency inversions and assigns full/light slots. An accepted installed-game load order remains unavailable.",
         "path": "crates/converter/src/esm/load_order.rs",
-        "line": 23
+        "anchor": "pub(crate) fn order_explicit_plugins(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {"
+      },
+      {
+        "label": "Selected record frontend",
+        "text": "The pipeline selects the legacy or in-house reader. The in-house route validates records before publication and exports the same decoded winners used for terrain source capture; frontend identity and byte-exact archive preservation remain separate contracts.",
+        "path": "crates/converter/src/esm/inhouse.rs",
+        "anchor": "fn convert_plugins_with_dump("
       },
       {
         "label": "Parsed RawRecord",
         "text": "Selected header values, ordered parsed tags/payloads and cell/worldspace links. Original group/compression/XXXX framing is reduced.",
         "path": "crates/converter/src/esm/records/mod.rs",
-        "line": 9
+        "anchor": "pub struct RawRecord {"
       },
       {
         "label": "Remap and winner merge",
-        "text": "Selected links are remapped; invalid IDs in optional FormID layouts become 0 and malformed optional subrecords are removed. Later overrides replace earlier records and deleted winners remove forms. GMST uses a case-insensitive EDID identity rule.",
+        "text": "In the legacy route, selected links are remapped; invalid IDs in optional FormID layouts become 0 and malformed optional subrecords are removed. Later overrides replace earlier records and deleted winners remove forms. GMST uses a case-insensitive EDID identity rule.",
         "path": "crates/converter/src/esm/mod.rs",
-        "line": 61
+        "anchor": "fn merge_plugins_with_load_order("
       },
       {
         "label": "Current SQL + terrain cache",
         "text": "Effective winner rows, selected typed values and normalized parsed payload blobs. SQL/cache use the same merged view; no byte-exact source archive.",
         "path": "crates/converter/src/esm/mod.rs",
-        "line": 33
+        "anchor": "/// terrain cache cannot observe a second merge with a different load order."
       }
     ],
     "planned": [

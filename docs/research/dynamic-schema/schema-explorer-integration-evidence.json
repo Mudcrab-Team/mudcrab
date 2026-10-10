@@ -1,0 +1,62 @@
+{
+  "observed_date": "2026-10-10",
+  "scope": "Static source at the immutable local all-PR integration checkpoint; actual exporter DDL executed in an empty in-memory SQLite database.",
+  "code_commit": "62af074a01b9d43c22e5df0ef62d63ee682388bd",
+  "hash_normalization": "SHA-256 of strict UTF-8 text with CRLF converted to LF; all other bytes retained.",
+  "source_hashes": {
+    "crates/converter/src/esm/exporter.rs": "8920706b44c08fefb715f51ae728dc400c3e651ab621dd9ec352096b89c5cd05",
+    "crates/shared/src/lib.rs": "398fa1d1762c7e0bd7e3083d54997509cbc735bf2e45782a18de5ba04302f407",
+    "crates/converter/src/esm/records/mod.rs": "98c0b882617b196f24e8dc2864222b24e8d9a092b93bc387f516e3396fa71d45",
+    "crates/converter/src/esm/mod.rs": "dc0e865f8778954cad07a9f7ed7f886bb2b1668d368479e8bd69dd369a854ae3",
+    "crates/converter/src/esm/load_order.rs": "d99a576a6a89fdb640ac9f2942bb26bae96453f73f0d0f74ecd9db6c4b074057",
+    "crates/converter/src/esm/extractors.rs": "3df9d88db6a3e591d0f1f3833bfc50c21b6c8892144e2da4ab2b9e0acacac4a2",
+    "crates/converter/src/esm/cell_cache.rs": "a9da47c302c5fa565951359815ae2f2f53e111099c5847fd402de0ed32d0098e",
+    "crates/converter/src/esm/records/achr.rs": "04dcbff7345e3b84063c7665cb8f2bd12a174de12c3dcf1f8db583b56b2d5beb",
+    "crates/converter/src/esm/inhouse.rs": "f54517684c06d1c9808b37a737652197e7cde12fd84c23dd83105c3ddf3df1e0"
+  },
+  "contracts": {
+    "producer": 27,
+    "world_database": 9,
+    "runtime_min": 3,
+    "cell_cache": 3
+  },
+  "projection_summary": {
+    "logical_tables": 26,
+    "rtree_tables": 2,
+    "sqlite_tables_with_shadows": 32,
+    "excluded_shadow_tables": [
+      "exterior_spatial_node",
+      "exterior_spatial_parent",
+      "exterior_spatial_rowid",
+      "lod_chunks_spatial_node",
+      "lod_chunks_spatial_parent",
+      "lod_chunks_spatial_rowid"
+    ],
+    "foreign_key_count": 0,
+    "column_count": 183,
+    "records": 134,
+    "shared": 127,
+    "xedit_only": 6,
+    "headers": 1
+  },
+  "reviewed_changes": [
+    "Combined producer 27/world 9 output contract; runtime world compatibility 3 through 9; cell cache 3",
+    "XESP flag column uses only byte 4; bytes 5-7 retained in serialized payload",
+    "ARMO MOD2 then MOD4 for in-house reader; legacy MOD3 fallback retained",
+    "Selected reader dispatch and in-house projection source recorded alongside legacy projection",
+    "Current project anchors resolve unique source text and reject absent or ambiguous matches"
+  ],
+  "historical_evidence": {
+    "preserved_files": [
+      "native-field-ledger.md",
+      "pilot-code-evidence.json",
+      "schema-explorer-re-evidence.json"
+    ],
+    "observations_date": "2026-10-05",
+    "native_or_corpus_observations_rerun": false
+  },
+  "limits": [
+    "Local source commit links become available on GitHub when the commit is published.",
+    "Source/DDL evidence does not establish populated retail data, full field interpretation, native runtime effects, or corpus/performance acceptance."
+  ]
+}

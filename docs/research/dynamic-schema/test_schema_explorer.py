@@ -72,8 +72,11 @@ class TestV159_ExplorerFacts(unittest.TestCase):
         self.assertTrue(all(r["kind"] in {"Code relationship", "Semantic link"} for r in self.data["relationships"]))
 
     def test_versions_come_from_current_shared_contract(self):
-        self.assertEqual(self.data["versions"], {"world_database": 7, "runtime_min": 3, "cell_cache": 3})
+        self.assertEqual(self.data["versions"], {"world_database": 9, "runtime_min": 3, "cell_cache": 3})
         self.assertEqual(self.data["pins"]["code"], explorer.CODE_PIN)
+        self.assertEqual(self.data["summary"]["column_count"], 183)
+        self.assertEqual(self.data["integration_evidence"]["contracts"]["producer"], 27)
+        self.assertEqual(self.data["integration_evidence"]["code_commit"], explorer.CODE_PIN)
 
     def test_composite_keys_defaults_and_partial_index_preserved(self):
         self.assertEqual(self.tables["lod"]["primary_key"], ["cell_id", "lod_level"])
@@ -124,8 +127,19 @@ class TestV159_ExplorerFacts(unittest.TestCase):
         for key in ("cells.flags", "references.header_flags", "statics.flags", "worldspaces.flags", "npcs.flags"):
             self.assertIn("header", columns[key]["note"].lower())
         self.assertIn("DATA flags", columns["lights.flags"]["note"])
+        self.assertIn("Only XESP byte 4", columns["references.enable_parent_flags"]["note"])
+        self.assertIn("do not contribute", columns["references.enable_parent_flags"]["note"])
         self.assertIn("unresolved", columns["references.enable_parent_flags"]["note"])
-        self.assertNotIn("known padding", columns["references.enable_parent_flags"]["note"])
+
+    def test_current_xesp_and_armo_facts_are_separate_from_historical_evidence(self):
+        fields = {field["id"]: field for field in self.data["fields"]}
+        xesp = fields["REFR.XESP"]
+        self.assertIn("only byte 4", xesp["projection"])
+        self.assertIn("excluded from the flag column", xesp["projection"])
+        self.assertTrue(any(source["path"].endswith("/achr.rs") for source in xesp["sources"]))
+        self.assertIn("MOD4 with the in-house reader or MOD3 with the legacy reader", fields["STAT.MODL"]["projection"])
+        self.assertIn("historical corpus", xesp["unknown"])
+        self.assertIn("parent-chain effects remain unobserved", xesp["unknown"])
 
     def test_mcp_labels_keep_producer_and_runtime_limits(self):
         mcp = self.data["mcp"]
@@ -148,6 +162,7 @@ class TestV159_ExplorerFacts(unittest.TestCase):
             links.extend(m["source"] for m in record["mappings"])
         links.extend(s for f in self.data["fields"] for s in f["sources"])
         links.extend(t["source"] for t in self.tables.values())
+        links.extend(stage["source"] for stage in self.data["dataflow"]["current"])
         for link in links:
             split = urlsplit(link["url"])
             self.assertEqual((split.scheme, split.hostname), ("https", "github.com"))
@@ -161,6 +176,26 @@ class TestV159_ExplorerFacts(unittest.TestCase):
             explorer.source_link("project", "../outside", 1)
         with self.assertRaises(ValueError):
             explorer.source_link("project", "/absolute", 1)
+
+    def test_reviewed_project_anchors_point_to_the_intended_source_text(self):
+        annotations = explorer.read_json(explorer.HERE / "schema-explorer-annotations.json")
+        fields = {field["id"]: field for field in self.data["fields"]}
+        for field in annotations["fields"]:
+            for expected in field["anchors"]:
+                if expected["source"] != "project":
+                    continue
+                actual = next(source for source in fields[field["record"]+'.'+field["tag"]]["sources"]
+                              if source["path"] == expected["path"] and source["label"] != "Historical field ledger (2026-10-05)"
+                              and expected["anchor"] in explorer.read_text_lf(explorer.ROOT / source["path"]).splitlines()[source["line"]-1])
+                self.assertEqual(actual["pin"], explorer.CODE_PIN)
+
+    def test_missing_or_ambiguous_code_anchor_requires_review(self):
+        path = "fixture.rs"
+        self.assertEqual(explorer.anchor(path, "selected()", {path: "// leading line\nselected();\n"})["line"], 2)
+        with self.assertRaisesRegex(ValueError, "Missing code anchor"):
+            explorer.anchor(path, "selected()", {path: "different();\n"})
+        with self.assertRaisesRegex(ValueError, "Ambiguous code anchor"):
+            explorer.anchor(path, "selected()", {path: "selected();\nselected();\n"})
 
 
 class TestV159_EmbeddedDocument(unittest.TestCase):
@@ -192,7 +227,8 @@ class TestV160_TextIdentity(unittest.TestCase):
         relative_docs = explorer.HERE.relative_to(explorer.ROOT)
         paths = list(explorer.CODE_HASHES) + [str(relative_docs / name) for name in (
             "candidate-inventory.json", "native-field-ledger.md", "pilot-code-evidence.json",
-            "schema-explorer-annotations.json", "schema-explorer-re-evidence.json", "schema-explorer.template.html")]
+            "schema-explorer-annotations.json", "schema-explorer-re-evidence.json", "schema-explorer.template.html",
+            "schema-explorer-integration-evidence.json")]
         for relative in paths:
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +264,17 @@ class TestV160_TextIdentity(unittest.TestCase):
             path = root / 'crates/converter/src/esm/exporter.rs'
             path.write_bytes(path.read_bytes().replace(b'DEFAULT 1.0', b'DEFAULT 2.0', 1))
             with self.assertRaisesRegex(ValueError, 'Code drift'):
+                explorer.build_data(root, docs)
+
+    def test_stale_integration_evidence_cannot_claim_new_contracts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docs = self.copy_checkout(root, False)
+            path = docs / "schema-explorer-integration-evidence.json"
+            evidence = explorer.read_json(path)
+            evidence["contracts"]["world_database"] = 7
+            path.write_text(json.dumps(evidence))
+            with self.assertRaisesRegex(ValueError, "contracts/projection changed"):
                 explorer.build_data(root, docs)
 
 
