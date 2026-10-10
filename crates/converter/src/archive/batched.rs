@@ -8,7 +8,9 @@ use super::{
     Interrupted, ProgressReporter, StopCheck, ba2, blob_path, bsa, check_stop,
     detect_archive_collision, safe_relative_path, share_blob,
 };
-use crate::cache::{IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy};
+use crate::cache::{
+    IngestedFile, IngestionCacheEntry, SpillCache, hash_bytes, hash_file, link_or_copy,
+};
 use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
@@ -319,6 +321,7 @@ pub(super) fn extract(
         .build()?;
     let decoded = AtomicUsize::new(0);
     let created_packs = Mutex::new(BTreeSet::new());
+    let spill_cache = SpillCache::default();
     let (sender, receiver) = crossbeam_channel::bounded::<Batch>(options.io_jobs);
     let result = std::thread::scope(|scope| -> Result<Vec<ExtractedFile>> {
         let mut writers = Vec::new();
@@ -327,6 +330,7 @@ pub(super) fn extract(
             let source_hash = &source_hash;
             let reporter = &reporter;
             let created_packs = &created_packs;
+            let spill_cache = &spill_cache;
             let writer_budget = Arc::clone(&budget);
             writers.push(scope.spawn(move || -> Result<Vec<ExtractedFile>> {
                 let _exit = WriterExit(writer_budget);
@@ -341,6 +345,7 @@ pub(super) fn extract(
                         output,
                         cache,
                         source_hash,
+                        spill_cache,
                         options,
                         created_packs,
                         stop,
@@ -618,6 +623,7 @@ fn write_batch(
     output: &Path,
     cache: &Path,
     source_hash: &str,
+    spill_cache: &SpillCache,
     options: &ExtractOptions,
     created_packs: &Mutex<BTreeSet<PathBuf>>,
     stop: Option<StopCheck<'_>>,
@@ -643,7 +649,7 @@ fn write_batch(
                 atomic_write_derived(&blob, &data)?;
             }
         }
-        share_blob(&blob, &output.join(&prepared.file.path))?;
+        share_blob(&blob, &output.join(&prepared.file.path), spill_cache)?;
         if let Some(progress) = progress {
             progress.advance(prepared.file.bytes_written);
         }

@@ -7,7 +7,7 @@ pub(crate) use batched::{sync_directory, sync_pack_file};
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
     cache::{
-        IngestedFile, IngestionCacheEntry, hash_bytes, hash_file, link_or_copy,
+        IngestedFile, IngestionCacheEntry, SpillCache, hash_bytes, hash_file, link_or_copy,
         link_or_copy_spilling,
     },
     pipeline::Interrupted,
@@ -465,6 +465,7 @@ fn restore_cached_files(
     if let Some(reporter) = &reporter {
         reporter.announce();
     }
+    let spill_cache = SpillCache::default();
     let mut restored = Vec::with_capacity(entry.files.len());
     for file in &entry.files {
         check_stop(stop)?;
@@ -473,7 +474,7 @@ fn restore_cached_files(
         let new_blob = blob_path(cache_root, &file.hash)?;
         copy_if_missing(&old_blob, &new_blob)?;
         let destination = output_root.join(&relative);
-        share_blob(&new_blob, &destination)?;
+        share_blob(&new_blob, &destination, &spill_cache)?;
         if let Some(reporter) = &reporter {
             reporter.advance(file.size);
         }
@@ -491,13 +492,14 @@ fn persist_cache_blobs(
     output_root: &Path,
     cache_root: &Path,
 ) -> Result<()> {
+    let spill_cache = SpillCache::default();
     for file in files {
         let extracted = output_root.join(&file.path);
         let blob = blob_path(cache_root, &file.sha256)?;
         if blob.is_file() {
             // Another entry with the same bytes stored this blob first: make this path a name for
             // it too, so duplicated content is held once.
-            share_blob(&blob, &extracted)?;
+            share_blob(&blob, &extracted, &spill_cache)?;
         } else {
             copy_file(&extracted, &blob)?;
         }
@@ -507,11 +509,11 @@ fn persist_cache_blobs(
 
 /// Makes `destination` a name for `blob`, a blob in this run's cache that many paths may share
 /// (see `link_or_copy_spilling`).
-fn share_blob(blob: &Path, destination: &Path) -> Result<()> {
+fn share_blob(blob: &Path, destination: &Path, spill_cache: &SpillCache) -> Result<()> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    link_or_copy_spilling(blob, destination).wrap_err_with(|| {
+    link_or_copy_spilling(blob, destination, spill_cache).wrap_err_with(|| {
         format!(
             "failed to restore cached asset {} to {}",
             blob.display(),

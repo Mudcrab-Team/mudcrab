@@ -146,8 +146,6 @@ def main():
         evidence = Path(option(run["run"], "--evidence"))
         if evidence.exists() and any(evidence.iterdir()):
             parser.error(f"evidence directory is already populated: {evidence}")
-        if Path(run["output"]).exists():
-            parser.error(f"isolated output already exists: {run['output']}")
     protected_manifest = protected / "conversion-manifest.json"
     source_hash = file_hash(protected_manifest)
     binary_hash = file_hash(binary)
@@ -186,6 +184,17 @@ def main():
                 parser.error(f"resume prefix was not audited against the protected source: {run['label']}")
             completed.append({"label": run["label"], "output": str(output), "audit": str(audit_path), "audit_sha256": file_hash(audit_path), "ordinary_manifest_sha256": audit["ordinary_manifest_hash"], "converter_sha256": inherited["converter_sha256"], "recorded_status": inherited["status"]})
         resume = {"after": args.resume_after, "previous_status": str(args.previous_status.resolve()), "previous_status_sha256": history[-1]["sha256"], "previous_converter_sha256": provenance["converter_sha256"], "current_converter_sha256": binary_hash, "binary_changed": binary_changed, "explicitly_allowed_new_binary": args.allow_new_binary, "preserved_prefix": completed, "verified_status_chain": history}
+    for run in runs:
+        if Path(run["output"]).exists():
+            # Only the final warm leg may reuse the fully verified fresh output.
+            audited_fresh_output = (
+                resume is not None and len(runs) == 1
+                and run["label"] == "full-gpu-warm"
+                and completed[-1]["label"] == "full-gpu-fresh"
+                and Path(run["output"]).resolve() == Path(completed[-1]["output"])
+            )
+            if not audited_fresh_output:
+                parser.error(f"isolated output already exists: {run['output']}")
     helpers = Path(__file__).parent
     status = {
         "started_at_utc": timestamp(), "passed": False,

@@ -42,7 +42,9 @@ def main():
         # Normal warm conversion uses the same isolated output; metadata rebuilds require a new output each time.
         output = root / ("full-gpu-fresh" if label == "full-gpu-warm" else label)
         logs = root / (label + "-evidence")
-        command = [str(binary), str(data), str(output), "--texture-encoder", a.texture_encoder, "--lod-encoder", encoder, "--gpu-quality", str(a.gpu_quality), "--gpu-batch-mb", str(a.gpu_batch_mb), "--cpu-jobs", str(a.cpu_jobs), "--io-jobs", str(a.io_jobs), "--report-json", str(logs / "conversion-report.json")]
+        command = [str(binary), str(data), str(output), "--texture-encoder", a.texture_encoder, "--lod-encoder", encoder, "--cpu-jobs", str(a.cpu_jobs), "--io-jobs", str(a.io_jobs), "--report-json", str(logs / "conversion-report.json")]
+        if a.texture_encoder == "gpu" or encoder == "gpu":
+            command += ["--gpu-quality", str(a.gpu_quality), "--gpu-batch-mb", str(a.gpu_batch_mb)]
         if parent:
             command += ["--reuse-assets", str(parent)]
         if label == "full-gpu-fresh":

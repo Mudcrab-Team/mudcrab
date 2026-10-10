@@ -2410,7 +2410,7 @@ fn publish_runtime_pack(
     published
 }
 
-/// Copies new ingestion blobs into the persistent cache root outside the pack.
+/// Copies sealed packs and canonical blobs into the persistent cache root.
 fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
     let absolute_cache = if cache_root.is_absolute() {
         cache_root.to_owned()
@@ -2431,41 +2431,34 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
         if !entry.file_type().is_file() {
             continue;
         }
-        // A spill copy (`<hash>.N`) only stands in for a full blob while a run links files out of
-        // it; restoring makes fresh ones in staging, so persisting them would just duplicate bytes.
-        if is_spill_copy(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
         let relative = entry.path().strip_prefix(staging_cache)?;
         let destination = cache_root.join(relative);
-        let is_pack = relative.starts_with("batches")
-            && entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "pack");
-        if destination.is_file() {
-            let name = entry.file_name().to_string_lossy();
-            let expected = if is_pack {
-                name.strip_suffix(".pack").unwrap_or("")
-            } else {
-                &name
-            };
-            let canonical =
-                expected.len() == 64 && expected.bytes().all(|byte| byte.is_ascii_hexdigit());
-            if !canonical
-                || (fs::metadata(&destination)?.len() == entry.metadata()?.len()
-                    && hash_file(&destination)? == expected)
-            {
-                // A prior attempt may have linked this pack and failed before
-                // flushing it. Verified bytes alone do not prove durability.
-                if is_pack {
-                    crate::archive::sync_pack_file(&destination)?;
-                    if let Some(parent) = destination.parent() {
-                        pack_directories.insert(parent.to_owned());
-                    }
+        let name = entry.file_name().to_string_lossy();
+        let is_pack = relative.starts_with("batches");
+        let expected = if is_pack {
+            name.strip_suffix(".pack").unwrap_or("")
+        } else {
+            &name
+        };
+        // Only final content-addressed names belong in the persistent cache.
+        // A killed writer can leave a NamedTempFile in either namespace; these
+        // unsealed files and derived spill copies must disappear with staging.
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        if destination.is_file()
+            && fs::metadata(&destination)?.len() == entry.metadata()?.len()
+            && hash_file(&destination)? == expected
+        {
+            // A prior attempt may have linked this pack and failed before
+            // flushing it. Verified bytes alone do not prove durability.
+            if is_pack {
+                crate::archive::sync_pack_file(&destination)?;
+                if let Some(parent) = destination.parent() {
+                    pack_directories.insert(parent.to_owned());
                 }
-                continue;
             }
+            continue;
         }
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -3037,16 +3030,6 @@ fn create_lod_gpu(quality: u32, batch_mb: u64) -> Result<GpuUastc> {
     // Chunk batches are much smaller than DDS streaming batches. Bound the
     // three reusable GPU slots to avoid reserving a gigabyte for small atlases.
     GpuUastc::new(quality, batch_mb.min(64))
-}
-
-/// Whether a cache file name is a spill copy of a blob: 64 hex digits, a dot and a number.
-fn is_spill_copy(name: &str) -> bool {
-    name.split_once('.').is_some_and(|(hash, index)| {
-        hash.len() == 64
-            && hash.bytes().all(|b| b.is_ascii_hexdigit())
-            && !index.is_empty()
-            && index.bytes().all(|b| b.is_ascii_digit())
-    })
 }
 
 /// Removes ingestion-cache blobs (and spill files) no longer referenced by
@@ -6592,12 +6575,60 @@ mod tests {
         let blob = "ab".repeat(32);
         fs::write(staging.join(&blob), b"blob").unwrap();
         fs::write(staging.join(format!("{blob}.1")), b"spill").unwrap();
+        fs::write(staging.join(".tmp-abandoned-blob"), b"unfinished blob").unwrap();
         let root = directory.path().join("cache");
 
         persist_ingestion_cache(&staging, &root).unwrap();
 
         assert!(root.join(&blob).is_file());
         assert!(!root.join(format!("{blob}.1")).exists());
+        assert!(!root.join(".tmp-abandoned-blob").exists());
+    }
+
+    #[tokio::test]
+    async fn resumed_ingestion_drops_unsealed_packs_and_retains_warm_reuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("assets");
+        let staging = directory.path().join("assets.staging-abandoned-packs");
+        fs::create_dir_all(&data).unwrap();
+        let archive = dummy_content::ba2::general(
+            &[dummy_content::Entry::new(
+                "strings/review.strings",
+                b"input",
+            )],
+            dummy_content::ba2::Compression::None,
+        )
+        .unwrap();
+        fs::write(data.join("review.ba2"), &archive).unwrap();
+        let recipe = PathBuf::from("batches")
+            .join(hash_bytes(&archive))
+            .join("converter-inputs-v1");
+        let pack_directory = staging.join(".ingestion-cache").join(&recipe);
+        fs::create_dir_all(&pack_directory).unwrap();
+        let abandoned = [
+            ".tmp-abandoned-pack",
+            "unfinished.partial",
+            "unfinished.pack",
+        ];
+        for name in abandoned {
+            fs::write(pack_directory.join(name), b"unsealed bytes").unwrap();
+        }
+        let mut config = cpu_lod_config(&data, &output);
+        let cache = config.ingestion_cache_dir().join(".ingestion-cache");
+        config.resume_staging = Some(staging.clone());
+        assert!(run_without_progress(config.clone()).await.complete);
+        assert!(!staging.exists());
+        for name in abandoned {
+            assert!(!cache.join(&recipe).join(name).exists());
+        }
+        assert_eq!(fs::read_dir(cache.join(&recipe)).unwrap().count(), 1);
+
+        config.resume_staging = None;
+        let warm = run_without_progress(config).await;
+        assert!(warm.complete);
+        assert_eq!(warm.cache_hits, 1);
+        assert_eq!(warm.converted, 0);
     }
 
     #[test]
