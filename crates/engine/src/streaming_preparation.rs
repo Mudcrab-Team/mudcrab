@@ -220,12 +220,29 @@ impl StreamingPreparationBridge {
         demands: Vec<PreparationDemand>,
         ready: bool,
     ) {
+        self.publish_fixture_state(source_main_frame, demands, true, ready);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_absent_fixture(
+        &self,
+        source_main_frame: u64,
+        demands: Vec<PreparationDemand>,
+    ) {
+        self.publish_fixture_state(source_main_frame, demands, false, false);
+    }
+
+    #[cfg(test)]
+    fn publish_fixture_state(
+        &self,
+        source_main_frame: u64,
+        demands: Vec<PreparationDemand>,
+        present: bool,
+        ready: bool,
+    ) {
         self.0.lock().unwrap().render_available = true;
         let batch = DemandBatch::new(demands);
-        let state = ResourceState {
-            present: true,
-            ready,
-        };
+        let state = ResourceState { present, ready };
         let meshes = batch.meshes.iter().map(|id| (*id, state)).collect();
         let images = batch.images.iter().map(|id| (*id, state)).collect();
         let materials = batch.materials.iter().map(|id| (*id, state)).collect();

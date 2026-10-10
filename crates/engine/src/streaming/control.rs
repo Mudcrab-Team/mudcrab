@@ -123,7 +123,6 @@ pub(crate) struct ControllerSettings {
     pub target_frame_ms: f64,
     pub timing_smoothing_seconds: f64,
     pub pressure_enter_ratio: f64,
-    pub pressure_exit_ratio: f64,
     pub spike_ratio: f64,
     pub recovery_hold_seconds: f64,
     /// Interval for one ordinary scene job when frame pressure alone persists.
@@ -195,7 +194,6 @@ impl Default for ControllerSettings {
             target_frame_ms: 16.67,
             timing_smoothing_seconds: 0.5,
             pressure_enter_ratio: 1.15,
-            pressure_exit_ratio: 0.9,
             spike_ratio: 1.5,
             recovery_hold_seconds: 0.5,
             recovery_probe_seconds: 2.0,
@@ -273,6 +271,7 @@ pub(crate) struct ControllerDecision {
     pub streaming_work_ema_ms: Option<f64>,
     pub configured_target_frame_ms: f64,
     pub effective_target_frame_ms: f64,
+    /// Median recent non-streaming cost; short asynchronous frames are outliers.
     pub recent_base_frame_ms: Option<f64>,
     pub quiet_seconds: f64,
     pub startup_complete: bool,
@@ -408,13 +407,26 @@ impl ControllerState {
         }) {
             self.baseline_samples.pop_front();
         }
-        let recent_base_frame_ms = self
+        let mut base_costs: Vec<_> = self
             .baseline_samples
             .iter()
             .map(|(_, value)| *value)
-            .reduce(f64::min);
+            .collect();
+        base_costs.sort_unstable_by(f64::total_cmp);
+        let recent_base_frame_ms = if base_costs.is_empty() {
+            None
+        } else {
+            let middle = base_costs.len() / 2;
+            Some(if base_costs.len() % 2 == 0 {
+                base_costs[middle - 1] * 0.5 + base_costs[middle] * 0.5
+            } else {
+                base_costs[middle]
+            })
+        };
         // A GPU-bound machine may never meet the requested target. Compare new
-        // load spikes with recent base cost instead of starving scene intake.
+        // load spikes with typical recent base cost instead of starving intake.
+        // A few short asynchronous frames must not pin the reference below the
+        // cost at which this scene normally renders.
         let effective_target = target.max(recent_base_frame_ms.unwrap_or(0.0) * 1.1);
         if frame_sample.is_some() {
             self.frame_samples = self.frame_samples.saturating_add(1);
@@ -430,7 +442,6 @@ impl ControllerState {
             .chain(sample(input.gpu_frame_ms))
             .reduce(f64::max);
         let enter_ratio = positive_or(settings.pressure_enter_ratio, 1.15).max(1.0);
-        let exit_ratio = positive_or(settings.pressure_exit_ratio, 0.9).min(enter_ratio);
         let material_streaming =
             streaming_work_ms.max(self.streaming_work_ema_ms.unwrap_or(0.0)) >= target * 0.15;
         let frame_pressure = settings.adaptive
@@ -446,12 +457,11 @@ impl ControllerState {
         let queue_pressure = input.backlog.any_at_or_above(settings.high_watermarks);
         let reduced_pressure = input.memory_blocked || frame_pressure || frame_spike;
         let pressure = queue_pressure || reduced_pressure;
-        let recovery_reference =
-            (effective_target * exit_ratio).max(recent_base_frame_ms.unwrap_or(0.0) * 1.05);
-        let timing_recovered = !settings.adaptive
-            || (observed_ms.is_none_or(|ms| ms <= recovery_reference)
-                && current_ms.is_none_or(|ms| ms <= effective_target * enter_ratio)
-                && streaming_work_ms < target * 0.15);
+        // Use the same timing predicates for entry and recovery. A separate
+        // below-target exit or lower CPU threshold can be permanently impossible
+        // even after all entry-pressure signals clear. The stable hold provides
+        // hysteresis without requiring an unreachable frame or polling cost.
+        let timing_recovered = !frame_pressure && !frame_spike;
 
         // Intake hysteresis waits for the queues to drain. Reduced processing
         // budgets instead wait for timing/memory to recover, even while a large
@@ -1092,6 +1102,145 @@ mod tests {
         assert_ne!(recovered.mode, ControllerMode::Recovery);
         assert!(recovered.allow_scene_intake);
         assert!(recovered.budgets.max_scene_jobs < decision.budgets.max_scene_jobs);
+    }
+
+    #[test]
+    fn native_trace_recovers_with_normal_jitter_and_bounded_polling_cost() {
+        let settings = adaptive();
+        let mut state = ControllerState {
+            frame_ema_ms: Some(19.231078141268565),
+            non_streaming_ema_ms: Some(16.805507489096115),
+            streaming_work_ema_ms: Some(2.4255706521724405),
+            baseline_samples: VecDeque::from([(0.0, 6.333832)]),
+            recovery: true,
+            recovery_reduced: true,
+            startup_complete: true,
+            ..Default::default()
+        };
+        // Failed native smoke, frames 1762–1792: elapsed frame and previous
+        // streaming CPU milliseconds reconstructed from its timing EMA. All
+        // entry-pressure reasons were clear, yet the old exit gate never opened.
+        let timings = [
+            (17.6978, 2.4415),
+            (18.1445, 2.3952),
+            (24.4346, 2.3365),
+            (11.3818, 2.4204),
+            (19.6626, 2.3162),
+            (17.5788, 2.3358),
+            (19.2758, 2.1977),
+            (18.3962, 2.4936),
+            (18.2861, 2.3522),
+            (17.9286, 2.4937),
+            (18.4000, 2.2888),
+            (22.0772, 2.4366),
+            (14.9222, 2.2101),
+            (18.5972, 2.3210),
+            (17.6566, 2.7631),
+            (18.7916, 2.5555),
+            (18.1265, 2.7901),
+            (18.5720, 2.7952),
+            (19.4494, 2.4526),
+            (16.7922, 2.6980),
+            (19.7054, 2.3155),
+            (17.0557, 2.7390),
+            (21.7204, 2.3406),
+            (15.8492, 2.4850),
+            (17.1208, 2.7943),
+            (18.8397, 2.3100),
+            (17.9731, 2.2691),
+            (17.8804, 2.4529),
+            (19.8229, 2.3197),
+            (18.8261, 2.2725),
+            (18.5040, 2.4289),
+        ];
+        let mut decision = None;
+        for (frame_ms, streaming_work_ms) in timings {
+            let next = state.tick(
+                &settings,
+                ControllerInput {
+                    delta_seconds: frame_ms / 1_000.0,
+                    frame_ms: Some(frame_ms),
+                    streaming_work_ms,
+                    ..input()
+                },
+            );
+            assert!(!next.reasons.frame_pressure);
+            assert!(!next.reasons.frame_spike);
+            decision = Some(next);
+        }
+        let recovered = decision.unwrap();
+        assert_ne!(recovered.mode, ControllerMode::Recovery);
+        assert!(recovered.allow_scene_intake);
+        assert!(!recovered.reasons.recovery_probe);
+        assert!(recovered.frame_ema_ms.unwrap() > settings.target_frame_ms * 0.9);
+
+        // Safe ongoing polling can exceed the old 15%-of-target exit threshold.
+        for index in 0..100 {
+            let decision = state.tick(
+                &settings,
+                ControllerInput {
+                    frame_ms: Some(if index % 2 == 0 { 18.9 } else { 19.1 }),
+                    streaming_work_ms: if index % 2 == 0 { 2.6 } else { 2.7 },
+                    ..input()
+                },
+            );
+            assert!(decision.allow_scene_intake);
+            assert!(!decision.reasons.recovery_probe);
+            assert_bounded(decision.budgets, input().hard_limits);
+        }
+    }
+
+    #[test]
+    fn short_async_frames_do_not_pin_a_sustained_gpu_bound_baseline() {
+        let settings = adaptive();
+        let mut state = ControllerState::default();
+        let base = ControllerInput {
+            delta_seconds: 0.04,
+            frame_ms: Some(40.0),
+            streaming_work_ms: 2.6,
+            ..input()
+        };
+        advance(&mut state, &settings, base, 60);
+        let spike = state.tick(
+            &settings,
+            ControllerInput {
+                frame_ms: Some(50.0),
+                streaming_work_ms: 10.0,
+                ..base
+            },
+        );
+        assert_eq!(spike.mode, ControllerMode::Recovery);
+        assert!(spike.reasons.frame_pressure);
+        let frame_times = [40.0, 42.0, 38.0, 9.0, 40.0, 41.0, 39.0, 40.0];
+        for index in 0..240 {
+            let frame_ms = frame_times[index % frame_times.len()];
+            let decision = state.tick(
+                &settings,
+                ControllerInput {
+                    delta_seconds: frame_ms / 1_000.0,
+                    frame_ms: Some(frame_ms),
+                    ..base
+                },
+            );
+            assert!(!decision.reasons.frame_pressure);
+            assert!(!decision.reasons.frame_spike);
+            assert!(decision.effective_target_frame_ms > 40.0);
+            if index >= 20 {
+                assert!(decision.allow_scene_intake);
+                assert!(!decision.reasons.recovery_probe);
+            }
+            assert_bounded(decision.budgets, base.hard_limits);
+        }
+        let slow_frame = state.tick(
+            &settings,
+            ControllerInput {
+                frame_ms: Some(80.0),
+                ..base
+            },
+        );
+        assert_eq!(slow_frame.mode, ControllerMode::Recovery);
+        assert!(slow_frame.reasons.frame_spike);
+        assert!(!slow_frame.allow_scene_intake);
     }
 
     #[test]

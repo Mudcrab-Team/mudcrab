@@ -36,6 +36,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use shared::streaming_costs::{
     ByteEstimate, ResolvedSceneCost, ResourceKind, STREAMING_COST_FILE_NAME, StreamingCostCatalog,
+    canonical_resource_key,
 };
 use std::{
     any::TypeId,
@@ -719,7 +720,10 @@ pub(super) fn update_streaming_control(world: &mut World) {
         world,
         &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
         1024.0 * 1024.0 * 1024.0,
-    );
+    )
+    // sysinfo can report zero when the process observation is unavailable.
+    // A running game cannot have zero RSS; do not present it as a fresh sample.
+    .filter(|rss| *rss != 0);
     let used_percent = diagnostic_bytes(
         world,
         &SystemInformationDiagnosticsPlugin::SYSTEM_MEM_USAGE,
@@ -1037,9 +1041,38 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
                 asset,
                 world.resource::<Assets<StandardMaterial>>(),
             );
-            for resource in &scene.resources {
+            // Every material dependency must have an exact loader identity
+            // before catalog entries can be proved unused. Embedded images
+            // stay with scene geometry; unknown identities retain all claims.
+            let dependency_paths = (|| {
+                let mut paths = HashMap::<String, Vec<AssetId<Image>>>::new();
+                for image in &demand.images {
+                    let path = world.resource::<AssetServer>().get_path(*image)?;
+                    if path.label().is_some() {
+                        continue;
+                    }
+                    let path = canonical_resource_key(&path.path().to_string_lossy()).ok()?;
+                    paths.entry(path).or_default().push(*image);
+                }
+                Some(paths)
+            })();
+            scene.resources.retain(|resource| {
                 let watch = runtime.watches.get_mut(resource).unwrap();
                 if let Some(path) = &watch.texture_path {
+                    if let Some(paths) = &dependency_paths {
+                        let Some(images) = paths.get(path) else {
+                            runtime.ledger.detach_resource(&scene.owner, resource);
+                            if !runtime.ledger.resource_has_owners(resource) {
+                                watch.orphaned_frame = Some(runtime.frame);
+                                runtime.prepared_resources.remove(resource);
+                            }
+                            // Detaching a claim leaves last-owner bytes charged
+                            // until CPU and render disposal are both observed.
+                            return false;
+                        };
+                        watch.demand.images.extend(images);
+                        return true;
+                    }
                     watch.demand.images.extend(
                         demand
                             .images
@@ -1072,7 +1105,8 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
                             .copied(),
                     );
                 }
-            }
+                true
+            });
             scene.dependencies_cached = true;
         }
         if !scene.prepared && scene.dependencies_cached && !pending_keys.contains(key) {
@@ -1193,12 +1227,15 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
                 .collect();
             current.sort_unstable();
             current.dedup();
-            if watch.orphaned_frame.is_none()
-                && !current.is_empty()
-                && current != watch.demand.images
-            {
-                watch.demand.images = current;
-                runtime.prepared_resources.remove(resource);
+            if !current.is_empty() {
+                if watch.orphaned_frame.is_some() {
+                    // A detached catalog image may still finish loading. Keep
+                    // every generation until its exact GPU IDs disappear.
+                    watch.demand.images.extend(current);
+                } else if current != watch.demand.images {
+                    watch.demand.images = current;
+                    runtime.prepared_resources.remove(resource);
+                }
             }
         }
         watch.demand.meshes.sort_unstable();

@@ -154,6 +154,7 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
     let cap = control.map_or(configured_cap, |decision| decision.budgets.max_scene_jobs);
     let ordinary_intake = control.is_none_or(|decision| decision.allow_scene_intake && cap != 0);
     let mandatory_jobs = control.map_or(0, |decision| decision.mandatory_scene_jobs);
+    let select_new_jobs = ordinary_intake || mandatory_jobs != 0;
     let admission_micros = control.map(|decision| decision.budgets.max_admission_micros);
     let pack_identity = world
         .resource::<SceneSchedulingState>()
@@ -251,6 +252,9 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
     let mut priorities: BTreeMap<SceneKey, Vec<DemandPriority>> = BTreeMap::new();
     let mut placement_costs: BTreeMap<SceneKey, Vec<(Entity, bool)>> = BTreeMap::new();
     for demand in &demands {
+        if !select_new_jobs {
+            break;
+        }
         let request = world.get::<SceneRequest>(demand.subscriber).unwrap();
         if request.handle.is_some() {
             continue;
@@ -306,19 +310,25 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         })
         .map(|(_, key, _)| key.0.clone())
         .collect();
-    let queued: Vec<_> = world
-        .resource::<SceneAdmission>()
-        .queued_keys(0)
-        .into_iter()
-        .filter(|key| !cleanup_waiting.contains(key))
-        .filter_map(|key| {
-            priority::shared_scene_priority(priorities.remove(&key)?)
-                .map(|priority| (key, priority))
-        })
-        .filter(|(_, rank)| {
-            ordinary_intake || (mandatory_jobs != 0 && rank.is_protected_collision())
-        })
-        .collect();
+    // Paused intake still reconciles ownership, polls jobs, and fans out handles.
+    // It does not need to rank the entire unassigned queue every frame.
+    let queued: Vec<_> = if select_new_jobs {
+        world
+            .resource::<SceneAdmission>()
+            .queued_keys(0)
+            .into_iter()
+            .filter(|key| !cleanup_waiting.contains(key))
+            .filter_map(|key| {
+                priority::shared_scene_priority(priorities.remove(&key)?)
+                    .map(|priority| (key, priority))
+            })
+            .filter(|(_, rank)| {
+                ordinary_intake || (mandatory_jobs != 0 && rank.is_protected_collision())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut choices = world.resource::<SceneSchedulingState>().dispatch_choices;
     let slots = if ordinary_intake {
         // Controlled zero means paused; legacy zero remains unlimited only when
@@ -342,7 +352,9 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
             .reservation_retries,
     );
     let queued_keys: std::collections::HashSet<_> = queued.iter().map(|(key, _)| key).collect();
-    retries.retain(|key, _| queued_keys.contains(key));
+    if select_new_jobs {
+        retries.retain(|key, _| queued_keys.contains(key));
+    }
     // Denied candidates rotate behind work not yet attempted, preventing an
     // unaffordable prefix from consuming every bounded scan forever.
     normal.sort_unstable_by(|&left, &right| {
@@ -377,6 +389,10 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
     let mut retry_sequence = world
         .resource::<SceneSchedulingState>()
         .reservation_attempts;
+    // Reconciliation and ordering are accounted for in the full frame span.
+    // Give dispatch its own allowance so a large owner set cannot consume it
+    // before the first candidate, reducing every burst to one load per frame.
+    let dispatch_started = Instant::now();
     while dispatched < slots && attempts < queued.len() {
         let (order, cursor) = if prioritize
             && choices % priority::AGED_SERVICE_INTERVAL == priority::AGED_SERVICE_INTERVAL - 1
@@ -424,8 +440,9 @@ pub(super) fn dispatch_scene_requests(world: &mut World) {
         }
         if control.is_some()
             && (attempts >= 128
-                || admission_micros
-                    .is_some_and(|micros| started.elapsed().as_micros() >= u128::from(micros)))
+                || admission_micros.is_some_and(|micros| {
+                    dispatch_started.elapsed().as_micros() >= u128::from(micros)
+                }))
         {
             // At least one candidate gets a chance after reconciliation. A
             // refused reservation is never converted into a loader request.
