@@ -1,6 +1,8 @@
 pub mod app;
 pub mod color_pipeline;
 pub mod config;
+pub mod door_crossing;
+pub mod doors;
 pub mod lights;
 pub mod metrics;
 pub mod nif_material;

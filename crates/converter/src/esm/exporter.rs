@@ -507,6 +507,7 @@ fn export_records(
             _ => {}
         }
     }
+    super::doors::project_door_links(&tx)?;
     tx.commit()
 }
 

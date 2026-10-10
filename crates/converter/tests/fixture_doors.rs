@@ -163,7 +163,7 @@ fn generated_interior_plugin_holds_an_interior_cell_and_a_door_pair() {
     // reference's own (`form_id_layout` in `crates/converter/src/esm/mod.rs`),
     // so the doors keep pointing at each other in any load-order slot. The
     // fixture is the only plugin here, at index 0, so the values are unchanged.
-    // Nothing consumes `XTEL` yet.
+    // The exporter also projects these records into `door_links`.
     let inside_xtel = subrecord_or_panic(inside_ref, b"XTEL");
     let outside_xtel = subrecord_or_panic(outside_ref, b"XTEL");
     assert_eq!(inside_xtel.len(), 32, "Skyrim SE's XTEL");
@@ -218,4 +218,73 @@ fn generated_interior_plugin_never_panics_under_truncation_or_mutation() {
             "ESM parser panicked on mutation at {index}"
         );
     }
+}
+
+#[test]
+fn real_plugin_export_projects_reciprocal_door_arrivals() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = write_plugin(directory.path());
+    let database = directory.path().join("world.db");
+    converter::esm::EsmParser::convert_plugins(&[plugin], &database).unwrap();
+    let conn = rusqlite::Connection::open(database).unwrap();
+    let links: Vec<(u32, u32, f32, f32, f32, Option<u32>)> = conn
+        .prepare("SELECT ref_id,destination_ref_id,pos_x,pos_y,pos_z,destination_worldspace_id FROM door_links ORDER BY ref_id")
+        .unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))
+        .unwrap().map(Result::unwrap).collect();
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0].0, links[1].1);
+    assert_eq!(links[0].1, links[1].0);
+    let interior = links.iter().find(|row| row.5.is_none()).unwrap();
+    let exterior = links.iter().find(|row| row.5.is_some()).unwrap();
+    assert_eq!([interior.2, interior.3, interior.4], [128.0, 256.0, 0.0]);
+    assert_eq!([exterior.2, exterior.3, exterior.4], [2048.0, 512.0, 0.0]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT destination_name FROM door_links WHERE ref_id=?1",
+            [interior.0],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "Generated Interior"
+    );
+    assert_eq!(converter::esm::doors::rebuild_door_links(&conn).unwrap(), 2);
+
+    // The winning override removes XTEL: an older link must not survive.
+    let mut records =
+        converter::esm::binary::parse_plugin_file(&write_plugin(directory.path())).unwrap();
+    let source = records
+        .iter_mut()
+        .find(|r| r.form_id == interior.0)
+        .unwrap();
+    source.subrecords.retain(|(tag, _)| tag != b"XTEL");
+    let blob = converter::esm::extractors::serialize_subrecords(&source.subrecords);
+    conn.execute(
+        "UPDATE records SET data=?1 WHERE form_id=?2",
+        rusqlite::params![blob, source.form_id],
+    )
+    .unwrap();
+    assert_eq!(converter::esm::doors::rebuild_door_links(&conn).unwrap(), 1);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM door_links WHERE ref_id=?1",
+            [interior.0],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0
+    );
+
+    // A corrupt canonical archive must not erase the previous valid projection.
+    conn.execute(
+        "UPDATE records SET data=x'00' WHERE form_id=?1",
+        [exterior.0],
+    )
+    .unwrap();
+    assert!(converter::esm::doors::rebuild_door_links(&conn).is_err());
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM door_links", [], |row| row
+            .get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
 }
