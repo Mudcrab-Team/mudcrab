@@ -16,11 +16,11 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 # An evidence revision, never the viewer's eventual HEAD (which would self-reference).
-CODE_PIN = "62af074a01b9d43c22e5df0ef62d63ee682388bd"
+CODE_PIN = "f3a6a5c2d43b7d25282889e433e14d93a7f414eb"
 XEDIT_PIN = "9fb016884bec138ea6c7b872cec831537d464c3e"
 MUTAGEN_PIN = "4f533562ee0c70347d47c1979d5464d42b06ee6b"
 CODE_HASHES = {
-    "crates/converter/src/esm/exporter.rs": "8920706b44c08fefb715f51ae728dc400c3e651ab621dd9ec352096b89c5cd05",
+    "crates/converter/src/esm/exporter.rs": "f6e82c69a95ab29b0e44e9a0525a0245fa30f8f147f5f81d4b1d844de4b96a7a",
     "crates/shared/src/lib.rs": "398fa1d1762c7e0bd7e3083d54997509cbc735bf2e45782a18de5ba04302f407",
     "crates/converter/src/esm/records/mod.rs": "98c0b882617b196f24e8dc2864222b24e8d9a092b93bc387f516e3396fa71d45",
     "crates/converter/src/esm/mod.rs": "dc0e865f8778954cad07a9f7ed7f886bb2b1668d368479e8bd69dd369a854ae3",

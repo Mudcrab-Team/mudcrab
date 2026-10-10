@@ -1,10 +1,10 @@
 {
   "observed_date": "2026-10-10",
   "scope": "Static source at the immutable local all-PR integration checkpoint; actual exporter DDL executed in an empty in-memory SQLite database.",
-  "code_commit": "62af074a01b9d43c22e5df0ef62d63ee682388bd",
+  "code_commit": "f3a6a5c2d43b7d25282889e433e14d93a7f414eb",
   "hash_normalization": "SHA-256 of strict UTF-8 text with CRLF converted to LF; all other bytes retained.",
   "source_hashes": {
-    "crates/converter/src/esm/exporter.rs": "8920706b44c08fefb715f51ae728dc400c3e651ab621dd9ec352096b89c5cd05",
+    "crates/converter/src/esm/exporter.rs": "f6e82c69a95ab29b0e44e9a0525a0245fa30f8f147f5f81d4b1d844de4b96a7a",
     "crates/shared/src/lib.rs": "398fa1d1762c7e0bd7e3083d54997509cbc735bf2e45782a18de5ba04302f407",
     "crates/converter/src/esm/records/mod.rs": "98c0b882617b196f24e8dc2864222b24e8d9a092b93bc387f516e3396fa71d45",
     "crates/converter/src/esm/mod.rs": "dc0e865f8778954cad07a9f7ed7f886bb2b1668d368479e8bd69dd369a854ae3",
@@ -44,7 +44,8 @@
     "XESP flag column uses only byte 4; bytes 5-7 retained in serialized payload",
     "ARMO MOD2 then MOD4 for in-house reader; legacy MOD3 fallback retained",
     "Selected reader dispatch and in-house projection source recorded alongside legacy projection",
-    "Current project anchors resolve unique source text and reject absent or ambiguous matches"
+    "Current project anchors resolve unique source text and reject absent or ambiguous matches",
+    "PR #213 adds a check for legacy LAND ambiguity before the exporter opens a transaction. Schema versions and selected field layouts are unchanged."
   ],
   "historical_evidence": {
     "preserved_files": [
