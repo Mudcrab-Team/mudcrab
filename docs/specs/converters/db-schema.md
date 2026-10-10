@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS references (
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
     scale REAL NOT NULL DEFAULT 1.0,    -- Scale multiplier
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
-    header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
+    header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP flags; NULL when absent
     data BLOB                           -- Subrecords payload
@@ -137,18 +137,20 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header. The eight-byte XESP
-subrecord holds a four-byte little-endian parent FormID, one flags byte, and
-three unused bytes. `enable_parent_id` is resolved through plugin load order;
-`enable_parent_flags` stores only the flags byte, excluding the unused bytes
-even when they are non-zero. The complete subrecord payload remains in `data`
-with its parent remapped and its flags and unused bytes unchanged. Normal
-conversion and metadata rebuild re-export these columns;
-previously published databases retain their values until rebuilt. An invalid
-parent link is published as
-`enable_parent_id = 0` (no parent) with its flags byte kept; a malformed XESP
-is dropped before projection, so both columns are NULL. See the remapped-field
+metadata for initial spawn filtering (#165) and later object LOD (#106).
+The engine resolves parent chains before spawning. With no parent, header bit
+`0x800` marks an initially disabled reference; the rule and runtime limits are
+in [reference enable-state evidence](../../research/reference-enable-state-20261005.md).
+Current terrain LOD does not consume these columns. `header_flags` comes from
+the record header. The eight-byte XESP subrecord holds a four-byte little-endian
+parent FormID, one flags byte, and three unused bytes. `enable_parent_id` is
+resolved through plugin load order; `enable_parent_flags` stores only the flags
+byte, excluding non-zero unused bytes. The complete subrecord payload remains
+in `data`, with its parent remapped and its flags and unused bytes unchanged.
+Normal conversion and metadata rebuild re-export these columns; published
+databases retain their values until rebuilt. An invalid parent link is
+published as `enable_parent_id = 0` with its flags byte kept. A malformed XESP
+is dropped before projection, leaving both columns NULL. See the remapped-field
 table below.
 
 ---

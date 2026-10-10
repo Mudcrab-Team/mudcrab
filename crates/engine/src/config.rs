@@ -2060,13 +2060,65 @@ mod tests {
         paths
     }
 
+    fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
+        let options = parser_options();
+        let mut checked = 0;
+        for flag in option_tokens(script) {
+            // This database-only tool owns --verify. Keep it scoped to the tool:
+            // an engine launcher passing --verify must still fail the audit.
+            let observation_option = path.file_name().is_some_and(|name| {
+                name == "reference-enable-observations.py" && flag == "--verify"
+            });
+            if NON_ENGINE_FLAGS.contains(&flag) || observation_option {
+                continue;
+            }
+            assert!(
+                options.contains(&flag),
+                "{} passes {flag}, which the parser refuses",
+                path.display()
+            );
+            checked += 1;
+        }
+        checked
+    }
+
+    #[test]
+    fn the_script_audit_scopes_observation_options_and_rejects_unknown_engine_flags() {
+        let observation = std::path::Path::new("reference-enable-observations.py");
+        assert_eq!(
+            checked_script_engine_flags(
+                "--output manifest.json --verify manifest.json",
+                observation
+            ),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags("engine --headless", observation),
+            1
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --unknown-engine-option", observation)
+            })
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(
+                    "engine --verify manifest.json",
+                    std::path::Path::new("launch.sh"),
+                )
+            })
+            .is_err()
+        );
+    }
+
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
     /// included, is read from disk, so a script added later cannot pass an
     /// option the parser refuses without failing this test. The scan is skipped
     /// when the repository's `scripts/` is not next to this crate.
     #[test]
     fn the_scripts_only_pass_options_the_parser_accepts() {
-        let options = parser_options();
         let Some(scripts) = scripts_directory() else {
             return;
         };
@@ -2074,17 +2126,7 @@ mod tests {
         for path in script_paths(&scripts) {
             let script = std::fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-            for flag in option_tokens(&script) {
-                if NON_ENGINE_FLAGS.contains(&flag) {
-                    continue;
-                }
-                assert!(
-                    options.contains(&flag),
-                    "{} passes {flag}, which the parser refuses",
-                    path.display()
-                );
-                checked += 1;
-            }
+            checked += checked_script_engine_flags(&script, &path);
         }
         assert!(
             checked >= 20,

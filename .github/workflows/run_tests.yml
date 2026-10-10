@@ -64,10 +64,12 @@ jobs:
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '\.ps1$'
           check_pattern "check_schema_tools" '^(scripts/schema/|docs/research/dynamic-schema/.*\.py$|\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
       check_schema_tools: ${{ steps.filter.outputs.check_schema_tools }}
+      check_enable_observations: ${{ steps.filter.outputs.check_enable_observations }}
 
   format:
     needs: [orchestrate]
@@ -144,6 +146,25 @@ jobs:
 
       - name: Test source inventory tooling without retail inputs
         run: python -m unittest discover -s docs/research/dynamic-schema -p 'test_*.py' -v
+
+  enable_observations:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_enable_observations == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test reference observation input preservation
+        run: python3 -m unittest discover -s scripts/tests -p test_reference_enable_observations.py -v
 
   clippy:
     needs: [orchestrate]
@@ -281,6 +302,7 @@ jobs:
       - format
       - scripts
       - schema_tools
+      - enable_observations
       - clippy
       - test
       - security
@@ -305,6 +327,7 @@ jobs:
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
           check_result "schema_tools" "$RESULT_SCHEMA_TOOLS"
+          check_result "enable_observations" "$RESULT_ENABLE_OBSERVATIONS"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -316,6 +339,7 @@ jobs:
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
           RESULT_SCHEMA_TOOLS: ${{ needs.schema_tools.result }}
+          RESULT_ENABLE_OBSERVATIONS: ${{ needs.enable_observations.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}

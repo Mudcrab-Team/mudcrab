@@ -1,10 +1,11 @@
+use super::enable_state::{EnableStateError, EnableStateResolver, InitialEnableInputs};
 use bevy::prelude::Resource;
 use color_eyre::{Result, eyre::WrapErr};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -33,6 +34,9 @@ pub enum CellKey {
 #[derive(Debug, Clone)]
 pub struct ReferenceRow {
     pub form_id: u32,
+    /// New-game enable-state snapshot, including parent chains. All rows remain available;
+    /// this bootstrap value does not represent subsequent script/quest/save state.
+    pub initially_enabled: bool,
     pub cell_id: u32,
     pub base_form_id: u32,
     /// Authoritative base record type; `statics` also contains movable clutter.
@@ -453,7 +457,7 @@ fn worker(
     // the reference query is built once for the connection. If the database cannot be opened or
     // probed, every request is still answered, with that error, so the cells fail visibly instead
     // of waiting forever.
-    let setup = Connection::open_with_flags(
+    let mut setup = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -473,7 +477,7 @@ fn worker(
             } => {
                 let queue_wait_micros = elapsed_micros(queued_at);
                 let started = Instant::now();
-                let result = match &setup {
+                let result = match &mut setup {
                     Ok((connection, query)) => load_cell(connection, query, generation, key)
                         .map_err(|error| format!("{error:#}")),
                     Err(error) => Err(error.clone()),
@@ -795,6 +799,11 @@ const ABSENT_LIGHT_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL";
 const RADIUS_OVERRIDE_COLUMN: &str = "r.radius_override";
 const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 
+// PR #128 owns door decoding at 25..=33. Reserve that suffix so combining its
+// optional door projection with enable state cannot reinterpret either feature.
+const ABSENT_DOOR_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL";
+const REFERENCE_ENABLE_START: usize = 34;
+
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
 /// each reference lighting the space at its own radius.
 const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
@@ -871,9 +880,13 @@ fn has_radius_override(connection: &Connection) -> Result<bool> {
 /// The reference query's column list and joins for one database: the `records`, `lights` and
 /// `door_links` tables and the `radius_override` column are joined when the database has them and
 /// read as `NULL` when it does not, so [`map_reference`]'s column indices are the same either way.
+/// Enable-state metadata is optional for legacy packages; the resolver survives cell unloads.
 struct ReferenceQuery {
     columns: String,
     joins: String,
+    parent_sql: String,
+    enable_states: EnableStateResolver,
+    enable_errors: HashSet<EnableStateError>,
 }
 
 impl ReferenceQuery {
@@ -908,19 +921,43 @@ impl ReferenceQuery {
         if has_door_links {
             joins.push_str(DOOR_JOIN);
         }
+        let enable_column_count: usize = connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('references') \
+             WHERE name IN ('header_flags','enable_parent_id','enable_parent_flags')",
+            [],
+            |row| row.get(0),
+        )?;
+        let enable_columns = match enable_column_count {
+            0 => {
+                bevy::log::warn!(
+                    "world database has no reference enable-state metadata; references default to enabled; reconvert assets to filter initially disabled references"
+                );
+                "0,NULL,0"
+            }
+            3 => "header_flags,enable_parent_id,enable_parent_flags",
+            _ => color_eyre::eyre::bail!(
+                "incomplete reference enable-state columns: expected header_flags, enable_parent_id and enable_parent_flags"
+            ),
+        };
+        let reference_enable_columns = match enable_column_count {
+            0 => "0,NULL,0",
+            _ => "r.header_flags,r.enable_parent_id,r.enable_parent_flags",
+        };
         Ok(Self {
             columns: format!(
-                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
-                 {door_columns}"
+                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},{door_columns},{reference_enable_columns}"
             ),
             joins,
+            parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
+            enable_states: EnableStateResolver::default(),
+            enable_errors: HashSet::new(),
         })
     }
 }
 
 fn load_cell(
     connection: &Connection,
-    query: &ReferenceQuery,
+    query: &mut ReferenceQuery,
     generation: u64,
     key: CellKey,
 ) -> Result<CellPayload> {
@@ -936,8 +973,9 @@ fn load_cell(
         )?,
         CellKey::Interior(cell_id) => cell_id,
     };
-    let ReferenceQuery { columns, joins } = query;
-    let references = match key {
+    let columns = &query.columns;
+    let joins = &query.joins;
+    let rows = match key {
         CellKey::Exterior {
             worldspace_id,
             grid_x,
@@ -965,6 +1003,31 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
     };
+    let mut references = Vec::with_capacity(rows.len());
+    for (mut reference, inputs) in rows {
+        let state = query
+            .enable_states
+            .resolve(reference.form_id, inputs, |parent| {
+                connection
+                    .prepare_cached(&query.parent_sql)?
+                    .query_row([parent], |row| map_enable_inputs(row, 0))
+                    .optional()
+            })
+            .wrap_err_with(|| format!("enable state of reference {:08X}", reference.form_id))?;
+        reference.initially_enabled = match state {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                if query.enable_errors.insert(error) {
+                    bevy::log::warn!(
+                        "reference {:08X}: {error}; unresolved references will not spawn",
+                        reference.form_id
+                    );
+                }
+                false
+            }
+        };
+        references.push(reference);
+    }
     Ok(CellPayload {
         generation,
         key,
@@ -973,7 +1036,30 @@ fn load_cell(
     })
 }
 
-fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
+fn map_enable_inputs(
+    row: &rusqlite::Row<'_>,
+    start: usize,
+) -> rusqlite::Result<InitialEnableInputs> {
+    let parent_id: Option<u32> = row.get(start + 1)?;
+    let parent_flags: Option<u32> = row.get(start + 2)?;
+    if parent_id.is_some_and(|id| id != 0) && parent_flags.is_none() {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            start + 2,
+            rusqlite::types::Type::Null,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "enable parent has no XESP flags",
+            )),
+        ));
+    }
+    Ok(InitialEnableInputs {
+        header_flags: row.get(start)?,
+        parent_id,
+        parent_flags: parent_flags.unwrap_or(0),
+    })
+}
+
+fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, InitialEnableInputs)> {
     let base_record_type: Option<String> = row.get(18)?;
     let radius: Option<f32> = row.get(19)?;
     let light = match radius {
@@ -1012,22 +1098,26 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         }
         None => None,
     };
-    Ok(ReferenceRow {
-        form_id: row.get(0)?,
-        cell_id: row.get(1)?,
-        base_form_id: row.get(2)?,
-        base_record_type,
-        model_path: row.get(3)?,
-        position: [row.get(4)?, row.get(5)?, row.get(6)?],
-        rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
-        scale: row.get(10)?,
-        bounds_min: [row.get(11)?, row.get(12)?, row.get(13)?],
-        bounds_max: [row.get(14)?, row.get(15)?, row.get(16)?],
-        bounds_valid: row.get(17)?,
-        light,
-        light_radius_override: row.get(24)?,
-        door,
-    })
+    Ok((
+        ReferenceRow {
+            form_id: row.get(0)?,
+            initially_enabled: true,
+            cell_id: row.get(1)?,
+            base_form_id: row.get(2)?,
+            base_record_type,
+            model_path: row.get(3)?,
+            position: [row.get(4)?, row.get(5)?, row.get(6)?],
+            rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
+            scale: row.get(10)?,
+            bounds_min: [row.get(11)?, row.get(12)?, row.get(13)?],
+            bounds_max: [row.get(14)?, row.get(15)?, row.get(16)?],
+            bounds_valid: row.get(17)?,
+            light,
+            light_radius_override: row.get(24)?,
+            door,
+        },
+        map_enable_inputs(row, REFERENCE_ENABLE_START)?,
+    ))
 }
 
 #[cfg(test)]
@@ -1056,7 +1146,7 @@ mod tests {
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
         super::load_cell(
             connection,
-            &ReferenceQuery::for_connection(connection)?,
+            &mut ReferenceQuery::for_connection(connection)?,
             generation,
             key,
         )
@@ -1080,6 +1170,218 @@ mod tests {
                 INSERT INTO exterior_spatial VALUES(31,8250,8250,-12150,-12150,55,55,99,60);"#,
             )
             .unwrap();
+    }
+
+    fn enable_columns(connection: &Connection) {
+        connection
+            .execute_batch(
+                "ALTER TABLE \"references\" ADD COLUMN header_flags INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE \"references\" ADD COLUMN enable_parent_id INTEGER;
+             ALTER TABLE \"references\" ADD COLUMN enable_parent_flags INTEGER;",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn enable_metadata_does_not_decode_reserved_door_slots() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=2048,enable_parent_id=20,enable_parent_flags=1 WHERE id=30;",
+            )
+            .unwrap();
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            query.columns, query.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                for index in 25..34 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // Model #128's nine-column projection with distinct destination and
+        // arrival values, without implementing or depending on its door tables.
+        // Bounds COALESCE expressions contain commas, so replace the exact
+        // suffix instead of treating the SQL text as a CSV list.
+        query.columns = query.columns.replace(
+            &format!(",{ABSENT_DOOR_COLUMNS},r.header_flags"),
+            ",123,456,NULL,1.25,2.5,3.75,0.1,0.2,0.3,r.header_flags",
+        );
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            query.columns, query.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                assert_eq!(row.get::<_, u32>(25)?, 123);
+                assert_eq!(row.get::<_, u32>(26)?, 456);
+                assert_eq!(row.get::<_, Option<u32>>(27)?, None);
+                assert_eq!(row.get::<_, f32>(28)?, 1.25);
+                let (_, inputs) = map_reference(row)?;
+                assert_eq!(inputs.header_flags, 2048);
+                assert_eq!(inputs.parent_id, Some(20));
+                assert_eq!(inputs.parent_flags, 1);
+                Ok(())
+            })
+            .unwrap();
+        for key in [
+            CellKey::Interior(10),
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        ] {
+            let payload = super::load_cell(&connection, &mut query, 1, key).unwrap();
+            let child = payload
+                .references
+                .iter()
+                .find(|row| row.form_id == 30)
+                .unwrap();
+            assert!(!child.initially_enabled);
+        }
+    }
+
+    #[test]
+    fn initial_enable_state_uses_parents_outside_the_loaded_cell_without_models() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection.execute_batch(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id,header_flags) VALUES(100,500,9999,2048);
+             INSERT INTO \"references\"(id,cell_id,base_form_id,header_flags,enable_parent_id,enable_parent_flags)
+                 VALUES(200,600,9998,0,100,1);
+             UPDATE \"references\" SET header_flags=2048,enable_parent_id=200,enable_parent_flags=952044802 WHERE id=30;
+             UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
+        ).unwrap();
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        for _ in 0..2 {
+            let interior =
+                super::load_cell(&connection, &mut query, 1, CellKey::Interior(99)).unwrap();
+            assert_eq!(interior.references.len(), 1);
+            assert!(!interior.references[0].initially_enabled);
+            let exterior = super::load_cell(
+                &connection,
+                &mut query,
+                2,
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 2,
+                    grid_y: -3,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                exterior.references.len(),
+                2,
+                "hidden rows remain in the payload"
+            );
+            assert!(
+                exterior
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == 30)
+                    .unwrap()
+                    .initially_enabled
+            );
+            assert!(
+                !exterior
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == 31)
+                    .unwrap()
+                    .initially_enabled
+            );
+        }
+        assert!(query.enable_errors.is_empty());
+    }
+
+    #[test]
+    fn missing_and_cyclic_enable_parents_remain_hidden_and_are_diagnosed_once() {
+        for parent in [99, 31] {
+            let connection = Connection::open_in_memory().unwrap();
+            fixture(&connection);
+            enable_columns(&connection);
+            connection.execute(
+                "UPDATE \"references\" SET enable_parent_id=?1,enable_parent_flags=1 WHERE id=30",
+                [parent],
+            ).unwrap();
+            connection.execute_batch(
+                "UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
+            ).unwrap();
+            let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+            for _ in 0..2 {
+                let payload = super::load_cell(
+                    &connection,
+                    &mut query,
+                    1,
+                    CellKey::Exterior {
+                        worldspace_id: 60,
+                        grid_x: 2,
+                        grid_y: -3,
+                    },
+                )
+                .unwrap();
+                assert_eq!(payload.references.len(), 2);
+                assert!(payload.references.iter().all(|row| !row.initially_enabled));
+                assert_eq!(query.enable_errors.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_reference_columns_default_enabled_but_partial_columns_fail() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert!(payload.references.iter().all(|row| row.initially_enabled));
+        connection
+            .execute_batch(
+                "ALTER TABLE \"references\" ADD COLUMN header_flags INTEGER NOT NULL DEFAULT 0;",
+            )
+            .unwrap();
+        let error = load_cell(&connection, 1, CellKey::Interior(99)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("incomplete reference enable-state columns")
+        );
+    }
+
+    #[test]
+    fn corrupt_parent_flags_fail_the_cell_instead_of_inventing_enabled_state() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection.execute_batch(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id,header_flags) VALUES(100,500,9999,-1);
+             UPDATE \"references\" SET enable_parent_id=100,enable_parent_flags=1 WHERE id=31;"
+        ).unwrap();
+        let error = load_cell(&connection, 1, CellKey::Interior(99)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("enable state of reference 0000001F")
+        );
+    }
+
+    #[test]
+    fn nonzero_enable_parent_requires_flags_in_the_database() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch("UPDATE \"references\" SET enable_parent_id=30 WHERE id=31;")
+            .unwrap();
+        let error = load_cell(&connection, 1, CellKey::Interior(99)).unwrap_err();
+        assert!(format!("{error:#}").contains("enable parent has no XESP flags"));
     }
 
     fn lod_fixture(connection: &Connection) {
