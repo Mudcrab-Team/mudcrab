@@ -37,7 +37,9 @@ def base_document():
 class AuditRiverwoodReuseTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        # macOS's default temp path can pass through /var -> /private/var.
+        # Fixtures use the real root; explicit symlink inputs still fail closed.
+        self.root = Path(self.temp.name).resolve()
         self.candidate = self.root / "candidate"
         self.reference = self.root / "reference"
         for root in (self.candidate, self.reference):

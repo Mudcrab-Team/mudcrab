@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +10,10 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "capture-riverwood-lod.sh"
+# Read the owning layer so a future schema bump cannot leave this wrapper stale.
+SHARED_SOURCE = (SCRIPT.parents[1] / "crates/shared/src/lib.rs").read_text()
+CURRENT_PRODUCER = int(re.search(r"pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = (\d+);", SHARED_SOURCE)[1])
+CURRENT_WORLD = int(re.search(r"pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = (\d+);", SHARED_SOURCE)[1])
 PROVENANCE_FILES = (
     "bin/engine",
     "assets/skyrim_world.db",
@@ -70,23 +75,23 @@ def make_package(package):
     write_json(
         package / "assets/lod-manifest.json",
         {
-            "converter_schema": 25,
-            "world_database_schema": 7,
+            "converter_schema": CURRENT_PRODUCER,
+            "world_database_schema": CURRENT_WORLD,
             "build_identity": identity,
             "chunks": 1,
         },
     )
     write_json(
         package / "assets/conversion-manifest.json",
-        {"schema_version": 25, "complete": True},
+        {"schema_version": CURRENT_PRODUCER, "complete": True},
     )
     write_json(
         package / "assets/integration-report.json",
-        {"schema_version": 7, "passed": True},
+        {"schema_version": CURRENT_WORLD, "passed": True},
     )
     with sqlite3.connect(package / "assets/skyrim_world.db") as database:
         database.execute("CREATE TABLE schema_info(version INTEGER NOT NULL)")
-        database.execute("INSERT INTO schema_info(version) VALUES (7)")
+        database.execute("INSERT INTO schema_info(version) VALUES (?)", (CURRENT_WORLD,))
         database.execute(
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL)"
         )
@@ -172,6 +177,42 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
             write_json(path, {"schema_version": 20, "complete": True})
             refresh_checksum(package, "assets/conversion-manifest.json")
             self.assertNotEqual(run_provenance_validator(package).returncode, 0)
+
+    def test_prior_collision_and_txst_packages_do_not_prove_combined_contract(self):
+        for producer, world in ((25, 7), (26, 9)):
+            with self.subTest(producer=producer, world=world), tempfile.TemporaryDirectory() as directory:
+                package = make_package(Path(directory))
+                for relative, fields in (
+                    ("assets/lod-manifest.json", {"converter_schema": producer, "world_database_schema": world}),
+                    ("assets/conversion-manifest.json", {"schema_version": producer}),
+                    ("assets/integration-report.json", {"schema_version": world}),
+                ):
+                    path = package / relative
+                    value = json.loads(path.read_text())
+                    value.update(fields)
+                    write_json(path, value)
+                    refresh_checksum(package, relative)
+                with sqlite3.connect(package / "assets/skyrim_world.db") as database:
+                    database.execute("UPDATE schema_info SET version=?", (world,))
+                refresh_checksum(package, "assets/skyrim_world.db")
+                self.assertNotEqual(run_provenance_validator(package).returncode, 0)
+
+    def test_current_outer_manifest_does_not_promote_retained_legacy_meshes(self):
+        for retained in (24, 25, 26, CURRENT_PRODUCER):
+            with self.subTest(retained=retained), tempfile.TemporaryDirectory() as directory:
+                package = make_package(Path(directory))
+                relative = "assets/conversion-manifest.json"
+                path = package / relative
+                conversion = json.loads(path.read_text())
+                conversion["retained_mesh_schema_version"] = retained
+                write_json(path, conversion)
+                refresh_checksum(package, relative)
+                result = run_provenance_validator(package)
+                if retained == CURRENT_PRODUCER:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Package retains legacy meshes", result.stderr)
 
     def test_capture_scripts_redirect_logs_without_unsupported_engine_flag(self):
         for script in (SCRIPT, SCRIPT.with_name("capture-lod-phase1.sh")):
@@ -303,6 +344,19 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
             text=True,
             check=False,
         )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Capture output must be outside the package", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(list(package.iterdir()), [])
+
+    def test_parent_symlink_cannot_hide_output_inside_package(self):
+        package = self.root / "package"
+        package.mkdir()
+        alias = self.root / "outside-alias"
+        alias.symlink_to(package, target_is_directory=True)
+        output = alias / "new-capture"
+        result = subprocess.run(["bash", str(SCRIPT), str(package), str(output)],
+                                capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("Capture output must be outside the package", result.stderr)
         self.assertFalse(output.exists())

@@ -11,7 +11,6 @@ on:
   push:
     branches: [ main, develop ]
   pull_request:
-    branches: [ main, develop, feat/dynamic-schema-p0 ]
   workflow_dispatch:
 
 permissions:
@@ -29,19 +28,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
-          fetch-depth: ${{ github.ref == 'refs/heads/main' && 2 || 350 }}
+          fetch-depth: 0
 
       - id: filter
         name: Filter changed files
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ -z "${GITHUB_BASE_REF:-}" ]; then
             echo "Not in a PR context (i.e., push event)"
             COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           else
-            echo "In a PR context comparing to pull_request.base.ref"
-            git fetch origin "$GITHUB_BASE_REF" --depth=350
-            COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
+            echo "In a PR context comparing to the captured base commit"
+            : "${PR_BASE_SHA:?Missing pull_request.base.sha}"
+            COMPARE_REV="$(git merge-base "$PR_BASE_SHA" "$GITHUB_SHA")"
           fi
 
           if [ "$COMPARE_REV" = "$GITHUB_SHA" ]; then
@@ -62,11 +63,11 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '\.(ps1|py)$'
-          check_pattern "check_schema_tools" '^(scripts/schema/|docs/research/dynamic-schema/.*\.py$|\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_scripts" '^(scripts/|docs/research/lod-acceptance-[^/]+/|\.github/workflows/run_tests\.yml$)|\.ps1$'
+          check_pattern "check_schema_tools" '^(scripts/schema/|docs/research/dynamic-schema/|crates/converter/src/esm/|crates/shared/src/lib\.rs$|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
-          check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_native_profiling" '^(scripts/profiling/.*|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -106,8 +107,16 @@ jobs:
         with:
           clean: false
 
-      - name: Test repeated terrain startup runner
-        run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test offline script tooling and PR integration audit
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
+      - name: Test LOD audit and validation-plan tooling
+        run: python -m unittest discover -s scripts/lod-performance -p 'test_*.py' -v
 
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
@@ -176,7 +185,11 @@ jobs:
   native_profiling:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_native_profiling == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -187,7 +200,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Test native trace analyzers and camera fixtures
+      - name: Test trace analyzers, camera fixtures and native observer configuration
         run: python3 -m unittest discover -s scripts/tests -p test_native_metal_profiling.py -v
 
   z_fighting_audit:

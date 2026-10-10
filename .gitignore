@@ -1,4 +1,6 @@
 /target/
+__pycache__/
+*.pyc
 **/*.rs.bk
 Cargo.lock.3rdparty
 *.iso

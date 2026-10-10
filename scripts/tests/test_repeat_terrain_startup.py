@@ -390,13 +390,33 @@ class ProcessTests(unittest.TestCase):
             "    child.wait(timeout=4)\n"
             "    sys.exit(0)\n"
             "signal.signal(signal.SIGTERM, stop)\n"
+            "Path('ready').write_text('ready')\n"
             "time.sleep(60)\n"
         ))
         untouched = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
         try:
             output = self.root / "timeout"
-            result = subprocess.run(self.command(output, "--timeout", "0.8"), capture_output=True, text=True, timeout=15)
-            self.assertEqual(result.returncode, 1, result.stderr)
+            output.mkdir()
+            directory = output / "16mib-01"
+            args = RUNNER.parse_args(self.command(output, "--timeout", "0.1")[2:])
+            real_popen = subprocess.Popen
+
+            def launch_ready(*arguments, **keywords):
+                process = real_popen(*arguments, **keywords)
+                deadline = time.monotonic() + 10
+                while not (directory / "ready").exists():
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        RUNNER.stop_owned_group(process)
+                        self.fail("fixture descendant did not become ready")
+                    time.sleep(0.01)
+                return process
+
+            # The fixture must exist before its short deadline begins. Startup
+            # timing under another build is not the cleanup behavior under test.
+            with mock.patch.object(RUNNER.subprocess, "Popen", side_effect=launch_ready):
+                result, stopped = RUNNER.run_one(args, directory, 16, "16mib-01", os.environ.copy())
+            self.assertFalse(stopped)
+            self.assertFalse(result["functional_checks_passed"])
             manifest = json.loads((output / "16mib-01/run.json").read_text())
             self.assertTrue(manifest["timed_out"])
             child_pid = int((output / "16mib-01/child.pid").read_text())
