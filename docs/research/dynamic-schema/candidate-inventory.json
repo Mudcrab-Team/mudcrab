@@ -1,0 +1,4847 @@
+{
+  "artifact_kind": "provisional_newest_SE_record_source_candidate_inventory",
+  "artifact_status": "P0_source_evidence_only_not_accepted_corpus",
+  "generated_at_utc": "2026-10-05T04:44:24Z",
+  "scope": "Candidate inventory of declared four-character Skyrim plugin major RECORD signatures from pinned xEdit DefineTES5 and Mutagen Skyrim model XML. It does not assert semantic completeness, current retail coverage, or newest official game build identity.",
+  "sources": {
+    "xedit": {
+      "checkout": "/tmp/mudcrab-schema-source-xedit",
+      "pin": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "branch": "dev-4.1.6",
+      "upstream": "origin/dev-4.1.6",
+      "ahead_behind_vs_upstream": {
+        "ahead": 0,
+        "behind": 0
+      },
+      "working_tree": "clean",
+      "declaration_source": {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "procedure_start_line": 2187,
+        "procedure_end_line": 10915,
+        "method_note": "Active wbRecord/wbRefRecord calls plus ReferenceRecord(SIG, name) helper invocations inside DefineTES5; the helper body delegates to wbRefRecord."
+      }
+    },
+    "mutagen": {
+      "checkout": "/tmp/mudcrab-schema-source-mutagen",
+      "pin": "4f533562ee0c70347d47c1979d5464d42b06ee6b",
+      "branch": "dev",
+      "upstream": "origin/dev",
+      "ahead_behind_vs_upstream": {
+        "ahead": 0,
+        "behind": 0
+      },
+      "working_tree": "clean",
+      "declaration_source": {
+        "directory": "Mutagen.Bethesda.Skyrim/Records/Major Records",
+        "method_note": "Direct child Object declarations in each Major Records XML file."
+      },
+      "model_release_scope_source": {
+        "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+        "release_option_lines": [
+          125,
+          131
+        ]
+      }
+    }
+  },
+  "extraction_methods": {
+    "xedit": "Read Core/wbDefinitionsTES5.pas at pinned commit; strip Pascal brace, (* *) and // comments while preserving strings/newlines; scope to implementation procedure DefineTES5; extract active wbRecord/wbRefRecord calls and typed ReferenceRecord(SIG, name) calls. The ReferenceRecord helper body at line 2134 delegates to wbRefRecord. Keep declarations by source line; classify direct wbIsSkyrimSE enclosure manually from source anchors. This is declaration scraping, not evaluation of the full Pascal program.",
+    "mutagen": "Parse XML files directly under Mutagen.Bethesda.Skyrim/Records/Major Records; take only root-level child Object elements with objType=\"Record\" and a four-character recordType. Preserve all declarations so multiple CLR objects sharing one wire signature remain visible. Group registration is joined by object name from SkyrimMod.xml. The shared SkyrimMod release list is not applied as a per-record version gate. Record classes nested in SkyrimMod cell/list-group models are not inferred by a direct top-level Group refName join; an empty join does not mean unregistered.",
+    "comparison": "Compare exact 4-character signatures after excluding xEdit TES4 file header from plugin major-record set; retain TES4 row as separately classified evidence, with its Mutagen SkyrimModHeader declaration shown separately. Differences are flagged as source asymmetries, not assumed omissions."
+  },
+  "summary": {
+    "xedit_active_record_declaration_calls_in_DefineTES5": 134,
+    "xedit_unique_declared_signatures_including_TES4_header": 134,
+    "xedit_unique_plugin_candidate_signatures_excluding_TES4_header": 133,
+    "mutagen_direct_major_record_xml_declaration_objects": 135,
+    "mutagen_unique_major_record_signatures": 127,
+    "shared_plugin_candidate_signatures": 127,
+    "xedit_only_plugin_candidate_signatures": [
+      "CLDC",
+      "PLYR",
+      "PWAT",
+      "RGDL",
+      "SCOL",
+      "SCPT"
+    ],
+    "mutagen_only_plugin_candidate_signatures": [],
+    "xedit_only_declaration_duplicates": {},
+    "mutagen_duplicate_signature_declarations": {
+      "GLOB": 5,
+      "GMST": 5
+    },
+    "xedit_header_signature_excluded": [
+      "TES4"
+    ]
+  },
+  "source_gate_anchors": {
+    "xedit": [
+      {
+        "path": "Core/wbInterface.pas",
+        "line": 5338,
+        "fact": "wbIsSkyrimSE evaluates true for gmTES5VR, gmSSE, and gmEnderalSE."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 10206,
+        "fact": "if wbIsSkyrimSE then begin encloses VOLI and LENS declarations at lines 10207 and 10221."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 10883,
+        "fact": "LENS and VOLI group-order registration is also gated by wbIsSkyrimSE."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 10116,
+        "fact": "TES4 is declared as Main File Header; retained separately from plugin record signatures."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 10714,
+        "fact": "Following xEdit comment labels CLDC, HAIR, PWAT, and SCPT as unused/empty-group cases; HAIR note says contained in Skyrim.esm."
+      },
+      {
+        "path": "Core/wbDefinitionsCommon.pas",
+        "line": 6510,
+        "fact": "IsSSE chooses its first alternative whenever wbIsSkyrimSE is true; this is used for conditional fields and names as well as definitions."
+      },
+      {
+        "path": "Core/wbDefinitionsCommon.pas",
+        "line": 6326,
+        "fact": "IsVR chooses first alternative for gmTES5VR or gmFO4VR."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5Saves.pas",
+        "line": 6233,
+        "fact": "DefineTES5Saves initializes TES5 save parsing, calls DefineTES5, then save-specific DefineTES5SavesA and DefineTES5SavesS."
+      },
+      {
+        "path": "Core/wbInterface.pas",
+        "line": 4584,
+        "fact": "xEdit distinguishes tsPlugins and tsSaves tool sources."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 2134,
+        "fact": "ReferenceRecord typed helper delegates to wbRefRecord; its eight invocations at lines 4184-4191 declare placed-trap signatures."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4184,
+        "fact": "ReferenceRecord call declares PARW (Placed Arrow)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4185,
+        "fact": "ReferenceRecord call declares PBAR (Placed Barrier)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4186,
+        "fact": "ReferenceRecord call declares PBEA (Placed Beam)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4187,
+        "fact": "ReferenceRecord call declares PCON (Placed Cone/Voice)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4188,
+        "fact": "ReferenceRecord call declares PFLA (Placed Flame)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4189,
+        "fact": "ReferenceRecord call declares PGRE (Placed Projectile)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4190,
+        "fact": "ReferenceRecord call declares PHZD (Placed Hazard)."
+      },
+      {
+        "path": "Core/wbDefinitionsTES5.pas",
+        "line": 4191,
+        "fact": "ReferenceRecord call declares PMIS (Placed Missile)."
+      },
+      {
+        "path": "Core/wbInterface.pas",
+        "line": 5333,
+        "fact": "wbIsSkyrim covers gmTES5, gmEnderal, gmTES5VR, gmSSE, and gmEnderalSE source modes."
+      }
+    ],
+    "mutagen": [
+      {
+        "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+        "line": 125,
+        "fact": "SkyrimMod lists release options SkyrimLE, SkyrimSE, SkyrimSEGog, SkyrimVR, EnderalLE, EnderalSE, EnderalSEGog."
+      },
+      {
+        "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LensFlare.xml",
+        "line": 3,
+        "fact": "LensFlare model declares recordType LENS; no per-release gate in declaration."
+      },
+      {
+        "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/VolumetricLighting.xml",
+        "line": 3,
+        "fact": "VolumetricLighting model declares recordType VOLI; no per-release gate in declaration."
+      },
+      {
+        "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMajorRecord.xml",
+        "line": 3,
+        "fact": "Common major-record base model contains FormVersion and Version2; field versioning is distinct from per-release record applicability."
+      }
+    ]
+  },
+  "entries": [
+    {
+      "signature": "AACT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5253,
+          "declaration": "wbRecord",
+          "name": "Action",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ActionRecord.xml",
+          "line": 3,
+          "object_name": "ActionRecord",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 9,
+              "group_name": "Actions"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ACHR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 3108,
+          "declaration": "wbRefRecord",
+          "name": "Placed NPC",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedNpc.xml",
+          "line": 3,
+          "object_name": "PlacedNpc",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ACTI",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 3206,
+          "declaration": "wbRecord",
+          "name": "Activator",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Activator.xml",
+          "line": 3,
+          "object_name": "Activator",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 25,
+              "group_name": "Activators"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ADDN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6079,
+          "declaration": "wbRecord",
+          "name": "Addon Node",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/AddonNode.xml",
+          "line": 3,
+          "object_name": "AddonNode",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 82,
+              "group_name": "AddonNodes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ALCH",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 3953,
+          "declaration": "wbRecord",
+          "name": "Ingestible",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Ingestible.xml",
+          "line": 3,
+          "object_name": "Ingestible",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 46,
+              "group_name": "Ingestibles"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "AMMO",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 3999,
+          "declaration": "wbRecord",
+          "name": "Ammunition",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Ammunition.xml",
+          "line": 3,
+          "object_name": "Ammunition",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 42,
+              "group_name": "Ammunitions"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ANIO",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4040,
+          "declaration": "wbRecord",
+          "name": "Animated Object",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/AnimatedObject.xml",
+          "line": 3,
+          "object_name": "AnimatedObject",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 72,
+              "group_name": "AnimatedObjects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "APPA",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8251,
+          "declaration": "wbRecord",
+          "name": "Alchemical Apparatus",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/AlchemicalApparatus.xml",
+          "line": 3,
+          "object_name": "AlchemicalApparatus",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 34,
+              "group_name": "AlchemicalApparatuses"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ARMA",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4093,
+          "declaration": "wbRecord",
+          "name": "Armor Addon",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ArmorAddon.xml",
+          "line": 3,
+          "object_name": "ArmorAddon",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 90,
+              "group_name": "ArmorAddons"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ARMO",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4049,
+          "declaration": "wbRecord",
+          "name": "Armor",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Armor.xml",
+          "line": 3,
+          "object_name": "Armor",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 27,
+              "group_name": "Armors"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ARTO",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7446,
+          "declaration": "wbRecord",
+          "name": "Art Object",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ArtObject.xml",
+          "line": 3,
+          "object_name": "ArtObject",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 112,
+              "group_name": "ArtObjects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ASPC",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5325,
+          "declaration": "wbRecord",
+          "name": "Acoustic Space",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/AcousticSpace.xml",
+          "line": 3,
+          "object_name": "AcousticSpace",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 19,
+              "group_name": "AcousticSpaces"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ASTP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7430,
+          "declaration": "wbRecord",
+          "name": "Association Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/AssociationType.xml",
+          "line": 3,
+          "object_name": "AssociationType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 110,
+              "group_name": "AssociationTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "AVIF",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6106,
+          "declaration": "wbRecord",
+          "name": "Actor Value Information",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ActorValueInformation.xml",
+          "line": 3,
+          "object_name": "ActorValueInformation",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 83,
+              "group_name": "ActorValueInformation"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "BOOK",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4134,
+          "declaration": "wbRecord",
+          "name": "Book",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Book.xml",
+          "line": 3,
+          "object_name": "Book",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 28,
+              "group_name": "Books"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "BPTD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6015,
+          "declaration": "wbRecord",
+          "name": "Body Part Data",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/BodyPartData.xml",
+          "line": 3,
+          "object_name": "BodyPartData",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 81,
+              "group_name": "BodyParts"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CAMS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6149,
+          "declaration": "wbRecord",
+          "name": "Camera Shot",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/CameraShot.xml",
+          "line": 3,
+          "object_name": "CameraShot",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 84,
+              "group_name": "CameraShots"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CELL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4193,
+          "declaration": "wbRecord",
+          "name": "Cell",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Cell.xml",
+          "line": 21,
+          "object_name": "Cell",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CLAS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4303,
+          "declaration": "wbRecord",
+          "name": "Class",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Class.xml",
+          "line": 3,
+          "object_name": "Class",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 12,
+              "group_name": "Classes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CLDC",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10716,
+          "declaration": "wbRecord",
+          "name": "CLDC",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [],
+      "reconciliation": "xedit_only_candidate",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 0
+      },
+      "caveats": [
+        "Source asymmetry is provisional; absence from Mutagen major-record XML is not proof that the game never emits this signature.",
+        "xEdit labels it among unused records with empty GRUP in skyrim.esm; this is source commentary, not retail corpus validation."
+      ]
+    },
+    {
+      "signature": "CLFM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7639,
+          "declaration": "wbRecord",
+          "name": "Color",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ColorRecord.xml",
+          "line": 3,
+          "object_name": "ColorRecord",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 120,
+              "group_name": "Colors"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CLMT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4362,
+          "declaration": "wbRecord",
+          "name": "Climate",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Climate.xml",
+          "line": 3,
+          "object_name": "Climate",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 54,
+              "group_name": "Climates"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "COBJ",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8275,
+          "declaration": "wbRecord",
+          "name": "Constructible Object",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ConstructibleObject.xml",
+          "line": 3,
+          "object_name": "ConstructibleObject",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 48,
+              "group_name": "ConstructibleObjects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "COLL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7614,
+          "declaration": "wbRecord",
+          "name": "Collision Layer",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/CollisionLayer.xml",
+          "line": 3,
+          "object_name": "CollisionLayer",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 119,
+              "group_name": "CollisionLayers"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CONT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4411,
+          "declaration": "wbRecord",
+          "name": "Container",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Container.xml",
+          "line": 3,
+          "object_name": "Container",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 29,
+              "group_name": "Containers"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CPTH",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6199,
+          "declaration": "wbRecord",
+          "name": "Camera Path",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/CameraPath.xml",
+          "line": 3,
+          "object_name": "CameraPath",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 85,
+              "group_name": "CameraPaths"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "CSTY",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4512,
+          "declaration": "wbRecord",
+          "name": "Combat Style",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/CombatStyle.xml",
+          "line": 3,
+          "object_name": "CombatStyle",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 69,
+              "group_name": "CombatStyles"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DEBR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5724,
+          "declaration": "wbRecord",
+          "name": "Debris",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Debris.xml",
+          "line": 3,
+          "object_name": "Debris",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 76,
+              "group_name": "Debris"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DIAL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4677,
+          "declaration": "wbRecord",
+          "name": "Dialog Topic",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/DialogTopic.xml",
+          "line": 3,
+          "object_name": "DialogTopic",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 65,
+              "group_name": "DialogTopics"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DLBR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7114,
+          "declaration": "wbRecord",
+          "name": "Dialog Branch",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/DialogBranch.xml",
+          "line": 3,
+          "object_name": "DialogBranch",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 102,
+              "group_name": "DialogBranches"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DLVW",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7154,
+          "declaration": "wbRecord",
+          "name": "Dialog View",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/DialogView.xml",
+          "line": 3,
+          "object_name": "DialogView",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 104,
+              "group_name": "DialogViews"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DOBJ",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6964,
+          "declaration": "wbRecord",
+          "name": "Default Object Manager",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/DefaultObjectManager.xml",
+          "line": 3,
+          "object_name": "DefaultObjectManager",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 94,
+              "group_name": "DefaultObjectManagers"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DOOR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4829,
+          "declaration": "wbRecord",
+          "name": "Door",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Door.xml",
+          "line": 3,
+          "object_name": "Door",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 30,
+              "group_name": "Doors"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "DUAL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7543,
+          "declaration": "wbRecord",
+          "name": "Dual Cast Data",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/DualCastData.xml",
+          "line": 3,
+          "object_name": "DualCastData",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 116,
+              "group_name": "DualCastData"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ECZN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6286,
+          "declaration": "wbRecord",
+          "name": "Encounter Zone",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/EncounterZone.xml",
+          "line": 3,
+          "object_name": "EncounterZone",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 91,
+              "group_name": "EncounterZones"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "EFSH",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4856,
+          "declaration": "wbRecord",
+          "name": "Effect Shader",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/EffectShader.xml",
+          "line": 3,
+          "object_name": "EffectShader",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 74,
+              "group_name": "EffectShaders"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "ENCH",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5011,
+          "declaration": "wbRecord",
+          "name": "Enchantment",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ObjectEffect.xml",
+          "line": 3,
+          "object_name": "ObjectEffect",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 22,
+              "group_name": "ObjectEffects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "EQUP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7192,
+          "declaration": "wbRecord",
+          "name": "Equip Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/EquipType.xml",
+          "line": 3,
+          "object_name": "EquipType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 107,
+              "group_name": "EquipTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "EXPL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5688,
+          "declaration": "wbRecord",
+          "name": "Explosion",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Explosion.xml",
+          "line": 3,
+          "object_name": "Explosion",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 75,
+              "group_name": "Explosions"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "EYES",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5039,
+          "declaration": "wbRecord",
+          "name": "Eyes",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Eyes.xml",
+          "line": 3,
+          "object_name": "Eyes",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 16,
+              "group_name": "Eyes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "FACT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5072,
+          "declaration": "wbRecord",
+          "name": "Faction",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Faction.xml",
+          "line": 3,
+          "object_name": "Faction",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 13,
+              "group_name": "Factions"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "FLOR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10186,
+          "declaration": "wbRecord",
+          "name": "Flora",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Flora.xml",
+          "line": 3,
+          "object_name": "Flora",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 39,
+              "group_name": "Florae"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "FLST",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5899,
+          "declaration": "wbRecord",
+          "name": "FormID List",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/FormList.xml",
+          "line": 3,
+          "object_name": "FormList",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 79,
+              "group_name": "FormLists"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "FSTP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7022,
+          "declaration": "wbRecord",
+          "name": "Footstep",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Footstep.xml",
+          "line": 3,
+          "object_name": "Footstep",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 97,
+              "group_name": "Footsteps"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "FSTS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7028,
+          "declaration": "wbRecord",
+          "name": "Footstep Set",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/FootstepSet.xml",
+          "line": 3,
+          "object_name": "FootstepSet",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 98,
+              "group_name": "FootstepSets"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "FURN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5129,
+          "declaration": "wbRecord",
+          "name": "Furniture",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Furniture.xml",
+          "line": 3,
+          "object_name": "Furniture",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 40,
+              "group_name": "Furniture"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "GLOB",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5219,
+          "declaration": "wbRecord",
+          "name": "Global",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Global.xml",
+          "line": 3,
+          "object_name": "Global",
+          "abstract": true,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 11,
+              "group_name": "Globals"
+            }
+          ]
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Global.xml",
+          "line": 8,
+          "object_name": "GlobalInt",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Global.xml",
+          "line": 13,
+          "object_name": "GlobalShort",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Global.xml",
+          "line": 18,
+          "object_name": "GlobalFloat",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Global.xml",
+          "line": 23,
+          "object_name": "GlobalUnknown",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 5
+      },
+      "caveats": [
+        "Mutagen models several value-specialized CLR objects under the same RECORD signature; these are duplicate source declarations for one wire signature."
+      ]
+    },
+    {
+      "signature": "GMST",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5232,
+          "declaration": "wbRecord",
+          "name": "Game Setting",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/GameSetting.xml",
+          "line": 3,
+          "object_name": "GameSetting",
+          "abstract": true,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 6,
+              "group_name": "GameSettings"
+            }
+          ]
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/GameSetting.xml",
+          "line": 7,
+          "object_name": "GameSettingInt",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/GameSetting.xml",
+          "line": 12,
+          "object_name": "GameSettingFloat",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/GameSetting.xml",
+          "line": 17,
+          "object_name": "GameSettingString",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        },
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/GameSetting.xml",
+          "line": 22,
+          "object_name": "GameSettingBool",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 5
+      },
+      "caveats": [
+        "Mutagen models several value-specialized CLR objects under the same RECORD signature; these are duplicate source declarations for one wire signature."
+      ]
+    },
+    {
+      "signature": "GRAS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7667,
+          "declaration": "wbRecord",
+          "name": "Grass",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Grass.xml",
+          "line": 3,
+          "object_name": "Grass",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 37,
+              "group_name": "Grasses"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "HAIR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10719,
+          "declaration": "wbRecord",
+          "name": "HAIR",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Hair.xml",
+          "line": 3,
+          "object_name": "Hair",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 15,
+              "group_name": "Hairs"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": [
+        "xEdit labels it unused in Skyrim but contained in Skyrim.esm; retained as a declared signature."
+      ]
+    },
+    {
+      "signature": "HAZD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5434,
+          "declaration": "wbRecord",
+          "name": "Hazard",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Hazard.xml",
+          "line": 3,
+          "object_name": "Hazard",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 50,
+              "group_name": "Hazards"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "HDPT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5279,
+          "declaration": "wbRecord",
+          "name": "Head Part",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/HeadPart.xml",
+          "line": 3,
+          "object_name": "HeadPart",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 14,
+              "group_name": "HeadParts"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "IDLE",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7701,
+          "declaration": "wbRecord",
+          "name": "Idle Animation",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/IdleAnimation.xml",
+          "line": 3,
+          "object_name": "IdleAnimation",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 67,
+              "group_name": "IdleAnimations"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "IDLM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5363,
+          "declaration": "wbRecord",
+          "name": "Idle Marker",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/IdleMarker.xml",
+          "line": 3,
+          "object_name": "IdleMarker",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 47,
+              "group_name": "IdleMarkers"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "IMAD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5797,
+          "declaration": "wbRecord",
+          "name": "Image Space Adapter",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ImageSpaceAdapter.xml",
+          "line": 3,
+          "object_name": "ImageSpaceAdapter",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 78,
+              "group_name": "ImageSpaceAdapters"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "IMGS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5729,
+          "declaration": "wbRecord",
+          "name": "Image Space",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ImageSpace.xml",
+          "line": 3,
+          "object_name": "ImageSpace",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 77,
+              "group_name": "ImageSpaces"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "INFO",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7726,
+          "declaration": "wbRecord",
+          "name": "Dialog response",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/DialogResponses.xml",
+          "line": 3,
+          "object_name": "DialogResponses",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "INGR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7835,
+          "declaration": "wbRecord",
+          "name": "Ingredient",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Ingredient.xml",
+          "line": 3,
+          "object_name": "Ingredient",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 31,
+              "group_name": "Ingredients"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "IPCT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6238,
+          "declaration": "wbRecord",
+          "name": "Impact",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Impact.xml",
+          "line": 3,
+          "object_name": "Impact",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 88,
+              "group_name": "Impacts"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "IPDS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6278,
+          "declaration": "wbRecord",
+          "name": "Impact Data Set",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ImpactDataSet.xml",
+          "line": 3,
+          "object_name": "ImpactDataSet",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 89,
+              "group_name": "ImpactDataSets"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "KEYM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7868,
+          "declaration": "wbRecord",
+          "name": "Key",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Key.xml",
+          "line": 3,
+          "object_name": "Key",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 45,
+              "group_name": "Keys"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "KYWD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5243,
+          "declaration": "wbRecord",
+          "name": "Keyword",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Keyword.xml",
+          "line": 3,
+          "object_name": "Keyword",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 7,
+              "group_name": "Keywords"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LAND",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7888,
+          "declaration": "wbRecord",
+          "name": "Landscape",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Landscape.xml",
+          "line": 3,
+          "object_name": "Landscape",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LCRT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5248,
+          "declaration": "wbRecord",
+          "name": "Location Reference Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LocationReferenceType.xml",
+          "line": 3,
+          "object_name": "LocationReferenceType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 8,
+              "group_name": "LocationReferenceTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LCTN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6308,
+          "declaration": "wbRecord",
+          "name": "Location",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Location.xml",
+          "line": 3,
+          "object_name": "Location",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 92,
+              "group_name": "Locations"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LENS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10221,
+          "declaration": "wbRecord",
+          "name": "Lens Flare",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LensFlare.xml",
+          "line": 3,
+          "object_name": "LensFlare",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 123,
+              "group_name": "LensFlares"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": [
+        "xEdit declaration is inside if wbIsSkyrimSE; that predicate also includes Skyrim VR and Enderal SE.",
+        "Mutagen model registers this type without a per-release gate; SkyrimMod supports LE, SE, SE GOG, VR, Enderal LE, Enderal SE, and Enderal SE GOG."
+      ]
+    },
+    {
+      "signature": "LGTM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6978,
+          "declaration": "wbRecord",
+          "name": "Lighting Template",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LightingTemplate.xml",
+          "line": 3,
+          "object_name": "LightingTemplate",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 95,
+              "group_name": "LightingTemplates"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LIGH",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7912,
+          "declaration": "wbRecord",
+          "name": "Light",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Light.xml",
+          "line": 3,
+          "object_name": "Light",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 32,
+              "group_name": "Lights"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LSCR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7978,
+          "declaration": "wbRecord",
+          "name": "Load Screen",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LoadScreen.xml",
+          "line": 3,
+          "object_name": "LoadScreen",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 70,
+              "group_name": "LoadScreens"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LTEX",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8000,
+          "declaration": "wbRecord",
+          "name": "Landscape Texture",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LandscapeTexture.xml",
+          "line": 3,
+          "object_name": "LandscapeTexture",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 21,
+              "group_name": "LandscapeTextures"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LVLI",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8037,
+          "declaration": "wbRecord",
+          "name": "Leveled Item",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LeveledItem.xml",
+          "line": 3,
+          "object_name": "LeveledItem",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 52,
+              "group_name": "LeveledItems"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LVLN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8017,
+          "declaration": "wbRecord",
+          "name": "Leveled NPC",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LeveledNpc.xml",
+          "line": 3,
+          "object_name": "LeveledNpc",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 44,
+              "group_name": "LeveledNpcs"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "LVSP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8058,
+          "declaration": "wbRecord",
+          "name": "Leveled Spell",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/LeveledSpell.xml",
+          "line": 3,
+          "object_name": "LeveledSpell",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 71,
+              "group_name": "LeveledSpells"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MATO",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7457,
+          "declaration": "wbRecord",
+          "name": "Material Object",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MaterialObject.xml",
+          "line": 3,
+          "object_name": "MaterialObject",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 113,
+              "group_name": "MaterialObjects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MATT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6225,
+          "declaration": "wbRecord",
+          "name": "Material Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MaterialType.xml",
+          "line": 3,
+          "object_name": "MaterialType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 87,
+              "group_name": "MaterialTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MESG",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6535,
+          "declaration": "wbRecord",
+          "name": "Message",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Message.xml",
+          "line": 3,
+          "object_name": "Message",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 93,
+              "group_name": "Messages"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MGEF",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8076,
+          "declaration": "wbRecord",
+          "name": "Magic Effect",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MagicEffect.xml",
+          "line": 3,
+          "object_name": "MagicEffect",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 20,
+              "group_name": "MagicEffects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MISC",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8231,
+          "declaration": "wbRecord",
+          "name": "Misc. Item",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MiscItem.xml",
+          "line": 3,
+          "object_name": "MiscItem",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 33,
+              "group_name": "MiscItems"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MOVT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7480,
+          "declaration": "wbRecord",
+          "name": "Movement Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MovementType.xml",
+          "line": 3,
+          "object_name": "MovementType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 114,
+              "group_name": "MovementTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MSTT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5333,
+          "declaration": "wbRecord",
+          "name": "Moveable Static",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MoveableStatic.xml",
+          "line": 3,
+          "object_name": "MoveableStatic",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 36,
+              "group_name": "MoveableStatics"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MUSC",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7003,
+          "declaration": "wbRecord",
+          "name": "Music Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MusicType.xml",
+          "line": 3,
+          "object_name": "MusicType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 96,
+              "group_name": "MusicTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "MUST",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7132,
+          "declaration": "wbRecord",
+          "name": "Music Track",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/MusicTrack.xml",
+          "line": 3,
+          "object_name": "MusicTrack",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 103,
+              "group_name": "MusicTracks"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "NAVI",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5597,
+          "declaration": "wbRecord",
+          "name": "Navmesh Info Map",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/NavigationMeshInfoMap.xml",
+          "line": 3,
+          "object_name": "NavigationMeshInfoMap",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 58,
+              "group_name": "NavigationMeshInfoMaps"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "NAVM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5580,
+          "declaration": "wbRecord",
+          "name": "Navmesh",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/NavigationMesh.xml",
+          "line": 3,
+          "object_name": "NavigationMesh",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "NPC_",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8290,
+          "declaration": "wbRecord",
+          "name": "Non-Player Character",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Npc.xml",
+          "line": 3,
+          "object_name": "Npc",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 43,
+              "group_name": "Npcs"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "OTFT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7441,
+          "declaration": "wbRecord",
+          "name": "Outfit",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Outfit.xml",
+          "line": 3,
+          "object_name": "Outfit",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 111,
+              "group_name": "Outfits"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PACK",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8505,
+          "declaration": "wbRecord",
+          "name": "Package",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Package.xml",
+          "line": 3,
+          "object_name": "Package",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 68,
+              "group_name": "Packages"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PARW",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4184,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Arrow",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 37,
+          "object_name": "PlacedArrow",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PBAR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4185,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Barrier",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 57,
+          "object_name": "PlacedBarrier",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PBEA",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4186,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Beam",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 42,
+          "object_name": "PlacedBeam",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PCON",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4187,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Cone/Voice",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 52,
+          "object_name": "PlacedCone",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PERK",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5908,
+          "declaration": "wbRecord",
+          "name": "Perk",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Perk.xml",
+          "line": 3,
+          "object_name": "Perk",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 80,
+              "group_name": "Perks"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PFLA",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4188,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Flame",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 47,
+          "object_name": "PlacedFlame",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PGRE",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4189,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Projectile",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 62,
+          "object_name": "PlacedTrap",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PHZD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4190,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Hazard",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 67,
+          "object_name": "PlacedHazard",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PLYR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10147,
+          "declaration": "wbRecord",
+          "name": "Player Reference",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [],
+      "reconciliation": "xedit_only_candidate",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 0
+      },
+      "caveats": [
+        "Source asymmetry is provisional; absence from Mutagen major-record XML is not proof that the game never emits this signature.",
+        "xEdit labels it Player Reference; Mutagen has no corresponding Major Records XML declaration at this pin. Do not treat the asymmetry as a bug without game evidence."
+      ]
+    },
+    {
+      "signature": "PMIS",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4191,
+          "declaration": "ReferenceRecord",
+          "name": "Placed Missile",
+          "evidence_method": "active typed helper call; ReferenceRecord body delegates to wbRefRecord"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedTrap.xml",
+          "line": 72,
+          "object_name": "PlacedMissile",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PROJ",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5373,
+          "declaration": "wbRecord",
+          "name": "Projectile",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Projectile.xml",
+          "line": 3,
+          "object_name": "Projectile",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 49,
+              "group_name": "Projectiles"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "PWAT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10722,
+          "declaration": "wbRecord",
+          "name": "PWAT",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [],
+      "reconciliation": "xedit_only_candidate",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 0
+      },
+      "caveats": [
+        "Source asymmetry is provisional; absence from Mutagen major-record XML is not proof that the game never emits this signature.",
+        "xEdit labels it among unused records with empty GRUP in skyrim.esm; this is source commentary, not retail corpus validation."
+      ]
+    },
+    {
+      "signature": "QUST",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 8689,
+          "declaration": "wbRecord",
+          "name": "Quest",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Quest.xml",
+          "line": 3,
+          "object_name": "Quest",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 66,
+              "group_name": "Quests"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "RACE",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9298,
+          "declaration": "wbRecord",
+          "name": "Race",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Race.xml",
+          "line": 3,
+          "object_name": "Race",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 17,
+              "group_name": "Races"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "REFR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9501,
+          "declaration": "wbRefRecord",
+          "name": "Placed Object",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 3,
+          "object_name": "PlacedObject",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": []
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "REGN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9882,
+          "declaration": "wbRecord",
+          "name": "Region",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Region.xml",
+          "line": 3,
+          "object_name": "Region",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 57,
+              "group_name": "Regions"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "RELA",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7198,
+          "declaration": "wbRecord",
+          "name": "Relationship",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Relationship.xml",
+          "line": 3,
+          "object_name": "Relationship",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 108,
+              "group_name": "Relationships"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "REVB",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7649,
+          "declaration": "wbRecord",
+          "name": "Reverb Parameters",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ReverbParameters.xml",
+          "line": 3,
+          "object_name": "ReverbParameters",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 121,
+              "group_name": "ReverbParameters"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "RFCT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4398,
+          "declaration": "wbRecord",
+          "name": "Visual Effect",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/VisualEffect.xml",
+          "line": 3,
+          "object_name": "VisualEffect",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 56,
+              "group_name": "VisualEffects"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "RGDL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10247,
+          "declaration": "wbRecord",
+          "name": "Ragdoll",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [],
+      "reconciliation": "xedit_only_candidate",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 0
+      },
+      "caveats": [
+        "Source asymmetry is provisional; absence from Mutagen major-record XML is not proof that the game never emits this signature.",
+        "xEdit group-order comment says unused in Skyrim but contained in Skyrim.esm; this is source commentary, not current retail validation."
+      ]
+    },
+    {
+      "signature": "SCEN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7232,
+          "declaration": "wbRecord",
+          "name": "Scene",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Scene.xml",
+          "line": 3,
+          "object_name": "Scene",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 109,
+              "group_name": "Scenes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SCOL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10737,
+          "declaration": "wbRecord",
+          "name": "Static Collection",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [],
+      "reconciliation": "xedit_only_candidate",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 0
+      },
+      "caveats": [
+        "Source asymmetry is provisional; absence from Mutagen major-record XML is not proof that the game never emits this signature.",
+        "xEdit group-order comment says unused in Skyrim but contained in Skyrim.esm; this is source commentary, not current retail validation."
+      ]
+    },
+    {
+      "signature": "SCPT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10744,
+          "declaration": "wbRecord",
+          "name": "SCPT",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [],
+      "reconciliation": "xedit_only_candidate",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 0
+      },
+      "caveats": [
+        "Source asymmetry is provisional; absence from Mutagen major-record XML is not proof that the game never emits this signature.",
+        "xEdit labels it among unused records with empty GRUP in skyrim.esm; this is source commentary, not retail corpus validation."
+      ]
+    },
+    {
+      "signature": "SCRL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10025,
+          "declaration": "wbRecord",
+          "name": "Scroll",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Scroll.xml",
+          "line": 3,
+          "object_name": "Scroll",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 24,
+              "group_name": "Scrolls"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SHOU",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7173,
+          "declaration": "wbRecord",
+          "name": "Shout",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Shout.xml",
+          "line": 3,
+          "object_name": "Shout",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 106,
+              "group_name": "Shouts"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SLGM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5460,
+          "declaration": "wbRecord",
+          "name": "Soul Gem",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/SoulGem.xml",
+          "line": 3,
+          "object_name": "SoulGem",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 51,
+              "group_name": "SoulGems"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SMBN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7056,
+          "declaration": "wbRecord",
+          "name": "Story Manager Branch Node",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/StoryManagerNodes.xml",
+          "line": 10,
+          "object_name": "StoryManagerBranchNode",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 99,
+              "group_name": "StoryManagerBranchNodes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SMEN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7098,
+          "declaration": "wbRecord",
+          "name": "Story Manager Event Node",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/StoryManagerNodes.xml",
+          "line": 36,
+          "object_name": "StoryManagerEventNode",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 101,
+              "group_name": "StoryManagerEventNodes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SMQN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7071,
+          "declaration": "wbRecord",
+          "name": "Story Manager Quest Node",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/StoryManagerNodes.xml",
+          "line": 16,
+          "object_name": "StoryManagerQuestNode",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 100,
+              "group_name": "StoryManagerQuestNodes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SNCT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7560,
+          "declaration": "wbRecord",
+          "name": "Sound Category",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/SoundCategory.xml",
+          "line": 3,
+          "object_name": "SoundCategory",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 117,
+              "group_name": "SoundCategories"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SNDR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7503,
+          "declaration": "wbRecord",
+          "name": "Sound Descriptor",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/SoundDescriptor.xml",
+          "line": 3,
+          "object_name": "SoundDescriptor",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 115,
+              "group_name": "SoundDescriptors"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SOPM",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 7572,
+          "declaration": "wbRecord",
+          "name": "Sound Output Model",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/SoundOutputModel.xml",
+          "line": 3,
+          "object_name": "SoundOutputModel",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 118,
+              "group_name": "SoundOutputModels"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SOUN",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9972,
+          "declaration": "wbRecord",
+          "name": "Sound Marker",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/SoundMarker.xml",
+          "line": 3,
+          "object_name": "SoundMarker",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 18,
+              "group_name": "SoundMarkers"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SPEL",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9980,
+          "declaration": "wbRecord",
+          "name": "Spell",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Spell.xml",
+          "line": 3,
+          "object_name": "Spell",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 23,
+              "group_name": "Spells"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "SPGD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4375,
+          "declaration": "wbRecord",
+          "name": "Shader Particle Geometry",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/ShaderParticleGeometry.xml",
+          "line": 3,
+          "object_name": "ShaderParticleGeometry",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 55,
+              "group_name": "ShaderParticleGeometries"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "STAT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10074,
+          "declaration": "wbRecord",
+          "name": "Static",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Static.xml",
+          "line": 3,
+          "object_name": "Static",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 35,
+              "group_name": "Statics"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "TACT",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 3243,
+          "declaration": "wbRecord",
+          "name": "Talking Activator",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/TalkingActivator.xml",
+          "line": 3,
+          "object_name": "TalkingActivator",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 26,
+              "group_name": "TalkingActivators"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "TES4",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10116,
+          "declaration": "wbRecord",
+          "name": "Main File Header",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimModHeader.xml",
+          "line": 3,
+          "object_name": "SkyrimModHeader",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "separate mod-header XML root Object declares recordType TES4; excluded from Major Records XML scrape"
+        }
+      ],
+      "reconciliation": "header_only_excluded_from_plugin_major_record_set",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": [
+        "File header signature, not a Skyrim plugin major RECORD candidate for catalog count."
+      ]
+    },
+    {
+      "signature": "TREE",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10152,
+          "declaration": "wbRecord",
+          "name": "Tree",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Tree.xml",
+          "line": 3,
+          "object_name": "Tree",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 38,
+              "group_name": "Trees"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "TXST",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 5258,
+          "declaration": "wbRecord",
+          "name": "Texture Set",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/TextureSet.xml",
+          "line": 3,
+          "object_name": "TextureSet",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 10,
+              "group_name": "TextureSets"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "VOLI",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10207,
+          "declaration": "wbRecord",
+          "name": "Volumetric Lighting",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/VolumetricLighting.xml",
+          "line": 3,
+          "object_name": "VolumetricLighting",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 122,
+              "group_name": "VolumetricLightings"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": [
+        "xEdit declaration is inside if wbIsSkyrimSE; that predicate also includes Skyrim VR and Enderal SE.",
+        "Mutagen model registers this type without a per-release gate; SkyrimMod supports LE, SE, SE GOG, VR, Enderal LE, Enderal SE, and Enderal SE GOG."
+      ]
+    },
+    {
+      "signature": "VTYP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 6217,
+          "declaration": "wbRecord",
+          "name": "Voice Type",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/VoiceType.xml",
+          "line": 3,
+          "object_name": "VoiceType",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 86,
+              "group_name": "VoiceTypes"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "WATR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10304,
+          "declaration": "wbRecord",
+          "name": "Water",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Water.xml",
+          "line": 3,
+          "object_name": "Water",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 73,
+              "group_name": "Waters"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "WEAP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10431,
+          "declaration": "wbRecord",
+          "name": "Weapon",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Weapon.xml",
+          "line": 3,
+          "object_name": "Weapon",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 41,
+              "group_name": "Weapons"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "WOOP",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10639,
+          "declaration": "wbRecord",
+          "name": "Word of Power",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/WordOfPower.xml",
+          "line": 3,
+          "object_name": "WordOfPower",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 105,
+              "group_name": "WordsOfPower"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "WRLD",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10645,
+          "declaration": "wbRecord",
+          "name": "Worldspace",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Worldspace.xml",
+          "line": 3,
+          "object_name": "Worldspace",
+          "abstract": false,
+          "major_flag": true,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 64,
+              "group_name": "Worldspaces"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    },
+    {
+      "signature": "WTHR",
+      "xedit_declarations": [
+        {
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10555,
+          "declaration": "wbRecord",
+          "name": "Weather",
+          "evidence_method": "active Pascal call signature argument; comments stripped, scoped to DefineTES5"
+        }
+      ],
+      "mutagen_declarations": [
+        {
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Weather.xml",
+          "line": 3,
+          "object_name": "Weather",
+          "abstract": false,
+          "major_flag": false,
+          "evidence_method": "direct child Object in Major Records XML with objType=Record and 4-character recordType",
+          "model_group_registration": [
+            {
+              "path": "Mutagen.Bethesda.Skyrim/Records/SkyrimMod.xml",
+              "line": 53,
+              "group_name": "Weathers"
+            }
+          ]
+        }
+      ],
+      "reconciliation": "declared_by_both_sources",
+      "duplicate_declaration_counts": {
+        "xedit": 1,
+        "mutagen": 1
+      },
+      "caveats": []
+    }
+  ],
+  "interpretive_caveats": [
+    "xEdit wbIsSkyrimSE includes gmTES5VR and gmEnderalSE as well as gmSSE; its name does not make its gated declarations exclusive to retail Special Edition.",
+    "xEdit IsSSE(...) is also used to choose version-specific fields inside records. Those field branches must not be counted as separate record types.",
+    "Mutagen SkyrimMod advertises a shared schema for LE, SE, SE GOG, VR, and Enderal variants; model inclusion alone does not establish that a record exists or is valid in every release.",
+    "xEdit save parsing has a separate DefineTES5Saves entrypoint and save-specific routines; save chapters are outside this plugin RECORD inventory even though the save initializer reuses DefineTES5.",
+    "xEdit source comments identify some signatures as unused or empty-group in skyrim.esm; this is a tool-source clue, not a check against a pinned retail plugin corpus.",
+    "The complete official newest-SE retail Data/Creation manifest is not pinned in this artifact. There was no plugin read, binary/runtime validation, build, test, xEdit execution, Mutagen execution, or upstream script execution.",
+    "The Mutagen group join records only direct SkyrimMod Group entries. Placed references and cells also appear through nested cell/list-group model declarations; an empty direct join is not an omission signal.",
+    "The parent reports an executable pin for Skyrim SE/AE 1.7.104.0 (Steam build 24914197, exe SHA256 in validation_scope_and_provenance); this source inventory does not establish that the complete Data/Creation manifest is pinned or that the build is newest.",
+    "The parent reports a separate importer-native 1.6.1170 reference and an existing Mutagen 0.54.4 / .NET 9.0.318 oracle with placed-dump F0005 evidence. Those are distinct evidence lanes and were not inspected or rerun here."
+  ],
+  "validation_scope_and_provenance": {
+    "this_kickoff_performed": false,
+    "this_kickoff_performed_note": "This artifact records source declarations only. It did not read a Skyrim.esm, execute the oracle, validate a package, run xEdit/Mutagen, or confirm a retail catalog.",
+    "source_reference_pins": {
+      "xedit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "mutagen": "4f533562ee0c70347d47c1979d5464d42b06ee6b"
+    },
+    "separate_executable_pin_reported_by_parent": {
+      "status": "parent-reported repository lock evidence; not inspected in this source inventory run",
+      "evidence_scope": "local-only; paths are relative to the separate mudcrab-reverse-engineering checkout",
+      "lock_file": "mudcrab-reverse-engineering/tools.lock.toml",
+      "game": "Skyrim SE/AE 1.7.104.0",
+      "steam_build": "24914197",
+      "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+      "scope_limit": "An executable/build pin does not pin the complete Data/Creation content corpus or establish that this is the newest released corpus."
+    },
+    "separate_importer_and_oracle_context_reported_by_parent": {
+      "static_importer_native_evidence": "1.6.1170; source/validation meaning is importer-native only, not a current retail executable pin.",
+      "evidence_scope": "local-only; paths are relative to the separate mudcrab-reverse-engineering checkout",
+      "oracle_source": "mudcrab-reverse-engineering/oracles/records/Program.cs",
+      "oracle_dependencies": {
+        "Mutagen.Bethesda.Skyrim": "0.54.4",
+        ".NET SDK": "9.0.318"
+      },
+      "reported_evidence": "Placed dump only; F0005 reports seven count categories matched on the same Skyrim.esm.",
+      "provenance_note": "These details remain parent-reported; this source inventory run did not independently inspect or rerun them."
+    },
+    "remaining_p0_prerequisite": "Full Data/Creation manifest is not pinned (RE T18 pending). Pin and identify the official data/build corpus before treating this candidate inventory as an accepted newest-SE record catalog."
+  }
+}

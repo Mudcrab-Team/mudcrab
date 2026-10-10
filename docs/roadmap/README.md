@@ -32,3 +32,8 @@ timeline
 
 5. **[`05-multiplatform-and-networking.md`](05-multiplatform-and-networking.md)**  
    *Hardware ray-tracing, DLSS 3/FSR 3 frame generation, WebSocket native co-op multiplayer, Android ARM64 port, and OpenXR VR.*
+
+## Plugin ingestion initiative
+
+- **[Dynamic Schema Initiative](dynamic-schema-initiative.md)** — Newest Skyrim SE first: 100% record interpretation, lossless archives and current-game compatibility; earlier SE/VR, LE and other games follow accepted milestones.
+- **[Dynamic Schema issue proposals](dynamic-schema-issue-proposals.md)** — Local tracking/first-wave drafts, live overlap checks and work that can start while native decompilation runs.
