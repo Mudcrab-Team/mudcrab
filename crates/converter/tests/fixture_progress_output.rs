@@ -3,8 +3,12 @@
 
 mod common;
 
-use converter::progress::ProgressRenderer;
-use std::{fs, process::Command, time::Instant};
+use converter::progress::{ProgressRenderer, ProgressStage};
+use std::{
+    fs,
+    process::Command,
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc;
 
 /// Both successful and incomplete CLI runs print advisories without counting them as failures.
@@ -67,6 +71,85 @@ fn fixture_data(directory: &std::path::Path) -> std::path::PathBuf {
     )
     .unwrap();
     data
+}
+
+/// Actual cold and warm batches retain world counts while the default terminal shows chunks.
+#[tokio::test]
+async fn terrain_lod_batches_are_visible_in_the_default_terminal() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = fixture_data(directory.path());
+    let output = directory.path().join("modern");
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.cpu_jobs = 2;
+
+    for reused in [false, true] {
+        let (tx, mut rx) = mpsc::channel(64);
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+        let report = converter::AssetPipeline::run_async(config.clone(), tx)
+            .await
+            .unwrap();
+        let events = collector.await.unwrap();
+        assert!(report.complete);
+        assert_eq!(report.lod_chunks, 6);
+        assert_eq!(report.lod_cache_hits, if reused { 6 } else { 0 });
+
+        let lod: Vec<_> = events
+            .iter()
+            .filter(|event| event.stage == ProgressStage::LodChunks && !event.notice)
+            .collect();
+        let batches: Vec<_> = lod
+            .iter()
+            .filter(|event| event.message.starts_with("Terrain LOD GeneratedWorld:"))
+            .collect();
+        assert_eq!(batches.len(), 3);
+        let mut renderer = ProgressRenderer::new(true, false);
+        for (index, event) in batches.iter().enumerate() {
+            let chunks = (index + 1) * 2;
+            let message = format!(
+                "Terrain LOD GeneratedWorld: {chunks}/6 chunks ({} reused)",
+                if reused { chunks } else { 0 }
+            );
+            assert_eq!(event.message, message);
+            assert_eq!((event.completed, event.total), (0, 1));
+            assert_eq!(event.stage_fraction, None);
+            assert_eq!(event.progress_fraction(), 0.0);
+            let line = renderer
+                .update(event, Duration::from_secs(index as u64))
+                .unwrap();
+            assert!(line.starts_with('\r') && !line.ends_with('\n'));
+            assert!(line.contains(&message), "{line:?}");
+        }
+        let completed = lod.last().unwrap();
+        assert_eq!((completed.completed, completed.total), (1, 1));
+        assert_eq!(completed.progress_fraction(), 1.0);
+        assert_eq!(completed.overall(), batches[0].overall());
+        let totals = format!(
+            "Terrain LOD GeneratedWorld: {} reused, {} rebuilt, 6 total chunks",
+            if reused { 6 } else { 0 },
+            if reused { 0 } else { 6 }
+        );
+        let notices: Vec<_> = events
+            .iter()
+            .filter(|event| event.notice && event.message == totals)
+            .collect();
+        assert_eq!(notices.len(), 1);
+        let notice = renderer
+            .update(notices[0], Duration::from_secs(3))
+            .unwrap();
+        assert!(notice.starts_with('\n') && notice.ends_with('\n'));
+        assert!(notice.contains(&totals), "{notice:?}");
+        let final_line = renderer
+            .update(completed, Duration::from_secs(4))
+            .unwrap();
+        assert!(final_line.contains("100%"), "{final_line:?}");
+        assert!(!final_line.contains("/6 chunks"), "{final_line:?}");
+    }
 }
 
 #[tokio::test]
