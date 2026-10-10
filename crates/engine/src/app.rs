@@ -755,12 +755,14 @@ fn cross_streaming_fixture_interior(
         if state.frames < STREAMING_FIXTURE_INTERIOR_FRAME {
             return;
         }
-        streaming.request_cell(
+        if !streaming.request_cell(
             &database,
             CellKey::Interior(STREAMING_FIXTURE_INTERIOR_CELL_ID),
             &mut metrics,
             &mut profiler,
-        );
+        ) {
+            return;
+        }
         state.interior.requested_frame = Some(state.frames);
         state.interior_center = center;
         profiler.event("streaming-fixture", "interior_requested", None);

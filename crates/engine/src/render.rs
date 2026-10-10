@@ -430,6 +430,27 @@ pub struct TerrainImages {
 }
 
 impl TerrainExtension {
+    /// The exact image resources retained by this quadrant's material.
+    pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
+        [
+            self.layer_0.as_ref(),
+            self.layer_1.as_ref(),
+            self.layer_2.as_ref(),
+            self.layer_3.as_ref(),
+            self.layer_4.as_ref(),
+            self.layer_5.as_ref(),
+            self.normal_0.as_ref(),
+            self.normal_1.as_ref(),
+            self.normal_2.as_ref(),
+            self.normal_3.as_ref(),
+            self.normal_4.as_ref(),
+            self.normal_5.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(Handle::id)
+    }
+
     /// Builds the material without looking up zero texture IDs, retaining those layers' slots
     /// and weights. Nonzero texture IDs still require a converted diffuse image.
     pub fn from_quadrant(
@@ -630,6 +651,12 @@ impl Default for WaterExtension {
 }
 
 impl WaterExtension {
+    /// Per-cell dependencies. The shared reflection target belongs to the
+    /// renderer baseline and must not keep a retired water cell reserved.
+    pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
+        self.flow_normal.iter().map(Handle::id)
+    }
+
     /// Builds a water material with Skyrim's DefaultWater fresnel and reflectivity. Callers that
     /// know a water's own factors (from [`crate::world::database::AssetCatalog::water_colors`])
     /// should use [`Self::with_reflection_and_factors`] instead.
@@ -860,6 +887,31 @@ fn reflected_camera_transform(main: &GlobalTransform, water_y: f32) -> Transform
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_reservation_observes_all_six_diffuse_and_normal_layers() {
+        let mut images = Assets::<Image>::default();
+        let handles: [Handle<Image>; 12] = std::array::from_fn(|_| images.add(Image::default()));
+        let extension = TerrainExtension {
+            layer_0: Some(handles[0].clone()),
+            layer_1: Some(handles[1].clone()),
+            layer_2: Some(handles[2].clone()),
+            layer_3: Some(handles[3].clone()),
+            layer_4: Some(handles[4].clone()),
+            layer_5: Some(handles[5].clone()),
+            normal_0: Some(handles[6].clone()),
+            normal_1: Some(handles[7].clone()),
+            normal_2: Some(handles[8].clone()),
+            normal_3: Some(handles[9].clone()),
+            normal_4: Some(handles[10].clone()),
+            normal_5: Some(handles[11].clone()),
+            ..default()
+        };
+        assert_eq!(
+            extension.image_ids().collect::<Vec<_>>(),
+            handles.iter().map(Handle::id).collect::<Vec<_>>()
+        );
+    }
     use crate::world::components::{StreamingCamera, WaterSurface};
 
     const MAIN_CAMERA_FAR: f32 = 1000.0;

@@ -85,6 +85,19 @@ pub struct EngineConfig {
     /// Outstanding unique Scene(0) jobs, including recursive CPU dependencies.
     /// Zero retains unlimited admission; this count does not bound memory bytes.
     pub max_scene_loads: usize,
+    /// Opt-in startup, walking and recovery budgets. Also enables spatial priority.
+    pub adaptive_streaming: bool,
+    /// Downstream queue high watermark; zero disables it outside adaptive mode.
+    pub max_streaming_backlog: usize,
+    /// Estimated streaming allocation allowance. Zero disables memory admission
+    /// outside adaptive mode, which otherwise uses a finite automatic allowance.
+    pub streaming_memory_mib: usize,
+    /// Override for converter-generated streaming cost metadata.
+    pub streaming_costs: Option<PathBuf>,
+    /// Free system memory reserved for the rest of the process and other apps.
+    pub streaming_headroom_mib: usize,
+    /// Controller frame target. Benchmark acceptance keeps its separate thresholds.
+    pub streaming_frame_ms: f64,
     /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
     /// threads, at least one and at most four. A nonzero count must be at most
     /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
@@ -171,6 +184,12 @@ impl Default for EngineConfig {
             max_model_spawns_per_frame: 32,
             prioritize_streaming: false,
             max_scene_loads: 0,
+            adaptive_streaming: false,
+            max_streaming_backlog: 0,
+            streaming_memory_mib: 0,
+            streaming_costs: None,
+            streaming_headroom_mib: 2_048,
+            streaming_frame_ms: 16.67,
             // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
             io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
@@ -249,6 +268,13 @@ Streaming:
   --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
   --prioritize-streaming               prioritize nearby collision and view-facing bounds
   --max-scene-loads <count>             outstanding unique scene jobs; 0 is unlimited (default: 0)
+  --adaptive-streaming                 adapt startup/walking budgets; enables spatial priority
+  --max-streaming-backlog <count>      downstream queue limit; 0 disables it, adaptive uses 256
+  --streaming-memory-mib <mib>         estimated allowance; 0 disables it unless adaptive
+                                     adaptive: half detected RAM, at most 16 GiB (fallback: 8 GiB)
+  --streaming-costs <file>             override streaming cost metadata (default: asset pack metadata)
+  --streaming-headroom-mib <mib>       system memory kept free (default: 2048)
+  --streaming-frame-ms <ms>            controller frame target (default: 16.67)
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
@@ -409,6 +435,42 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    pub fn streaming_controls_enabled(&self) -> bool {
+        self.adaptive_streaming || self.max_streaming_backlog != 0 || self.streaming_memory_mib != 0
+    }
+
+    pub fn streaming_backlog_limit(&self) -> usize {
+        if self.max_streaming_backlog == 0 && self.adaptive_streaming {
+            256
+        } else {
+            self.max_streaming_backlog
+        }
+    }
+
+    /// A limit on estimated streaming allocations, not process RSS. Without an
+    /// explicit adaptive limit this returns the 8 GiB fallback; the runtime
+    /// selects half detected RAM within the 16 GiB and system-headroom limits.
+    /// Available system memory is checked separately before reservations.
+    pub fn memory_budget_bytes(&self) -> Option<u64> {
+        let mib = if self.streaming_memory_mib != 0 {
+            self.streaming_memory_mib
+        } else if self.adaptive_streaming {
+            8_192
+        } else {
+            return None;
+        };
+        Some(
+            mib.checked_mul(1024 * 1024)
+                .expect("streaming memory size must fit bytes") as u64,
+        )
+    }
+
+    pub fn streaming_headroom_bytes(&self) -> u64 {
+        self.streaming_headroom_mib
+            .checked_mul(1024 * 1024)
+            .expect("streaming headroom size must fit bytes") as u64
+    }
+
     /// The per-frame render-asset upload budget in bytes, or `None` when
     /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
     pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
@@ -591,6 +653,46 @@ impl EngineConfig {
                     config.max_scene_loads = take_value(
                         "--max-scene-loads",
                         "a scene job count, 0 for unlimited",
+                        args.next(),
+                    )?;
+                }
+                "--adaptive-streaming" => {
+                    config.adaptive_streaming = true;
+                    config.prioritize_streaming = true;
+                }
+                "--max-streaming-backlog" => {
+                    config.max_streaming_backlog = take_value(
+                        "--max-streaming-backlog",
+                        "a downstream queue count, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-memory-mib" => {
+                    config.streaming_memory_mib = take_mib(
+                        "--streaming-memory-mib",
+                        "a MiB size that fits bytes, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-costs" => {
+                    config.streaming_costs = Some(take_value(
+                        "--streaming-costs",
+                        "a file path for streaming cost metadata",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-headroom-mib" => {
+                    config.streaming_headroom_mib = take_mib(
+                        "--streaming-headroom-mib",
+                        "a MiB size that fits bytes, 0 to reserve no headroom",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-frame-ms" => {
+                    config.streaming_frame_ms = take_number(
+                        "--streaming-frame-ms",
+                        "a positive number of milliseconds",
+                        Bound::Positive,
                         args.next(),
                     )?;
                 }
@@ -947,6 +1049,18 @@ fn take_value<T: std::str::FromStr>(
         .map_err(|_| ConfigError::invalid_value(option, Some(value), expected))
 }
 
+fn take_mib(
+    option: &'static str,
+    expected: &'static str,
+    value: Option<String>,
+) -> Result<usize, ConfigError> {
+    let raw = take_raw(option, expected, value)?;
+    raw.parse::<usize>()
+        .ok()
+        .filter(|mib| mib.checked_mul(1024 * 1024).is_some())
+        .ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
+}
+
 /// The range a numeric option's value must fall in. Neither admits NaN or an infinity.
 #[derive(Debug, Clone, Copy)]
 enum Bound {
@@ -1212,6 +1326,162 @@ mod tests {
             parse_error(&["--max-scene-loads", "-1"]),
             ConfigError::InvalidValue { .. }
         ));
+    }
+
+    #[test]
+    fn pipeline_controls_default_off_and_preserve_fixed_limits() {
+        let config = run_config(&[]);
+        assert!(!config.adaptive_streaming);
+        assert!(!config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 0);
+        assert_eq!(config.memory_budget_bytes(), None);
+        assert_eq!(config.streaming_headroom_bytes(), 2_048 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 16.67);
+        assert!(config.streaming_costs.is_none());
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+        assert_eq!(config.max_upload_bytes_per_frame(), Some(16 * 1024 * 1024));
+    }
+
+    #[test]
+    fn adaptive_mode_enables_priority_and_finite_automatic_pipeline_limits() {
+        let config = run_config(&["--adaptive-streaming"]);
+        assert!(config.adaptive_streaming);
+        assert!(config.prioritize_streaming);
+        assert!(config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        // Legacy fields keep their meaning; the runtime translates unlimited
+        // values into finite controller ceilings only for adaptive mode.
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+    }
+
+    #[test]
+    fn explicit_pipeline_limits_override_adaptive_fallbacks() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--max-streaming-backlog",
+            "48",
+            "--streaming-memory-mib",
+            "4096",
+            "--streaming-headroom-mib",
+            "1024",
+            "--streaming-frame-ms",
+            "33.33",
+            "--streaming-costs",
+            "metadata/custom-costs.json",
+        ]);
+        assert_eq!(config.streaming_backlog_limit(), 48);
+        assert_eq!(config.memory_budget_bytes(), Some(4_096 * 1024 * 1024));
+        assert_eq!(config.streaming_headroom_bytes(), 1_024 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(
+            config.streaming_costs,
+            Some(PathBuf::from("metadata/custom-costs.json"))
+        );
+    }
+
+    #[test]
+    fn backlog_and_memory_admission_can_be_enabled_without_adaptation() {
+        for args in [
+            vec!["--max-streaming-backlog", "64"],
+            vec!["--streaming-memory-mib", "1024"],
+        ] {
+            let config = run_config(&args);
+            assert!(config.streaming_controls_enabled());
+            assert!(!config.adaptive_streaming);
+            assert!(!config.prioritize_streaming);
+        }
+        for args in [
+            vec!["--max-streaming-backlog", "0"],
+            vec!["--streaming-memory-mib", "0"],
+            vec!["--streaming-costs", "costs.json"],
+            vec!["--streaming-frame-ms", "8.33"],
+            vec!["--streaming-headroom-mib", "0"],
+        ] {
+            assert!(!run_config(&args).streaming_controls_enabled());
+        }
+    }
+
+    #[test]
+    fn zero_pipeline_limits_select_automatic_limits_only_in_adaptive_mode() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--streaming-memory-mib",
+            "0",
+            "--max-streaming-backlog",
+            "0",
+            "--streaming-headroom-mib",
+            "0",
+        ]);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.streaming_headroom_bytes(), 0);
+    }
+
+    #[test]
+    fn pipeline_mib_values_must_fit_bytes_and_negative_values_are_rejected() {
+        let overflow = (usize::MAX / (1024 * 1024) + 1).to_string();
+        let maximum = (usize::MAX / (1024 * 1024)).to_string();
+        for option in ["--streaming-memory-mib", "--streaming-headroom-mib"] {
+            for invalid in ["-1", "NaN", "inf", overflow.as_str()] {
+                assert!(matches!(
+                    parse_error(&[option, invalid]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+            let config = run_config(&[option, &maximum]);
+            if option == "--streaming-memory-mib" {
+                assert_eq!(
+                    config.memory_budget_bytes(),
+                    Some((usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64)
+                );
+            } else {
+                assert_eq!(
+                    config.streaming_headroom_bytes(),
+                    (usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64
+                );
+            }
+        }
+        assert!(matches!(
+            parse_error(&["--max-streaming-backlog", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_frame_target_is_positive_finite_and_independent_of_acceptance() {
+        for value in ["0", "-1", "NaN", "inf", "-inf", "1e999"] {
+            assert!(matches!(
+                parse_error(&["--streaming-frame-ms", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        let config = run_config(&["--streaming-frame-ms", "33.33"]);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(config.accept_p95_ms, 16.67);
+        assert_eq!(config.accept_min_fps, 60.0);
+    }
+
+    #[test]
+    fn pipeline_options_require_values_without_swallowing_following_flags() {
+        for option in [
+            "--max-streaming-backlog",
+            "--streaming-memory-mib",
+            "--streaming-costs",
+            "--streaming-headroom-mib",
+            "--streaming-frame-ms",
+        ] {
+            assert!(matches!(
+                parse_error(&[option]),
+                ConfigError::InvalidValue { value: None, .. }
+            ));
+            assert!(matches!(
+                parse_error(&[option, "--headless"]),
+                ConfigError::InvalidValue { value: Some(value), .. } if value == "--headless"
+            ));
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub mod sky;
 pub mod skyrim_ini;
 pub mod streaming;
 mod streaming_gpu_metrics;
+mod streaming_preparation;
 mod streaming_trace;
 pub mod terrain_upload;
 pub mod visibility_optimization;

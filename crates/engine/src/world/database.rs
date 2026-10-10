@@ -364,6 +364,26 @@ fn is_safe_relative_asset_path(path: &str) -> bool {
 }
 
 impl WorldDatabase {
+    #[cfg(test)]
+    pub(crate) fn channel_fixture(
+        capacity: usize,
+    ) -> (Self, Receiver<DatabaseRequest>, Sender<DatabaseResponse>) {
+        let (requests, request_rx) = bounded(capacity);
+        let (response_tx, responses) = unbounded();
+        let (_lod_tx, lod_responses) = unbounded();
+        (
+            Self {
+                requests,
+                responses,
+                lod_responses,
+                worker: None,
+                worker_stopped: Arc::new(AtomicBool::new(true)),
+            },
+            request_rx,
+            response_tx,
+        )
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         validate(path)?;
         let path = path.to_owned();
@@ -395,8 +415,18 @@ impl WorldDatabase {
             .wrap_err("world database worker stopped")
     }
 
+    /// Ordinary streaming intake must never wait for the worker on the main thread.
+    pub(crate) fn try_request(&self, request: DatabaseRequest) -> Result<()> {
+        enqueue_request(&self.requests, request)
+    }
+
     pub fn try_response(&self) -> Option<DatabaseResponse> {
         self.responses.try_recv().ok()
+    }
+
+    /// Includes returned payloads that the main world has not polled yet.
+    pub(crate) fn pending_cell_responses(&self) -> usize {
+        self.responses.len()
     }
 
     /// Queue a world-space LOD chunk range query on the existing database worker.
@@ -420,6 +450,10 @@ fn enqueue_lod_query(
         query,
         queued_at: Instant::now(),
     };
+    enqueue_request(requests, request)
+}
+
+fn enqueue_request(requests: &Sender<DatabaseRequest>, request: DatabaseRequest) -> Result<()> {
     match requests.try_send(request) {
         Ok(()) => Ok(()),
         Err(TrySendError::Full(_)) => Err(color_eyre::eyre::eyre!(
@@ -433,8 +467,8 @@ fn enqueue_lod_query(
 
 impl Drop for WorldDatabase {
     fn drop(&mut self) {
-        let _ = self.requests.send(DatabaseRequest::Shutdown);
         if let Some(worker) = self.worker.take() {
+            let _ = self.requests.send(DatabaseRequest::Shutdown);
             let _ = worker.join();
         }
         debug_assert!(self.worker_stopped.load(Ordering::Acquire));
@@ -1619,6 +1653,20 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("queue is full"), "{error}");
+    }
+
+    #[test]
+    fn full_database_queue_rejects_cell_intake_without_blocking() {
+        let (database, requests, _responses) = WorldDatabase::channel_fixture(1);
+        let request = || DatabaseRequest::Load {
+            generation: 1,
+            key: CellKey::Interior(1),
+            queued_at: Instant::now(),
+        };
+        database.try_request(request()).unwrap();
+        let error = database.try_request(request()).unwrap_err().to_string();
+        assert!(error.contains("queue is full"), "{error}");
+        assert_eq!(requests.len(), 1);
     }
 
     #[test]
