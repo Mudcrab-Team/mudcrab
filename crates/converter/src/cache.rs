@@ -169,9 +169,28 @@ pub struct IngestedFile {
     pub hash: String,
 }
 
+/// Which archive entries an ingestion cache proves it contains.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestionSelection {
+    /// Older manifests extracted every archive entry.
+    #[default]
+    All,
+    /// Runtime mesh/texture/script inputs, LOD settings, and English string banks.
+    RuntimeEnglishV1,
+}
+
+impl IngestionSelection {
+    pub fn can_satisfy(self, requested: Self) -> bool {
+        self == Self::All || self == requested
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestionCacheEntry {
     pub source_hash: String,
+    #[serde(default)]
+    pub selection: IngestionSelection,
     pub files: Vec<IngestedFile>,
 }
 
@@ -343,17 +362,17 @@ fn link_or_copy_with(
     to: &Path,
     link: fn(&Path, &Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    if to.exists() {
-        // Removing `to` would delete `from` itself when `to` is the same path as `from`, so that
-        // state is success rather than a reason to touch anything.
-        let names_one_file = match fs::canonicalize(from) {
-            Ok(from) => fs::canonicalize(to).is_ok_and(|to| to == from),
-            Err(_) => false,
-        };
-        if names_one_file {
-            return Ok(());
+    match fs::symlink_metadata(to) {
+        Ok(_) => {
+            // Removing the source itself would lose its bytes; a dangling destination symlink
+            // must still be removed before the copy fallback can follow it.
+            if same_path(from, to) {
+                return Ok(());
+            }
+            fs::remove_file(to)?;
         }
-        fs::remove_file(to)?;
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     link(from, to).or_else(|_| fs::copy(from, to).map(|_| ()))
 }
@@ -373,41 +392,63 @@ pub(crate) fn link_or_copy_spilling(blob: &Path, to: &Path) -> std::io::Result<(
     link_or_copy_spilling_with(blob, to, |from, to| fs::hard_link(from, to))
 }
 
-fn link_or_copy_spilling_with(
+/// Shares a blob while allowing its owner to verify and flush separate physical copies.
+/// `spill` is true for a reusable spill name and false for a destination-only fallback.
+pub(crate) fn link_or_copy_spilling_with_copy_and_link(
     blob: &Path,
     to: &Path,
     link: fn(&Path, &Path) -> std::io::Result<()>,
+    mut copy: impl FnMut(&Path, &Path, bool) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    if same_path(blob, to) {
-        return Ok(());
-    }
-    if to.exists() {
-        fs::remove_file(to)?;
+    match fs::symlink_metadata(to) {
+        Ok(_) => {
+            if same_path(blob, to) {
+                return Ok(());
+            }
+            fs::remove_file(to)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     match link(blob, to) {
         Ok(()) => return Ok(()),
-        Err(error) if !is_too_many_links(&error) => return fs::copy(blob, to).map(|_| ()),
+        Err(error) if !is_too_many_links(&error) => return copy(blob, to, false),
         Err(_) => {}
     }
     for index in 1..=MAX_SPILLS {
         let mut name = blob.as_os_str().to_owned();
         name.push(format!(".{index}"));
         let spill = std::path::PathBuf::from(name);
-        if !spill.is_file() {
-            // Written under a temporary name and renamed, so a reader never sees half a spill.
-            let mut partial = spill.as_os_str().to_owned();
-            partial.push(format!(".partial-{}", std::process::id()));
-            let partial = std::path::PathBuf::from(partial);
-            fs::copy(blob, &partial)?;
-            fs::rename(&partial, &spill)?;
-        }
+        copy(blob, &spill, true)?;
         match link(&spill, to) {
             Ok(()) => return Ok(()),
             Err(error) if is_too_many_links(&error) => continue,
             Err(_) => break,
         }
     }
-    fs::copy(blob, to).map(|_| ())
+    copy(blob, to, false)
+}
+
+fn link_or_copy_spilling_with(
+    blob: &Path,
+    to: &Path,
+    link: fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    link_or_copy_spilling_with_copy_and_link(blob, to, link, |source, destination, spill| {
+        if spill && destination.is_file() {
+            return Ok(());
+        }
+        if !spill {
+            return fs::copy(source, destination).map(|_| ());
+        }
+        // Unique temporary names also make interrupted spill creation safe to retry.
+        let temporary = tempfile::NamedTempFile::new_in(destination.parent().unwrap())?;
+        fs::copy(source, temporary.path())?;
+        temporary
+            .persist(destination)
+            .map_err(|error| error.error)?;
+        Ok(())
+    })
 }
 
 /// A link refused because the file already has as many names as the filesystem allows.
@@ -479,6 +520,24 @@ pub fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_ingestion_entries_prove_all_files_and_coverage_is_directional() {
+        let entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
+            "source_hash": "source", "files": [],
+        }))
+        .unwrap();
+        assert_eq!(entry.selection, IngestionSelection::All);
+        assert!(
+            entry
+                .selection
+                .can_satisfy(IngestionSelection::RuntimeEnglishV1)
+        );
+        assert!(!IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::All));
+        assert!(
+            IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::RuntimeEnglishV1)
+        );
+    }
 
     #[test]
     fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
@@ -568,6 +627,61 @@ mod tests {
             hash_bytes(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn sha256_matches_known_padding_boundary_vectors() {
+        // Fixed digests computed independently with Python's hashlib.
+        let vectors = [
+            (
+                0,
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                55,
+                "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+            ),
+            (
+                56,
+                "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+            ),
+            (
+                63,
+                "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34",
+            ),
+            (
+                64,
+                "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+            ),
+            (
+                65,
+                "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",
+            ),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("padding-vector.bin");
+        for (size, expected) in vectors {
+            let bytes = vec![b'a'; size];
+            assert_eq!(hash_bytes(&bytes), expected, "byte vector length {size}");
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                hash_file(&path).unwrap(),
+                expected,
+                "file vector length {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn sha256_file_matches_known_multiblock_vector() {
+        // Standard SHA-256 million-'a' vector, spanning many file read chunks.
+        let bytes = vec![b'a'; 1_000_000];
+        let expected = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+        assert_eq!(hash_bytes(&bytes), expected);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("million-a.bin");
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(hash_file(&path).unwrap(), expected);
     }
 
     #[test]
@@ -671,6 +785,47 @@ mod tests {
 
         assert_eq!(fs::read(&blob).unwrap(), b"archive bytes");
         assert_eq!(fs::read(&vfs).unwrap(), b"archive bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_replaces_destination_symlinks_without_touching_their_targets() {
+        use std::os::unix::fs::symlink;
+
+        fn force_copy(_: &Path, _: &Path) -> std::io::Result<()> {
+            Err(std::io::Error::other("no hard links here"))
+        }
+        type Restore = fn(&Path, &Path) -> std::io::Result<()>;
+        let restores: [Restore; 2] = [
+            |from, to| link_or_copy_with(from, to, force_copy),
+            |from, to| link_or_copy_spilling_with(from, to, force_copy),
+        ];
+        for restore in restores {
+            for target_exists in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let blob = directory.path().join("blob");
+                fs::write(&blob, b"archive bytes").unwrap();
+                let outside = directory.path().join("outside");
+                if target_exists {
+                    fs::write(&outside, b"external bytes").unwrap();
+                }
+                let staging = directory.path().join("staging");
+                fs::create_dir(&staging).unwrap();
+                let destination = staging.join("restored.bin");
+                symlink(&outside, &destination).unwrap();
+
+                restore(&blob, &destination).unwrap();
+
+                assert!(fs::symlink_metadata(&destination).unwrap().is_file());
+                assert_eq!(fs::read(&destination).unwrap(), b"archive bytes");
+                assert_eq!(fs::read(&blob).unwrap(), b"archive bytes");
+                if target_exists {
+                    assert_eq!(fs::read(&outside).unwrap(), b"external bytes");
+                } else {
+                    assert!(fs::symlink_metadata(&outside).is_err());
+                }
+            }
+        }
     }
 
     #[test]

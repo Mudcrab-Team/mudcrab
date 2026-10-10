@@ -371,24 +371,40 @@ fn export_records(
 
     let mut ordered: Vec<_> = master.iter().collect();
     ordered.sort_unstable_by_key(|(form_id, _)| **form_id);
+    let mut record_insert = tx.prepare(
+        "INSERT OR REPLACE INTO records(form_id, record_type, cell_id, worldspace_id, load_order, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    let mut identity_insert = order
+        .map(|_| {
+            tx.prepare(
+                "INSERT OR REPLACE INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, ?2, ?3, ?4)",
+            )
+        })
+        .transpose()?;
     for (&form_id, record) in ordered {
         let type_str = from_utf8(&record.record_type).unwrap_or("UNKN");
         let blob = serialize_subrecords(&record.subrecords);
-        tx.execute(
-            "INSERT OR REPLACE INTO records(form_id, record_type, cell_id, worldspace_id, load_order, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![form_id, type_str, record.cell_form_id, record.worldspace_form_id, record.load_order, blob],
-        )?;
-        if let Some(order) = order {
+        record_insert.execute(params![
+            form_id,
+            type_str,
+            record.cell_form_id,
+            record.worldspace_form_id,
+            record.load_order,
+            blob
+        ])?;
+        if let (Some(order), Some(identity_insert)) = (order, identity_insert.as_mut()) {
             let identity = order.identity(form_id).map_err(|error| {
                 rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("record {form_id:08X}: {error}"),
                 )))
             })?;
-            tx.execute(
-                "INSERT OR REPLACE INTO formid_map(form_id, plugin_name, internal_id, record_type) VALUES (?1, ?2, ?3, ?4)",
-                params![form_id, identity.plugin, identity.local_id, type_str],
-            )?;
+            identity_insert.execute(params![
+                form_id,
+                identity.plugin,
+                identity.local_id,
+                type_str
+            ])?;
         }
 
         let canonical_record = record;
@@ -590,6 +606,8 @@ fn export_records(
             _ => {}
         }
     }
+    drop(record_insert);
+    drop(identity_insert);
     tx.commit()
 }
 
@@ -792,13 +810,14 @@ pub fn insert_reference(
         })
         .unzip();
 
-    tx.execute(
+    tx.prepare_cached(
         "INSERT OR REPLACE INTO \"references\"(id, cell_id, worldspace_id, base_form_id, is_exterior, pos_x, pos_y, pos_z, local_x, local_y, rot_x, rot_y, rot_z, scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, data)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+    )?.execute(
         params![form_id, cell_id, worldspace_id, base_form_id, is_exterior, pos[0], pos[1], pos[2], local_x, local_y, rot[0], rot[1], rot[2], scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, blob],
     )?;
     if is_exterior {
-        tx.execute("INSERT OR REPLACE INTO exterior_spatial(id, minX, maxX, minY, maxY, minZ, maxZ, cell_id, worldspace_id) VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?4, ?5, ?6)", params![form_id, pos[0], pos[1], pos[2], cell_id, worldspace_id])?;
+        tx.prepare_cached("INSERT OR REPLACE INTO exterior_spatial(id, minX, maxX, minY, maxY, minZ, maxZ, cell_id, worldspace_id) VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?4, ?5, ?6)")?.execute(params![form_id, pos[0], pos[1], pos[2], cell_id, worldspace_id])?;
     }
     Ok(())
 }
@@ -814,8 +833,9 @@ struct CellRow<'a> {
 }
 
 fn insert_cell(tx: &Transaction<'_>, row: CellRow<'_>) -> Result<()> {
-    tx.execute(
+    tx.prepare_cached(
         "INSERT OR REPLACE INTO cells(id, worldspace_id, grid_x, grid_y, interior_name, flags, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?.execute(
         params![row.form_id, row.worldspace_id, row.grid_x, row.grid_y, row.interior_name, row.flags, row.data],
     )?;
     Ok(())

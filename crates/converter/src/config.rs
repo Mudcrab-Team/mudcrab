@@ -63,6 +63,12 @@ pub struct PipelineConfig {
     pub fail_fast: bool,
     pub invalidate_cache: bool,
     pub verify_cache: bool,
+    /// Include archive entries beyond the runtime inputs and English string banks.
+    #[serde(default)]
+    pub extract_all_archive_files: bool,
+    /// Flush extracted inputs per file, after an archive, or rely on cache verification.
+    #[serde(default)]
+    pub ingestion_sync: crate::archive::IngestionSync,
     /// Quality for the UASTC fallback path (uncompressed/legacy sources).
     /// Named `texture_etc1s_quality` in serialized configs for compatibility;
     /// it never selected ETC1S encoding, which the Bevy runtime rejects.
@@ -99,6 +105,8 @@ impl PipelineConfig {
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
+            extract_all_archive_files: false,
+            ingestion_sync: crate::archive::IngestionSync::PerFile,
             texture_fallback_quality: 192,
             texture_uastc_level: 2,
             texture_zstd_level: default_texture_zstd_level(),
@@ -130,6 +138,10 @@ impl PipelineConfig {
         );
         color_eyre::eyre::ensure!(self.cpu_jobs > 0, "cpu_jobs must be greater than zero");
         color_eyre::eyre::ensure!(self.io_jobs > 0, "io_jobs must be greater than zero");
+        color_eyre::eyre::ensure!(
+            self.ingestion_sync != crate::archive::IngestionSync::None || self.verify_cache,
+            "ingestion_sync=none requires verify_cache"
+        );
         color_eyre::eyre::ensure!(
             (1..=255).contains(&self.texture_fallback_quality),
             "texture_fallback_quality must be between 1 and 255"
@@ -382,6 +394,11 @@ mod tests {
         let config: PipelineConfig = serde_json::from_value(legacy.clone()).unwrap();
         assert!(config.lod_origins.is_empty());
         assert!(!config.no_lod);
+        assert!(!config.extract_all_archive_files);
+        assert_eq!(
+            config.ingestion_sync,
+            crate::archive::IngestionSync::PerFile
+        );
         assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
         assert_eq!(config.data_dir, PathBuf::from("Data"));
         assert_eq!(config.cpu_jobs, 2);
@@ -389,6 +406,24 @@ mod tests {
         legacy["lod_origins"] = serde_json::json!({"GeneratedWorld": [-4, 12]});
         let explicit: PipelineConfig = serde_json::from_value(legacy).unwrap();
         assert_eq!(explicit.lod_origins["GeneratedWorld"], [-4, 12]);
+    }
+
+    #[test]
+    fn no_ingestion_sync_requires_cache_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(data, directory.path().join("output"));
+        config.ingestion_sync = crate::archive::IngestionSync::None;
+        config.validate().unwrap();
+        config.verify_cache = false;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires verify_cache")
+        );
     }
 
     #[test]

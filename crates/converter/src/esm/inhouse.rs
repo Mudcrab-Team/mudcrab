@@ -19,10 +19,49 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
 pub const ADAPTER_VERSION: u32 = 4;
+
+/// Diagnostic timings do not participate in producer identity or asset reuse.
+pub(crate) const DATABASE_PROFILE_FILE: &str = "inhouse-database-profile.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DatabaseProfile {
+    schema_version: u32,
+    reader: String,
+    counts: BTreeMap<String, u64>,
+    elapsed_seconds: BTreeMap<String, f64>,
+}
+
+impl DatabaseProfile {
+    fn new() -> Self {
+        Self {
+            schema_version: 1,
+            reader: "inhouse".to_owned(),
+            counts: BTreeMap::new(),
+            elapsed_seconds: BTreeMap::new(),
+        }
+    }
+
+    fn elapsed(&mut self, phase: &str, started: Instant) {
+        self.elapsed_seconds
+            .insert(phase.to_owned(), started.elapsed().as_secs_f64());
+    }
+
+    fn write(&self, output: &Path) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(self)?;
+        let path = output.join(DATABASE_PROFILE_FILE);
+        // Resumed staging can share files with the previous pack through hard links.
+        if path.is_file() {
+            fs::remove_file(&path)?;
+        }
+        fs::write(path, bytes)?;
+        Ok(())
+    }
+}
 
 /// Identity binds decoder behavior and schema bytes so stale output cannot prove reuse.
 pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
@@ -207,21 +246,39 @@ pub(crate) fn write_terrain_caches(
     db_path: &Path,
     output: &Path,
 ) -> Result<usize> {
+    let started = Instant::now();
+    let profile_path = output.join(DATABASE_PROFILE_FILE);
+    let mut profile = if profile_path.is_file() {
+        serde_json::from_slice::<DatabaseProfile>(&fs::read(profile_path)?)?
+    } else {
+        DatabaseProfile::new()
+    };
+    let auxiliary_started = Instant::now();
     let offsets = terrain_source_offsets(db_path)?;
     let preserved = terrain_preserved_layers(db_path)?;
     let runtime = terrain_runtime_layers(db_path, &preserved)?;
+    profile.elapsed("terrain_auxiliary_reads", auxiliary_started);
+    let runtime_started = Instant::now();
     let count = crate::esm::cell_cache::write_cell_cache_with_preserved_layers(
         records,
         &offsets,
         &runtime,
         &output.join("cell_cache.rkyv"),
     )?;
+    profile.elapsed("terrain_runtime_cache", runtime_started);
+    let preserved_started = Instant::now();
     crate::esm::cell_cache::write_cell_cache_with_preserved_layers(
         records,
         &offsets,
         &preserved,
         &output.join("cell_cache_preserved.rkyv"),
     )?;
+    profile.elapsed("terrain_preserved_cache", preserved_started);
+    profile
+        .counts
+        .insert("terrain_cells".to_owned(), count as u64);
+    profile.elapsed("total_terrain_caches", started);
+    profile.write(output)?;
     Ok(count)
 }
 
@@ -241,14 +298,26 @@ fn convert_plugins_with_dump(
     strings_root: &Path,
     dump: Option<(&Path, &[[u8; 4]])>,
 ) -> Result<HashMap<u32, RawRecord>> {
+    let started = Instant::now();
+    let mut profile = DatabaseProfile::new();
+    profile
+        .counts
+        .insert("plugins".to_owned(), plugin_paths.len() as u64);
+    let order_started = Instant::now();
     let order = LoadOrder::read(plugin_paths)?;
+    profile.elapsed("load_order", order_started);
     let mut warnings = Warnings::default();
     let mut preserved_layers = HashMap::new();
+    let reader_started = Instant::now();
+    let mut reader_before_observer = 0.0;
+    let mut source_layer_capture = 0.0;
     let decoded = records::read_plugins_with_validation_and_observer(
         plugin_paths,
         &order,
         validate_candidate,
         |accepted| {
+            reader_before_observer = reader_started.elapsed().as_secs_f64();
+            let observer_started = Instant::now();
             for record in accepted
                 .records
                 .values()
@@ -264,8 +333,29 @@ fn convert_plugins_with_dump(
                     ),
                 }
             }
+            source_layer_capture = observer_started.elapsed().as_secs_f64();
         },
     )?;
+    let reader_total = reader_started.elapsed().as_secs_f64();
+    profile.elapsed_seconds.insert(
+        "reader_decode_merge_deferred".to_owned(),
+        reader_before_observer,
+    );
+    profile.elapsed_seconds.insert(
+        "reader_terrain_source_capture".to_owned(),
+        source_layer_capture,
+    );
+    profile.elapsed_seconds.insert(
+        "reader_target_validation_and_diagnostics".to_owned(),
+        (reader_total - reader_before_observer - source_layer_capture).max(0.0),
+    );
+    profile
+        .elapsed_seconds
+        .insert("total_reader".to_owned(), reader_total);
+    profile
+        .counts
+        .insert("decoded_winners".to_owned(), decoded.records.len() as u64);
+    let adapter_started = Instant::now();
     let mut localized_fields = Vec::new();
     let mut unresolved_fields = HashMap::new();
     let mut tables: HashMap<(usize, String), HashMap<u32, String>> = HashMap::new();
@@ -273,7 +363,9 @@ fn convert_plugins_with_dump(
         .map(|(output, _)| fs::File::create(output.join("typed-records.jsonl")).map(BufWriter::new))
         .transpose()?;
     let mut master = HashMap::with_capacity(decoded.records.len());
+    let mut decoded_field_count = 0u64;
     for record in decoded.records.values() {
+        decoded_field_count += record.fields.len() as u64;
         let priority = record.load_order as usize;
         let plugin = &order.names[priority];
         let mut raw = record.to_raw_record();
@@ -377,33 +469,63 @@ fn convert_plugins_with_dump(
     if let Some(writer) = &mut typed_output {
         writer.flush()?;
     }
+    profile.elapsed("runtime_adaptation", adapter_started);
+    profile
+        .counts
+        .insert("runtime_winners".to_owned(), master.len() as u64);
+    profile
+        .counts
+        .insert("decoded_fields".to_owned(), decoded_field_count);
+    profile
+        .counts
+        .insert("localized_fields".to_owned(), localized_fields.len() as u64);
+    profile.counts.insert(
+        "preserved_terrain_records".to_owned(),
+        preserved_layers.len() as u64,
+    );
+    let schema_started = Instant::now();
     let conn = Connection::open(db_path)?;
     create_tables(&conn)?;
+    profile.elapsed("database_open_and_schema", schema_started);
+    let plugins_started = Instant::now();
+    let mut plugin_insert = conn.prepare(
+        "INSERT OR REPLACE INTO plugins(id,name,priority,checksum) VALUES (?1,?2,?3,?4)",
+    )?;
     for (priority, path) in plugin_paths.iter().enumerate() {
         let checksum = Sha256::digest(fs::read(path)?);
-        conn.execute(
-            "INSERT OR REPLACE INTO plugins(id,name,priority,checksum) VALUES (?1,?2,?3,?4)",
-            params![
-                priority as i64,
-                path.file_name().unwrap_or_default().to_string_lossy(),
-                priority as i64,
-                checksum.as_slice()
-            ],
-        )?;
+        plugin_insert.execute(params![
+            priority as i64,
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            priority as i64,
+            checksum.as_slice()
+        ])?;
     }
+    drop(plugin_insert);
+    profile.elapsed("plugin_checksums_and_inserts", plugins_started);
+    let offsets_started = Instant::now();
     let terrain_offsets = decoded
         .records
         .values()
         .filter(|record| record.record_type == *b"LAND" && master.contains_key(&record.form_id))
         .map(|record| (record.form_id, record.source_record_offset))
         .collect::<HashMap<_, _>>();
+    profile.elapsed("terrain_offsets_collection", offsets_started);
+    let export_started = Instant::now();
     export_inhouse_to_db(&conn, &master, &order, &unresolved_fields, &terrain_offsets)?;
+    profile.elapsed("runtime_database_export", export_started);
     // Keep the established rkyv records.data contract for runtime tools.
     // Auxiliary provenance holds verbatim source framing and file-relative IDs.
+    let provenance_started = Instant::now();
+    let setup_started = Instant::now();
     let tx = conn.unchecked_transaction()?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_source_records(form_id INTEGER PRIMARY KEY, source_form_id INTEGER NOT NULL, load_order INTEGER NOT NULL, record_type TEXT NOT NULL, flags INTEGER NOT NULL, payload BLOB NOT NULL); DELETE FROM inhouse_source_records;")?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_localized_fields(form_id INTEGER NOT NULL, field_index INTEGER NOT NULL, signature TEXT NOT NULL, field_name TEXT NOT NULL, string_table TEXT NOT NULL, string_id INTEGER NOT NULL, load_order INTEGER NOT NULL, resolved_text TEXT, status TEXT NOT NULL CHECK(status IN ('resolved','null_id','missing')), PRIMARY KEY(form_id,field_index)); DELETE FROM inhouse_localized_fields; CREATE TABLE IF NOT EXISTS inhouse_terrain_source_order(form_id INTEGER PRIMARY KEY, source_record_offset INTEGER NOT NULL); DELETE FROM inhouse_terrain_source_order;")?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_terrain_layers(form_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL, load_order INTEGER NOT NULL, layer_data BLOB NOT NULL, unresolved_texture_ids TEXT NOT NULL); DELETE FROM inhouse_terrain_layers;")?;
+    profile.elapsed("provenance_schema", setup_started);
+    let terrain_started = Instant::now();
+    let mut terrain_insert = tx.prepare(
+        "INSERT INTO inhouse_terrain_layers(form_id,cell_id,load_order,layer_data,unresolved_texture_ids) VALUES (?1,?2,?3,?4,?5)",
+    )?;
     for (id, layers) in preserved_layers {
         let Some(record) = master.get(&id) else {
             continue;
@@ -418,30 +540,73 @@ fn convert_plugins_with_dump(
                         .is_some_and(|record| record.record_type == *b"LTEX")
             })
             .collect::<BTreeSet<_>>();
-        tx.execute(
-            "INSERT INTO inhouse_terrain_layers(form_id,cell_id,load_order,layer_data,unresolved_texture_ids) VALUES (?1,?2,?3,?4,?5)",
-            params![id, record.cell_form_id.unwrap_or(id), record.load_order, rkyv::to_bytes::<rkyv::rancor::Error>(&layers)?.as_slice(), serde_json::to_string(&unresolved)?],
-        )?;
+        terrain_insert.execute(params![
+            id,
+            record.cell_form_id.unwrap_or(id),
+            record.load_order,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&layers)?.as_slice(),
+            serde_json::to_string(&unresolved)?
+        ])?;
     }
+    drop(terrain_insert);
+    profile.elapsed("provenance_terrain_layers", terrain_started);
+    let localized_started = Instant::now();
+    let mut localized_insert = tx.prepare(
+        "INSERT INTO inhouse_localized_fields(form_id,field_index,signature,field_name,string_table,string_id,load_order,resolved_text,status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+    )?;
     for field in localized_fields {
-        tx.execute(
-            "INSERT INTO inhouse_localized_fields(form_id,field_index,signature,field_name,string_table,string_id,load_order,resolved_text,status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![field.form_id, field.field_index as u64, String::from_utf8_lossy(&field.signature), field.field_name, field.string_table, field.string_id, field.load_order, field.resolved_text, field.status],
-        )?;
+        localized_insert.execute(params![
+            field.form_id,
+            field.field_index as u64,
+            String::from_utf8_lossy(&field.signature),
+            field.field_name,
+            field.string_table,
+            field.string_id,
+            field.load_order,
+            field.resolved_text,
+            field.status
+        ])?;
     }
+    drop(localized_insert);
+    profile.elapsed("provenance_localized_fields", localized_started);
+    let source_order_started = Instant::now();
+    let mut source_order_insert = tx.prepare(
+        "INSERT INTO inhouse_terrain_source_order(form_id,source_record_offset) VALUES (?1,?2)",
+    )?;
     for (id, offset) in terrain_offsets {
-        tx.execute(
-            "INSERT INTO inhouse_terrain_source_order(form_id,source_record_offset) VALUES (?1,?2)",
-            params![id, offset],
-        )?;
+        source_order_insert.execute(params![id, offset])?;
     }
-    for (&id, record) in &decoded.records {
-        tx.execute(
-            "INSERT INTO inhouse_source_records(form_id,source_form_id,load_order,record_type,flags,payload) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![id, record.source_form_id, record.load_order, String::from_utf8_lossy(&record.record_type), record.flags, record.raw_payload],
-        )?;
+    drop(source_order_insert);
+    profile.elapsed("provenance_terrain_order", source_order_started);
+    let source_records_started = Instant::now();
+    let mut source_record_insert = tx.prepare(
+        "INSERT INTO inhouse_source_records(form_id,source_form_id,load_order,record_type,flags,payload) VALUES (?1,?2,?3,?4,?5,?6)",
+    )?;
+    let mut source_payload_bytes = 0u64;
+    // Keep source-row inserts in primary-key order for SQLite page locality.
+    let mut source_records: Vec<_> = decoded.records.iter().collect();
+    source_records.sort_unstable_by_key(|(id, _)| **id);
+    for (&id, record) in source_records {
+        source_record_insert.execute(params![
+            id,
+            record.source_form_id,
+            record.load_order,
+            String::from_utf8_lossy(&record.record_type),
+            record.flags,
+            record.raw_payload
+        ])?;
+        source_payload_bytes += record.raw_payload.len() as u64;
     }
+    drop(source_record_insert);
+    profile.elapsed("provenance_source_records", source_records_started);
+    profile
+        .counts
+        .insert("source_payload_bytes".to_owned(), source_payload_bytes);
+    let commit_started = Instant::now();
     tx.commit()?;
+    profile.elapsed("provenance_commit", commit_started);
+    profile.elapsed("total_provenance", provenance_started);
+    let diagnostics_started = Instant::now();
     if let Some(staging) = db_path.parent() {
         let path = staging.join("inhouse-reader-diagnostics.json");
         if path.is_file() {
@@ -455,6 +620,14 @@ fn convert_plugins_with_dump(
         )?;
     }
     warnings.report();
+    profile.elapsed("diagnostics_write_and_report", diagnostics_started);
+    let release_started = Instant::now();
+    drop(decoded);
+    profile.elapsed("release_decoded_records", release_started);
+    profile.elapsed("total_convert_plugins", started);
+    if let Some(staging) = db_path.parent() {
+        profile.write(staging)?;
+    }
     Ok(master)
 }
 

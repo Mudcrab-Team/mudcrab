@@ -268,6 +268,44 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
     generate(&data);
     convert(&data, &output, RecordReader::Inhouse).await;
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("inhouse-database-profile.json")).unwrap())
+            .unwrap();
+    assert_eq!(profile["schema_version"], 1);
+    assert_eq!(profile["reader"], "inhouse");
+    for (count, sql) in [
+        (
+            "decoded_winners",
+            "SELECT count(*) FROM inhouse_source_records",
+        ),
+        ("runtime_winners", "SELECT count(*) FROM records"),
+        (
+            "localized_fields",
+            "SELECT count(*) FROM inhouse_localized_fields",
+        ),
+        (
+            "source_payload_bytes",
+            "SELECT coalesce(sum(length(payload)),0) FROM inhouse_source_records",
+        ),
+    ] {
+        let actual: u64 = db.query_row(sql, [], |row| row.get(0)).unwrap();
+        assert_eq!(profile["counts"][count].as_u64(), Some(actual), "{count}");
+    }
+    for phase in [
+        "reader_decode_merge_deferred",
+        "reader_target_validation_and_diagnostics",
+        "runtime_database_export",
+        "provenance_source_records",
+        "terrain_runtime_cache",
+        "terrain_preserved_cache",
+    ] {
+        assert!(
+            profile["elapsed_seconds"][phase]
+                .as_f64()
+                .is_some_and(|seconds| seconds.is_finite() && seconds >= 0.0),
+            "{phase}"
+        );
+    }
     for id in [0x900, 0x902] {
         assert_eq!(
             db.query_row("SELECT model_path FROM statics WHERE id=?1", [id], |row| {

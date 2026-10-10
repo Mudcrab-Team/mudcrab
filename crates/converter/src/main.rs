@@ -2,6 +2,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
+use converter::archive::IngestionSync;
 use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
@@ -28,6 +29,8 @@ struct Cli {
     report_json: Option<PathBuf>,
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
+    ingestion_sync: IngestionSync,
+    extract_all_archive_files: bool,
     texture_encoder: TextureEncoder,
     record_reader: RecordReader,
     fail_fast: bool,
@@ -164,6 +167,8 @@ async fn main() -> Result<()> {
     config.verify_cache = cli.verify_cache;
     config.no_lod = cli.no_lod;
     config.texture_encoder = cli.texture_encoder;
+    config.ingestion_sync = cli.ingestion_sync;
+    config.extract_all_archive_files = cli.extract_all_archive_files;
     if let Some(cpu_jobs) = cli.cpu_jobs {
         config.cpu_jobs = cpu_jobs;
     }
@@ -454,6 +459,14 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.record_reader == RecordReader::Inhouse {
         command.push_str(" --record-reader inhouse");
     }
+    if cli.extract_all_archive_files {
+        command.push_str(" --extract-all-archive-files");
+    }
+    match cli.ingestion_sync {
+        IngestionSync::PerFile => {}
+        IngestionSync::Archive => command.push_str(" --ingestion-sync archive"),
+        IngestionSync::None => command.push_str(" --ingestion-sync none"),
+    }
     command
 }
 
@@ -660,6 +673,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut reuse_assets = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
+    let mut ingestion_sync = IngestionSync::PerFile;
+    let mut extract_all_archive_files = false;
     let mut use_gpu = false;
     let mut record_reader = RecordReader::Legacy;
     let mut gpu_quality = None;
@@ -708,6 +723,15 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     _ => bail!("--record-reader must be legacy or inhouse"),
                 };
             }
+            Some("--ingestion-sync") => {
+                ingestion_sync = match next_value(&mut args, "--ingestion-sync")?.to_str() {
+                    Some("per-file") => IngestionSync::PerFile,
+                    Some("archive") => IngestionSync::Archive,
+                    Some("none") => IngestionSync::None,
+                    _ => bail!("--ingestion-sync must be per-file, archive, or none"),
+                };
+            }
+            Some("--extract-all-archive-files") => extract_all_archive_files = true,
             Some("--gpu-quality") => {
                 gpu_quality = Some(parse_u32(
                     next_value(&mut args, "--gpu-quality")?,
@@ -733,6 +757,9 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     if positional.is_empty() || positional.len() > 2 {
         bail!(usage());
     }
+    if ingestion_sync == IngestionSync::None && !verify_cache {
+        bail!("--ingestion-sync none requires verified cache reuse; omit --no-verify-cache");
+    }
     let texture_encoder = if use_gpu {
         TextureEncoder::Gpu {
             quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
@@ -754,6 +781,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         report_json,
         cpu_jobs,
         io_jobs,
+        ingestion_sync,
+        extract_all_archive_files,
         texture_encoder,
         record_reader,
         fail_fast,
@@ -802,9 +831,16 @@ fn usage() -> &'static str {
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
                  [--record-reader legacy|inhouse]
+                 [--ingestion-sync per-file|archive|none] [--extract-all-archive-files]
        converter check <output directory> [--full]
 
 Converts a Skyrim Data directory into runtime assets.
+
+Archive ingestion extracts the formats used by conversion and English string banks.
+--extract-all-archive-files retains every archive entry for compatibility and comparisons.
+--ingestion-sync defaults to per-file. archive syncs every extracted file in parallel after
+each archive; none skips those syncs for regenerable ingestion bytes and requires cache
+verification. These options do not change runtime package publication.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1051,6 +1087,8 @@ mod tests {
             report_json: None,
             cpu_jobs: None,
             io_jobs: None,
+            ingestion_sync: IngestionSync::PerFile,
+            extract_all_archive_files: false,
             texture_encoder: TextureEncoder::Cpu,
             record_reader: RecordReader::Legacy,
             fail_fast: false,
@@ -1104,6 +1142,49 @@ mod tests {
         assert!(
             resume_command("converter.exe", &gpu, staging)
                 .ends_with(" --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256")
+        );
+    }
+
+    #[test]
+    fn parses_and_preserves_ingestion_options_on_resume() {
+        let staging = Path::new("assets.staging");
+        let defaults = parse_cli(vec!["Data".into()]).unwrap();
+        assert_eq!(defaults.ingestion_sync, IngestionSync::PerFile);
+        assert!(!defaults.extract_all_archive_files);
+        for (value, policy) in [
+            ("archive", IngestionSync::Archive),
+            ("none", IngestionSync::None),
+        ] {
+            let cli = parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                value.into(),
+                "--extract-all-archive-files".into(),
+            ])
+            .unwrap();
+            assert_eq!(cli.ingestion_sync, policy);
+            assert!(cli.extract_all_archive_files);
+            let command = resume_command("converter", &cli, staging);
+            assert!(command.contains(" --extract-all-archive-files"));
+            assert!(command.ends_with(&format!(" --ingestion-sync {value}")));
+        }
+        assert!(parse_cli(vec!["Data".into(), "--ingestion-sync".into()]).is_err());
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                "invalid".into()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                "none".into(),
+                "--no-verify-cache".into()
+            ])
+            .is_err()
         );
     }
 
