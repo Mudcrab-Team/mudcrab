@@ -2,6 +2,72 @@
 
 This document outlines the conversion pipeline to ingest legacy Skyrim formats (`.bsa`, `.dds`, `.nif`, `.hkx`, `.esm`) and output modern asset standards suitable for modern web & native runtimes (Bevy Engine, glTF 2.0, KTX2, WebGPU).
 
+The converter accepts `--record-reader legacy|inhouse`, with `legacy` as the
+default. Both routes use the same plugin ordering, runtime tables and terrain
+cache writer. The in-house route scans memory-mapped records and decodes authored
+schema entries before building canonical projection inputs; it does not run the
+legacy record decoder for supported records. Unknown record types remain opaque.
+Malformed fields and records are omitted with bounded per-plugin diagnostics;
+valid neighboring records continue through publication. Semantic terrain and
+movement failures are caught per record before a candidate replaces an earlier
+usable winner. Real deletions still apply. LAND with rejected authored heights
+or incomplete framing is skipped; genuinely heightless texture/color records
+retain the existing default-height cache behavior.
+
+`record-reader.json` stamps the selected frontend. In-house identity includes the
+authored schema SHA-256, adapter version and English localization choice, and
+`inhouse-reader-diagnostics.json` records bounded decoder and adapter issues. Generated
+database, terrain cache and LOD artifacts are rebuilt when resuming staging.
+In-house mode includes this identity in the configuration proof, because the
+corrected TXST slots affect texture roles. The current shared configuration key
+also invalidates mesh reuse conservatively; legacy configuration hashes remain
+compatible with existing packs. Resume commands preserve the reader choice.
+
+Localized fields in in-house mode use their declared English STRINGS, DLSTRINGS
+or ILSTRINGS bank from the effective archive VFS, with loose files taking
+precedence. Every validated occurrence remains in canonical records. Null or
+missing IDs yield empty canonical text and retain their original ID, bank,
+winning plugin and status in `inhouse_localized_fields`; nullable runtime name
+columns remain NULL. Missing nonzero keys produce counted warnings. Explicitly
+resolved empty text remains distinguishable from unresolved text. Other language
+selection is not implemented.
+Ordinary plugin text and English string banks use Windows-1252, including bytes
+that happen to form valid UTF-8. VMAD strings use their independent UTF-8 format.
+Runtime text is encoded as UTF-8 after decoding, and original source bytes remain
+available in provenance. The reader identity records both encoding contracts.
+Metadata rebuild uses the selected reader while validating retained assets under
+their original recorded reader configuration (unstamped older packs are legacy).
+Provenance records the retained reader separately, including across repeated
+metadata rebuilds. Retained models/textures keep their source bytes and may carry
+older TXST role encodings; normal conversion regenerates them under the selected
+reader. Unknown source producer identities are rejected.
+
+The explicit retained-asset route accepts the exact schema-15/16 producer
+configuration variant that records fixed Zstd level 6. Protected schema-15
+source provenance hashes default quality 192, UASTC level 2 and script ABI 1
+plus this fixed compression level to
+`b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435`.
+Texture quality and script ABI must still match the recorded configuration;
+every retained asset is copied and verified against its output hash. This
+compatibility proof does not alter normal conversion or staging cache identities.
+
+For record-only diagnostics, `inhouse-records <Data> <plugins.txt> <new directory>`
+writes the database, cell caches, reader identity and diagnostic report without
+running asset stages or publishing a runtime pack. The new directory also keeps
+selected English archive STRINGS inputs under `.strings-input` for comparison.
+
+In-house terrain publication selects the latest accepted LAND by plugin priority
+and physical record order when several identities share a cell. It retains
+normalized original texture IDs, slots and blend weights in
+`inhouse_terrain_layers` and `cell_cache_preserved.rkyv`. The runtime
+`cell_cache.rkyv` keeps those slots and weights with explicit zero-ID placeholders
+for absent, deleted or wrong-kind texture targets. Native null assignments are
+resolved before this replacement, so they do not displace a nonnull assignment
+or revive discarded weights. Runtime material construction accepts placeholders
+in any slot; a nonzero texture with missing converted images still fails its
+existing lookup checks. Original native fields and padding remain in the source
+table independently of these derived caches.
+
 ---
 
 ## 1. Pipeline Overview Diagram

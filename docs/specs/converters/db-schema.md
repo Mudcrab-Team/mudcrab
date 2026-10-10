@@ -2,21 +2,44 @@
 
 This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](../../../crates/converter/src/esm/exporter.rs).
 
+The optional in-house frontend keeps the runtime column contract while
+using TXST slot interpretation: diffuse TX00, normal TX01, mask TX02, glow
+TX03, height TX04, environment TX05, detail TX06, and specular TX07. The existing
+`detail_path` column carries TX06 multilayer data; TX03 is the source's
+glow/detail-map slot and TX07 its backlight-mask/specular slot. These role names
+retain the runtime approximation and do not imply complete shader support.
+In-house ARMO model projection uses MOD2 with MOD4 as the female world-model
+fallback; legacy retains its existing MOD3 fallback.
+
 ---
 
 ## 1. Schema Overview
 
 `skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, ESM-flagged plugins and `.esm`/`.esl` files take priority, keeping the listed order within each category except that regular dependencies are moved ahead of the master files that need them. The resulting order is validated before assigning full/light slots, ordering archive (BSA/BA2) priority, and merging database records and terrain caches. Unrelated regular plugins retain the user's order. This is not a general dependency sort: any inversions remaining after normalization, including a master file listed before another master it depends on, are rejected. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
 
-The database stamps its version in `schema_info`; the current version is **7**
+The database stamps its version in `schema_info`; the current version is **9**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`). Schema 4 added lights and
 `references.radius_override`. Schema 5 adds grass data in #152;
 the combined producer exports grass and LOD tables. Schema 6 adds LOD origins, chunk metadata,
-its spatial index, and a build identity. The engine, `world-inspect` and
-launcher accept world schemas **3 through 7**, using
+its spatial index, and a build identity. Schema 9 combines the corrected texture-set slot
+projection: `mask_path` comes from TX02, `glow_path` from TX03, `height_path`
+from TX04 and `environment_path` from TX05. TX00, TX01, TX06 and TX07 retain
+their existing diffuse, normal, specular and detail column projections in legacy mode.
+The in-house terminal-slot interpretation is documented above. Schema 9 also
+projects only XESP byte 4 into `enable_parent_flags`. Separate candidate fixes
+used producer 25/world 8 for different contracts; combined output uses 27/9, including the new collision payloads.
+The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 25**. Legacy worlds render full detail without
+support schemas **15 through 27**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
+
+Converter producer 27 also corrects the texture encodings chosen from those
+columns. Normal conversion rebuilds earlier GLBs and KTX2, the database, cell
+cache and derived LOD outputs. Only current producer-27 meshes, unchanged scripts
+and archive ingestion remain reusable with matching source/dependency,
+configuration and output-byte proof.
+Metadata-only rebuilds preserve the original retained producer/configuration
+and texture bytes. Run normal conversion to repair those retained encodings.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -58,7 +81,18 @@ CREATE TABLE IF NOT EXISTS plugins (
 
 ### 2. Primary Record Database (`records`)
 
-Stores unparsed raw subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character record type codes.
+Stores subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character
+record type codes, encoded as rkyv `ArchivedRecordData`. Both frontends resolve
+known embedded links to load-order numbering. The in-house frontend projects
+validated decoded fields into this existing encoding. Its auxiliary experimental
+`inhouse_source_records(form_id, source_form_id, load_order, record_type, flags,
+payload)` table holds original
+decompressed source bytes, including file-relative IDs and unused framing. Those
+source bytes are provenance, not decoded runtime fields. `load_order` names the
+winning source plugin through `plugins.id`. Required movement and terrain
+semantics are validated before winner selection; rejected candidates leave an
+earlier usable winner intact and are counted in per-plugin diagnostics. The pack's
+`record-reader.json` identifies the frontend and schema.
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
@@ -128,7 +162,7 @@ CREATE TABLE IF NOT EXISTS references (
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
-    enable_parent_flags INTEGER,        -- XESP flags; NULL when absent
+    enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
     data BLOB                           -- Subrecords payload
 );
 

@@ -42,6 +42,8 @@ use walkdir::WalkDir;
 
 #[derive(Serialize)]
 struct MetadataProvenance {
+    record_reader: serde_json::Value,
+    retained_asset_record_reader: serde_json::Value,
     source_converter_schema: u32,
     source_retained_mesh_schema: u32,
     source_manifest_hash: String,
@@ -75,16 +77,19 @@ impl AssetPipeline {
         let output_lock = AssetLock::acquire_exclusive(&config.output_dir)?;
         let source_manifest = fs::read(source.join("conversion-manifest.json"))?;
         // Read the original version; normal cache loading deliberately invalidates
-        // GLBs during schema migration, which this explicit route verifies instead.
+        // incompatible assets during migration, which this explicit route verifies instead.
         let mut manifest: ConversionManifest = serde_json::from_slice(&source_manifest)?;
+        let source_reader = source_reader_identity(&source)?;
+        let retained_reader = retained_reader_identity(&source, &source_reader)?;
+        let source_settings = settings_for_source_reader(&config, &source_reader)?;
+        let retained_settings = settings_for_source_reader(&config, &retained_reader)?;
         ensure!(
-            (matches!(
-                manifest.schema_version,
-                15 | 16 | 19 | 20 | 21 | 22 | 23 | 24
-            ) || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
+            (matches!(manifest.schema_version, 15 | 16 | 19..=24)
+                || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && manifest.complete
                 && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15, 16, 19, 20, 21, 22, 23, 24 or 25 assets"
+            "metadata rebuild requires complete converter schema 15, 16, 19 through 24 or {} assets",
+            CONVERTER_SCHEMA_VERSION
         );
         ensure!(
             manifest.retained_mesh_schema_version.is_some()
@@ -95,8 +100,7 @@ impl AssetPipeline {
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
         ensure!(
-            (matches!(mesh_schema, 15 | 16 | 19 | 20 | 21 | 22 | 23 | 24)
-                || mesh_schema == CONVERTER_SCHEMA_VERSION)
+            (matches!(mesh_schema, 15 | 16 | 19..=24) || mesh_schema == CONVERTER_SCHEMA_VERSION)
                 && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );
@@ -107,7 +111,7 @@ impl AssetPipeline {
         );
         ensure!(
             retained_configuration_matches(
-                &config,
+                &source_settings,
                 manifest.schema_version,
                 &manifest.configuration_hash
             )?,
@@ -118,7 +122,11 @@ impl AssetPipeline {
             .as_deref()
             .unwrap_or(&manifest.configuration_hash);
         ensure!(
-            retained_configuration_matches(&config, mesh_schema, retained_configuration)?,
+            retained_configuration_matches(
+                &retained_settings,
+                mesh_schema,
+                retained_configuration
+            )?,
             "retained producer configuration does not match rebuild settings"
         );
         let plugins = matched_plugins(&source, &config.data_dir)?;
@@ -152,6 +160,53 @@ impl AssetPipeline {
     }
 }
 
+/// Original packages predate reader stamps and were produced by the legacy frontend.
+fn source_reader_identity(source: &Path) -> Result<serde_json::Value> {
+    let path = source.join("record-reader.json");
+    if path.is_file() {
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    } else {
+        Ok(crate::esm::inhouse::reader_identity(
+            crate::config::RecordReader::Legacy,
+        ))
+    }
+}
+
+/// Retained bytes keep their producer identity across repeated metadata rebuilds.
+fn retained_reader_identity(
+    source: &Path,
+    current: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let path = source.join("metadata-rebuild.json");
+    if path.is_file() {
+        let provenance: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        if let Some(reader) = provenance.get("retained_asset_record_reader") {
+            return Ok(reader.clone());
+        }
+        ensure!(
+            current["mode"] == "legacy",
+            "missing retained asset reader provenance"
+        );
+    }
+    Ok(current.clone())
+}
+
+/// Validate asset settings under their recorded reader without relabeling retained bytes.
+fn settings_for_source_reader(
+    config: &PipelineConfig,
+    identity: &serde_json::Value,
+) -> Result<PipelineConfig> {
+    let reader: crate::config::RecordReader = serde_json::from_value(identity["mode"].clone())?;
+    ensure!(
+        identity == &crate::esm::inhouse::reader_identity(reader),
+        "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
+    );
+    let mut settings = config.clone();
+    settings.record_reader = reader;
+    Ok(settings)
+}
+
+/// Resolve a new metadata output disjoint from source assets and game inputs.
 fn new_output_path(output: &Path, source: &Path, data: &Path) -> Result<PathBuf> {
     let name = output
         .file_name()
@@ -239,6 +294,11 @@ async fn rebuild_into(
     let (retained, replay_verified_pruned_assets) =
         copy_verified_assets(source, staging, manifest)?;
     let provenance = MetadataProvenance {
+        record_reader: crate::esm::inhouse::reader_identity(config.record_reader),
+        retained_asset_record_reader: retained_reader_identity(
+            source,
+            &source_reader_identity(source)?,
+        )?,
         source_converter_schema: manifest.schema_version,
         source_retained_mesh_schema: manifest
             .retained_mesh_schema_version
@@ -262,6 +322,11 @@ async fn rebuild_into(
         artifacts: retained.keys().map(PathBuf::from).collect(),
         ..Default::default()
     };
+    if provenance.record_reader != provenance.retained_asset_record_reader {
+        let notice = "Metadata reader changed; retained models and textures keep their verified source producer bytes, including earlier texture-role encodings. Use normal conversion to regenerate those assets.";
+        eprintln!("note: {notice}");
+        report.notices.push(notice.to_owned());
+    }
     progress_event(
         progress,
         ProgressStage::Extracting,
@@ -314,14 +379,34 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    // Loose string tables override the ones extracted from archives.
+    // Loose string tables override the effective archive VFS for legacy projection.
     let strings = StringsSource {
         roots: vec![config.data_dir.clone(), vfs.clone()],
         language: config.language.clone(),
     };
-    let merged = EsmParser::convert_plugins_with_records(plugins, &database, &strings)?;
+    let merged = EsmParser::convert_plugins_with_reader(
+        plugins,
+        &database,
+        config.record_reader,
+        &vfs,
+        &strings,
+    )?;
     validate_database(&Connection::open(&database)?)?;
-    write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+    if config.record_reader == crate::config::RecordReader::Inhouse {
+        crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
+    } else {
+        write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+    }
+    crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
+    report.artifacts.push(PathBuf::from("record-reader.json"));
+    if config.record_reader == crate::config::RecordReader::Inhouse {
+        report
+            .artifacts
+            .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+        report
+            .artifacts
+            .push(PathBuf::from("cell_cache_preserved.rkyv"));
+    }
     drop(merged);
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
     for archive in &archives {

@@ -131,16 +131,16 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let benchmark_active =
         config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
     configure_benchmark_priority(benchmark_active)?;
-    let window = (!config.headless || shots_active).then(|| Window {
+    let window = (!config.headless || shots_active || config.hidden_window).then(|| Window {
         title: config.window_title(),
+        visible: !config.hidden_window,
         // A shots file's frame is the size its reference screenshots were taken at, so the window,
         // and every PNG taken of it, is exactly that many pixels.
         resolution: match &shots {
             Some(run) => run.file.window_resolution(),
             None => (1600, 900).into(),
         },
-        // A timing or shots run opens on screen, in the middle, so whoever is at the machine can
-        // see what is running and not disturb it.
+        // Visible timing and shots runs open in the middle of the primary screen.
         position: if benchmark_active || shots_active {
             WindowPosition::Centered(MonitorSelection::Primary)
         } else {
@@ -161,7 +161,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some(asset_lock) = asset_lock {
         app.insert_resource(AssetDirectoryReadLock { _guard: asset_lock });
     }
-    if benchmark_active || shots_active {
+    if benchmark_active || shots_active || config.hidden_window {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
         // unfocused window to 60 Hz, which makes a 16.67 ms P95 gate measure the
@@ -219,7 +219,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 fly_camera.run_if(console_closed),
                 capture_acceptance_screenshot,
             ),
-        );
+        )
+        .add_systems(PostUpdate, keep_windows_hidden);
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
             .insert_resource(catalog)
@@ -271,7 +272,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             output = %run.output_dir.display(),
             "rendering camera poses"
         );
-        app.add_plugins((crate::capture_frame::CaptureFramePlugin, ShotsPlugin { run }));
+        app.add_plugins((
+            crate::capture_frame::CaptureFramePlugin,
+            ShotsPlugin { run },
+        ));
     }
     let exit = app.run();
     drop(app);
@@ -290,6 +294,18 @@ fn finished(exit: &AppExit) -> Result<()> {
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
+    }
+}
+
+/// Reset accidental visibility changes before Bevy applies Window changes in Last.
+/// The primary window starts hidden, so screenshot rendering needs no visible flash.
+fn keep_windows_hidden(config: Res<EngineConfig>, mut windows: Query<&mut Window>) {
+    if config.hidden_window {
+        for mut window in &mut windows {
+            if window.visible {
+                window.visible = false;
+            }
+        }
     }
 }
 
@@ -536,12 +552,11 @@ impl StreamingFixtureDirectory {
         let connection = Connection::open(&database_path)?;
         connection.execute_batch(
             r#"CREATE TABLE schema_info(version INTEGER NOT NULL);
-            INSERT INTO schema_info VALUES(7);
             CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
             CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);
             CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
             CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
-            CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
+            CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL,header_flags INTEGER NOT NULL DEFAULT 0,enable_parent_id INTEGER,enable_parent_flags INTEGER NOT NULL DEFAULT 0);
             CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);
             CREATE TABLE lod_build(id INTEGER PRIMARY KEY CHECK (id=1),build_identity TEXT NOT NULL);
             INSERT INTO lod_build VALUES(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
@@ -550,6 +565,10 @@ impl StreamingFixtureDirectory {
             CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
             CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);"#,
+        )?;
+        connection.execute(
+            "INSERT INTO schema_info VALUES(?1)",
+            [shared::WORLD_DATABASE_SCHEMA_VERSION],
         )?;
         connection.execute(
             "INSERT INTO worldspaces(id,editor_id,parent_world,flags,lod_origin_x,lod_origin_y) VALUES(?1,'Fixture',NULL,0,?2,?3)",
@@ -2299,6 +2318,30 @@ mod tests {
     use super::*;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::world_serialization::WorldSerializationPlugin;
+
+    /// A capture window remains hidden if an update system tries to show it.
+    #[test]
+    fn hidden_capture_suppresses_visibility_changes_before_window_sync() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig {
+            hidden_window: true,
+            ..default()
+        })
+        .add_systems(PostUpdate, keep_windows_hidden);
+        let entity = app
+            .world_mut()
+            .spawn(Window {
+                visible: true,
+                ..default()
+            })
+            .id();
+        app.update();
+        assert!(!app.world().get::<Window>(entity).unwrap().visible);
+        app.world_mut().resource_mut::<EngineConfig>().hidden_window = false;
+        app.world_mut().get_mut::<Window>(entity).unwrap().visible = true;
+        app.update();
+        assert!(app.world().get::<Window>(entity).unwrap().visible);
+    }
 
     #[test]
     fn relative_asset_root_is_shared_by_database_and_streamed_files() {

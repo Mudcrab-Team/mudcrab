@@ -2,6 +2,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
+use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
     pipeline::{Cancellation, Interrupted, PipelineFailure},
@@ -32,6 +33,7 @@ struct Cli {
     texture_fallback_quality: Option<u8>,
     texture_uastc_level: Option<u8>,
     texture_zstd_level: Option<i32>,
+    record_reader: RecordReader,
     fail_fast: bool,
     invalidate_cache: bool,
     verify_cache: bool,
@@ -51,6 +53,7 @@ impl Cli {
         config.verify_cache = self.verify_cache;
         config.no_lod = self.no_lod;
         config.texture_encoder = self.texture_encoder;
+        config.record_reader = self.record_reader;
         if let Some(value) = self.texture_fallback_quality {
             config.texture_fallback_quality = value;
         }
@@ -525,6 +528,9 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if let Some(language) = &cli.language {
         command.push_str(&format!(" --language {language}"));
     }
+    if cli.record_reader == RecordReader::Inhouse {
+        command.push_str(" --record-reader inhouse");
+    }
     command
 }
 
@@ -759,6 +765,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
+    let mut record_reader = RecordReader::Legacy;
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
     let mut texture_fallback_quality = None;
@@ -810,6 +817,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     Some("cpu") => false,
                     Some("gpu") => true,
                     _ => bail!("--texture-encoder must be cpu or gpu"),
+                };
+            }
+            Some("--record-reader") => {
+                record_reader = match next_value(&mut args, "--record-reader")?.to_str() {
+                    Some("legacy") => RecordReader::Legacy,
+                    Some("inhouse") => RecordReader::Inhouse,
+                    _ => bail!("--record-reader must be legacy or inhouse"),
                 };
             }
             Some("--gpu-quality") => {
@@ -908,6 +922,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         texture_fallback_quality,
         texture_uastc_level,
         texture_zstd_level,
+        record_reader,
         fail_fast,
         invalidate_cache,
         verify_cache,
@@ -966,6 +981,7 @@ fn usage() -> &'static str {
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
                  [--mo2-instance DIR] [--mo2-profile NAME]
                  [--language NAME]
+                 [--record-reader legacy|inhouse]
        converter check <output directory> [--full]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
@@ -1453,6 +1469,7 @@ mod tests {
             texture_fallback_quality: None,
             texture_uastc_level: None,
             texture_zstd_level: None,
+            record_reader: RecordReader::Legacy,
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
@@ -1478,6 +1495,25 @@ mod tests {
         let french = parse_cli(vec!["Data".into(), "--language".into(), "french".into()]).unwrap();
         assert_eq!(french.language.as_deref(), Some("french"));
         assert!(resume_command("converter", &french, staging).ends_with(" --language french"));
+        let inhouse = parse_cli(vec![
+            "Data".into(),
+            "--record-reader".into(),
+            "inhouse".into(),
+        ])
+        .unwrap();
+        assert_eq!(inhouse.record_reader, RecordReader::Inhouse);
+        assert!(
+            resume_command("converter", &inhouse, staging).ends_with(" --record-reader inhouse")
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--record-reader".into(),
+                "other".into()
+            ])
+            .is_err()
+        );
+        assert!(parse_cli(vec!["Data".into(), "--record-reader".into()]).is_err());
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {

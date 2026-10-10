@@ -398,8 +398,9 @@ fn unknown_body_fields_are_ignored() {
 
 /// Producer 23 predates body dynamics even though #118 retained its schema number.
 /// Matching source/configuration/output proof must not hide the changed mesh contract.
+/// Producer 24 and current have matching dynamics contracts and reuse proven GLBs.
 #[tokio::test]
-async fn schema23_cached_mesh_rebuilds_body_dynamics_and_current24_reuses() {
+async fn schema23_cached_mesh_rebuilds_body_dynamics_and_compatible_meshes_reuse() {
     use converter::{
         cache::{ConversionManifest, configuration_hash_for_schema, hash_bytes},
         config::PipelineConfig,
@@ -416,6 +417,7 @@ async fn schema23_cached_mesh_rebuilds_body_dynamics_and_current24_reuses() {
     )
     .unwrap();
     let config = PipelineConfig::new(&data, &output);
+    /// Runs the pipeline while draining progress events.
     async fn run(config: PipelineConfig) -> converter::pipeline::PipelineReport {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -464,8 +466,16 @@ async fn schema23_cached_mesh_rebuilds_body_dynamics_and_current24_reuses() {
     );
     assert_eq!(read_glb(&mesh).1.bodies.len(), 1);
     assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
-    let reused = run(config).await;
+    let mut compatible: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    compatible.schema_version = 24;
+    compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+    compatible.save(&manifest_path).unwrap();
+    let reused = run(config.clone()).await;
     assert_eq!(reused.converted, 0);
     assert_eq!(reused.cache_hits, 1);
     assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
+    let current = run(config).await;
+    assert_eq!(current.converted, 0);
+    assert_eq!(current.cache_hits, 1);
 }

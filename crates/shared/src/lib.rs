@@ -8,12 +8,12 @@ pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-// Schema 5 belongs to grass data (#152); LOD tables first appear in schema 6.
-pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 7;
+/// Current combined database contract: corrected TXST roles and one-byte XESP flags.
+pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 /// Latest producer required when a package advertises the combined LOD contract.
-/// 25: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
-/// shapes) changes GLB collision extras.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 25;
+/// 27 combines collision coverage and corrected TXST semantics from pending producers 25/26.
+/// Neither earlier producer proves the combined mesh and texture contract.
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 27;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and

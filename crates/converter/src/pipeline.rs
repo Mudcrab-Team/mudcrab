@@ -700,17 +700,37 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            // Loose string tables override the ones extracted from archives.
+            // Both frontends share the selected input scope; legacy resolves configured tables.
             let strings = StringsSource {
                 roots: vec![config.data_dir.clone(), vfs_dir.clone()],
                 language: config.language.clone(),
             };
-            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path, &strings)?;
+            let merged = EsmParser::convert_plugins_with_reader(
+                &plugins,
+                &db_path,
+                config.record_reader,
+                &vfs_dir,
+                &strings,
+            )?;
             validate_database(&Connection::open(&db_path)?)?;
-            write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
+            } else {
+                write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            }
+            crate::esm::inhouse::write_reader_identity(staging, config.record_reader)?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                report
+                    .artifacts
+                    .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+                report
+                    .artifacts
+                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
+            }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("record-reader.json"),
             ]);
         }
 
@@ -2445,6 +2465,9 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         "skyrim_world.db-wal",
         "skyrim_world.db-shm",
         "cell_cache.rkyv",
+        "cell_cache_preserved.rkyv",
+        "record-reader.json",
+        "inhouse-reader-diagnostics.json",
         "integration-report.json",
         "lod-manifest.json",
         "metadata-rebuild.json",
@@ -4227,8 +4250,9 @@ mod tests {
         assert!(output.join("skyrim_world.db").is_file());
     }
 
+    /// Older mesh producers regenerate collision payloads; source changes remain visible.
     #[tokio::test]
-    async fn current24_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn collision_producer_upgrade_rebuilds_meshes_and_changed_source() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -4243,7 +4267,10 @@ mod tests {
         config.cpu_jobs = 2;
         run_without_progress(config.clone()).await;
         let path = output.join("conversion-manifest.json");
-        let old: ConversionManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old.schema_version = 24;
+        old.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -4258,10 +4285,20 @@ mod tests {
             .collect();
         assert!(!meshes.is_empty());
         let reused = run_without_progress(config.clone()).await;
-        assert_eq!(reused.converted, 0);
+        let textures = old
+            .entries
+            .values()
+            .filter(|entry| entry.output.ends_with(".ktx2"))
+            .count();
+        assert_eq!(reused.converted, (textures + meshes.len()) as u64);
         for (relative, bytes) in &meshes {
             assert_eq!(fs::read(output.join(relative)).unwrap(), *bytes);
         }
+        let mut compatible: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        compatible.schema_version = 24;
+        compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+        compatible.save(&path).unwrap();
         fs::write(
             data.join("meshes/generated.nif"),
             dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
@@ -4443,9 +4480,12 @@ mod tests {
         fs::create_dir_all(staging.join("vfs")).unwrap();
         overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
         let plugins = vec![data.join("Skyrim.esm")];
-        let records =
-            EsmParser::convert_plugins_with_records(&plugins, &staging.join("skyrim_world.db"))
-                .unwrap();
+        let records = EsmParser::convert_plugins_with_records(
+            &plugins,
+            &staging.join("skyrim_world.db"),
+            &Default::default(),
+        )
+        .unwrap();
         write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
         let mut cache = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(
             &fs::read(staging.join("cell_cache.rkyv")).unwrap(),

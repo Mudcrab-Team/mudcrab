@@ -352,11 +352,13 @@ async fn resumed_conversion_drops_removed_textures_and_stale_provenance() {
     }
 }
 
+/// Combined grass/LOD export uses the current shared producer and database identities.
 #[tokio::test]
 async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     generate_data(&data);
+    /// Encodes one synthetic subrecord.
     fn sub(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         [
             tag.as_slice(),
@@ -365,6 +367,7 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
         ]
         .concat()
     }
+    /// Encodes one synthetic record header and payload.
     fn record(tag: &[u8; 4], id: u32, payload: &[u8]) -> Vec<u8> {
         [
             tag.as_slice(),
@@ -408,14 +411,17 @@ async fn combined_export_keeps_grass_links_lod_origins_and_payloads() {
     let world_schema: u32 = db
         .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(world_schema, 7);
+    assert_eq!(world_schema, shared::WORLD_DATABASE_SCHEMA_VERSION);
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
     assert_eq!(
         manifest["converter_schema"],
         shared::LOD_CONVERTER_SCHEMA_VERSION
     );
-    assert_eq!(manifest["world_database_schema"], 7);
+    assert_eq!(
+        manifest["world_database_schema"],
+        shared::WORLD_DATABASE_SCHEMA_VERSION
+    );
     assert_eq!(manifest["chunks"], report.lod_chunks);
 }
 

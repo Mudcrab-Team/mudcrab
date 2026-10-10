@@ -994,6 +994,7 @@ pub(crate) mod tests {
         std::fs::write(output.join("integration-report.json"), report).unwrap();
     }
 
+    /// Play readiness binds the actual database to its report and exact current LOD contract.
     #[test]
     fn readiness_validates_database_report_and_current_lod_identity() {
         let output = complete_output("db-lod-contract");
@@ -1005,7 +1006,7 @@ pub(crate) mod tests {
             );
         }
         set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 5);
-        write_integration_report(&output, true); // Says current world 7, actual DB is 5.
+        write_integration_report(&output, true); // Reports the current schema; actual DB is 5.
         assert!(
             !output_is_complete(&output),
             "integration report must match actual schema"
@@ -1015,7 +1016,11 @@ pub(crate) mod tests {
             !output_is_complete(&output),
             "corrupt database cannot enable Play"
         );
-        set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 7);
+        set_schemas(
+            &output,
+            converter::cache::CONVERTER_SCHEMA_VERSION,
+            shared::WORLD_DATABASE_SCHEMA_VERSION,
+        );
         let identity = "a".repeat(64);
         let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
         database
@@ -1040,12 +1045,14 @@ pub(crate) mod tests {
             "mixed build identity cannot enable Play"
         );
         lod["build_identity"] = serde_json::json!(identity);
-        lod["converter_schema"] = serde_json::json!(23);
-        std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
-        assert!(
-            !output_is_complete(&output),
-            "stale LOD producer cannot enable Play"
-        );
+        for stale_producer in [25, 24, 23] {
+            lod["converter_schema"] = serde_json::json!(stale_producer);
+            std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
+            assert!(
+                !output_is_complete(&output),
+                "stale LOD producer {stale_producer} cannot enable Play"
+            );
+        }
         std::fs::remove_file(&path).unwrap();
         database
             .execute("INSERT INTO lod_chunks(id) VALUES(0)", [])

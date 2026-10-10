@@ -5,6 +5,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Record frontend used to generate the runtime database and terrain cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordReader {
+    /// Existing hand-written record reader.
+    #[default]
+    Legacy,
+    /// MudCrab's schema-driven Rust decoder.
+    Inhouse,
+}
+
 /// Which encoder turns DDS textures into UASTC KTX2.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +47,9 @@ pub struct PipelineConfig {
     /// Resolve this MO2 profile over physical Data; incompatible with plugins_file.
     #[serde(default)]
     pub mo2: Option<mo2::Selection>,
+    /// Defaults to legacy for older serialized configurations.
+    #[serde(default)]
+    pub record_reader: RecordReader,
     /// Explicit per-worldspace LOD origins for custom worlds, keyed by
     /// worldspace editor id: `[grid_x, grid_y]`. Installed worlds read
     /// `lodsettings/<WorldspaceEDID>.lod` instead; a world with neither gets
@@ -88,6 +102,7 @@ impl PipelineConfig {
             cache_dir: None,
             plugins_file: None,
             mo2: None,
+            record_reader: RecordReader::Legacy,
             lod_origins: BTreeMap::new(),
             no_lod: false,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),

@@ -88,23 +88,29 @@ content hashes of inputs, rule set, settings, and compiler version
 publish only after every referenced payload validates. The `lod` reshape
 ships with a world DB version bump.
 
-The combined implementation uses converter schema 25 (24 before collision coverage) and world schema 7. World schema 5
+The combined implementation uses converter schema 27 and world schema 9. World schema 5
 belongs to grass data; LOD tables were introduced in schema 6. Only verified current
-producer 25 meshes may be reused during normal conversion. Producer 23 was shared by
+producer-27 meshes may be reused during normal conversion. Producer 27 combines
+sphere/cylinder collision payloads, corrected TXST columns, texture semantics and one-byte XESP flags.
+Producer 23 was shared by
 the source-surface exporter before and after rigid-body dynamics changed the GLB payload;
-its number cannot prove the current mesh contract. All earlier producers through 24
+its number cannot prove the current mesh contract. All earlier producers through 26
 regenerate GLBs and textures, retaining only verified scripts/archive ingestion.
-Numeric ordering grants no reuse.
+Numeric ordering grants no reuse. Separate #194/#196 candidates both used 25/8
+for different contracts; the combined producer allocates 27/9 and rejects those
+ambiguous candidate identities for asset or metadata reuse.
 Configuration proof includes encoder selection and GPU quality, while batch size only
 changes scheduling. Metadata-only retained bytes preserve explicit original producer,
-configuration, manifest and output hashes; they are never certified as current 25 bytes.
+configuration, manifest and output hashes; their retained textures are not certified as
+current-producer bytes. A subsequent normal conversion regenerates earlier meshes
+and textures while retaining verified scripts and archive ingestion.
 Grass-only schema-5 worlds remain readable without LOD tables.
 
 When combining these branches, resolve the cache and metadata gates deliberately:
 the numeric ordering alone does not prove that a lighting mesh is compatible
-with the LOD branch. A combined producer must use a new converter identity
-above 23, and a combined grass/LOD database must use a new world identity above
-6; update runtime, launcher, manifests and capture gates together. Existing
+with the LOD branch. Every independent output-contract change must allocate a fresh
+producer/database identity and resolve explicit compatibility gates; update runtime,
+launcher, manifests and capture gates together. Existing
 native evidence below describes its original producer and is historical.
 Main's converter schema 16 identifies collision-aware assets; retained assets
 keep their producer schema/configuration during metadata-only rebuilds.
@@ -161,7 +167,7 @@ to LOD build/fingerprint identity; ordinary producer 24 bytes retain their prove
 - LOD-V3: resumed output after an origin change equals a clean build's chunk
   keys/hashes; removing the winning sidecar removes old chunks, R-tree rows,
   payloads, and manifest. Full-detail conversion remains usable.
-- LOD-V4: `--reuse-assets DIR` requires complete source producer 15, 16, 19, 20, 21, 22, 23, 24 or 25;
+- LOD-V4: `--reuse-assets DIR` requires a supported complete source producer;
   retained bytes match manifest hashes; source DB plugin order/checksums
   match originals before rebuild. New disjoint output only; source unchanged.
   Retained meshes/textures/scripts reflect source package, not later Data
@@ -181,18 +187,18 @@ to LOD build/fingerprint identity; ordinary producer 24 bytes retain their prove
   including ESL index; preserve inversion flags and reference header flags.
 - LOD-V7: metadata-only migration preserves the original mesh cache contract
   in `retained_mesh_schema_version`, including repeated rebuilds. Normal
-  conversion regenerates retained older-contract GLBs but still reuses
-  compatible textures/scripts. Runtime metadata schema is independent.
+  conversion regenerates incompatible retained GLBs and all old textures;
+  proven producer-24 GLBs and unchanged scripts remain reuse candidates. Runtime metadata schema is independent.
   Preserve the exact source manifest beside the derived provenance report;
   rebuilding metadata does not assert a newer asset producer.
   Markerless metadata-only sources cannot become GLB cache hits and are
   rejected by metadata reuse; recover from verified original assets or an
   independently audited provenance migration, never infer a current producer.
   Preserve `retained_asset_configuration_hash` independently of rebuilt
-  metadata settings. Explicit reuse accepts the native schema-16 projection
+  metadata settings. Explicit reuse accepts the historical schema-15 fixed-Zstd-6 configuration or native schema-16 projection
   with fixed `texture_zstd_level=6` only when every other setting matches;
-  normal conversion reuses schema-16 meshes when source, bytes and actual
-  configuration match; schema 12-15 mesh contracts still invalidate. Equal schema
+  normal conversion regenerates schema-12–26 meshes; current producer-27
+  meshes still require matching source, bytes and configuration. Equal schema
   numbers do not establish equal producer contracts. Repeated rebuilds keep
   the original retained configuration hash and verify it again. Missing
   producer configuration in metadata-only output rejects metadata reuse and

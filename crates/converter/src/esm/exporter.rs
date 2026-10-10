@@ -9,7 +9,10 @@ use crate::{
     esm::records::record_type::vmad::parse_vmad,
 };
 use rusqlite::{Connection, Result, Transaction, params};
-use std::{collections::HashMap, str::from_utf8};
+use std::{
+    collections::{BTreeSet, HashMap},
+    str::from_utf8,
+};
 
 const CELL_SIZE: f32 = 4096.0;
 
@@ -233,9 +236,17 @@ type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 /// Export selected records without changing existing provenance. Grass records
 /// outside this subset are preserved; movement projections are rebuilt from it.
 /// Synthetic records without a source load order have no formid_map entry.
-/// Without a load order, lstring fields are read as text.
+/// Without a load order, lstring fields are read as runtime text.
 pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Result<()> {
-    export_records(conn, master, None, &PluginStrings::text_only())
+    export_records(
+        conn,
+        master,
+        None,
+        &PluginStrings::text_only(),
+        false,
+        None,
+        None,
+    )
 }
 
 /// Export a complete effective load order, replacing both grass projections.
@@ -259,8 +270,70 @@ pub fn export_to_db_with_strings(
     order: &LoadOrder,
     strings: &PluginStrings,
 ) -> Result<()> {
-    export_records(conn, master, Some(order), strings)?;
+    export_records(conn, master, Some(order), strings, false, None, None)?;
     strings.report();
+    Ok(())
+}
+
+/// Export canonical decoded fields with Skyrim's texture slots and byte-wide XESP flags.
+pub(crate) fn export_inhouse_to_db(
+    conn: &Connection,
+    master: &HashMap<u32, RawRecord>,
+    order: &LoadOrder,
+    unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
+    terrain_offsets: &HashMap<u32, u64>,
+) -> Result<()> {
+    export_records(
+        conn,
+        master,
+        Some(order),
+        &PluginStrings::text_only(),
+        true,
+        Some(unresolved_fields),
+        Some(terrain_offsets),
+    )
+}
+
+/// Keep unresolved text occurrences in the archive while nullable projections see no text.
+/// A genuinely resolved empty string is not filtered out.
+fn runtime_projection(
+    record: &RawRecord,
+    unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
+) -> Option<RawRecord> {
+    let unresolved = unresolved_fields?.get(&record.form_id)?;
+    let mut projected = record.clone();
+    projected.subrecords = record
+        .subrecords
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !unresolved.contains(index))
+        .map(|(_, field)| field.clone())
+        .collect();
+    Some(projected)
+}
+
+/// Reject unusable movement records before the tolerant frontend exports them.
+pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
+    let view = SubrecordView::new(&record.subrecords);
+    match &record.record_type {
+        b"MOVT" if record.form_id == 0x0003_580D => {
+            decode_npc_default_speeds(&view, record.form_id)?;
+        }
+        b"GMST"
+            if view.get_string(b"EDID").is_some_and(|name| {
+                ["fMoveCharWalkBase", "fJumpHeightMin"]
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(&name))
+            }) =>
+        {
+            decode_movement_setting(&view, record.form_id)?;
+        }
+        b"RACE" => {
+            optional_race_movement_link(&view, record.form_id, b"WKMV")?;
+            optional_race_movement_link(&view, record.form_id, b"RNMV")?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -271,13 +344,10 @@ fn export_records(
     master: &HashMap<u32, RawRecord>,
     order: Option<&LoadOrder>,
     strings: &PluginStrings,
+    inhouse: bool,
+    unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
+    terrain_offsets: Option<&HashMap<u32, u64>>,
 ) -> Result<()> {
-    let land_winners = super::records::land_by_cell(master).map_err(|error| {
-        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            error.to_string(),
-        )))
-    })?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM movement_types", [])?;
     tx.execute("DELETE FROM movement_game_settings", [])?;
@@ -296,12 +366,32 @@ fn export_records(
         tx.execute("DELETE FROM grass_types", [])?;
     }
     let mut cells: HashMap<u32, CellMetadata> = HashMap::new();
+    let unordered_offsets = HashMap::new();
+    let terrain_winners = if inhouse {
+        crate::esm::cell_cache::land_winners_by_cell(
+            master,
+            terrain_offsets.unwrap_or(&unordered_offsets),
+        )
+    } else {
+        super::records::land_by_cell(master)
+            .map_err(|error| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    error.to_string(),
+                )))
+            })?
+            .into_iter()
+            .map(|(cell, record)| (cell, record.form_id))
+            .collect()
+    };
 
     for (&form_id, record) in master
         .iter()
         .filter(|(_, record)| &record.record_type == b"CELL")
     {
-        let (grid_x, grid_y, interior_name) = extract_cell_info(&record.subrecords);
+        let projection = runtime_projection(record, unresolved_fields);
+        let projected = projection.as_ref().unwrap_or(record);
+        let (grid_x, grid_y, interior_name) = extract_cell_info(&projected.subrecords);
         let data = serialize_subrecords(&record.subrecords);
         insert_cell(
             &tx,
@@ -340,6 +430,9 @@ fn export_records(
             )?;
         }
 
+        let canonical_record = record;
+        let projection = runtime_projection(record, unresolved_fields);
+        let record = projection.as_ref().unwrap_or(record);
         let view = SubrecordView::new(&record.subrecords);
         if let Some(vmad_bytes) = view.find(b"VMAD")
             && let Ok((_, vmad)) = parse_vmad(vmad_bytes, &record.record_type)
@@ -376,12 +469,12 @@ fn export_records(
                     cell_id,
                     cells.get(&cell_id).copied(),
                     record.flags,
-                    &record.subrecords,
+                    &canonical_record.subrecords,
                 )?;
             }
             "LAND" => {
                 let cell_id = record.cell_form_id.unwrap_or(form_id);
-                if land_winners[&cell_id].form_id != form_id {
+                if terrain_winners.get(&cell_id) != Some(&form_id) {
                     continue;
                 }
                 let (heightmap, vtex, vclr, normals) = extract_land_data(&record.subrecords);
@@ -407,17 +500,19 @@ fn export_records(
             // Every base record type with a world model. The runtime spawns
             // anything that resolves a model path here, so trees, flora,
             // containers, doors, activators, and placed inventory all render;
-            // records without MODL (triggers, markers) store NULL and are
+            // Records without MODL (triggers, markers) store NULL and are
             // skipped at spawn time. `LIGH` is handled above: the light goes
             // in `lights` and only a light with geometry lands in `statics`.
             "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "WEAP"
             | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL" | "ARMO" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
-                // gendered MOD2/MOD3 slots (male first, female fallback).
+                // gendered world-model slots (male first, female fallback).
+                // The in-house frontend uses MOD4 for the female world model;
+                // legacy keeps its earlier MOD3 fallback for compatibility.
                 let model = if type_str == "ARMO" {
                     view.get_string(b"MOD2")
-                        .or_else(|| view.get_string(b"MOD3"))
+                        .or_else(|| view.get_string(if inhouse { b"MOD4" } else { b"MOD3" }))
                 } else {
                     view.get_string(b"MODL")
                 };
@@ -493,12 +588,12 @@ fn export_records(
                         view.get_string(b"EDID"),
                         view.get_string(b"TX00"),
                         view.get_string(b"TX01"),
-                        view.get_string(b"TX02"),
                         view.get_string(b"TX03"),
                         view.get_string(b"TX04"),
                         view.get_string(b"TX05"),
-                        view.get_string(b"TX06"),
-                        view.get_string(b"TX07"),
+                        view.get_string(b"TX02"),
+                        view.get_string(if inhouse { b"TX07" } else { b"TX06" }),
+                        view.get_string(if inhouse { b"TX06" } else { b"TX07" }),
                     ],
                 )?;
             }
@@ -678,6 +773,7 @@ fn insert_light(tx: &Transaction<'_>, form_id: u32, view: &SubrecordView<'_>) ->
     Ok(())
 }
 
+/// Write a reference and its exterior spatial projection.
 pub fn insert_reference(
     tx: &Transaction<'_>,
     form_id: u32,

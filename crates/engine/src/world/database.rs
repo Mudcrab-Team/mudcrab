@@ -1453,6 +1453,7 @@ mod tests {
         }
     }
 
+    /// Builds a database and conversion manifest with the current combined LOD identities.
     fn lod_build_contract_fixture(path: &Path, chunks: u32, identity: &str) {
         std::fs::write(
             path.parent().unwrap().join("conversion-manifest.json"),
@@ -1466,9 +1467,14 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_info(version INTEGER NOT NULL);
-                 INSERT INTO schema_info VALUES(7);
                  CREATE TABLE lod_chunks(id INTEGER PRIMARY KEY);
                  CREATE TABLE lod_build(id INTEGER PRIMARY KEY,build_identity TEXT NOT NULL);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_info VALUES(?1)",
+                [shared::WORLD_DATABASE_SCHEMA_VERSION],
             )
             .unwrap();
         for id in 0..chunks {
@@ -1506,13 +1512,20 @@ mod tests {
         }
     }
 
+    /// Current database schemas require LOD tables even when no LOD manifest is present.
     #[test]
     fn current_database_requires_lod_tables_even_without_manifest() {
         let directory = tempfile::tempdir().unwrap();
         let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
-        connection.execute_batch(
-            "CREATE TABLE schema_info(version INTEGER NOT NULL); INSERT INTO schema_info VALUES(7);"
-        ).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_info(version INTEGER NOT NULL);")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_info VALUES(?1)",
+                [shared::WORLD_DATABASE_SCHEMA_VERSION],
+            )
+            .unwrap();
         assert!(load_lod_chunks(&connection, lod_query([0.0, 0.0], [1.0, 1.0])).is_err());
         assert!(validate_lod_build_contract(directory.path(), 20).is_err());
     }
@@ -1529,6 +1542,12 @@ mod tests {
                 shared::WORLD_DATABASE_SCHEMA_VERSION,
                 true,
             ),
+            (25, shared::WORLD_DATABASE_SCHEMA_VERSION, false),
+            (shared::LOD_CONVERTER_SCHEMA_VERSION, 8, false),
+            (25, 8, false),
+            (24, shared::WORLD_DATABASE_SCHEMA_VERSION, false),
+            (shared::LOD_CONVERTER_SCHEMA_VERSION, 7, false),
+            (24, 7, false),
             (24, 6, false),
             (23, 7, false),
             (22, 7, false),
@@ -1537,6 +1556,11 @@ mod tests {
             (19, 7, false),
             (16, 7, false),
         ] {
+            std::fs::write(
+                directory.path().join("conversion-manifest.json"),
+                serde_json::to_vec(&serde_json::json!({"schema_version": producer})).unwrap(),
+            )
+            .unwrap();
             Connection::open(&database)
                 .unwrap()
                 .execute("UPDATE schema_info SET version=?1", [world])

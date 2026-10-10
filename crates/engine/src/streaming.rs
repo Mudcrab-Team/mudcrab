@@ -3326,6 +3326,8 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
+/// Validates terrain geometry and nonzero image dependencies. Normalized zero-ID layers retain
+/// their slots and weights without requiring a converted texture.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -3364,7 +3366,7 @@ fn validate_terrain_snapshot(
     }
     for quadrant in 0..4 {
         for layer in quadrant_layers(terrain, quadrant)? {
-            if layer.is_base && layer.texture_form_id == 0 {
+            if layer.texture_form_id == 0 {
                 continue;
             }
             if catalog.landscape_diffuse(layer.texture_form_id).is_none() {
@@ -5513,6 +5515,75 @@ mod tests {
         let mut terrain = terrain_fixture(1, 0.0);
         terrain.layers.clear();
         assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
+    }
+
+    /// Zero overlays retain ordered weights and geometry validation while missing nonzero
+    /// diffuse images still fail locally and a subsequent placeholder snapshot remains usable.
+    #[test]
+    fn terrain_zero_texture_overlay_preserves_weights_and_nonzero_image_errors() {
+        let directory = tempfile::tempdir().unwrap().keep();
+        let path = directory.join("placeholder-catalogue.db");
+        write_empty_catalogue(&path);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("INSERT INTO landscape_textures VALUES(2116,NULL);")
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&path).unwrap();
+        let mut terrain = terrain_fixture(91, 12.5);
+        for layer in &mut terrain.layers {
+            layer.texture_form_id = 0;
+        }
+        terrain.layers.extend([
+            TerrainLayerSnapshot {
+                texture_form_id: 0,
+                quadrant: 0,
+                layer: 4,
+                is_base: false,
+                weights: vec![(3, 0.625)],
+            },
+            TerrainLayerSnapshot {
+                texture_form_id: 0,
+                quadrant: 0,
+                layer: 1,
+                is_base: false,
+                weights: vec![(0, 0.25), (18, 0.75)],
+            },
+        ]);
+        validate_terrain_snapshot(&terrain, &catalog)
+            .expect("normalized zero overlays retain their weights without image lookup");
+        let layers = quadrant_layers(&terrain, 0).unwrap();
+        assert_eq!(
+            layers.iter().map(|layer| layer.layer).collect::<Vec<_>>(),
+            vec![0, 1, 4]
+        );
+        let grids = quadrant_overlay_weights(&terrain, 0).unwrap();
+        assert_eq!(grids.len(), 2);
+        assert_eq!(grids[0][0].to_bits(), 0.25f32.to_bits());
+        assert_eq!(grids[0][18].to_bits(), 0.75f32.to_bits());
+        assert_eq!(grids[1][3].to_bits(), 0.625f32.to_bits());
+        assert_eq!(grids[1][0], 0.0);
+        assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
+
+        terrain.layers[4].texture_form_id = 0x844;
+        let error = validate_terrain_snapshot(&terrain, &catalog).unwrap_err();
+        assert!(error.contains("00000844") && error.contains("no converted diffuse image"));
+        terrain.layers[4].texture_form_id = 0;
+        assert!(validate_terrain_snapshot(&terrain, &catalog).is_ok());
+
+        terrain.layers[4].weights.push((3, 0.5));
+        assert!(
+            validate_terrain_snapshot(&terrain, &catalog)
+                .unwrap_err()
+                .contains("duplicate VTXT")
+        );
+        terrain.layers[4].weights.pop();
+        terrain.heights[0] = f32::NAN;
+        assert!(
+            validate_terrain_snapshot(&terrain, &catalog)
+                .unwrap_err()
+                .contains("non-finite height")
+        );
     }
 
     #[test]
