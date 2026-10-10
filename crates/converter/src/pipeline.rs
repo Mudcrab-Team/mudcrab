@@ -2301,7 +2301,11 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
         )?);
     }
     for folder in ["meshes", "textures", "scripts"] {
-        for path in discover(&staging.join(folder))? {
+        let directory = staging.join(folder);
+        if !directory.is_dir() {
+            continue;
+        }
+        for path in discover(&directory)? {
             if !extension(&path, &["glb", "ktx2", "luau"]) {
                 continue;
             }
@@ -4376,6 +4380,25 @@ mod tests {
         drop(output_lock);
         assert!(crate::repair::OutputOwnership::acquire(&output).is_ok());
         assert!(AssetLock::acquire_exclusive(&output).is_ok());
+    }
+
+    #[test]
+    fn mo2_output_pruning_handles_missing_folders_and_keeps_current_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        prune_removed_mo2_outputs(staging, &[]).unwrap();
+
+        fs::create_dir_all(staging.join("meshes")).unwrap();
+        fs::write(staging.join("meshes/current.glb"), b"current").unwrap();
+        fs::write(staging.join("meshes/stale.glb"), b"stale").unwrap();
+        fs::write(staging.join("meshes/unrelated.txt"), b"unrelated").unwrap();
+        let sources = vec![staging.join("vfs/meshes/current.nif")];
+        prune_removed_mo2_outputs(staging, &sources).unwrap();
+        assert!(staging.join("meshes/current.glb").is_file());
+        assert!(!staging.join("meshes/stale.glb").exists());
+        assert!(staging.join("meshes/unrelated.txt").is_file());
+        assert!(!staging.join("textures").exists());
+        assert!(!staging.join("scripts").exists());
     }
 
     #[test]
