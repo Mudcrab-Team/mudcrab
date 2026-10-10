@@ -210,7 +210,7 @@ pub struct ConversionManifest {
 /// These schema changes affect GLBs/textures/world data, leaving script/archive
 /// bytes compatible. Configuration and source hashes still have to match.
 pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
-    matches!(schema, 12..=23)
+    matches!(schema, 12..=24)
 }
 
 impl ConversionManifest {
@@ -465,7 +465,7 @@ mod tests {
         for name in ["old.glb", "old.ktx2"] {
             let path = directory.path().join(name);
             fs::write(&path, b"verified old bytes").unwrap();
-            for schema_version in [17, 18, 19, 20, 21, 22, 23] {
+            for schema_version in [17, 18, 19, 20, 21, 22, 23, 24] {
                 let record = StagedOutput {
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
@@ -778,6 +778,7 @@ mod tests {
             21,
             22,
             23,
+            24,
             CONVERTER_SCHEMA_VERSION + 1,
         ] {
             let directory = tempfile::tempdir().unwrap();

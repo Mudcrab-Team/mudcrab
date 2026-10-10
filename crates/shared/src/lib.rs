@@ -11,7 +11,9 @@ use rkyv::{Archive, Deserialize, Serialize};
 // Schema 5 belongs to grass data (#152); LOD tables first appear in schema 6.
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 7;
 /// Latest producer required when a package advertises the combined LOD contract.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 24;
+/// 25: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
+/// shapes) changes GLB collision extras.
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 25;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
