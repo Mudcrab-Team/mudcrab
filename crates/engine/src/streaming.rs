@@ -3373,6 +3373,16 @@ fn validate_streaming_lifecycle(
     profiler.set_gauge("streaming/resident_roots", root_entries.len() as f64);
 }
 
+impl TerrainCoverage {
+    pub(crate) fn receipt(&self) -> serde_json::Value {
+        serde_json::json!({
+            "cell": self.grid.to_array(),
+            "quadrant": self.quadrant,
+            "tier": format!("{:?}", self.tier)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6430,15 +6440,5 @@ mod tests {
             Some(&FormId(0x100)),
             "and the reference is still spawned"
         );
-    }
-}
-
-impl TerrainCoverage {
-    pub(crate) fn receipt(&self) -> serde_json::Value {
-        serde_json::json!({
-            "cell": self.grid.to_array(),
-            "quadrant": self.quadrant,
-            "tier": format!("{:?}", self.tier)
-        })
     }
 }

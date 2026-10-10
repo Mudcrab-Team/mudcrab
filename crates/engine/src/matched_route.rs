@@ -65,7 +65,8 @@ impl MatchedRoute {
                 }
                 let delta = distance.signum() * i64::from(self.step_creation_units);
                 for _ in 0..steps {
-                    let previous = i64::from(*relative.last().unwrap()) + i64::from(self.start_creation[0]);
+                    let previous =
+                        i64::from(*relative.last().unwrap()) + i64::from(self.start_creation[0]);
                     let next_relative = i64::from(*relative.last().unwrap()) + delta;
                     let next = next_relative + i64::from(self.start_creation[0]);
                     // f32 integer poses must remain exact, including the coordinate conversion.
@@ -73,7 +74,9 @@ impl MatchedRoute {
                         return Err(invalid());
                     }
                     let index = relative.len();
-                    if previous.div_euclid(i64::from(self.cell_size)) != next.div_euclid(i64::from(self.cell_size)) {
+                    if previous.div_euclid(i64::from(self.cell_size))
+                        != next.div_euclid(i64::from(self.cell_size))
+                    {
                         checkpoints.extend([index - 1, index]);
                     }
                     relative.push(next_relative as i32);
@@ -89,17 +92,25 @@ impl MatchedRoute {
         {
             return Err(invalid());
         }
-        let shots = relative.into_iter().enumerate().map(|(step, x)| Shot {
-            name: format!("route-{step:06}"),
-            worldspace_id: Some(self.worldspace_id),
-            interior_cell_id: None,
-            position: [(i64::from(self.start_creation[0]) + i64::from(x)) as f32, self.start_creation[1] as f32, self.start_creation[2] as f32],
-            yaw: self.yaw_degrees,
-            pitch: self.pitch_degrees,
-            hfov: self.hfov_degrees,
-            reference: None,
-            note: None,
-        }).collect();
+        let shots = relative
+            .into_iter()
+            .enumerate()
+            .map(|(step, x)| Shot {
+                name: format!("route-{step:06}"),
+                worldspace_id: Some(self.worldspace_id),
+                interior_cell_id: None,
+                position: [
+                    (i64::from(self.start_creation[0]) + i64::from(x)) as f32,
+                    self.start_creation[1] as f32,
+                    self.start_creation[2] as f32,
+                ],
+                yaw: self.yaw_degrees,
+                pitch: self.pitch_degrees,
+                hfov: self.hfov_degrees,
+                reference: None,
+                note: None,
+            })
+            .collect();
         let file = ShotsFile {
             width: 1600,
             height: 900,
@@ -127,14 +138,21 @@ mod tests {
             assert_eq!(file.shots[base + 256].position[0], 38912.0);
             assert_eq!(file.shots[base + 768].position[0], 6144.0);
             assert_eq!(file.shots[base + 1024].position, file.shots[0].position);
-            for step in [base + 256, base + 768, base + 1024] { assert!(checkpoints.contains(&step)); }
+            for step in [base + 256, base + 768, base + 1024] {
+                assert!(checkpoints.contains(&step));
+            }
         }
         assert!(checkpoints.contains(&31));
         assert!(checkpoints.contains(&32));
     }
     #[test]
     fn refuses_inconsistent_or_unbounded_routes() {
-        for text in [FIXTURE.replace("3072", "3071"), FIXTURE.replace("3072", "100001"), FIXTURE.replace("\"step_creation_units\": 64", "\"step_creation_units\": 63"), FIXTURE.replace("\"cycles\": 3", "\"cycles\": 0")] {
+        for text in [
+            FIXTURE.replace("3072", "3071"),
+            FIXTURE.replace("3072", "100001"),
+            FIXTURE.replace("\"step_creation_units\": 64", "\"step_creation_units\": 63"),
+            FIXTURE.replace("\"cycles\": 3", "\"cycles\": 0"),
+        ] {
             assert!(MatchedRoute::parse(&text).is_err());
         }
     }

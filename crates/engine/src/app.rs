@@ -260,7 +260,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             output = %run.output_dir.display(),
             "rendering camera poses"
         );
-        app.add_plugins((crate::capture_frame::CaptureFramePlugin, ShotsPlugin { run }));
+        app.add_plugins((
+            crate::capture_frame::CaptureFramePlugin,
+            ShotsPlugin { run },
+        ));
     }
     let exit = app.run();
     drop(app);

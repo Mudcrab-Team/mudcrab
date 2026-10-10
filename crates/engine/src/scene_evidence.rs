@@ -167,9 +167,7 @@ fn record_scene(
         .images
         .as_ref()
         .filter(|_| {
-            config.shots.is_none()
-                && config.matched_route.is_none()
-                && (crossed_cell || reversed)
+            config.shots.is_none() && config.matched_route.is_none() && (crossed_cell || reversed)
         })
         .map(|root| root.join(format!("handoff-{:06}.png", evidence.frame)));
     let record = SceneRecord {

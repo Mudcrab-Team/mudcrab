@@ -891,6 +891,25 @@ fn selected_geometry(members: &[BatchMember], selected: u16) -> (Vec<u32>, Optio
     (indices, bounds)
 }
 
+impl LodTerrainBatches {
+    pub(crate) fn coverage_receipt(&self) -> Vec<serde_json::Value> {
+        self.batches
+            .iter()
+            .map(|batch| {
+                serde_json::json!({
+                    "mesh_generation": format!("{:?}", batch.mesh.id()),
+                    "selection_mask": batch.selected,
+                    "pending_upload": batch.pending_upload,
+                    "initial_upload": self.source_children.is_some(),
+                    "selected_members": batch.members.iter().enumerate()
+                        .filter(|(index, _)| batch.selected & (1 << index) != 0)
+                        .map(|(_, member)| member.coverage.receipt()).collect::<Vec<_>>()
+                })
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{LodStreaming, update_terrain_lod_visibility};
@@ -2372,19 +2391,5 @@ mod tests {
                 .is_some()
         );
         assert_eq!(app.world().resource::<StreamingCommitBudget>().commits, 1);
-    }
-}
-
-impl LodTerrainBatches {
-    pub(crate) fn coverage_receipt(&self) -> Vec<serde_json::Value> {
-        self.batches.iter().map(|batch| serde_json::json!({
-            "mesh_generation": format!("{:?}", batch.mesh.id()),
-            "selection_mask": batch.selected,
-            "pending_upload": batch.pending_upload,
-            "initial_upload": self.source_children.is_some(),
-            "selected_members": batch.members.iter().enumerate()
-                .filter(|(index, _)| batch.selected & (1 << index) != 0)
-                .map(|(_, member)| member.coverage.receipt()).collect::<Vec<_>>()
-        })).collect()
     }
 }

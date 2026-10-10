@@ -1200,8 +1200,11 @@ mod tests {
         let config = run_config(&["--matched-route", "route.json"]);
         assert_eq!(config.matched_route, Some(PathBuf::from("route.json")));
         assert!(!config.interactive_world_physics());
-        assert!(run_config(&["--matched-route", "route.json", "--run-label", "test"])
-            .window_title().contains("matched-route"));
+        assert!(
+            run_config(&["--matched-route", "route.json", "--run-label", "test"])
+                .window_title()
+                .contains("matched-route")
+        );
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a
