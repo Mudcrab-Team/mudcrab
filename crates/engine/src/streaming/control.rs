@@ -292,6 +292,7 @@ pub(crate) struct ControllerState {
     elapsed_seconds: f64,
     recovery: bool,
     recovery_reduced: bool,
+    recovery_memory_pressure: bool,
     recovering_low_seconds: f64,
     recovering_drain_seconds: f64,
     motion_remaining_seconds: f64,
@@ -315,6 +316,7 @@ impl Default for ControllerState {
             elapsed_seconds: 0.0,
             recovery: false,
             recovery_reduced: false,
+            recovery_memory_pressure: false,
             recovering_low_seconds: 0.0,
             recovering_drain_seconds: 0.0,
             motion_remaining_seconds: 0.0,
@@ -484,6 +486,14 @@ impl ControllerState {
         let queue_pressure = input.backlog.any_at_or_above(settings.high_watermarks);
         let reduced_pressure = input.memory_blocked || frame_pressure || frame_spike;
         let pressure = queue_pressure || reduced_pressure;
+        self.recovery_memory_pressure |= input.memory_blocked;
+        let configured_hold = duration(settings.recovery_hold_seconds);
+        let recovery_hold =
+            if settings.adaptive && stationary_startup && !self.recovery_memory_pressure {
+                configured_hold.min(0.1)
+            } else {
+                configured_hold
+            };
         // Use the same timing predicates for entry and recovery. A separate
         // below-target exit or lower CPU threshold can be permanently impossible
         // even after all entry-pressure signals clear. The stable hold provides
@@ -499,9 +509,7 @@ impl ControllerState {
         } else if self.recovery_reduced {
             if timing_recovered {
                 self.recovering_drain_seconds += delta;
-                if self.recovering_drain_seconds + f64::EPSILON
-                    >= duration(settings.recovery_hold_seconds)
-                {
+                if self.recovering_drain_seconds + f64::EPSILON >= recovery_hold {
                     self.recovery_reduced = false;
                     self.recovering_drain_seconds = 0.0;
                 }
@@ -520,9 +528,10 @@ impl ControllerState {
                     .all_at_or_below(settings.low_watermarks, settings.high_watermarks)
             {
                 self.recovering_low_seconds += delta;
-                if self.recovering_low_seconds >= duration(settings.recovery_hold_seconds) {
+                if self.recovering_low_seconds >= recovery_hold {
                     self.recovery = false;
                     self.recovery_reduced = false;
+                    self.recovery_memory_pressure = false;
                     self.recovering_low_seconds = 0.0;
                     self.recovering_drain_seconds = 0.0;
                 }
@@ -915,7 +924,8 @@ mod tests {
                 spike.budgets.max_model_activations,
                 settings.minimum.max_model_activations
             );
-            let holding = advance(&mut state, &settings, queued, 9);
+            let hold_frames = if memory_pressure { 9 } else { 1 };
+            let holding = advance(&mut state, &settings, queued, hold_frames);
             assert_eq!(
                 holding.budgets.max_model_activations,
                 settings.minimum.max_model_activations
@@ -973,6 +983,164 @@ mod tests {
             advance(&mut state, &settings, input, 7).mode,
             ControllerMode::Fixed
         );
+    }
+
+    #[test]
+    fn stationary_startup_recovers_intake_and_reduced_drain_after_short_hold() {
+        for configured in [0.5, 0.05] {
+            let settings = ControllerSettings {
+                recovery_hold_seconds: configured,
+                ..adaptive()
+            };
+            let mut state = ControllerState::default();
+            let healthy = ControllerInput {
+                delta_seconds: 0.025,
+                frame_ms: Some(16.0),
+                streaming_work_ms: 1.0,
+                ..input()
+            };
+            let spike = state.tick(
+                &settings,
+                ControllerInput {
+                    streaming_work_ms: 20.0,
+                    ..healthy
+                },
+            );
+            assert!(spike.reasons.frame_pressure);
+            assert!(!spike.allow_scene_intake);
+            let hold_frames = if configured < 0.1 { 2 } else { 4 };
+            let holding = advance(&mut state, &settings, healthy, hold_frames - 1);
+            assert_eq!(holding.mode, ControllerMode::Recovery);
+            assert!(!holding.allow_scene_intake);
+            assert_eq!(
+                holding.budgets.max_model_activations,
+                settings.minimum.max_model_activations
+            );
+            let resumed = state.tick(&settings, healthy);
+            assert_eq!(resumed.mode, ControllerMode::Startup);
+            assert!(resumed.allow_scene_intake);
+            assert!(resumed.budgets.max_model_activations > settings.minimum.max_model_activations);
+            assert!(!resumed.reasons.recovery_probe);
+            assert_bounded(resumed.budgets, healthy.hard_limits);
+        }
+    }
+
+    #[test]
+    fn walking_and_completed_startup_retain_the_configured_recovery_hold() {
+        let settings = adaptive();
+        for completed in [false, true] {
+            let mut state = ControllerState {
+                startup_complete: completed,
+                ..Default::default()
+            };
+            let healthy = ControllerInput {
+                delta_seconds: 0.025,
+                frame_ms: Some(16.0),
+                streaming_work_ms: 1.0,
+                camera_moving: !completed,
+                ..input()
+            };
+            state.tick(
+                &settings,
+                ControllerInput {
+                    streaming_work_ms: 10.0,
+                    ..healthy
+                },
+            );
+            let holding = advance(&mut state, &settings, healthy, 19);
+            assert_eq!(holding.mode, ControllerMode::Recovery);
+            assert!(!holding.allow_scene_intake);
+            assert_eq!(
+                holding.budgets.max_model_activations,
+                settings.minimum.max_model_activations
+            );
+            let resumed = state.tick(&settings, healthy);
+            assert_ne!(resumed.mode, ControllerMode::Recovery);
+            assert!(resumed.allow_scene_intake);
+            assert_bounded(resumed.budgets, healthy.hard_limits);
+        }
+    }
+
+    #[test]
+    fn memory_pressure_retains_the_long_hold_for_its_entire_startup_episode() {
+        let settings = adaptive();
+        let mut state = ControllerState::default();
+        let healthy = ControllerInput {
+            delta_seconds: 0.025,
+            frame_ms: Some(16.0),
+            streaming_work_ms: 1.0,
+            ..input()
+        };
+        state.tick(
+            &settings,
+            ControllerInput {
+                memory_blocked: true,
+                ..healthy
+            },
+        );
+        let holding = advance(&mut state, &settings, healthy, 19);
+        assert_eq!(holding.mode, ControllerMode::Recovery);
+        assert!(!holding.reasons.memory_pressure);
+        assert!(state.recovery_memory_pressure);
+        assert!(!holding.allow_scene_intake);
+        assert_eq!(
+            holding.budgets.max_model_activations,
+            settings.minimum.max_model_activations
+        );
+        let resumed = state.tick(&settings, healthy);
+        assert!(resumed.allow_scene_intake);
+        assert!(!state.recovery_memory_pressure);
+        // A later CPU-only episode can use the short startup hold again.
+        state.tick(
+            &settings,
+            ControllerInput {
+                streaming_work_ms: 20.0,
+                ..healthy
+            },
+        );
+        let next = advance(&mut state, &settings, healthy, 4);
+        assert!(next.allow_scene_intake);
+        assert!(!state.recovery_memory_pressure);
+    }
+
+    #[test]
+    fn startup_short_hold_never_bypasses_downstream_low_watermarks() {
+        let settings = adaptive();
+        let mut state = ControllerState::default();
+        let healthy = ControllerInput {
+            delta_seconds: 0.025,
+            ..input()
+        };
+        state.tick(
+            &settings,
+            ControllerInput {
+                backlog: DownstreamBacklog {
+                    ready_placements: settings.high_watermarks.ready_placements,
+                    ..Default::default()
+                },
+                ..healthy
+            },
+        );
+        let between = ControllerInput {
+            backlog: DownstreamBacklog {
+                ready_placements: settings.low_watermarks.ready_placements + 1,
+                ..Default::default()
+            },
+            ..healthy
+        };
+        let blocked = advance(&mut state, &settings, between, 40);
+        assert_eq!(blocked.mode, ControllerMode::Recovery);
+        assert!(!blocked.allow_scene_intake);
+        assert!(!blocked.reasons.recovery_probe);
+        let low = ControllerInput {
+            backlog: DownstreamBacklog::default(),
+            ..healthy
+        };
+        let holding = advance(&mut state, &settings, low, 3);
+        assert!(!holding.allow_scene_intake);
+        let resumed = state.tick(&settings, low);
+        assert!(resumed.allow_scene_intake);
+        assert_bounded(resumed.budgets, healthy.hard_limits);
     }
 
     #[test]
@@ -1596,7 +1764,7 @@ mod tests {
         );
         assert_eq!(blocked.mode, ControllerMode::Recovery);
         assert!(!blocked.startup_complete);
-        let recovered = advance(&mut state, &settings, ready, 11);
+        let recovered = advance(&mut state, &settings, ready, 2);
         assert_eq!(recovered.mode, ControllerMode::Startup);
         assert!(!recovered.startup_complete);
         let useful = advance(&mut state, &settings, ready, 5);
