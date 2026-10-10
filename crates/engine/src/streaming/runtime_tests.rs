@@ -36,6 +36,7 @@ fn fixture(enabled: bool) -> (App, tempfile::TempDir) {
     })
     .init_resource::<SceneAdmission>()
     .init_resource::<StreamingWorld>()
+    .init_resource::<ActiveSpace>()
     .init_resource::<StreamingMetrics>()
     .init_resource::<StaticCollisionCache>()
     .init_resource::<ProfilingState>()
@@ -901,6 +902,100 @@ fn generated_cost_sum_overflow_is_denied_without_partial_reservations() {
 }
 
 #[test]
+fn door_landing_keeps_uploads_unlimited_across_controller_updates() {
+    use crate::door_crossing::DoorCrossing;
+    let (mut app, _directory) = fixture(true);
+    app.insert_resource(RenderAssetBytesPerFrame { max_bytes: Some(1) })
+        .insert_resource(DoorCrossing::holding_for_test());
+    for _ in 0..4 {
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_millis(50));
+        update_streaming_control(app.world_mut());
+        assert_eq!(
+            app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+            None
+        );
+        let runtime = app.world().resource::<StreamingRuntime>();
+        let expected = Some(runtime.decision.unwrap().budgets.max_upload_bytes_per_frame as usize);
+        assert_eq!(
+            current_upload_budget(app.world().resource::<EngineConfig>(), Some(runtime)),
+            expected
+        );
+    }
+    app.insert_resource(DoorCrossing::default());
+    update_streaming_control(app.world_mut());
+    let restored = current_upload_budget(
+        app.world().resource::<EngineConfig>(),
+        Some(app.world().resource::<StreamingRuntime>()),
+    );
+    assert!(restored.is_some());
+    assert_eq!(
+        app.world().resource::<RenderAssetBytesPerFrame>().max_bytes,
+        restored
+    );
+}
+
+#[test]
+fn native_material_reservations_wait_for_cpu_absence_and_unknown_stores() {
+    let (mut app, _directory) = fixture(true);
+    app.init_asset::<NifDepthMaterial>();
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<NifDepthMaterial>>()
+        .add(crate::nif_depth::depth_material(
+            StandardMaterial::default(),
+            crate::nif_depth::NifDepthState {
+                depth_test: false,
+                depth_write: false,
+                decal: false,
+                alpha_mask: false,
+            },
+        ));
+    let watch = ResourceWatch {
+        demand: PreparationDemand {
+            key: PreparationKey::Resource(1),
+            meshes: vec![],
+            images: vec![],
+            materials: vec![material.id().into()],
+        },
+        root_scene: None,
+        root_entity: None,
+        texture_path: None,
+        orphaned_frame: Some(1),
+    };
+    assert!(!cpu_absent(app.world(), &watch));
+    let store = app
+        .world_mut()
+        .remove_resource::<Assets<NifDepthMaterial>>()
+        .unwrap();
+    assert!(
+        !cpu_absent(app.world(), &watch),
+        "unknown typed storage retains its reservation"
+    );
+    app.insert_resource(store);
+    app.world_mut()
+        .resource_mut::<Assets<NifDepthMaterial>>()
+        .remove(material.id());
+    assert!(cpu_absent(app.world(), &watch));
+}
+
+#[test]
+fn dynamic_clutter_preflight_includes_the_collision_estimate() {
+    let (mut app, _directory) = fixture(true);
+    let entity = app.world_mut().spawn_empty().id();
+    let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+    runtime.catalog = known_catalog();
+    let collision = super::super::collision_record_eligible(Some("MISC"));
+    assert!(
+        runtime.reserve_scene_with_placements(&scene_key("meshes/a.glb"), &[(entity, collision)])
+    );
+    let totals = runtime.ledger.totals();
+    assert_eq!(totals.resident_bytes, 64 + 512 + 100 + 300);
+    assert_eq!(totals.transient_bytes, 8 + 32 + 20 + 40);
+}
+
+#[test]
 fn camera_rebase_preserves_motion_history_and_teleport_resets_control() {
     let (mut app, _directory) = fixture(true);
     app.world_mut().insert_resource(RenderOrigin(IVec2::ZERO));
@@ -936,6 +1031,37 @@ fn camera_rebase_preserves_motion_history_and_teleport_resets_control() {
             .reasons
             .camera_discontinuity
     );
+    let position = app.world().get::<Transform>(camera).unwrap().translation;
+    for space in [
+        ActiveSpace {
+            worldspace_id: Some(61),
+            interior: None,
+        },
+        ActiveSpace {
+            worldspace_id: Some(61),
+            interior: Some(7),
+        },
+        ActiveSpace {
+            worldspace_id: Some(61),
+            interior: Some(8),
+        },
+    ] {
+        app.insert_resource(space);
+        update_streaming_control(app.world_mut());
+        assert!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .decision
+                .unwrap()
+                .reasons
+                .camera_discontinuity,
+            "space change at unchanged camera coordinates"
+        );
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            position
+        );
+    }
 }
 
 #[test]
@@ -1736,6 +1862,53 @@ fn detached_catalog_texture_retains_all_cpu_and_gpu_image_generations_until_disp
     assert!(!runtime.watches.contains_key(&texture));
     assert_eq!(runtime.ledger.totals().resident_bytes, 64);
     assert_eq!(runtime.ledger.totals().transient_bytes, 0);
+}
+
+#[test]
+fn native_material_image_dependencies_keep_their_catalog_reservation() {
+    let (mut app, _directory) = catalog_dependency_fixture();
+    app.init_asset::<NifDepthMaterial>();
+    let (key, scene) = register_catalog_scene(&mut app, "meshes/a.glb");
+    let image: Handle<Image> = app
+        .world()
+        .resource::<AssetServer>()
+        .load("textures/shared.ktx2");
+    wait_for_catalog_asset(&mut app, &image);
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<NifDepthMaterial>>()
+        .add(crate::nif_depth::depth_material(
+            StandardMaterial {
+                base_color_texture: Some(image.clone()),
+                ..default()
+            },
+            crate::nif_depth::NifDepthState {
+                depth_test: false,
+                depth_write: false,
+                decal: false,
+                alpha_mask: false,
+            },
+        ));
+    app.world_mut()
+        .resource_mut::<Assets<WorldAsset>>()
+        .get_mut(scene.id())
+        .unwrap()
+        .world
+        .spawn(MeshMaterial3d(material.clone()));
+    observe_at(&mut app, 1);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    let texture = runtime.resource_key("textures/shared.ktx2", None);
+    assert!(runtime.scenes[&key].dependencies_cached);
+    assert!(runtime.scenes[&key].resources.contains(&texture));
+    assert_eq!(runtime.watches[&texture].demand.images, vec![image.id()]);
+    assert!(runtime.watches[&texture].orphaned_frame.is_none());
+    assert!(
+        runtime
+            .watches
+            .values()
+            .any(|watch| watch.demand.materials.contains(&material.id().into()))
+    );
+    assert_eq!(runtime.ledger.totals().resident_bytes, 64 + 512);
 }
 
 #[test]

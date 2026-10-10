@@ -535,11 +535,13 @@ impl EngineConfig {
         Self::from_args(std::env::args().skip(1))
     }
 
-    /// Whether this is a benchmark run: `--benchmark-frames` or `--benchmark-duration` was given.
+    /// Whether a frame limit, duration or dedicated streaming route writes a benchmark report.
     /// The same test the report uses to decide whether to write itself (`metrics::collect_and_finish`),
     /// so anything that only makes sense for a benchmark can key off it.
     pub fn is_benchmark_run(&self) -> bool {
-        self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some()
+        self.benchmark_frames.is_some()
+            || self.benchmark_duration_secs.is_some()
+            || self.streaming_benchmark_route_speed.is_some()
     }
 
     /// Whether the pacing instrumentation should run at all. It is measurement only, and only a
@@ -1054,6 +1056,8 @@ impl EngineConfig {
             Some(fixture)
         } else if self.auto_fly_speed > 0.0 {
             Some("--auto-fly-speed keeps driving the camera")
+        } else if self.streaming_benchmark_route_speed.is_some() {
+            Some("--streaming-benchmark-route-speed keeps driving the camera")
         } else if self.acceptance_screenshot.is_some() {
             Some("--acceptance-screenshot anchors streaming on the start cell")
         } else if self.streaming_fixture {
@@ -1875,6 +1879,11 @@ mod tests {
     #[test]
     fn pacing_is_measured_only_for_a_benchmark_or_a_jump() {
         assert!(!EngineConfig::default().measures_pacing());
+        let route = EngineConfig::run_from_args(
+            ["--streaming-benchmark-route-speed", "0"].map(str::to_owned),
+        );
+        assert!(route.is_benchmark_run());
+        assert!(route.measures_pacing());
         assert!(
             EngineConfig {
                 benchmark_frames: Some(60),
@@ -1947,6 +1956,13 @@ mod tests {
         let config = args(&["--benchmark-jump", "3,4", "--streaming-fixture"]);
         assert_eq!(config.benchmark_jump, None);
         assert!(config.streaming_fixture);
+        let config = args(&[
+            "--benchmark-jump",
+            "3,4",
+            "--streaming-benchmark-route-speed",
+            "0",
+        ]);
+        assert_eq!(config.benchmark_jump, None);
         // A shots run poses the camera for each shot, and a jump would move it off a pose.
         let config = args(&[
             "--benchmark-jump",
@@ -2689,7 +2705,21 @@ mod tests {
             let observation_option = path.file_name().is_some_and(|name| {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
-            if NON_ENGINE_FLAGS.contains(&flag) || observation_option {
+            let integration_audit_option = path.file_name().is_some_and(|name| {
+                name == "audit-pr-integration.py"
+                    && [
+                        "--inventory",
+                        "--ref-prefix",
+                        "--repository",
+                        "--integration-head",
+                        "--ci-workflow",
+                        "--is-ancestor",
+                        "--verify",
+                        "--name-only",
+                    ]
+                    .contains(&flag)
+            });
+            if NON_ENGINE_FLAGS.contains(&flag) || observation_option || integration_audit_option {
                 continue;
             }
             assert!(
@@ -2715,6 +2745,20 @@ mod tests {
         assert_eq!(
             checked_script_engine_flags("engine --headless", observation),
             1
+        );
+        assert_eq!(
+            checked_script_engine_flags(
+                "--inventory inventory.json --ref-prefix refs/integration/a --verify HEAD --is-ancestor",
+                std::path::Path::new("audit-pr-integration.py")
+            ),
+            0
+        );
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags(
+                "engine --inventory inventory.json",
+                std::path::Path::new("launch.sh")
+            ))
+            .is_err()
         );
         assert!(
             std::panic::catch_unwind(|| {

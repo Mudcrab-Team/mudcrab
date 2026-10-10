@@ -31,6 +31,9 @@ pub(crate) enum CameraMotion {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CameraObservation {
     pub worldspace_id: u32,
+    /// Interior coordinates are independent of the exterior render origin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interior_cell_id: Option<u32>,
     pub render_origin_grid: [i32; 2],
     /// Stable runtime coordinates (Y-up) supplied by the caller, not rebased local coordinates.
     pub world_position: [f64; 3],

@@ -443,7 +443,9 @@ impl SettleCounts {
             quiet_frames,
             pending_lod_queries: streaming.pending_lod_queries,
             pending_lod_chunks: streaming.pending_lod_chunks,
-            failed_lod_work: streaming.failed_lod_queries.saturating_add(streaming.failed_lod_chunks),
+            failed_lod_work: streaming
+                .failed_lod_queries
+                .saturating_add(streaming.failed_lod_chunks),
             ..default()
         }
     }
@@ -489,7 +491,18 @@ impl SettleCounts {
             self.asset_load_failures,
             self.validation_failures,
             self.renderer_ready
-        ) + &format!(" lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?}", self.pending_lod_queries, self.pending_lod_chunks, self.failed_lod_work, self.outstanding_terrain_uploads, self.pending_batch_cpu, self.pending_batch_initial, self.pending_batch_selection, self.pending_specializations, self.pending_render_transfers)
+        ) + &format!(
+            " lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?}",
+            self.pending_lod_queries,
+            self.pending_lod_chunks,
+            self.failed_lod_work,
+            self.outstanding_terrain_uploads,
+            self.pending_batch_cpu,
+            self.pending_batch_initial,
+            self.pending_batch_selection,
+            self.pending_specializations,
+            self.pending_render_transfers
+        )
     }
 }
 
@@ -610,7 +623,11 @@ impl ShotsRun {
     }
 
     pub fn shot_path(&self, shot: &Shot) -> PathBuf {
-        let suffix = if self.transition_capture { "-transition" } else { "" };
+        let suffix = if self.transition_capture {
+            "-transition"
+        } else {
+            ""
+        };
         self.output_dir.join(format!("{}{suffix}.png", shot.name))
     }
 

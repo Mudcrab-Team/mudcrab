@@ -194,17 +194,34 @@ mod tests {
     #[test]
     fn render_receipt_is_immutable_across_callback_delay() {
         let ticket = CaptureTicket::default();
-        let record = CaptureFrame { main_frame: 3, render_frame: 2, camera_creation: [1.0; 3], rotation_runtime_xyzw: [0.0; 4], vertical_fov_radians: None, render_origin: [0; 2], pending_specializations: Some(0), work: default(), terrain_gauges: default(), terrain_coverage: default() };
+        let record = CaptureFrame {
+            main_frame: 3,
+            render_frame: 2,
+            camera_creation: [1.0; 3],
+            rotation_runtime_xyzw: [0.0; 4],
+            vertical_fov_radians: None,
+            render_origin: [0; 2],
+            pending_specializations: Some(0),
+            work: default(),
+            terrain_gauges: default(),
+            terrain_coverage: default(),
+        };
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
-        world.insert_resource(ExtractedCaptures { render_frame: 2, captures: vec![(ticket.clone(), record.clone())] });
+        world.insert_resource(ExtractedCaptures {
+            render_frame: 2,
+            captures: vec![(ticket.clone(), record.clone())],
+        });
         world.insert_resource(RetryReadiness(Arc::new(Mutex::new(Some(0)))));
         world.insert_resource(TransferReadiness(Arc::new(Mutex::new(Some(0)))));
         world.run_system_once(finalize_capture_frames).unwrap();
         let mut later = record;
         later.main_frame = 99;
         later.render_frame = 98;
-        world.resource_mut::<ExtractedCaptures>().captures.push((ticket.clone(), later));
+        world
+            .resource_mut::<ExtractedCaptures>()
+            .captures
+            .push((ticket.clone(), later));
         world.run_system_once(finalize_capture_frames).unwrap();
         assert_eq!(validate_receipt(&ticket, [1.0; 3]).unwrap().render_frame, 2);
         assert!(validate_receipt(&ticket, [0.0; 3]).is_err());
@@ -233,8 +250,12 @@ fn observe_render_transfers(
     for id in &images.removed {
         pending.images.remove(id);
     }
-    pending.meshes.extend(meshes.extracted.iter().map(|(id, _)| *id));
-    pending.images.extend(images.extracted.iter().map(|(id, _)| *id));
+    pending
+        .meshes
+        .extend(meshes.extracted.iter().map(|(id, _)| *id));
+    pending
+        .images
+        .extend(images.extracted.iter().map(|(id, _)| *id));
 }
 
 fn publish_render_transfers(

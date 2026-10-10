@@ -160,6 +160,27 @@ pub struct StreamingWorld {
 }
 
 impl StreamingWorld {
+    pub(crate) fn active_space_residency(
+        &self,
+        space: &ActiveSpace,
+        configured_worldspace: u32,
+        center: IVec2,
+        radius: i32,
+    ) -> (usize, usize, usize) {
+        if let Some(cell_id) = space.interior {
+            return match self.cells.get(&CellKey::Interior(cell_id)) {
+                Some(CellStatus::Resident { .. } | CellStatus::Retiring { .. }) => (1, 1, 0),
+                Some(CellStatus::Failed) => (1, 0, 1),
+                _ => (1, 0, 0),
+            };
+        }
+        self.window_residency(
+            space.exterior_worldspace(configured_worldspace),
+            center,
+            radius,
+        )
+    }
+
     /// The number of cells in the stream window of `radius` around `center`, how many of them are
     /// resident (at full detail: a retiring cell inside the window is revived by the planner before
     /// this is read, so it counts as resident), and how many ended in [`CellStatus::Failed`]. A
@@ -651,9 +672,40 @@ pub struct ActiveSpace {
     pub interior: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActiveSpaceIdentity {
+    Exterior(u32),
+    Interior(u32),
+}
+
 impl ActiveSpace {
     pub fn exterior_worldspace(&self, configured: u32) -> u32 {
         self.worldspace_id.unwrap_or(configured)
+    }
+
+    pub(crate) fn identity(&self, configured: u32) -> ActiveSpaceIdentity {
+        self.interior.map_or_else(
+            || ActiveSpaceIdentity::Exterior(self.exterior_worldspace(configured)),
+            ActiveSpaceIdentity::Interior,
+        )
+    }
+
+    /// Interior camera coordinates are already absolute. Only exteriors use the render origin.
+    pub(crate) fn absolute_camera_position(
+        &self,
+        local: bevy::math::DVec3,
+        origin: IVec2,
+    ) -> bevy::math::DVec3 {
+        if self.interior.is_some() {
+            local
+        } else {
+            local
+                + bevy::math::DVec3::new(
+                    f64::from(origin.x) * f64::from(CELL_SIZE),
+                    0.0,
+                    -f64::from(origin.y) * f64::from(CELL_SIZE),
+                )
+        }
     }
 }
 
@@ -1559,9 +1611,7 @@ fn spawn_cell(
                         center,
                         radius,
                         collision_candidate: terrain_physics
-                            && fixed_collision_record_eligible(
-                                reference.base_record_type.as_deref(),
-                            ),
+                            && collision_record_eligible(reference.base_record_type.as_deref()),
                         handle: None,
                         started: Instant::now(),
                         allow_retry: false,
@@ -1658,6 +1708,10 @@ fn dynamic_clutter_record_eligible(record_type: Option<&str>) -> bool {
             "MISC" | "WEAP" | "ARMO" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
         )
     )
+}
+
+fn collision_record_eligible(record_type: Option<&str>) -> bool {
+    fixed_collision_record_eligible(record_type) || dynamic_clutter_record_eligible(record_type)
 }
 
 fn static_proxy_material_allowed(
@@ -2309,6 +2363,7 @@ fn arm_pending_models(
     pending: Query<(Entity, &PendingModel, Option<&requests::SceneRequest>)>,
     cameras: Query<&Transform, With<StreamingCamera>>,
     origin: Option<Res<RenderOrigin>>,
+    space: Option<Res<ActiveSpace>>,
     mut scheduling: Option<ResMut<requests::SceneSchedulingState>>,
     streaming: Option<Res<StreamingWorld>>,
     mut commands: Commands,
@@ -2324,12 +2379,11 @@ fn arm_pending_models(
         .single()
         .ok()
         .map(|camera| priority::PriorityView {
-            position: camera.translation.as_dvec3()
-                + DVec3::new(
-                    f64::from(origin.x) * f64::from(CELL_SIZE),
-                    0.0,
-                    -f64::from(origin.y) * f64::from(CELL_SIZE),
-                ),
+            position: space
+                .as_deref()
+                .copied()
+                .unwrap_or_default()
+                .absolute_camera_position(camera.translation.as_dvec3(), origin),
             forward: (camera.rotation * Vec3::NEG_Z).as_dvec3(),
         })
         .unwrap_or(priority::PriorityView {
@@ -4244,6 +4298,16 @@ fn validate_streaming_lifecycle(
     profiler.set_gauge("streaming/resident_roots", root_entries.len() as f64);
 }
 
+impl TerrainCoverage {
+    pub(crate) fn receipt(&self) -> serde_json::Value {
+        serde_json::json!({
+            "cell": self.grid.to_array(),
+            "quadrant": self.quadrant,
+            "tier": format!("{:?}", self.tier)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4251,6 +4315,102 @@ mod tests {
     use bevy_rapier3d::prelude::{
         AdditionalMassProperties, ColliderMassProperties, QueryFilter, ReadRapierContext, Velocity,
     };
+
+    #[test]
+    fn pacing_waits_for_the_active_interior_or_worldspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache_path = directory.path().join("cells.rkyv");
+        std::fs::write(
+            &cache_path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+                version: shared::CELL_CACHE_VERSION,
+                cells: vec![],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        for (space, target) in [
+            (
+                ActiveSpace {
+                    worldspace_id: Some(61),
+                    interior: None,
+                },
+                CellKey::Exterior {
+                    worldspace_id: 61,
+                    grid_x: 4,
+                    grid_y: -12,
+                },
+            ),
+            (
+                ActiveSpace {
+                    worldspace_id: Some(61),
+                    interior: Some(7),
+                },
+                CellKey::Interior(7),
+            ),
+        ] {
+            let mut app = App::new();
+            let config = EngineConfig {
+                worldspace_id: 60,
+                stream_radius: 0,
+                benchmark_frames: Some(60),
+                ..default()
+            };
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(config.clone())
+                .insert_resource(space)
+                .insert_resource(RenderOrigin(IVec2::new(4, -12)))
+                .insert_resource(CellCache::open(&cache_path).unwrap())
+                .init_resource::<StreamingWorld>()
+                .init_resource::<StreamingMetrics>()
+                .init_resource::<crate::pacing::PacingTracker>()
+                .init_resource::<ProfilingState>()
+                .add_systems(Update, crate::pacing::track_world_ready);
+            app.world_mut()
+                .spawn((StreamingCamera, Transform::from_xyz(10.0, 20.0, -30.0)));
+            let wrong_root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .cells
+                .insert(
+                    CellKey::Exterior {
+                        worldspace_id: 60,
+                        grid_x: 4,
+                        grid_y: -12,
+                    },
+                    CellStatus::Resident { root: wrong_root },
+                );
+            app.update();
+            app.update();
+            assert!(
+                !app.world()
+                    .resource::<crate::pacing::PacingTracker>()
+                    .report(&config, 0)
+                    .world_ready_reached
+            );
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .cells
+                .insert(target, CellStatus::Resident { root });
+            app.update();
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<crate::pacing::PacingTracker>()
+                    .report(&config, 0)
+                    .world_ready_reached
+            );
+            if space.interior.is_some() {
+                assert_eq!(
+                    app.world()
+                        .resource::<StreamingWorld>()
+                        .active_space_residency(&space, 60, IVec2::ZERO, 3),
+                    (1, 1, 0)
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_capsule_hull_covers_the_diagonals_of_its_end_spheres() {
@@ -7473,8 +7633,8 @@ mod tests {
                 &mut water_materials,
                 IVec2::ZERO,
                 config.lights,
-                false,
-                false,
+                config.interactive_world_physics(),
+                requests::enabled(&config),
                 CellPayload {
                     generation: 1,
                     key: CellKey::Interior(99),
@@ -7529,6 +7689,28 @@ mod tests {
             .add_systems(Update, spawn_queued_references);
         app.update();
         app
+    }
+
+    #[test]
+    fn clutter_scene_requests_include_collision_in_admission() {
+        let mut app = spawn_reference_cell_app(vec![], false);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .max_scene_loads = 1;
+        let mut reference = lit_reference(1, None, None);
+        reference.base_record_type = Some("MISC".to_owned());
+        reference.model_path = Some("meshes/clutter/tankard.nif".to_owned());
+        app.insert_resource(QueuedReferences(vec![reference]));
+        app.world_mut()
+            .run_system_once(spawn_queued_references)
+            .unwrap();
+        let entity = reference_entity(&app, 1);
+        assert!(
+            app.world()
+                .get::<requests::SceneRequest>(entity)
+                .unwrap()
+                .collision_candidate
+        );
     }
 
     // ---- Dynamic clutter from authored physics data (#104 phase a) ----
@@ -7885,6 +8067,7 @@ mod tests {
         let mut app = crate::physics::headless::fixture_app();
         app.insert_resource(EngineConfig::default())
             .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<ActiveSpace>()
             .add_systems(Update, update_render_origin);
         let cell = app
             .world_mut()
@@ -8252,15 +8435,5 @@ mod tests {
             Some(&FormId(0x100)),
             "and the reference is still spawned"
         );
-    }
-}
-
-impl TerrainCoverage {
-    pub(crate) fn receipt(&self) -> serde_json::Value {
-        serde_json::json!({
-            "cell": self.grid.to_array(),
-            "quadrant": self.quadrant,
-            "tier": format!("{:?}", self.tier)
-        })
     }
 }

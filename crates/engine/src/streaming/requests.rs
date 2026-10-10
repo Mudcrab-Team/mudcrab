@@ -1,7 +1,7 @@
 //! Opt-in admission for full-detail and LOD scenes in one immutable asset pack.
 
 use super::{
-    CellStatus, PendingModel, RenderOrigin, StreamingWorld,
+    ActiveSpace, CellStatus, PendingModel, RenderOrigin, StreamingWorld,
     admission::{SceneAdmission, SceneDemand, SceneJobStatus, SceneKey},
     priority::{self, DemandPriority, PriorityView},
     runtime::StreamingRuntime,
@@ -110,15 +110,14 @@ pub(super) fn priority_view(world: &mut World) -> Option<PriorityView> {
     let origin = world
         .get_resource::<RenderOrigin>()
         .map_or(IVec2::ZERO, |origin| origin.0);
+    let space = world
+        .get_resource::<ActiveSpace>()
+        .copied()
+        .unwrap_or_default();
     let mut query = world.query_filtered::<&Transform, With<StreamingCamera>>();
     let camera = query.single(world).ok()?;
     Some(PriorityView {
-        position: camera.translation.as_dvec3()
-            + DVec3::new(
-                f64::from(origin.x) * f64::from(CELL_SIZE),
-                0.0,
-                -f64::from(origin.y) * f64::from(CELL_SIZE),
-            ),
+        position: space.absolute_camera_position(camera.translation.as_dvec3(), origin),
         forward: (camera.rotation * Vec3::NEG_Z).as_dvec3(),
     })
 }
@@ -540,6 +539,30 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[test]
+    fn admission_camera_uses_interior_coordinates_without_the_exterior_origin() {
+        let mut world = World::new();
+        world.insert_resource(RenderOrigin(IVec2::new(4, -12)));
+        world.insert_resource(ActiveSpace {
+            worldspace_id: Some(61),
+            interior: Some(7),
+        });
+        world.spawn((StreamingCamera, Transform::from_xyz(10.0, 20.0, 30.0)));
+        assert_eq!(
+            priority_view(&mut world).unwrap().position,
+            DVec3::new(10.0, 20.0, 30.0)
+        );
+        world.resource_mut::<ActiveSpace>().interior = None;
+        assert_eq!(
+            priority_view(&mut world).unwrap().position,
+            DVec3::new(
+                10.0 + 4.0 * f64::from(CELL_SIZE),
+                20.0,
+                30.0 + 12.0 * f64::from(CELL_SIZE)
+            )
+        );
+    }
 
     #[derive(TypePath)]
     struct TestSceneLoader {

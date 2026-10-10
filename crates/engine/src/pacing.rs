@@ -18,7 +18,7 @@ use crate::{
     app::benchmark_jump_position,
     config::EngineConfig,
     profiling::ProfilingState,
-    streaming::{RenderOrigin, StreamingMetrics, StreamingWorld, window_center},
+    streaming::{ActiveSpace, RenderOrigin, StreamingMetrics, StreamingWorld, window_center},
     world::{cache::CellCache, components::CELL_SIZE, components::StreamingCamera},
 };
 use bevy::prelude::*;
@@ -414,6 +414,7 @@ pub fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
 pub(crate) fn track_world_ready(
     config: Res<EngineConfig>,
     origin: Res<RenderOrigin>,
+    space: Option<Res<ActiveSpace>>,
     streaming: Res<StreamingWorld>,
     metrics: Res<StreamingMetrics>,
     cache: Res<CellCache>,
@@ -430,8 +431,13 @@ pub(crate) fn track_world_ready(
     };
     let started = *tracker.started.get_or_insert_with(Instant::now);
     let center = window_center(&config, camera.translation, origin.0);
-    let (window_cells, resident, failed) =
-        streaming.window_residency(config.worldspace_id, center, config.stream_radius);
+    let space = space.as_deref().copied().unwrap_or_default();
+    let (window_cells, resident, failed) = streaming.active_space_residency(
+        &space,
+        config.worldspace_id,
+        center,
+        config.stream_radius,
+    );
     let inputs = WorldReadyInputs::from_streaming(&metrics, window_cells, resident, failed);
     let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
     let ready = inputs.is_ready();
@@ -442,11 +448,13 @@ pub(crate) fn track_world_ready(
     let jump_now = tracker.observe(
         elapsed_millis,
         ready,
-        config.benchmark_jump.is_some(),
+        config.benchmark_jump.is_some() && space.interior.is_none(),
         real_time.delta_secs_f64() * 1000.0,
     );
     if let Some(grid) = config.benchmark_jump.filter(|_| jump_now) {
-        let position = benchmark_jump_position(&config, &cache, origin.0, grid);
+        let mut active_config = config.clone();
+        active_config.worldspace_id = space.exterior_worldspace(config.worldspace_id);
+        let position = benchmark_jump_position(&active_config, &cache, origin.0, grid);
         camera.translation = position;
         profiler.event(
             "pacing",

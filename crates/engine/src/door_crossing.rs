@@ -23,6 +23,7 @@
 
 use crate::{
     doors::LoadDoor,
+    nif_depth::NifDepthMaterial,
     physics::{
         CursorCapture, MovementTuning, PlayerBody, TeleportPlayer, body_and_camera_for_feet,
     },
@@ -189,6 +190,12 @@ pub struct DoorCrossing {
 impl DoorCrossing {
     pub fn is_active(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub(crate) fn landing_uploads_unlimited(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|crossing| matches!(crossing.stage, Stage::Landing { .. }))
     }
 }
 
@@ -403,6 +410,7 @@ struct LandingAssets<'w, 's> {
         (
             Option<&'static Mesh3d>,
             Option<&'static MeshMaterial3d<StandardMaterial>>,
+            Option<&'static MeshMaterial3d<NifDepthMaterial>>,
             Option<&'static MeshMaterial3d<TerrainMaterial>>,
             Option<&'static MeshMaterial3d<WaterMaterial>>,
         ),
@@ -410,6 +418,7 @@ struct LandingAssets<'w, 's> {
     meshes: Option<Res<'w, Assets<Mesh>>>,
     images: Option<Res<'w, Assets<Image>>>,
     standard: Option<Res<'w, Assets<StandardMaterial>>>,
+    depth: Option<Res<'w, Assets<NifDepthMaterial>>>,
     terrain: Option<Res<'w, Assets<TerrainMaterial>>>,
     water: Option<Res<'w, Assets<WaterMaterial>>>,
 }
@@ -482,29 +491,35 @@ impl LandingAssets<'_, '_> {
         textures_of: impl FnOnce(&Self, &A, &mut LandingReport),
         report: &mut LandingReport,
     ) {
-        let present = || {
-            store
-                .as_ref()
-                .is_none_or(|assets| assets.contains(handle.id()))
+        let Some(store) = store else {
+            report.waiting += 1;
+            report
+                .first_waiting
+                .get_or_insert_with(|| format!("{:?}", handle.id()));
+            return;
         };
         let before = report.waiting;
-        self.check(handle.id().untyped(), present, report);
+        self.check(
+            handle.id().untyped(),
+            || store.contains(handle.id()),
+            report,
+        );
         if report.waiting != before {
             return;
         }
-        if let Some(material) = store.as_ref().and_then(|assets| assets.get(handle.id())) {
+        if let Some(material) = store.get(handle.id()) {
             textures_of(self, material, report);
         }
     }
 
     /// Inspects every mesh, material and texture under `root`. Covered: `Mesh3d`,
-    /// `MeshMaterial3d<StandardMaterial>` with all its texture dependencies, and the terrain and
+    /// standard and native-depth materials with all their texture dependencies, and the terrain and
     /// water materials with their base-material textures. The terrain and water extensions' own
     /// layer and reflection images are private to `render.rs` and are not checked.
     fn inspect_under(&self, root: Entity) -> LandingReport {
         let mut report = LandingReport::default();
         for entity in std::iter::once(root).chain(self.children.iter_descendants(root)) {
-            let Ok((mesh, standard, terrain, water)) = self.parts.get(entity) else {
+            let Ok((mesh, standard, depth, terrain, water)) = self.parts.get(entity) else {
                 continue;
             };
             if let Some(Mesh3d(handle)) = mesh {
@@ -523,6 +538,14 @@ impl LandingAssets<'_, '_> {
                     handle,
                     &self.standard,
                     |this, m, report| this.check_dependencies(m, report),
+                    &mut report,
+                );
+            }
+            if let Some(MeshMaterial3d(handle)) = depth {
+                self.check_material(
+                    handle,
+                    &self.depth,
+                    |this, material, report| this.check_dependencies(&material.base, report),
                     &mut report,
                 );
             }
@@ -579,10 +602,11 @@ fn drive_door_crossing(
     (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
-    (mut budget, landing_assets, pending_under): (
+    (mut budget, landing_assets, pending_under, runtime): (
         Option<ResMut<RenderAssetBytesPerFrame>>,
         LandingAssets,
         PendingUnder,
+        Option<Res<crate::streaming::runtime::StreamingRuntime>>,
     ),
     mut commands: Commands,
 ) {
@@ -696,7 +720,13 @@ fn drive_door_crossing(
                         milliseconds = (active.since_press * 1000.0) as u32,
                         "door crossing: restored the player's own place (it failed to reload); fade-in starts"
                     );
-                    set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
+                    set_upload_budget(
+                        &mut budget,
+                        crate::streaming::runtime::current_upload_budget(
+                            &config,
+                            runtime.as_deref(),
+                        ),
+                    );
                     place_again(&mut commands, &landing);
                     active.stage = Stage::FadeIn { elapsed: 0.0 };
                 } else {
@@ -761,7 +791,10 @@ fn drive_door_crossing(
                         "arrived;"
                     }
                 );
-                set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
+                set_upload_budget(
+                    &mut budget,
+                    crate::streaming::runtime::current_upload_budget(&config, runtime.as_deref()),
+                );
                 place_again(&mut commands, &landing);
                 active.stage = Stage::FadeIn { elapsed: 0.0 };
             } else {
@@ -842,6 +875,7 @@ mod tests {
         app.init_asset::<Mesh>()
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
+            .init_asset::<NifDepthMaterial>()
             .insert_resource(RenderAssetBytesPerFrame {
                 max_bytes: crate::config::EngineConfig::default().max_upload_bytes_per_frame(),
             });
@@ -1144,6 +1178,70 @@ mod tests {
         app.update();
         app.update();
         assert_eq!(budget(&app), configured_budget());
+    }
+
+    #[test]
+    fn landing_waits_for_native_depth_material_images() {
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let texture = app.world().resource::<Assets<Image>>().reserve_handle();
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<NifDepthMaterial>>()
+            .add(crate::nif_depth::depth_material(
+                StandardMaterial {
+                    base_color_texture: Some(texture.clone()),
+                    ..default()
+                },
+                crate::nif_depth::NifDepthState {
+                    depth_test: true,
+                    depth_write: false,
+                    decal: true,
+                    alpha_mask: false,
+                },
+            ));
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .spawn((MeshMaterial3d(material), ChildOf(root)));
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        let native_store = app
+            .world_mut()
+            .remove_resource::<Assets<NifDepthMaterial>>()
+            .unwrap();
+        let mut assets = bevy::ecs::system::SystemState::<LandingAssets>::new(app.world_mut());
+        assert!(
+            assets.get(app.world()).unwrap().inspect_under(root).waiting > 0,
+            "unknown native material storage must hold the landing"
+        );
+        app.insert_resource(native_store);
+        for _ in 0..5 {
+            app.update();
+        }
+        assert!(alpha(&mut app) >= 0.99, "native texture is not loaded");
+        assert!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .landing_uploads_unlimited()
+        );
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(texture.id(), Image::default())
+            .unwrap();
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(
+            alpha(&mut app) < 0.99,
+            "native dependencies loaded and settled"
+        );
+        assert!(
+            !app.world()
+                .resource::<DoorCrossing>()
+                .landing_uploads_unlimited()
+        );
     }
 
     #[test]

@@ -3965,7 +3965,6 @@ mod console_tests {
 mod teleport_tests {
     use super::*;
 
-    #[test]
     /// A WALK body over nothing does not fall, or walk, while a door crossing holds the screen
     /// black, and falls again once the crossing is over.
     #[test]

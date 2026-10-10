@@ -72,6 +72,7 @@ pub(super) struct LodStreaming {
     terrain_batch_fallback_chunks: u64,
     terrain_batch_pending_cpu_chunks: usize,
     terrain_batch_completion_report: Option<(u64, u64, u64)>,
+    terrain_batch_controls_warned: bool,
 }
 
 impl LodStreaming {
@@ -814,7 +815,7 @@ pub(super) fn track_lod_readiness(
         commands
             .entity(entity)
             .insert(terrain_batching::PendingLodTerrainBatching {
-                source: pending.asset.clone(),
+                source: asset,
                 patches,
             });
     }
@@ -847,6 +848,23 @@ pub(super) fn batch_ready_lod_chunks(
     streaming.terrain_batch_commit_used = false;
     let pending_cpu = pending.iter().len();
     let pending_gpu = activation.pending_count();
+    // Derived batches retain source scene assets and allocate additional meshes. Until both
+    // generations are charged to the reservation ledger, admission/control modes keep sources.
+    if requests::enabled(&config) {
+        if pending_cpu != 0 && !streaming.terrain_batch_controls_warned {
+            warn!(
+                "terrain LOD batching disabled with streaming admission/control limits; original meshes remain active until generated retained-byte reservations are supported"
+            );
+            streaming.terrain_batch_controls_warned = true;
+        }
+        for (entity, _, _) in &pending {
+            commands
+                .entity(entity)
+                .remove::<terrain_batching::PendingLodTerrainBatching>();
+        }
+        record_terrain_batch_progress(&mut streaming, &mut profiler, 0, pending_gpu);
+        return;
+    }
     record_terrain_batch_progress(&mut streaming, &mut profiler, pending_cpu, pending_gpu);
     if !preparation.has_render_backend() {
         for (entity, _, _) in &pending {
@@ -1590,6 +1608,83 @@ mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn admission_controls_keep_the_original_lod_meshes_without_allocating_batches() {
+        for config in [
+            EngineConfig {
+                prioritize_streaming: true,
+                ..default()
+            },
+            EngineConfig {
+                max_scene_loads: 1,
+                ..default()
+            },
+            EngineConfig {
+                adaptive_streaming: true,
+                ..default()
+            },
+            EngineConfig {
+                streaming_memory_mib: 64,
+                ..default()
+            },
+        ] {
+            let mut app = App::new();
+            app.insert_resource(config)
+                .init_resource::<StreamingCommitBudget>()
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .init_resource::<LodStreaming>()
+                .init_resource::<ProfilingState>();
+            let metadata = retry_test_metadata();
+            let root = app
+                .world_mut()
+                .spawn((
+                    LodChunkRoot {
+                        key: metadata.key,
+                        generation: 1,
+                        origin: metadata.origin,
+                        retry_count: 0,
+                    },
+                    terrain_batching::PendingLodTerrainBatching {
+                        source: Handle::default(),
+                        patches: vec![],
+                    },
+                    Visibility::Inherited,
+                ))
+                .id();
+            let source = app
+                .world_mut()
+                .spawn((Transform::default(), ChildOf(root)))
+                .id();
+            app.world_mut()
+                .run_system_once(batch_ready_lod_chunks)
+                .unwrap();
+            assert!(
+                !app.world()
+                    .entity(root)
+                    .contains::<terrain_batching::PendingLodTerrainBatching>()
+            );
+            assert!(app.world().get_entity(source).is_ok());
+            assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 0);
+            assert_eq!(app.world().resource::<StreamingCommitBudget>().commits, 0);
+            assert!(
+                app.world()
+                    .resource::<LodStreaming>()
+                    .terrain_batch_controls_warned
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<LodStreaming>()
+                    .terrain_batch_pending_cpu_chunks,
+                0
+            );
+        }
+        assert!(
+            !requests::enabled(&EngineConfig::default()),
+            "ordinary upload budgets preserve batching"
+        );
+    }
 
     /// A reach equal to each tier's chunk side (4/8/16 cells), the smallest
     /// nesting the residency tests below exercise.

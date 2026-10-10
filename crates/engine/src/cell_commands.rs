@@ -13,8 +13,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use crate::{
     config::EngineConfig,
     console::{AppConsoleExt, ConsoleCommand},
-    physics::{LookIntent, TeleportPlayer},
-    streaming::RenderOrigin,
+    door_crossing::DoorCrossing,
+    physics::{LookIntent, MovementTuning, TeleportPlayer, body_and_camera_for_feet},
+    sky::CameraSpace,
+    streaming::{ActiveSpace, RenderOrigin, StreamingWorld, unload_all_cells_now},
     world::{cache::CellCache, components::CELL_SIZE},
 };
 
@@ -35,7 +37,7 @@ fn center_on_exterior_command() -> ConsoleCommand {
             let (worldspace_id, connection) = open_world(world)?;
             let cell_id = find_exterior_cell(&connection, worldspace_id, grid_x, grid_y)?
                 .ok_or_else(|| format!("no exterior cell at {grid_x} {grid_y}"))?;
-            teleport_to_cell(world, cell_id, grid_x, grid_y)?;
+            teleport_to_cell(world, worldspace_id, cell_id, grid_x, grid_y)?;
             Ok(format!("moved to exterior cell {grid_x} {grid_y}"))
         }),
     }
@@ -57,7 +59,7 @@ fn center_on_cell_command() -> ConsoleCommand {
             // named cell unless the database holds two cells for it.
             let cell_id =
                 find_exterior_cell(&connection, worldspace_id, grid_x, grid_y)?.unwrap_or(cell.id);
-            teleport_to_cell(world, cell_id, grid_x, grid_y)?;
+            teleport_to_cell(world, worldspace_id, cell_id, grid_x, grid_y)?;
             Ok(format!("moved to {name} (exterior cell {grid_x} {grid_y})"))
         }),
     }
@@ -161,13 +163,24 @@ pub fn exterior_target(
 }
 
 fn open_world(world: &World) -> Result<(u32, Connection), String> {
+    if world
+        .get_resource::<DoorCrossing>()
+        .is_some_and(DoorCrossing::is_active)
+    {
+        return Err("wait for the door crossing to finish before teleporting".to_owned());
+    }
     let config = world
         .get_resource::<EngineConfig>()
         .ok_or("no world is loaded in this run")?;
     let path = config.assets_dir.join("skyrim_world.db");
     let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-    Ok((config.worldspace_id, connection))
+    let worldspace_id = world
+        .get_resource::<ActiveSpace>()
+        .map_or(config.worldspace_id, |space| {
+            space.exterior_worldspace(config.worldspace_id)
+        });
+    Ok((worldspace_id, connection))
 }
 
 /// Render-space feet position for the centre of grid square `grid` at `ground`.
@@ -191,6 +204,7 @@ pub const LANDING_CLEARANCE: f32 = 16.0;
 /// thousands of units above or below 0, so a made-up height can drop the player under the world.
 fn teleport_to_cell(
     world: &mut World,
+    worldspace_id: u32,
     cell_id: u32,
     grid_x: i32,
     grid_y: i32,
@@ -206,13 +220,35 @@ fn teleport_to_cell(
     let yaw = world
         .get_resource::<LookIntent>()
         .map_or(0.0, |look| look.yaw);
-    let Some(mut teleports) = world.get_resource_mut::<Messages<TeleportPlayer>>() else {
+    if !world.contains_resource::<Messages<TeleportPlayer>>() {
         return Err("no player to move in this run".to_owned());
-    };
-    teleports.write(TeleportPlayer {
-        position: cell_centre_feet((grid_x, grid_y), origin, ground + LANDING_CLEARANCE),
-        yaw,
+    }
+    let tuning = world
+        .get_resource::<MovementTuning>()
+        .ok_or("no player to move in this run")?;
+    let position = cell_centre_feet((grid_x, grid_y), origin, ground + LANDING_CLEARANCE);
+    let (_, eye) = body_and_camera_for_feet(tuning, position);
+    let leaving_interior = world
+        .get_resource::<ActiveSpace>()
+        .is_some_and(|space| space.interior.is_some());
+    if leaving_interior {
+        if !world.contains_resource::<StreamingWorld>() {
+            return Err("no world is streaming in this run".to_owned());
+        }
+        unload_all_cells_now(world);
+    }
+    world.insert_resource(ActiveSpace {
+        worldspace_id: Some(worldspace_id),
+        interior: None,
     });
+    world.insert_resource(CameraSpace::Exterior);
+    // The planner can run before the teleport reader. It must already see the exterior landing.
+    let mut cameras =
+        world.query_filtered::<&mut Transform, With<crate::world::components::StreamingCamera>>();
+    for mut camera in cameras.iter_mut(world) {
+        camera.translation = eye;
+    }
+    world.write_message(TeleportPlayer { position, yaw });
     Ok(())
 }
 
@@ -222,7 +258,9 @@ mod tests {
     use crate::{
         console::{ConsoleState, execute_line},
         physics::headless,
-        world::components::StreamingCamera,
+        profiling::ProfilingState,
+        streaming::{StreamingMetrics, TerrainContinuity},
+        world::{components::StreamingCamera, database::CellKey},
     };
 
     fn database() -> tempfile::TempDir {
@@ -240,6 +278,7 @@ mod tests {
                  -- A second Riverwood in another worldspace, with a lower id: the streaming
                  -- worldspace's cell must still win.
                  INSERT INTO cells VALUES(0,61,7,7,'Riverwood');
+                 INSERT INTO cells VALUES(9,61,4,-12,'OtherWorldRiverwood');
                  -- An exterior with no terrain in the cell cache, and one with no grid.
                  INSERT INTO cells VALUES(5,60,6,-12,'NoLand');
                  INSERT INTO cells VALUES(6,60,NULL,NULL,'NoGrid');
@@ -433,7 +472,7 @@ mod tests {
         };
         let source = shared::CellCache {
             version: shared::CELL_CACHE_VERSION,
-            cells: vec![land(1, 0.0), land(2, 100.0)],
+            cells: vec![land(0, 200.0), land(1, 0.0), land(2, 100.0), land(9, 300.0)],
         };
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&source).unwrap();
         std::fs::write(&path, bytes).unwrap();
@@ -451,6 +490,12 @@ mod tests {
                     ..default()
                 })
                 .insert_resource(RenderOrigin(IVec2::new(4, -12)))
+                .init_resource::<ActiveSpace>()
+                .init_resource::<CameraSpace>()
+                .init_resource::<StreamingWorld>()
+                .init_resource::<StreamingMetrics>()
+                .init_resource::<TerrainContinuity>()
+                .init_resource::<ProfilingState>()
                 .init_resource::<ConsoleState>();
             register_cell_commands(app);
         });
@@ -533,5 +578,102 @@ mod tests {
         let at = camera_position(&mut app);
         let camera = Vec3::new(2048.0, 156.0, -2048.0);
         assert!((at - camera).length() < 1e-2, "{at:?} vs {camera:?}");
+    }
+
+    #[test]
+    fn console_teleports_leave_an_interior_before_the_planner_reads_the_camera() {
+        for command in ["coe 4 -12", "coc riverwood"] {
+            let directory = database();
+            let mut app = command_app(&directory);
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(CellKey::Interior(3), root);
+            app.insert_resource(ActiveSpace {
+                worldspace_id: Some(60),
+                interior: Some(3),
+            })
+            .insert_resource(CameraSpace::Interior);
+
+            execute_line(app.world_mut(), command);
+
+            assert!(app.world().get_entity(root).is_err());
+            assert_eq!(
+                *app.world().resource::<ActiveSpace>(),
+                ActiveSpace {
+                    worldspace_id: Some(60),
+                    interior: None,
+                }
+            );
+            assert_eq!(
+                *app.world().resource::<CameraSpace>(),
+                CameraSpace::Exterior
+            );
+            let expected = Vec3::new(2048.0, 156.0, -2048.0);
+            assert!((camera_position(&mut app) - expected).length() < 1e-2);
+            app.update();
+            assert!((camera_position(&mut app) - expected).length() < 1e-2);
+        }
+    }
+
+    #[test]
+    fn cell_commands_follow_a_door_worldspace_change_even_at_the_same_grid() {
+        for (command, expected) in [
+            ("coe 4 -12", Vec3::new(2048.0, 456.0, -2048.0)),
+            ("coc riverwood", Vec3::new(14336.0, 356.0, -79872.0)),
+        ] {
+            let directory = database();
+            let mut app = command_app(&directory);
+            app.insert_resource(ActiveSpace {
+                worldspace_id: Some(61),
+                interior: None,
+            });
+            execute_line(app.world_mut(), command);
+            app.update();
+            assert!((camera_position(&mut app) - expected).length() < 1e-2);
+            assert_eq!(
+                app.world().resource::<ActiveSpace>().worldspace_id,
+                Some(61)
+            );
+            assert!(!scrollback(&app).contains("error:"));
+        }
+    }
+
+    #[test]
+    fn a_door_crossing_and_invalid_landings_leave_the_active_space_untouched() {
+        let directory = database();
+        let mut app = command_app(&directory);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(3), root);
+        let inside = ActiveSpace {
+            worldspace_id: Some(60),
+            interior: Some(3),
+        };
+        app.insert_resource(inside)
+            .insert_resource(CameraSpace::Interior)
+            .insert_resource(DoorCrossing::holding_for_test());
+        let before = camera_position(&mut app);
+        for command in ["coe 4 -12", "coc riverwood"] {
+            execute_line(app.world_mut(), command);
+        }
+        assert_eq!(
+            scrollback(&app).matches("door crossing to finish").count(),
+            2
+        );
+        assert_eq!(*app.world().resource::<ActiveSpace>(), inside);
+        assert!(app.world().get_entity(root).is_ok());
+        assert_eq!(camera_position(&mut app), before);
+
+        app.insert_resource(DoorCrossing::default());
+        execute_line(app.world_mut(), "coe 6 -12");
+        assert_eq!(*app.world().resource::<ActiveSpace>(), inside);
+        assert_eq!(
+            *app.world().resource::<CameraSpace>(),
+            CameraSpace::Interior
+        );
+        assert!(app.world().get_entity(root).is_ok());
+        assert_eq!(camera_position(&mut app), before);
     }
 }

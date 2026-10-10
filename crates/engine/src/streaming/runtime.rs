@@ -2,7 +2,8 @@
 //! Reservations are estimates; process pressure is an independent backstop.
 
 use super::{
-    CellStatus, PendingAssetProfile, PendingModel, StreamingMetrics, StreamingWorld,
+    ActiveSpace, ActiveSpaceIdentity, CellStatus, PendingAssetProfile, PendingModel,
+    StreamingMetrics, StreamingWorld,
     admission::{SceneAdmission, SceneKey},
     control::{
         ControllerDecision, ControllerInput, ControllerSettings, ControllerState,
@@ -13,6 +14,7 @@ use super::{
 };
 use crate::{
     config::EngineConfig,
+    nif_depth::NifDepthMaterial,
     profiling::ProfilingState,
     render::{TerrainMaterial, WaterMaterial},
     streaming_preparation::{
@@ -106,7 +108,7 @@ pub(crate) struct StreamingRuntime {
     prepared_resources: HashSet<String>,
     next_resource: u64,
     frame: u64,
-    previous_camera: Option<(DVec3, DVec3, u32)>,
+    previous_camera: Option<(DVec3, DVec3, ActiveSpaceIdentity)>,
     pub previous_commit_ms: f64,
     pub previous_spawn_ms: f64,
     pub previous_validation_ms: f64,
@@ -693,6 +695,17 @@ fn diagnostic_bytes(
         .then_some((measurement.value * multiplier) as u64)
 }
 
+/// A crossing restores the current controller limit, including an explicit zero-byte limit.
+pub(crate) fn current_upload_budget(
+    config: &EngineConfig,
+    runtime: Option<&StreamingRuntime>,
+) -> Option<usize> {
+    runtime.and_then(|runtime| runtime.decision).map_or_else(
+        || config.max_upload_bytes_per_frame(),
+        |decision| Some(decision.budgets.max_upload_bytes_per_frame as usize),
+    )
+}
+
 pub(super) fn update_streaming_control(world: &mut World) {
     let Some(mut runtime) = world.remove_resource::<StreamingRuntime>() else {
         return;
@@ -703,19 +716,24 @@ pub(super) fn update_streaming_control(world: &mut World) {
     }
     runtime.frame = runtime.frame.saturating_add(1);
     let config = world.resource::<EngineConfig>().clone();
+    let space = world
+        .get_resource::<ActiveSpace>()
+        .copied()
+        .unwrap_or_default()
+        .identity(config.worldspace_id);
     let view = requests::priority_view(world);
     let (moving, turning, discontinuity) = match (view, runtime.previous_camera) {
-        (Some(view), Some((position, forward, space))) => {
+        (Some(view), Some((position, forward, previous_space))) => {
             let distance = view.position.distance(position);
             (
                 distance > 0.05,
                 view.forward.dot(forward) < 0.99999,
-                space != config.worldspace_id || distance > f64::from(CELL_SIZE) * 2.0,
+                previous_space != space || distance > f64::from(CELL_SIZE) * 2.0,
             )
         }
         _ => (false, false, false),
     };
-    runtime.previous_camera = view.map(|view| (view.position, view.forward, config.worldspace_id));
+    runtime.previous_camera = view.map(|view| (view.position, view.forward, space));
     let process = diagnostic_bytes(
         world,
         &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
@@ -843,8 +861,15 @@ pub(super) fn update_streaming_control(world: &mut World) {
             mandatory_collision_pending: mandatory,
         },
     );
+    let landing_unlimited = world
+        .get_resource::<crate::door_crossing::DoorCrossing>()
+        .is_some_and(crate::door_crossing::DoorCrossing::landing_uploads_unlimited);
     if let Some(mut upload) = world.get_resource_mut::<RenderAssetBytesPerFrame>() {
-        upload.max_bytes = Some(decision.budgets.max_upload_bytes_per_frame as usize);
+        upload.max_bytes = if landing_unlimited {
+            None
+        } else {
+            Some(decision.budgets.max_upload_bytes_per_frame as usize)
+        };
     }
     let totals = runtime.ledger.totals();
     runtime.snapshot = Some(RuntimeSnapshot {
@@ -920,6 +945,12 @@ fn cpu_absent(world: &World, watch: &ResourceWatch) -> bool {
             world
                 .resource::<Assets<StandardMaterial>>()
                 .contains(id.typed_debug_checked::<StandardMaterial>())
+        } else if id.type_id() == TypeId::of::<NifDepthMaterial>() {
+            world
+                .get_resource::<Assets<NifDepthMaterial>>()
+                .is_none_or(|materials| {
+                    materials.contains(id.typed_debug_checked::<NifDepthMaterial>())
+                })
         } else if id.type_id() == TypeId::of::<TerrainMaterial>() {
             world
                 .resource::<Assets<TerrainMaterial>>()
@@ -1047,12 +1078,17 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
             && world
                 .resource::<AssetServer>()
                 .is_loaded_with_dependencies(id)
-            && scene_dependencies_available(asset, world.resource::<Assets<StandardMaterial>>())
+            && scene_dependencies_available(
+                asset,
+                world.resource::<Assets<StandardMaterial>>(),
+                world.get_resource::<Assets<NifDepthMaterial>>(),
+            )
         {
             let demand = scene_demand(
                 PreparationKey::Scene(id),
                 asset,
                 world.resource::<Assets<StandardMaterial>>(),
+                world.get_resource::<Assets<NifDepthMaterial>>(),
             );
             // Every material dependency must have an exact loader identity
             // before catalog entries can be proved unused. Embedded images

@@ -4,13 +4,13 @@ use crate::{
     profiling::{MetricSummary, ProfilingState, SystemMetadata, reconcile_scene, summarize},
     render::RendererMetrics,
     render_timing::{PipelineActivity, RenderTimingPlugin, RenderTimings},
-    streaming::{RenderOrigin, StreamingMetrics},
+    streaming::{ActiveSpace, ActiveSpaceIdentity, RenderOrigin, StreamingMetrics},
     streaming_gpu_metrics::StreamingGpuMetricsBridge,
     streaming_trace::{
         BenchmarkWindow, CameraMotion, CameraObservation, StreamingBenchmarkRouteSnapshot,
         StreamingFrameSample,
     },
-    world::components::{CELL_SIZE, StreamingCamera},
+    world::components::StreamingCamera,
 };
 use bevy::{
     diagnostic::{
@@ -133,7 +133,7 @@ fn route_window(route: &crate::app::StreamingBenchmarkRoute) -> BenchmarkWindow 
 #[derive(Clone)]
 struct PreviousCamera {
     entity: Entity,
-    worldspace_id: u32,
+    space: ActiveSpaceIdentity,
     position: [f64; 3],
     rotation: Quat,
 }
@@ -142,18 +142,18 @@ fn observe_camera(
     entity: Entity,
     transform: &GlobalTransform,
     worldspace_id: u32,
+    space: ActiveSpace,
     origin: IVec2,
     previous: &mut Option<PreviousCamera>,
 ) -> CameraObservation {
-    let local = transform.translation();
-    let position = [
-        f64::from(local.x) + f64::from(origin.x) * f64::from(CELL_SIZE),
-        f64::from(local.y),
-        f64::from(local.z) - f64::from(origin.y) * f64::from(CELL_SIZE),
-    ];
+    let position = space
+        .absolute_camera_position(transform.translation().as_dvec3(), origin)
+        .to_array();
+    let identity = space.identity(worldspace_id);
+    let worldspace_id = space.exterior_worldspace(worldspace_id);
     let rotation = transform.rotation();
     let motion = match previous {
-        Some(last) if last.entity == entity && last.worldspace_id == worldspace_id => {
+        Some(last) if last.entity == entity && last.space == identity => {
             let translated = position
                 .iter()
                 .zip(last.position)
@@ -170,12 +170,13 @@ fn observe_camera(
     };
     *previous = Some(PreviousCamera {
         entity,
-        worldspace_id,
+        space: identity,
         position,
         rotation,
     });
     CameraObservation {
         worldspace_id,
+        interior_cell_id: space.interior,
         render_origin_grid: [origin.x, origin.y],
         world_position: position,
         motion,
@@ -194,6 +195,7 @@ fn sample_streaming_trace(
     mut events: MessageReader<AssetEvent<WorldAsset>>,
     cameras: Query<(Entity, &GlobalTransform), With<StreamingCamera>>,
     origin: Option<Res<RenderOrigin>>,
+    space: Option<Res<ActiveSpace>>,
     mut previous_camera: Local<Option<PreviousCamera>>,
     mut pending_ids: Local<Vec<bevy::asset::AssetId<WorldAsset>>>,
     mut profiler: ResMut<ProfilingState>,
@@ -205,6 +207,7 @@ fn sample_streaming_trace(
             entity,
             transform,
             config.worldspace_id,
+            space.as_deref().copied().unwrap_or_default(),
             origin.as_ref().map_or(IVec2::ZERO, |origin| origin.0),
             &mut previous_camera,
         )),
@@ -225,17 +228,19 @@ fn sample_streaming_trace(
             .map(|route| route_snapshot(route, profiler.elapsed_ms())),
         camera,
         streaming: streaming.as_deref().map(Into::into),
-        scene_admission: (config.prioritize_streaming || config.max_scene_loads != 0)
-            .then(|| {
-                admission
-                    .as_ref()
-                    .map(|admission| crate::streaming_trace::SceneAdmissionSnapshot {
-                        configured_job_limit: config.max_scene_loads,
-                        prioritization_enabled: config.prioritize_streaming,
-                        jobs: admission.stats(),
-                    })
-            })
-            .flatten(),
+        scene_admission: (config.prioritize_streaming
+            || config.max_scene_loads != 0
+            || config.streaming_controls_enabled())
+        .then(|| {
+            admission
+                .as_ref()
+                .map(|admission| crate::streaming_trace::SceneAdmissionSnapshot {
+                    configured_job_limit: config.max_scene_loads,
+                    prioritization_enabled: config.prioritize_streaming,
+                    jobs: admission.stats(),
+                })
+        })
+        .flatten(),
         scenes: Default::default(),
         cpu_spans_ms: profiler.frame_cpu_spans_ms.clone(),
         completion_latencies_ms: profiler.frame_completion_latencies_ms.clone(),
@@ -950,21 +955,34 @@ mod tests {
             entity,
             &GlobalTransform::from_xyz(10.0, 20.0, 30.0),
             1,
+            ActiveSpace::default(),
             IVec2::ZERO,
             &mut previous,
         );
         assert_eq!(first.motion, CameraMotion::Unavailable);
         let rebased = GlobalTransform::from(
-            Transform::from_xyz(10.0 - CELL_SIZE, 20.0, 30.0 + CELL_SIZE)
-                .with_rotation(-Quat::IDENTITY),
+            Transform::from_xyz(
+                10.0 - crate::world::components::CELL_SIZE,
+                20.0,
+                30.0 + crate::world::components::CELL_SIZE,
+            )
+            .with_rotation(-Quat::IDENTITY),
         );
-        let next = observe_camera(entity, &rebased, 1, IVec2::ONE, &mut previous);
+        let next = observe_camera(
+            entity,
+            &rebased,
+            1,
+            ActiveSpace::default(),
+            IVec2::ONE,
+            &mut previous,
+        );
         assert_eq!(next.world_position, first.world_position);
         assert_eq!(next.motion, CameraMotion::Stationary);
         let moved = observe_camera(
             entity,
             &GlobalTransform::from_xyz(11.0, 20.0, 30.0),
             1,
+            ActiveSpace::default(),
             IVec2::ZERO,
             &mut previous,
         );
@@ -973,10 +991,51 @@ mod tests {
             entity,
             &GlobalTransform::IDENTITY,
             2,
+            ActiveSpace::default(),
             IVec2::ZERO,
             &mut previous,
         );
         assert_eq!(changed_space.motion, CameraMotion::Unavailable);
+    }
+
+    #[test]
+    fn interior_trace_coordinates_and_motion_follow_the_active_space() {
+        let entity = Entity::from_raw_u32(1).unwrap();
+        let mut previous = None;
+        let transform = GlobalTransform::from_xyz(10.0, 20.0, 30.0);
+        let interior = ActiveSpace {
+            worldspace_id: Some(61),
+            interior: Some(7),
+        };
+        let first = observe_camera(
+            entity,
+            &transform,
+            60,
+            interior,
+            IVec2::new(4, -12),
+            &mut previous,
+        );
+        assert_eq!(first.world_position, [10.0, 20.0, 30.0]);
+        assert_eq!(first.worldspace_id, 61);
+        assert_eq!(first.interior_cell_id, Some(7));
+        let unchanged =
+            observe_camera(entity, &transform, 60, interior, IVec2::ZERO, &mut previous);
+        assert_eq!(unchanged.motion, CameraMotion::Stationary);
+        let other = ActiveSpace {
+            interior: Some(8),
+            ..interior
+        };
+        assert_eq!(
+            observe_camera(entity, &transform, 60, other, IVec2::ZERO, &mut previous).motion,
+            CameraMotion::Unavailable
+        );
+        let exterior = ActiveSpace {
+            worldspace_id: Some(61),
+            interior: None,
+        };
+        let outside = observe_camera(entity, &transform, 60, exterior, IVec2::ZERO, &mut previous);
+        assert_eq!(outside.motion, CameraMotion::Unavailable);
+        assert_eq!(outside.interior_cell_id, None);
     }
 
     #[test]

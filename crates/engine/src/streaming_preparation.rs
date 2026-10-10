@@ -3,6 +3,7 @@
 //! IDs are weak observations. This bridge never keeps an asset alive or certifies
 //! successful drawing, collision readiness, or physical GPU memory reclamation.
 
+use crate::nif_depth::NifDepthMaterial;
 use bevy::{
     asset::{AssetId, UntypedAssetId, VisitAssetDependencies},
     pbr::{MaterialBindGroupAllocators, PreparedMaterial},
@@ -312,19 +313,26 @@ fn extract_demands(
 pub(crate) fn scene_dependencies_available(
     scene: &WorldAsset,
     materials: &Assets<StandardMaterial>,
+    depth_materials: Option<&Assets<NifDepthMaterial>>,
 ) -> bool {
     scene.world.iter_entities().all(|entity| {
         entity
             .get::<MeshMaterial3d<StandardMaterial>>()
             .is_none_or(|material| materials.contains(material.0.id()))
+            && entity
+                .get::<MeshMaterial3d<NifDepthMaterial>>()
+                .is_none_or(|material| {
+                    depth_materials.is_some_and(|materials| materials.contains(material.0.id()))
+                })
     })
 }
 
-/// Collect weak IDs only after [`scene_dependencies_available`] succeeds.
+/// Collect weak IDs for the material bindings the renderer actually uses.
 pub(crate) fn scene_demand(
     key: PreparationKey,
     scene: &WorldAsset,
     materials: &Assets<StandardMaterial>,
+    depth_materials: Option<&Assets<NifDepthMaterial>>,
 ) -> PreparationDemand {
     let mut demand = PreparationDemand {
         key,
@@ -339,20 +347,39 @@ pub(crate) fn scene_demand(
         if let Some(material) = entity.get::<MeshMaterial3d<StandardMaterial>>() {
             demand.materials.push(material.0.id().into());
         }
+        if let Some(material) = entity.get::<MeshMaterial3d<NifDepthMaterial>>() {
+            demand.materials.push(material.0.id().into());
+        }
     }
     normalize(&mut demand.meshes);
     normalize(&mut demand.materials);
     for id in &demand.materials {
-        if let Some(material) = materials.get(id.typed_debug_checked::<StandardMaterial>()) {
-            material.visit_dependencies(&mut |dependency| {
-                if dependency.type_id() == TypeId::of::<Image>() {
-                    demand.images.push(dependency.typed_debug_checked());
-                }
-            });
+        if id.type_id() == TypeId::of::<StandardMaterial>() {
+            if let Some(material) = materials.get(id.typed_debug_checked::<StandardMaterial>()) {
+                append_material_images(material, &mut demand.images);
+            }
+        } else if id.type_id() == TypeId::of::<NifDepthMaterial>()
+            && let Some(material) = depth_materials
+                .and_then(|materials| materials.get(id.typed_debug_checked::<NifDepthMaterial>()))
+        {
+            // ExtendedMaterial does not expose the base's dependencies through its Asset
+            // implementation. The native extension has no image fields of its own.
+            append_material_images(&material.base, &mut demand.images);
         }
     }
     normalize(&mut demand.images);
     demand
+}
+
+fn append_material_images(
+    material: &impl VisitAssetDependencies,
+    images: &mut Vec<AssetId<Image>>,
+) {
+    material.visit_dependencies(&mut |dependency| {
+        if dependency.type_id() == TypeId::of::<Image>() {
+            images.push(dependency.typed_debug_checked());
+        }
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -670,15 +697,65 @@ mod tests {
             scene_world.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
         }
         let scene = WorldAsset::new(scene_world);
-        assert!(scene_dependencies_available(&scene, &materials));
-        let demand = scene_demand(key(), &scene, &materials);
+        assert!(scene_dependencies_available(&scene, &materials, None));
+        let demand = scene_demand(key(), &scene, &materials, None);
         assert_eq!(demand.meshes, vec![mesh.id()]);
         assert_eq!(demand.materials, vec![material.id().untyped()]);
         assert_eq!(demand.images.len(), 2);
         assert!(demand.images.contains(&color.id()));
         assert!(demand.images.contains(&normal.id()));
         materials.remove(material.id());
-        assert!(!scene_dependencies_available(&scene, &materials));
+        assert!(!scene_dependencies_available(&scene, &materials, None));
+    }
+
+    #[test]
+    fn native_depth_bindings_track_rendered_material_and_texture_dependencies() {
+        let mut images = Assets::<Image>::default();
+        let mut standard = Assets::<StandardMaterial>::default();
+        let mut depth = Assets::<NifDepthMaterial>::default();
+        let color = images.add(Image::default());
+        let normal = images.add(Image::default());
+        let base = StandardMaterial {
+            base_color_texture: Some(color.clone()),
+            emissive_texture: Some(color.clone()),
+            normal_map_texture: Some(normal.clone()),
+            ..default()
+        };
+        let source = standard.add(base.clone());
+        let native = depth.add(crate::nif_depth::depth_material(
+            base,
+            crate::nif_depth::NifDepthState {
+                depth_test: true,
+                depth_write: false,
+                decal: true,
+                alpha_mask: false,
+            },
+        ));
+        let mut world = World::new();
+        for _ in 0..2 {
+            world.spawn((
+                MeshMaterial3d(native.clone()),
+                crate::nif_depth::NifDepthMaterialSource(source.clone()),
+            ));
+        }
+        let scene = WorldAsset::new(world);
+        assert!(!scene_dependencies_available(&scene, &standard, None));
+        assert!(scene_dependencies_available(
+            &scene,
+            &standard,
+            Some(&depth)
+        ));
+        let demand = scene_demand(key(), &scene, &standard, Some(&depth));
+        assert_eq!(demand.materials, vec![native.id().untyped()]);
+        assert_eq!(demand.images.len(), 2);
+        assert!(demand.images.contains(&color.id()));
+        assert!(demand.images.contains(&normal.id()));
+        depth.remove(native.id());
+        assert!(!scene_dependencies_available(
+            &scene,
+            &standard,
+            Some(&depth)
+        ));
     }
 
     #[test]

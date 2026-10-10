@@ -835,7 +835,6 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 
 // PR #128 owns door decoding at 25..=33. Reserve that suffix so combining its
 // optional door projection with enable state cannot reinterpret either feature.
-const ABSENT_DOOR_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL";
 const REFERENCE_ENABLE_START: usize = 34;
 
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
