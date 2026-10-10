@@ -562,9 +562,11 @@ impl ArchiveExtractor {
                 |path| selection_includes(options.selection, path),
                 progress,
                 stop,
-                options.sync,
-                &sync,
-                Some(&ingestion),
+                ExtractionWriteContext {
+                    sync_mode: options.sync,
+                    sync: &sync,
+                    ingestion: Some(&ingestion),
+                },
             )
         })?;
         timings.extraction_seconds = extraction_started.elapsed().as_secs_f64();
@@ -651,10 +653,18 @@ fn extract_selected_reporting(
         include,
         progress,
         stop,
-        IngestionSync::PerFile,
-        &SyncMeasurements::default(),
-        None,
+        ExtractionWriteContext {
+            sync_mode: IngestionSync::PerFile,
+            sync: &SyncMeasurements::default(),
+            ingestion: None,
+        },
     )
+}
+
+struct ExtractionWriteContext<'a, 'session> {
+    sync_mode: IngestionSync,
+    sync: &'a SyncMeasurements,
+    ingestion: Option<&'a FreshIngestion<'session>>,
 }
 
 fn extract_selected_with_sync_reporting(
@@ -663,10 +673,13 @@ fn extract_selected_with_sync_reporting(
     include: impl Fn(&Path) -> bool + Sync,
     progress: Option<ExtractionProgressCallback<'_>>,
     stop: Option<StopCheck<'_>>,
-    sync_mode: IngestionSync,
-    sync: &SyncMeasurements,
-    ingestion: Option<&FreshIngestion<'_>>,
+    writes: ExtractionWriteContext<'_, '_>,
 ) -> Result<Vec<ExtractedFile>> {
+    let ExtractionWriteContext {
+        sync_mode,
+        sync,
+        ingestion,
+    } = writes;
     let file = File::open(archive_path)
         .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
     // SAFETY: the file remains open and the mapping is read-only for the duration
