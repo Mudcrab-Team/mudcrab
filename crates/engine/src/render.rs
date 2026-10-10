@@ -264,14 +264,12 @@ pub struct TerrainExtension {
     layer_4: Option<Handle<Image>>,
     #[texture(110)]
     layer_5: Option<Handle<Image>>,
-    // All diffuse and normal layers use the same repeating sampler. Sharing it keeps the full
-    // material below Metal's 16-sampler limit, including Bevy's standard material and view.
-    // The first present diffuse image supplies it even when the base layer has no texture.
-    // AsBindGroup requires the sampler's source image to have a texture binding on this field;
-    // the shader only uses its sampler, while bindings 100-110 supply the diffuse images.
+    // LAND images share one repeating sampler. Use the first available color layer so an
+    // untextured base does not select Bevy's clamping fallback sampler. AsBindGroup requires a
+    // texture on the sampler's field; binding 119 supplies it without another image allocation.
     #[texture(119)]
     #[sampler(101)]
-    layer_sampler: Option<Handle<Image>>,
+    sampler_source: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
     // Each layer's normal map, sampled through `layer_sampler`: every terrain layer image is
@@ -487,7 +485,7 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
-                layer_sampler: textures.iter().flatten().next().cloned(),
+                sampler_source: textures.iter().flatten().next().cloned(),
                 settings,
                 normal_0: normals[0].clone(),
                 normal_1: normals[1].clone(),
@@ -521,7 +519,7 @@ impl TerrainExtension {
             layer_3: Some(textures[3].clone()),
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
-            layer_sampler: Some(textures[0].clone()),
+            sampler_source: Some(textures[0].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
             normal_0: None,
             normal_1: None,
@@ -571,7 +569,7 @@ impl Default for TerrainExtension {
             layer_3: None,
             layer_4: None,
             layer_5: None,
-            layer_sampler: None,
+            sampler_source: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
             normal_0: None,
             normal_1: None,
@@ -772,7 +770,9 @@ fn update_water_reflection_camera(
     // Keep both views in the same domain, including explicit diagnostic exposure changes.
     let ev100 = exposure.map_or(DEFAULT_SCENE_EV100, |value| value.ev100);
     if let Some(mut reflection_exposure) = reflection_exposure {
-        reflection_exposure.ev100 = ev100;
+        if reflection_exposure.ev100 != ev100 {
+            reflection_exposure.ev100 = ev100;
+        }
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
     }
@@ -796,13 +796,17 @@ fn update_water_reflection_camera(
         );
     }
     let Some(surface) = mirror_surface else {
-        camera.is_active = false;
+        if camera.is_active {
+            camera.is_active = false;
+        }
         return;
     };
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
-    *reflection = reflected_camera_transform(main, surface.translation().y);
-    camera.is_active = surface_in_view;
+    reflection.set_if_neq(reflected_camera_transform(main, surface.translation().y));
+    if camera.is_active != surface_in_view {
+        camera.is_active = surface_in_view;
+    }
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
 
@@ -1025,6 +1029,63 @@ mod tests {
                 .ev100,
             9.7
         );
+    }
+
+    #[test]
+    fn stationary_reflection_does_not_mark_camera_state_changed() {
+        #[derive(Resource, Default)]
+        struct Changes {
+            transform: bool,
+            camera: bool,
+            exposure: bool,
+        }
+
+        type ReflectionChanges<'w> = (Ref<'w, Transform>, Ref<'w, Camera>, Ref<'w, Exposure>);
+
+        fn observe_changes(
+            reflection: Query<ReflectionChanges<'_>, With<WaterReflectionCamera>>,
+            mut changes: ResMut<Changes>,
+        ) {
+            let (transform, camera, exposure) = reflection.single().unwrap();
+            *changes = Changes {
+                transform: transform.is_changed(),
+                camera: camera.is_changed(),
+                exposure: exposure.is_changed(),
+            };
+        }
+
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness
+            .app
+            .init_resource::<Changes>()
+            .add_systems(Last, observe_changes);
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), Vec3::new(200.0, 0.0, 200.0));
+        assert!(harness.frame().active);
+        assert!(harness.frame().active);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
+
+        harness.aim(Transform::from_xyz(0.0, 160.0, 0.0));
+        let frame = harness.frame();
+        assert_eq!(frame.transform.translation.y, -80.0);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(changes.transform && !changes.camera && !changes.exposure);
+
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .insert(Exposure { ev100: 7.0 });
+        harness.frame();
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && changes.exposure);
+
+        harness.aim(Transform::from_xyz(0.0, 160.0, 0.0).looking_to(Vec3::Z, Vec3::Y));
+        assert!(!harness.frame().active);
+        assert!(harness.app.world().resource::<Changes>().camera);
+        assert!(!harness.frame().active);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
     }
 
     #[test]

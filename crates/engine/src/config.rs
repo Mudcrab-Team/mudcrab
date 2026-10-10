@@ -3,6 +3,15 @@ use bevy::prelude::Resource;
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
 
+/// Most IO threads `--io-threads` accepts; `0` still asks for the automatic size. Each thread
+/// reserves 128 MiB of address space (`app::IO_TASK_STACK_BYTES`), so an unbounded count could
+/// exhaust it and make Bevy panic spawning threads. 64 is well past the 4 the automatic size
+/// uses and the 8 that were measured.
+pub(crate) const MAX_IO_THREADS: usize = 64;
+
+/// What `--io-threads` takes, with [`MAX_IO_THREADS`] spelled out; a test holds the two equal.
+const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
+
 /// How far each terrain LOD tier draws, in Skyrim's `[TerrainManager]` terms:
 /// a tier reaches its block distance times `fSplitDistanceMult`, in Creation
 /// units from the camera. `--ini` reads these from a `SkyrimPrefs.ini`.
@@ -71,6 +80,10 @@ pub struct EngineConfig {
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
     pub max_model_spawns_per_frame: usize,
+    /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
+    /// threads, at least one and at most four. A nonzero count must be at most
+    /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
+    pub io_threads: usize,
     /// MiB of newly loaded render assets (meshes, textures) the renderer may
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
@@ -104,6 +117,8 @@ pub struct EngineConfig {
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
+    /// Exact, fixed-step profiling traversal. Mutually exclusive with other camera drivers.
+    pub matched_route: Option<PathBuf>,
     /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
     /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
     pub shots_out: Option<PathBuf>,
@@ -132,13 +147,16 @@ impl Default for EngineConfig {
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
             max_cell_unloads_per_frame: 2,
-            // A cell holds on the order of 15 references with a model and cells commit one per
-            // frame, so 15 models is the largest batch a frame can be handed at once. Bevy
-            // instantiates a batch like that in an estimated 5-8 ms on the stress scenario, which is
-            // most of a 60 fps frame; arming 4 per frame keeps a batch near 1.5 ms and a whole
-            // cell's models armed within four frames (~67 ms at 60 fps). `0` arms the batch whole,
-            // as the engine did before this budget existed.
-            max_model_spawns_per_frame: 4,
+            // After a jump, the models of several cells are already loaded and reach the scene
+            // spawner together: on the stress scenario the backlog runs to about 2,000 models. At 4
+            // a frame that backlog took ~500 frames to clear; at 32 the world is ready 2.5x sooner
+            // with the same worst frame, because a frame hands over more of the queue without
+            // instantiating so many models at once that the frame blows past 60 fps. The limit
+            // still spreads a burst over frames; `0` arms the whole batch at once, the behaviour
+            // before this budget existed (docs/roadmap/02-profiling.md, "Load speed defaults").
+            max_model_spawns_per_frame: 32,
+            // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
+            io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
             // a cell's new textures spread over a few frames instead of landing
             // in one 13 ms upload burst, and at 60 fps the budget still admits
@@ -167,6 +185,7 @@ impl Default for EngineConfig {
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
             shots: None,
+            matched_route: None,
             shots_out: None,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
@@ -207,8 +226,9 @@ Streaming:
   --stream-radius <cells>               cells streamed around the camera (default: 2)
   --max-commit-ms <ms>                  cell commit time allowed per frame (default: 16.67)
   --max-unloads-per-frame <count>       cells despawned per frame; 0 despawns all at once (default: 2)
-  --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 4)
+  --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
+  --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
 
 Benchmark and profiling:
@@ -225,6 +245,7 @@ Benchmark and profiling:
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
+  --matched-route <file>                execute exact route steps with transition and settled checkpoints
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
@@ -380,6 +401,7 @@ impl EngineConfig {
             && self.benchmark_duration_secs.is_none()
             && self.acceptance_screenshot.is_none()
             && self.shots.is_none()
+            && self.matched_route.is_none()
             && self.auto_fly_speed <= 0.0
             && !self.material_fixture
             && !self.terrain_water_fixture
@@ -400,6 +422,8 @@ impl EngineConfig {
             Some("benchmark")
         } else if self.streaming_fixture {
             Some("streaming fixture")
+        } else if self.matched_route.is_some() {
+            Some("matched-route")
         } else if self.shots.is_some() {
             Some("shots")
         } else {
@@ -511,6 +535,22 @@ impl EngineConfig {
                         "a model count, 0 for unlimited",
                         args.next(),
                     )?;
+                }
+                // 0 keeps the automatic size; a count past the cap is refused like a value that
+                // fails to parse.
+                "--io-threads" => {
+                    let raw = take_raw("--io-threads", IO_THREADS_EXPECTED, args.next())?;
+                    config.io_threads = raw
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|value| *value <= MAX_IO_THREADS)
+                        .ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--io-threads",
+                                Some(raw),
+                                IO_THREADS_EXPECTED,
+                            )
+                        })?;
                 }
                 "--max-upload-mib-per-frame" => {
                     config.max_upload_mib_per_frame = take_value(
@@ -652,6 +692,13 @@ impl EngineConfig {
                 // A path left out is an error, and must not swallow the next option: a `--shots`
                 // with no path is no mode at all, and continuing would silently launch an ordinary
                 // interactive run.
+                "--matched-route" => {
+                    config.matched_route = Some(take_value(
+                        "--matched-route",
+                        "a route fixture",
+                        args.next(),
+                    )?);
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
                 }
@@ -867,10 +914,9 @@ mod tests {
     /// it instead of keeping a second list of option names in step by hand.
     const CONFIG_SOURCE: &str = include_str!("config.rs");
 
-    /// Cargo, Git, `world-inspect`, dynamic-loader and audit-tool flags the
-    /// scripts also spell on a command line. Every other `--flag` in those
-    /// scripts goes to the engine. None of the audit tools starts the engine,
-    /// so their own options must not be mistaken for engine options.
+    /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
+    /// audit tools and launch wrappers. Wrappers also contain engine invocations,
+    /// so every other scanned `--flag` must be accepted by the engine parser.
     const NON_ENGINE_FLAGS: &[&str] = &[
         "--all",                 // cargo fmt
         "--all-targets",         // cargo test, cargo clippy
@@ -882,7 +928,8 @@ mod tests {
         "--ignore-submodules",   // git diff
         "--quiet",               // git diff
         "--short",               // git rev-parse
-        "--output",              // world-inspect
+        "--output",              // world inspection, profiling, startup runner
+        "--pairs-output",        // correlate_drawables.py
         "--radius",              // world-inspect
         "--library-path",        // ld-linux
         "--meshes",              // audit-collision.py
@@ -898,12 +945,30 @@ mod tests {
         "--candidate-inventory", // audit-riverwood-reuse.py
         "--reference-inventory", // audit-riverwood-reuse.py
         "--manifest",            // audit-riverwood-reuse.py
+        "--include",             // audit-z-fighting.py
+        "--materials-only",      // audit-z-fighting.py
+        "--no-placements",       // audit-z-fighting.py
+        "--plane-tolerance",     // audit-z-fighting.py
+        "--min-overlap-area",    // audit-z-fighting.py
+        "--max-triangles",       // audit-z-fighting.py
+        "--max-comparisons",     // audit-z-fighting.py
+        "--max-examples",        // audit-z-fighting.py
+        "--progress",            // audit-z-fighting.py
+        "--jobs",                // audit-z-fighting.py
         "--locked",              // cargo run
         "--manifest-path",       // cargo run
         "--cpu-jobs",            // converter
         "--io-jobs",             // converter
         "--binary",              // git diff
         "--porcelain",           // git status
+        "--engine",              // repeat-terrain-startup.py
+        "--repeats",             // repeat-terrain-startup.py
+        "--upload-budgets",      // repeat-terrain-startup.py
+        "--warmup",              // repeat-terrain-startup.py
+        "--duration",            // repeat-terrain-startup.py
+        "--timeout",             // repeat-terrain-startup.py
+        "--launch-prefix",       // repeat-terrain-startup.py
+        "--commit",              // repeat-terrain-startup.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -941,7 +1006,21 @@ mod tests {
         assert_eq!(config.max_cell_commits_per_frame, 1);
         assert_eq!(config.max_commit_micros_per_frame, 16_670);
         assert_eq!(config.max_cell_unloads_per_frame, 2);
-        assert_eq!(config.max_model_spawns_per_frame, 4);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+        assert_eq!(config.io_threads, 0);
+    }
+
+    #[test]
+    fn help_shows_the_model_spawn_default_the_engine_uses() {
+        let line = HELP_TEXT
+            .lines()
+            .find(|line| {
+                line.trim_start()
+                    .starts_with("--max-model-spawns-per-frame ")
+            })
+            .expect("--help has a --max-model-spawns-per-frame line");
+        let default = EngineConfig::default().max_model_spawns_per_frame;
+        assert!(line.ends_with(&format!("(default: {default})")), "{line}");
     }
 
     #[test]
@@ -963,6 +1042,34 @@ mod tests {
             run_config(&["--max-unloads-per-frame", "0"]).max_cell_unloads_per_frame,
             0
         );
+    }
+
+    #[test]
+    fn parses_the_io_thread_count_and_refuses_one_past_the_cap() {
+        assert_eq!(run_config(&["--io-threads", "6"]).io_threads, 6);
+        assert_eq!(run_config(&["--io-threads", "64"]).io_threads, 64);
+        // 0 still asks for the automatic size.
+        assert_eq!(run_config(&["--io-threads", "0"]).io_threads, 0);
+        // Past the cap is refused like a malformed number.
+        assert!(matches!(
+            parse_error(&["--io-threads", "65"]),
+            ConfigError::InvalidValue { value: Some(ref value), .. } if value == "65"
+        ));
+        assert_eq!(
+            IO_THREADS_EXPECTED,
+            format!("a thread count from 0 to {MAX_IO_THREADS}")
+        );
+        // `--help` spells the cap out too, so a bump must update it.
+        assert!(
+            HELP_TEXT.contains(&format!("asset IO threads, 0 to {MAX_IO_THREADS};")),
+            "--help states a different --io-threads cap"
+        );
+        // A count left out is an error naming `--io-threads`; it does not swallow the option
+        // after it (`--headless` would otherwise be lost and a window opened).
+        assert!(matches!(
+            parse_error(&["--io-threads", "--headless"]),
+            ConfigError::InvalidValue { value: Some(ref value), .. } if value == "--headless"
+        ));
     }
 
     #[test]
@@ -1086,6 +1193,18 @@ mod tests {
             "Mudcrab - shots: riverwood"
         );
         assert_eq!(args(&[]).window_title(), "Mudcrab");
+    }
+
+    #[test]
+    fn matched_route_is_a_separate_automated_camera_mode() {
+        let config = run_config(&["--matched-route", "route.json"]);
+        assert_eq!(config.matched_route, Some(PathBuf::from("route.json")));
+        assert!(!config.interactive_world_physics());
+        assert!(
+            run_config(&["--matched-route", "route.json", "--run-label", "test"])
+                .window_title()
+                .contains("matched-route")
+        );
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a

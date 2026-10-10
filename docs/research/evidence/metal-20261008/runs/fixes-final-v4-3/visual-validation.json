@@ -1,0 +1,8 @@
+{
+  "status": "passed",
+  "reason": "Intact terrain in saved scene image after manual baseline comparison.",
+  "evidence": [
+    "frame.png"
+  ],
+  "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e"
+}

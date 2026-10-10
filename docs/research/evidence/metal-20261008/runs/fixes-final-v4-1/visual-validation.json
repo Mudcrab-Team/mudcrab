@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "reason": "Manual frame.png comparison shows intact terrain at the matched Riverwood camera; counter-only checks are insufficient.",
+  "evidence": [
+    "frame.png"
+  ],
+  "checks": [
+    "native surface Immediate 3200x1802",
+    "last periodic drawable proof has measured_missing_frames=0"
+  ],
+  "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e"
+}

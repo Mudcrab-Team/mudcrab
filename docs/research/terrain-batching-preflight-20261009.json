@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "utc_date": "2026-10-09",
+  "source_scope": "Hash-verified historical PR #200 V4 release; not corrected main baseline/candidate. Other builds active; no performance acceptance.",
+  "local_raw_archive": "<private-preflight-archive>",
+  "pr_pinned_head": "0650c70987cb4056eb3f08525ab9329f2e8cf179",
+  "checks_at_pinned_head": 0,
+  "actions_at_pinned_head": 0,
+  "native_smoke": [
+    {
+      "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 56.127059542,
+      "peak_external_rss_gib": 2.2481689453125,
+      "budget_mib": 16,
+      "native_drawable_acquisitions": 0,
+      "native_command_buffer_completions": 0,
+      "report_exists": false,
+      "screenshot_exists": false,
+      "quality_accepted": false,
+      "reason": "Monitor removed; no open windows; no benchmark report or image."
+    },
+    {
+      "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+      "exit_code": 1,
+      "timed_out": false,
+      "wall_seconds": 19.571581416,
+      "peak_external_rss_gib": 3.3223114013671875,
+      "budget_mib": 1,
+      "native_drawable_acquisitions": 0,
+      "native_command_buffer_completions": 0,
+      "report_exists": true,
+      "screenshot_exists": true,
+      "quality_accepted": false,
+      "report_passed": false,
+      "failed_thresholds": {
+        "commit_budget_respected": false
+      },
+      "average_fps": 16.981153228034795,
+      "p95_ms": 127.14066700000001,
+      "screenshot_dimensions": [
+        3200,
+        1802
+      ],
+      "image_review": "Entire saved frame appears black; failed visible-scene gate."
+    }
+  ],
+  "xcode": {
+    "developer_dir": "/Applications/Xcode.app/Contents/Developer",
+    "template": "Metal System Trace",
+    "recorder_exit_code": 54,
+    "trace_saved": true,
+    "toc_export_exit_code": 0,
+    "recording_duration_seconds": 10.668082,
+    "target": {
+      "arguments": "--assets <converted-assets> --worldspace 0x3c --grid-x 5 --grid-y -12 --stream-radius 2 --max-model-spawns-per-frame 16 --max-upload-mib-per-frame 1 --benchmark-warmup-frames 60 --benchmark-duration 5 --benchmark-output <private-preflight-archive>/xcode-report.json --profile-output <private-preflight-archive>/xcode-profile",
+      "type": "launched",
+      "return-exit-status": "1",
+      "name": "engine-production-v4",
+      "pid": "47537",
+      "termination-reason": "exit(1)"
+    },
+    "report_passed": false,
+    "renderer_path_active": false,
+    "attribution_accepted": false,
+    "gate": "Trace and TOC retained, but renderer path/visible workload did not validate; no GPU/presentation attribution claim."
+  },
+  "unresolved": [
+    "Corrected common prerequisites not integrated",
+    "Repeated matched release coverage/timing/memory comparisons at both budgets",
+    "Deterministic route driver and complete batch/retry queue readiness",
+    "Actual CI at publishable heads"
+  ],
+  "path_scope": "Private local paths are replaced with portable placeholders; exact raw receipts remain outside Git."
+}
