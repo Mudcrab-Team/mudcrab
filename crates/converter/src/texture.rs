@@ -908,6 +908,14 @@ pub fn inspect_ktx2(bytes: &[u8], encoding: TextureEncoding) -> Result<Ktx2Metad
         .map_err(|error| color_eyre::eyre::eyre!("generated invalid KTX2: {error:?}"))?;
     let header = reader.header();
     let levels = header.level_count.max(1);
+    let max_levels = max_mip_levels(header.pixel_width, header.pixel_height, header.pixel_depth);
+    ensure!(
+        levels <= max_levels,
+        "KTX2 declares {levels} mip levels, but its {}x{}x{} dimensions allow at most {max_levels}",
+        header.pixel_width,
+        header.pixel_height.max(1),
+        header.pixel_depth.max(1)
+    );
     ensure!(
         reader.levels().count() == levels as usize,
         "KTX2 level index is incomplete"
@@ -2226,6 +2234,67 @@ pub(crate) mod tests {
         assert_eq!(metadata.encoded_bytes, bytes.len() as u64);
         assert_eq!(metadata.sha256, crate::cache::hash_bytes(&bytes));
         assert!(!metadata.format.is_empty() && !metadata.supercompression.is_empty());
+    }
+
+    #[test]
+    fn ktx_inspection_rejects_mip_counts_exceeding_dimensions_without_panicking() {
+        for levels in [4, 33] {
+            let bytes = crate::texture_ktx2::write_uastc(
+                4,
+                4,
+                1,
+                &vec![vec![0; 16]; levels],
+                true,
+                false,
+                "mip-count regression",
+            );
+            // The container parser accepts complete level tables even when the
+            // declared count exceeds the dimensions or the u32 shift width.
+            let reader = ktx2::Reader::new(&bytes).unwrap();
+            assert_eq!(reader.header().level_count, levels as u32);
+            let error = inspect_ktx2(&bytes, TextureEncoding::ColorSrgb).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("dimensions allow at most 3"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn ktx_inspection_keeps_array_cube_and_volume_mip_limits() {
+        for (width, height, depth, layers, faces) in [
+            (8u32, 8u32, 0u32, 3u32, 1u32),
+            (8, 8, 0, 0, 6),
+            (4, 4, 8, 0, 1),
+        ] {
+            let levels = max_mip_levels(width, height, depth);
+            let data = (0..levels)
+                .map(|mip| {
+                    let blocks = (width >> mip).max(1).div_ceil(4)
+                        * (height >> mip).max(1).div_ceil(4)
+                        * (depth >> mip).max(1)
+                        * layers.max(1)
+                        * faces;
+                    vec![0; blocks as usize * 16]
+                })
+                .collect::<Vec<_>>();
+            let mut bytes = crate::texture_ktx2::write_uastc(
+                width,
+                height,
+                faces,
+                &data,
+                true,
+                false,
+                "mip-dimensions regression",
+            );
+            bytes[28..32].copy_from_slice(&depth.to_le_bytes());
+            bytes[32..36].copy_from_slice(&layers.to_le_bytes());
+            let metadata = inspect_ktx2(&bytes, TextureEncoding::ColorSrgb).unwrap();
+            assert_eq!(metadata.levels, levels);
+            assert_eq!(metadata.depth, depth.max(1));
+            assert_eq!(metadata.layers, layers.max(1));
+            assert_eq!(metadata.faces, faces);
+        }
     }
 
     #[test]

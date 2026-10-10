@@ -2117,7 +2117,8 @@ mod tests {
     }
 
     /// Utility `.ps1`, `.sh` and `.py` files under `root`, subdirectories included,
-    /// in a stable order. Hidden directories and script tests are excluded.
+    /// in a stable order. Hidden directories, script tests and converter-only
+    /// profiling tools are excluded.
     fn script_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut paths = Vec::new();
         let mut pending = vec![root.to_owned()];
@@ -2131,9 +2132,13 @@ mod tests {
                 // loop the walk; hidden folders (`.venv`) hold no project scripts.
                 if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                     let name = entry.file_name();
-                    // Tests inspect script text, including deliberately unsupported engine
-                    // options; they are not utility command lines.
-                    if !name.to_string_lossy().starts_with('.') && name != "tests" {
+                    // Tests inspect deliberately unsupported engine options.
+                    // lod-performance contains converter and audit commands with
+                    // their own parsers; engine launchers belong outside it.
+                    if !name.to_string_lossy().starts_with('.')
+                        && name != "tests"
+                        && name != "lod-performance"
+                    {
                         pending.push(path);
                     }
                 } else if matches!(
@@ -2201,10 +2206,10 @@ mod tests {
         );
     }
 
-    /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
-    /// included, is read from disk, so a script added later cannot pass an
-    /// option the parser refuses without failing this test. The scan is skipped
-    /// when the repository's `scripts/` is not next to this crate.
+    /// Utility `.ps1`, `.sh` and `.py` files in the engine script scope are read
+    /// from disk, including nested utilities. Converter-only profiling tools
+    /// have separate parsers. The scan is skipped when the repository's
+    /// `scripts/` is not next to this crate.
     #[test]
     fn the_scripts_only_pass_options_the_parser_accepts() {
         let Some(scripts) = scripts_directory() else {
@@ -2305,11 +2310,17 @@ mod tests {
     }
 
     #[test]
-    fn script_v89_scan_excludes_tests_and_keeps_nested_utilities() {
+    fn script_v89_scan_excludes_other_tool_scopes_and_keeps_nested_utilities() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir(directory.path().join("tests")).unwrap();
+        std::fs::create_dir(directory.path().join("lod-performance")).unwrap();
         std::fs::create_dir(directory.path().join("utils")).unwrap();
         std::fs::write(directory.path().join("tests/check.py"), "--log-file").unwrap();
+        std::fs::write(
+            directory.path().join("lod-performance/audit.py"),
+            "--data-root --expected-chunks --lod-encoder",
+        )
+        .unwrap();
         let utility = directory.path().join("utils/capture.sh");
         std::fs::write(&utility, "--headless").unwrap();
         assert_eq!(script_paths(directory.path()), vec![utility]);

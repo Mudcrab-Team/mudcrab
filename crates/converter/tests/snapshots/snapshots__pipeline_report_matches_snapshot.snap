@@ -60,7 +60,9 @@ expression: report
   },
   "lod_cache_hits": 0,
   "lod_chunks": 6,
+  "lod_cpu_fallback_chunks": 0,
   "lod_elapsed_ms": "[lod_elapsed_ms]",
+  "lod_gpu_chunks": 0,
   "lod_warnings": [],
   "notices": [
     "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"

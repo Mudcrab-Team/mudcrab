@@ -115,7 +115,7 @@ Dynamic head, hair, and eye meshes now produce geometry. The [PR #154 review](ht
 
 ### GPU texture encoding
 
-The converter copies textures whose DDS blocks a GPU can sample directly (DXT1–DXT5, BC1–BC7) into KTX2 unchanged. Everything else, mainly Skyrim's uncompressed terrain and LOD textures, is converted on the CPU by default: uncompressed 8-bit RGB(A) (24-bit, X8R8G8B8, A8R8G8B8, A8B8G8R8, DXGI BGRA/BGRX) is block-compressed to native BC7, and the remaining textures are encoded to UASTC (Basis Universal). With `--texture-encoder gpu` a wgpu compute shader encodes every texture it takes, uncompressed RGB(A) included, to UASTC instead, writing KTX2 with the same Zstandard supercompression, so the engine needs no changes:
+The converter copies textures whose DDS blocks a GPU can sample directly (DXT1–DXT5, BC1–BC7) into KTX2 unchanged. Ordinary source textures that need encoding use the CPU by default: uncompressed 8-bit RGB(A) (24-bit, X8R8G8B8, A8R8G8B8, A8B8G8R8, DXGI BGRA/BGRX) is block-compressed to native BC7, and the remaining textures are encoded to UASTC (Basis Universal). With `--texture-encoder gpu` a wgpu compute shader encodes every texture it takes, uncompressed RGB(A) included, to UASTC instead, writing KTX2 with the same Zstandard supercompression, so the engine needs no changes:
 
 ```bash
 cargo run --release -p converter -- "<Skyrim Data>" "<output directory>" --texture-encoder gpu
@@ -136,6 +136,33 @@ On the author's 20 sample textures, quality was about 0.3–0.5 dB PSNR below th
 - `--gpu-batch-mb N` — source megabytes packed into one GPU dispatch (default 256).
 
 Textures the GPU path cannot take (volume textures, formats it cannot decode) use the CPU encoder, as does the whole run when no hardware GPU is available. If the GPU fails mid-run (a driver error or a lost device), everything it had not finished is encoded on the CPU instead. Encoded textures are cached separately per encoder, so switching it reconverts only them; copied textures and meshes are reused.
+
+Generated terrain LOD atlases use the GPU by default in new CLI runs and
+`PipelineConfig::new`. Their encoder is independent of ordinary source textures,
+which still default to CPU. To use the GPU for both:
+
+```bash
+cargo run --release -p converter -- "<Skyrim Data>" "<output directory>" --texture-encoder gpu --cpu-jobs 8 --io-jobs 4
+```
+
+Use `--lod-encoder cpu` to select CPU terrain encoding. Existing serialized
+configs without `lod_texture_encoder` retain the legacy CPU setting.
+
+`--gpu-quality` and `--gpu-batch-mb` apply to both GPU encoders. Terrain batches
+are also bounded by `--cpu-jobs`, and their GPU slots cap the batch budget at
+64 MiB. GPU terrain encoding preserves the three authored atlas mips, tile
+gutters and sRGB transfer function. Switching encoder recipes or changing GPU
+quality rebuilds affected LOD atlases; batch-size changes preserve their cache
+proof. A GPU failure falls back to CPU encoding and is recorded in the report.
+Fallback chunks have no GPU reuse proof, so a later GPU run retries them.
+Explicit CPU selection produces the CPU recipe and its reuse proof instead.
+
+Archive extraction uses `--cpu-jobs` for decoding and `--io-jobs` for writers.
+It extracts converter inputs into a bounded queue and seals flushed cache
+batches before creating derived files. Resuming validates those batches and
+reconstructs missing or damaged files; archive ordering still determines
+which override wins. Containing directories are also flushed on Unix;
+portable directory flushing remains a Windows limitation.
 
 ---
 

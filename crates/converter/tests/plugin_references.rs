@@ -1,4 +1,6 @@
 //! Synthetic plugins only: no game data or copied assets.
+mod common;
+
 use converter::esm::{EsmParser, extractors::SubrecordView, load_order::LoadOrder};
 use std::{
     fs,
@@ -1168,7 +1170,7 @@ fn database_field(conn: &rusqlite::Connection, table: &str, id: u32, tag: &[u8; 
 /// Rerunning replaces stale database blobs and old textures, retaining proven meshes/scripts.
 #[tokio::test]
 async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
-    use converter::{AssetPipeline, PipelineConfig};
+    use converter::AssetPipeline;
     use rusqlite::Connection;
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
@@ -1314,7 +1316,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     )
     .unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
     let mut expected_texture_rebuilds = 0;
     for pass in 0..2 {

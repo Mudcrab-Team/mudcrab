@@ -13,6 +13,7 @@ expression: manifest
           "size": 721
         }
       ],
+      "recipe": "converter-inputs-v1",
       "source_hash": "[source_hash]"
     },
     "skyrim - misc.bsa": {
@@ -28,6 +29,7 @@ expression: manifest
           "size": 131
         }
       ],
+      "recipe": "converter-inputs-v1",
       "source_hash": "[source_hash]"
     },
     "skyrim - textures.ba2": {
@@ -36,11 +38,6 @@ expression: manifest
           "hash": "[hash]",
           "path": "textures/generated_color.dds",
           "size": 2892
-        },
-        {
-          "hash": "[hash]",
-          "path": "textures/generated_normal.dds",
-          "size": 5636
         },
         {
           "hash": "[hash]",
@@ -54,10 +51,16 @@ expression: manifest
         },
         {
           "hash": "[hash]",
+          "path": "textures/generated_normal.dds",
+          "size": 5636
+        },
+        {
+          "hash": "[hash]",
           "path": "textures/generated_volume.dds",
           "size": 2876
         }
       ],
+      "recipe": "converter-inputs-v1",
       "source_hash": "[source_hash]"
     }
   },

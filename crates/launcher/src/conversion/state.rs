@@ -1354,6 +1354,8 @@ mod tests {
             pruned_texture_references: 0,
             lod_chunks: 1693,
             lod_cache_hits: 0,
+            lod_gpu_chunks: 0,
+            lod_cpu_fallback_chunks: 0,
             lod_elapsed_ms: 0,
             publication_elapsed_ms: 0,
             lod_warnings: vec!["Solstheim terrain skipped".into()],

@@ -1,4 +1,6 @@
 //! Plugin-only changes rebuild world data while preserving verified asset reuse.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     cache::{ConversionManifest, configuration_hash_for_schema, hash_bytes},
@@ -10,7 +12,7 @@ use std::fs;
 /// Compare with the pre-PR configuration contract for every supported schema.
 #[test]
 fn plugin_repairs_preserve_historical_asset_configuration_hashes() {
-    let config = PipelineConfig::new("synthetic-data", "synthetic-output");
+    let config = common::cpu_lod_config("synthetic-data", "synthetic-output");
     for schema in 12..=21 {
         let mut historical = serde_json::json!({
             "schema": schema,
@@ -44,7 +46,7 @@ async fn plugin_changes_rebuild_the_database_without_reconverting_unchanged_asse
     layout::prepare_directory(&data, false).unwrap();
     layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
     let output = dir.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let first = convert(config.clone()).await;
     assert!(first.converted > 0);
     assert_eq!(first.cache_hits, 0);

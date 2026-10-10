@@ -25,6 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
+same-file = "1.0"
 lz4_flex.workspace = true
 image_dds.workspace = true
 intel_tex_2 = "0.2.2"
@@ -37,6 +38,10 @@ zstd = "0.13"
 # The encoder runs on native Vulkan, Metal or DX12 only (no GL, no WebGPU).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"
+
+[target.'cfg(all(target_arch = "aarch64", target_vendor = "apple"))'.dependencies]
+# ARM SHA instructions accelerate checksums; sha2-asm does not support Windows.
+sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 gltf = { version = "1.4", default-features = false, features = ["utils"] }
