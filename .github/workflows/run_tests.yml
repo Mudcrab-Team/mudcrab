@@ -36,26 +36,31 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if [ -z "${GITHUB_BASE_REF:-}" ]; then
-            echo "Not in a PR context (i.e., push event)"
-            COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch checks all tracked owning paths"
+            CHANGED_FILES="$(git ls-files)"
           else
-            echo "In a PR context comparing to the captured base commit"
-            : "${PR_BASE_SHA:?Missing pull_request.base.sha}"
-            COMPARE_REV="$(git merge-base "$PR_BASE_SHA" "$GITHUB_SHA")"
-          fi
+            if [ -z "${GITHUB_BASE_REF:-}" ]; then
+              echo "Not in a PR context (i.e., push event)"
+              COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+            else
+              echo "In a PR context comparing to the captured base commit"
+              : "${PR_BASE_SHA:?Missing pull_request.base.sha}"
+              COMPARE_REV="$(git merge-base "$PR_BASE_SHA" "$GITHUB_SHA")"
+            fi
 
-          if [ "$COMPARE_REV" = "$GITHUB_SHA" ]; then
-            CHANGED_FILES="$(git diff --name-only HEAD~1 "$GITHUB_SHA" 2>/dev/null || git ls-files)"
-          else
-            CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
+            if [ "$COMPARE_REV" = "$GITHUB_SHA" ]; then
+              CHANGED_FILES="$(git diff --name-only HEAD~1 "$GITHUB_SHA" 2>/dev/null || git ls-files)"
+            else
+              CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA")"
+            fi
           fi
 
           check_pattern() {
             local output_name="$1"
             local pattern="$2"
 
-            if echo "$CHANGED_FILES" | grep -qE "$pattern"; then
+            if grep -qE "$pattern" <<< "$CHANGED_FILES"; then
               echo "${output_name}=true" >> "$GITHUB_OUTPUT"
             else
               echo "${output_name}=false" >> "$GITHUB_OUTPUT"

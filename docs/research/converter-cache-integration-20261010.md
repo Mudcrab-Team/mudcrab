@@ -32,12 +32,14 @@ New integration cases exercise both prior manifest shapes and conflicting/unknow
 
 ## Accessible validation
 
-Validated on Linux with the repository-pinned Rust 1.98.1 toolchain:
+PR #213 recorded the following Linux results at its own checkpoint with the repository-pinned Rust 1.98.1 toolchain. The current all-pending-PR integration results are in the [integration report](pending-pr-integration-20261010/README.md):
 
 - `cargo +1.98.1 test --locked -j 2 -p converter --lib --bins --tests --no-fail-fast -- --test-threads=4`: 811 passed, 19 ignored across 57 targets. The final symlink replacement regression was added afterwards: its targeted library run passed (1 passed, 524 filtered out).
 - `cargo +1.98.1 clippy --locked -j 2 -p converter --all-targets --all-features -- -D warnings`: passed. Cargo reports an existing future-compatibility notice for dependency `proc-macro-error2` 2.0.1.
 - `python -m unittest discover -s scripts/lod-performance -p 'test_*.py'`: 12 passed.
 - `cargo +1.98.1 fmt --all -- --check` and `git diff --check`: passed.
+
+The all-pending-PR integration additionally routes verified warm materialization through the shared durability and copy accounting. A regression covers None/Archive/PerFile, existing/new cache roots, and hard-link/copy/spill routes. PerFile flushes previously unsynced physical payloads; ordinary warm hard links avoid a second full digest read and retain parallel per-hash ownership. Copy counters describe payload copies, excluding metadata and hash/read I/O.
 
 Historical benchmark reports from either PR remain historical; none measures this combined implementation.
 
