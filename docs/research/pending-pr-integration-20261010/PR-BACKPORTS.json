@@ -1,0 +1,168 @@
+{
+  "status": "pushed_and_read_back",
+  "date": "2026-10-10",
+  "host": "aarch64-apple-darwin",
+  "integration_branch": "t3/merge-pending-prs",
+  "runtime_code_head": "c27b7234a078f195c1dd5731a17bfe3cf4e7bb19",
+  "integration_merge_head": "ef5d37d3705b72e8eae270da1a6ffe8448cdb626",
+  "integration_previous_head": "b273fa744a6db3ad97cd926c0ba2e1ec2cb6672e",
+  "integration_before_and_after_tree": "12f933ee8c54eddcd827ea4718d2bcc8b19a2e44",
+  "runtime_sha256": {
+    "engine": "2a5960dcd3feac47dcfebf723f3830028eaa0505d98ea856394ee62b97d5f7e1",
+    "world_database": "5177bb5a89179a30f2f4c77945c79825e0570f24aa7aa28b38e3723bccd3f8cb"
+  },
+  "runtime_files_unchanged": true,
+  "pull_requests": [
+    {
+      "number": 125,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/125",
+      "before": "7bd9cc0bb76ad463132b7e95472ca14a38b93d73",
+      "after": "a207d9eda84b6fed947471ed7512fe9ea9c4716f",
+      "comment": {
+        "url": "https://github.com/Mudcrab-Team/mudcrab/pull/125#issuecomment-6101448732",
+        "body": "> Written with Codex, at @TaylorTurnerIT's request.\n\nPushed the authored pickup/drop repair directly to this PR: [a207d9e](https://github.com/BimingtonBill/wah-krah-jol/commit/a207d9eda84b6fed947471ed7512fe9ea9c4716f).\n\nE now grabs eligible authored dynamic clutter as well as the debug tankard. It resolves a compound collider hit to its rigid-body root, respects the first ray hit, converts the held world position into its streamed parent's coordinates, and wakes the body with zero velocity when released. The authored eligibility rules and sleeping-at-spawn behavior are unchanged.\n\nStandalone macOS validation: all ten `physics::noclip_tests` passed. The new regression exercises compound-child selection, a translated streamed parent, camera movement, release and subsequent falling. Engine Clippy with all targets/features and `-D warnings`, formatting and diff checks passed.\n\nFuture merges: the combined door/clutter/console integration uses one shared E target and runs targeting/holding after transform propagation. Preserve that ordering and single-action ownership when combining this PR with #128 and the console. Its pickup/drop/enter tooltip is in [integration repair c27b723](https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19); the standalone backport does not pull in those other PRs. Character-controller impulses remain disabled; enabling them reproduced a Rapier contact-manifold panic in the combined run. These checks do not qualify every authored object or replace native interaction review.",
+        "user": {
+          "login": "TaylorTurnerIT",
+          "name": "TaylorTurnerIT",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/131205485?v=4",
+          "id": 131205485
+        },
+        "id": 6101448732,
+        "pull_request_review_id": null,
+        "in_reply_to_id": null,
+        "created_at": null,
+        "updated_at": null,
+        "review": null,
+        "side": null,
+        "line": null,
+        "start_line": null,
+        "path": null,
+        "body_html": "<blockquote>\n<p dir=\"auto\">Written with Codex, at <a class=\"user-mention notranslate\" data-hovercard-type=\"user\" data-hovercard-url=\"/users/TaylorTurnerIT/hovercard\" data-octo-click=\"hovercard-link-click\" data-octo-dimensions=\"link_type:self\" href=\"https://github.com/TaylorTurnerIT\">@TaylorTurnerIT</a>'s request.</p>\n</blockquote>\n<p dir=\"auto\">Pushed the authored pickup/drop repair directly to this PR: <a href=\"https://github.com/BimingtonBill/wah-krah-jol/commit/a207d9eda84b6fed947471ed7512fe9ea9c4716f\">a207d9e</a>.</p>\n<p dir=\"auto\">E now grabs eligible authored dynamic clutter as well as the debug tankard. It resolves a compound collider hit to its rigid-body root, respects the first ray hit, converts the held world position into its streamed parent's coordinates, and wakes the body with zero velocity when released. The authored eligibility rules and sleeping-at-spawn behavior are unchanged.</p>\n<p dir=\"auto\">Standalone macOS validation: all ten <code class=\"notranslate\">physics::noclip_tests</code> passed. The new regression exercises compound-child selection, a translated streamed parent, camera movement, release and subsequent falling. Engine Clippy with all targets/features and <code class=\"notranslate\">-D warnings</code>, formatting and diff checks passed.</p>\n<p dir=\"auto\">Future merges: the combined door/clutter/console integration uses one shared E target and runs targeting/holding after transform propagation. Preserve that ordering and single-action ownership when combining this PR with <a class=\"issue-link js-issue-link\" data-error-text=\"Failed to load title\" data-id=\"5674746822\" data-permission-text=\"Title is private\" data-url=\"https://github.com/Mudcrab-Team/mudcrab/issues/128\" data-hovercard-type=\"pull_request\" data-hovercard-url=\"/Mudcrab-Team/mudcrab/pull/128/hovercard\" href=\"https://github.com/Mudcrab-Team/mudcrab/pull/128\">#128</a> and the console. Its pickup/drop/enter tooltip is in <a href=\"https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19\">integration repair c27b723</a>; the standalone backport does not pull in those other PRs. Character-controller impulses remain disabled; enabling them reproduced a Rapier contact-manifold panic in the combined run. These checks do not qualify every authored object or replace native interaction review.</p>"
+      },
+      "validation": {
+        "tests_passed": 10,
+        "test_scope": "engine library physics::noclip_tests",
+        "strict_clippy": "passed; owning crate, all targets and features, warnings denied",
+        "formatting": "passed; entire workspace",
+        "diff_check": "passed",
+        "logs": {
+          "tests": {
+            "path": "/private/tmp/mudcrab-pr125-backport-tests.log",
+            "sha256": "b1ab482fcffca3f8fb7dd0675d9a163b5150a172c7b4f6e9e98deca3e336aeaf"
+          },
+          "clippy": {
+            "path": "/private/tmp/mudcrab-pr125-backport-clippy.log",
+            "sha256": "691b07b06f87b60f5c364c26df3d237d16bca16895b31ba99bddd959254568e0"
+          }
+        }
+      }
+    },
+    {
+      "number": 128,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/128",
+      "before": "386267dc6569154036d6c45ebb04a91dc7c9e5aa",
+      "after": "6424ce8cd1afa42d15b1c6ed44a96e73f42b6779",
+      "comment": {
+        "url": "https://github.com/Mudcrab-Team/mudcrab/pull/128#issuecomment-6101448432",
+        "body": "> Written with Codex, at @TaylorTurnerIT's request.\n\nPushed the door-export repair directly to this PR: [6424ce8](https://github.com/BimingtonBill/wah-krah-jol/commit/6424ce8cd1afa42d15b1c6ed44a96e73f42b6779).\n\nThe converter now projects canonical winning REFR/XTEL records into `door_links` inside the export transaction. It uses the authored arrival frame, checks both door references and the destination cell, skips malformed/nonfinite arrivals, replaces removed or overridden links, and writes an optional destination name. `door-links-annotate <pack>/skyrim_world.db` repairs an existing pack under the asset lock without changing meshes, terrain or producer identity.\n\nStandalone macOS validation: all three `fixture_doors` tests passed, including reciprocal arrivals/names, removal of an overridden teleport and atomic rollback on corrupt records; converter Clippy with all targets/features and `-D warnings`, formatting and diff checks passed.\n\nScope: the integrated converted pack now has 2,263 valid load-door links, with seven Riverwood exterior entrances checked against their destinations. This is a world-wide export repair, not proof that every door has been traversed. Hinged animations, script-only doors and automatic walk-through activation remain outside this repair.\n\nFuture merges must keep the projection inside the shared exporter transaction so both reader frontends use it, and include `esm/doors.rs` in conversion/cache producer fingerprints when those cache changes land. The shared E target, occlusion handling and `Enter <interior name>` tooltip remain in [integration repair c27b723](https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19), because they depend on the console and authored-clutter changes too. Those consumers should use one selected action so a keypress cannot both grab an object and cross a door.",
+        "user": {
+          "login": "TaylorTurnerIT",
+          "name": "TaylorTurnerIT",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/131205485?v=4",
+          "id": 131205485
+        },
+        "id": 6101448432,
+        "pull_request_review_id": null,
+        "in_reply_to_id": null,
+        "created_at": null,
+        "updated_at": null,
+        "review": null,
+        "side": null,
+        "line": null,
+        "start_line": null,
+        "path": null,
+        "body_html": "<blockquote>\n<p dir=\"auto\">Written with Codex, at <a class=\"user-mention notranslate\" data-hovercard-type=\"user\" data-hovercard-url=\"/users/TaylorTurnerIT/hovercard\" data-octo-click=\"hovercard-link-click\" data-octo-dimensions=\"link_type:self\" href=\"https://github.com/TaylorTurnerIT\">@TaylorTurnerIT</a>'s request.</p>\n</blockquote>\n<p dir=\"auto\">Pushed the door-export repair directly to this PR: <a href=\"https://github.com/BimingtonBill/wah-krah-jol/commit/6424ce8cd1afa42d15b1c6ed44a96e73f42b6779\">6424ce8</a>.</p>\n<p dir=\"auto\">The converter now projects canonical winning REFR/XTEL records into <code class=\"notranslate\">door_links</code> inside the export transaction. It uses the authored arrival frame, checks both door references and the destination cell, skips malformed/nonfinite arrivals, replaces removed or overridden links, and writes an optional destination name. <code class=\"notranslate\">door-links-annotate &lt;pack&gt;/skyrim_world.db</code> repairs an existing pack under the asset lock without changing meshes, terrain or producer identity.</p>\n<p dir=\"auto\">Standalone macOS validation: all three <code class=\"notranslate\">fixture_doors</code> tests passed, including reciprocal arrivals/names, removal of an overridden teleport and atomic rollback on corrupt records; converter Clippy with all targets/features and <code class=\"notranslate\">-D warnings</code>, formatting and diff checks passed.</p>\n<p dir=\"auto\">Scope: the integrated converted pack now has 2,263 valid load-door links, with seven Riverwood exterior entrances checked against their destinations. This is a world-wide export repair, not proof that every door has been traversed. Hinged animations, script-only doors and automatic walk-through activation remain outside this repair.</p>\n<p dir=\"auto\">Future merges must keep the projection inside the shared exporter transaction so both reader frontends use it, and include <code class=\"notranslate\">esm/doors.rs</code> in conversion/cache producer fingerprints when those cache changes land. The shared E target, occlusion handling and <code class=\"notranslate\">Enter &lt;interior name&gt;</code> tooltip remain in <a href=\"https://github.com/Mudcrab-Team/mudcrab/commit/c27b7234a078f195c1dd5731a17bfe3cf4e7bb19\">integration repair c27b723</a>, because they depend on the console and authored-clutter changes too. Those consumers should use one selected action so a keypress cannot both grab an object and cross a door.</p>"
+      },
+      "validation": {
+        "tests_passed": 3,
+        "test_scope": "converter fixture_doors integration target",
+        "strict_clippy": "passed; owning crate, all targets and features, warnings denied",
+        "formatting": "passed; entire workspace",
+        "diff_check": "passed",
+        "logs": {
+          "tests": {
+            "path": "/private/tmp/mudcrab-pr128-backport-tests.log",
+            "sha256": "98b0ad818041e9d9088ca901c552fe6d4b22ed4eff1ae7f2543eb2b44c5edd7c"
+          },
+          "clippy": {
+            "path": "/private/tmp/mudcrab-pr128-backport-clippy.log",
+            "sha256": "d7886dd48e650a4182dbf3a2f1487d5ac69c444eeaa93654990c396e9653928b"
+          }
+        }
+      }
+    },
+    {
+      "number": 200,
+      "url": "https://github.com/Mudcrab-Team/mudcrab/pull/200",
+      "before": "28dce5aecdf095407ae10f12843550e4af7902c8",
+      "after": "58720437635becb85eeef4cc80ae5b43d4fbb142",
+      "comment": {
+        "url": "https://github.com/Mudcrab-Team/mudcrab/pull/200#issuecomment-6101473544",
+        "body": "> Written with Codex, at @TaylorTurnerIT's request.\n\nPushed the runtime selector repair directly to this PR in [6ff7947](https://github.com/Mudcrab-Team/mudcrab/commit/6ff7947b36b1e6fb018e040fe9d949b93617b457). It reuses the terrain-selection scratch maps/sets with Bevy's integer-key hasher; tier decisions, source fallbacks, selection masks and upload ordering are preserved. A separate [5872043](https://github.com/Mudcrab-Team/mudcrab/commit/58720437635becb85eeef4cc80ae5b43d4fbb142) formats the existing matched-route changes and moves three existing production items before test modules to repair strict Clippy. Current PR head: `58720437635becb85eeef4cc80ae5b43d4fbb142`.\n\nStandalone macOS validation: all 411 engine library tests passed, including selection/batching, route and capture-receipt regressions. Engine Clippy with all targets/features and `-D warnings`, formatting and diff checks passed. This also supplies Rust validation that the previous matched-route follow-up had not run locally.\n\nThe six native probes on the combined integration build reduced LOD refresh p95 from 7.32–7.46 ms to 1.27–1.35 ms (about 82%), with matching final geometry and physics counts. Those measurements belong to the recorded integration binary, not a new native run of this standalone PR head. Whole-frame performance remains mixed and fails the 60 FPS gate; the probes were stationary with warm filesystem caches and GPU timings were unavailable. Keep this PR draft and preserve its prerequisite, matched-traversal, rendering, memory and human-review gates.\n\nFuture merges must preserve semantic dirty detection, stable masks and upload ordering while reusing scratch allocations. Initial LOD scene instantiation and render asset preparation still need separate pacing work; batching alone does not bound those costs. The bounded physics-enabled benchmark option remains in the integration branch because it depends on #125. [Recorded measurements and limits](https://github.com/Mudcrab-Team/mudcrab/blob/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010/RUNTIME-REPAIRS.md).",
+        "user": {
+          "login": "TaylorTurnerIT",
+          "name": "TaylorTurnerIT",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/131205485?v=4",
+          "id": 131205485
+        },
+        "id": 6101473544,
+        "pull_request_review_id": null,
+        "in_reply_to_id": null,
+        "created_at": null,
+        "updated_at": null,
+        "review": null,
+        "side": null,
+        "line": null,
+        "start_line": null,
+        "path": null,
+        "body_html": "<blockquote>\n<p dir=\"auto\">Written with Codex, at <a class=\"user-mention notranslate\" data-hovercard-type=\"user\" data-hovercard-url=\"/users/TaylorTurnerIT/hovercard\" data-octo-click=\"hovercard-link-click\" data-octo-dimensions=\"link_type:self\" href=\"https://github.com/TaylorTurnerIT\">@TaylorTurnerIT</a>'s request.</p>\n</blockquote>\n<p dir=\"auto\">Pushed the runtime selector repair directly to this PR in <a href=\"https://github.com/Mudcrab-Team/mudcrab/commit/6ff7947b36b1e6fb018e040fe9d949b93617b457\">6ff7947</a>. It reuses the terrain-selection scratch maps/sets with Bevy's integer-key hasher; tier decisions, source fallbacks, selection masks and upload ordering are preserved. A separate <a href=\"https://github.com/Mudcrab-Team/mudcrab/commit/58720437635becb85eeef4cc80ae5b43d4fbb142\">5872043</a> formats the existing matched-route changes and moves three existing production items before test modules to repair strict Clippy. Current PR head: <code class=\"notranslate\">58720437635becb85eeef4cc80ae5b43d4fbb142</code>.</p>\n<p dir=\"auto\">Standalone macOS validation: all 411 engine library tests passed, including selection/batching, route and capture-receipt regressions. Engine Clippy with all targets/features and <code class=\"notranslate\">-D warnings</code>, formatting and diff checks passed. This also supplies Rust validation that the previous matched-route follow-up had not run locally.</p>\n<p dir=\"auto\">The six native probes on the combined integration build reduced LOD refresh p95 from 7.32–7.46 ms to 1.27–1.35 ms (about 82%), with matching final geometry and physics counts. Those measurements belong to the recorded integration binary, not a new native run of this standalone PR head. Whole-frame performance remains mixed and fails the 60 FPS gate; the probes were stationary with warm filesystem caches and GPU timings were unavailable. Keep this PR draft and preserve its prerequisite, matched-traversal, rendering, memory and human-review gates.</p>\n<p dir=\"auto\">Future merges must preserve semantic dirty detection, stable masks and upload ordering while reusing scratch allocations. Initial LOD scene instantiation and render asset preparation still need separate pacing work; batching alone does not bound those costs. The bounded physics-enabled benchmark option remains in the integration branch because it depends on <a class=\"issue-link js-issue-link\" data-error-text=\"Failed to load title\" data-id=\"5674744933\" data-permission-text=\"Title is private\" data-url=\"https://github.com/Mudcrab-Team/mudcrab/issues/125\" data-hovercard-type=\"pull_request\" data-hovercard-url=\"/Mudcrab-Team/mudcrab/pull/125/hovercard\" href=\"https://github.com/Mudcrab-Team/mudcrab/pull/125\">#125</a>. <a href=\"https://github.com/Mudcrab-Team/mudcrab/blob/t3/merge-pending-prs/docs/research/pending-pr-integration-20261010/RUNTIME-REPAIRS.md\">Recorded measurements and limits</a>.</p>"
+      },
+      "validation": {
+        "tests_passed": 411,
+        "test_scope": "complete engine library",
+        "strict_clippy": "passed; owning crate, all targets and features, warnings denied",
+        "formatting": "passed; entire workspace",
+        "diff_check": "passed",
+        "logs": {
+          "tests": {
+            "path": "/private/tmp/mudcrab-pr200-backport-tests.log",
+            "sha256": "91d777e0cf4a336c6188280af42f65309d2b8c772e3c82c564b6bce0d00ee293"
+          },
+          "clippy": {
+            "path": "/private/tmp/mudcrab-pr200-backport-clippy.log",
+            "sha256": "9c5bef4c8c581cedbec505224de35d5e64d8469272b0f47ae4db5f798924fcee"
+          }
+        }
+      }
+    }
+  ],
+  "door_coverage": {
+    "valid_load_door_links": 2263,
+    "riverwood_exterior_entrances_checked": 7,
+    "all_doors_manually_traversed": false,
+    "excluded": "Hinged animations, script-only doors and automatic walk-through activation"
+  },
+  "remaining_integration_dependencies": [
+    "Shared pickup/drop/enter tooltip and single E target combine console, authored clutter and door crossing changes.",
+    "Physics-enabled bounded benchmark option depends on authored clutter."
+  ],
+  "acceptance_limits": [
+    "Standalone backport tests and Clippy do not replace native interaction review.",
+    "Native measurements belong to the recorded integration binary, not the standalone PR heads.",
+    "Whole-frame performance remains mixed and fails the 60 FPS gate; no correlated GPU timings or qualifying matched traversal campaign.",
+    "PR draft states, bases and prerequisite/human approval gates were preserved."
+  ]
+}
