@@ -80,6 +80,11 @@ pub struct EngineConfig {
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
     pub max_model_spawns_per_frame: usize,
+    /// Camera and bounds based queue ordering. Off preserves fixed FIFO activation.
+    pub prioritize_streaming: bool,
+    /// Outstanding unique Scene(0) jobs, including recursive CPU dependencies.
+    /// Zero retains unlimited admission; this count does not bound memory bytes.
+    pub max_scene_loads: usize,
     /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
     /// threads, at least one and at most four. A nonzero count must be at most
     /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
@@ -154,6 +159,8 @@ impl Default for EngineConfig {
             // still spreads a burst over frames; `0` arms the whole batch at once, the behaviour
             // before this budget existed (docs/roadmap/02-profiling.md, "Load speed defaults").
             max_model_spawns_per_frame: 32,
+            prioritize_streaming: false,
+            max_scene_loads: 0,
             // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
             io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
@@ -226,6 +233,8 @@ Streaming:
   --max-commit-ms <ms>                  cell commit time allowed per frame (default: 16.67)
   --max-unloads-per-frame <count>       cells despawned per frame; 0 despawns all at once (default: 2)
   --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
+  --prioritize-streaming               prioritize nearby collision and view-facing bounds
+  --max-scene-loads <count>             outstanding unique scene jobs; 0 is unlimited (default: 0)
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
@@ -529,6 +538,14 @@ impl EngineConfig {
                     config.max_model_spawns_per_frame = take_value(
                         "--max-model-spawns-per-frame",
                         "a model count, 0 for unlimited",
+                        args.next(),
+                    )?;
+                }
+                "--prioritize-streaming" => config.prioritize_streaming = true,
+                "--max-scene-loads" => {
+                    config.max_scene_loads = take_value(
+                        "--max-scene-loads",
+                        "a scene job count, 0 for unlimited",
                         args.next(),
                     )?;
                 }
@@ -1007,6 +1024,21 @@ mod tests {
         let without_output = run_config(&["--profile-gpu-inventory"]);
         assert!(without_output.profile_gpu_inventory);
         assert!(without_output.profile_output_dir.is_none());
+    }
+
+    #[test]
+    fn demand_scheduling_is_opt_in_and_keeps_zero_unlimited() {
+        let defaults = EngineConfig::default();
+        assert!(!defaults.prioritize_streaming);
+        assert_eq!(defaults.max_scene_loads, 0);
+        let candidate = run_config(&["--prioritize-streaming", "--max-scene-loads", "32"]);
+        assert!(candidate.prioritize_streaming);
+        assert_eq!(candidate.max_scene_loads, 32);
+        assert_eq!(run_config(&["--max-scene-loads", "0"]).max_scene_loads, 0);
+        assert!(matches!(
+            parse_error(&["--max-scene-loads", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
     }
 
     #[test]

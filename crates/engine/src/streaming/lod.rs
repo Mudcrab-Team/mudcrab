@@ -1,5 +1,6 @@
 use super::{
-    RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage, TerrainSurfaceReady,
+    RenderOrigin, StreamingCommitBudget, StreamingMetrics, StreamingWorld, TerrainCoverage,
+    TerrainSurfaceReady, requests,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
@@ -170,7 +171,7 @@ pub(super) struct LodChunkGridOrigin {
 #[derive(Component)]
 pub(super) struct PendingLodChunk {
     metadata: LodChunkMetadata,
-    asset: Handle<WorldAsset>,
+    asset: Option<Handle<WorldAsset>>,
     scene_spawned: bool,
     hash_task: Option<Task<Result<(), LodChunkFailure>>>,
     hash_verified: bool,
@@ -330,6 +331,7 @@ pub(super) fn collect_lod_chunks(
     asset_server: Res<AssetServer>,
     origin: Res<RenderOrigin>,
     mut camera_projection: Query<&mut Projection, With<StreamingCamera>>,
+    mut full_streaming: ResMut<StreamingWorld>,
     mut streaming: ResMut<LodStreaming>,
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -388,6 +390,25 @@ pub(super) fn collect_lod_chunks(
         }
     }
 
+    if config.prioritize_streaming
+        && let Some(center) = streaming.center
+    {
+        streaming
+            .pending_chunks
+            .make_contiguous()
+            .sort_by_key(|(_, metadata, _)| {
+                let min = chunk_min_grid(metadata.key, metadata.origin);
+                let side = i64::from(metadata.key.tier.side_cells());
+                let dx = min.0 + side / 2 - i64::from(center.x);
+                let dy = min.1 + side / 2 - i64::from(center.y);
+                (
+                    i128::from(dx) * i128::from(dx) + i128::from(dy) * i128::from(dy),
+                    metadata.key.tier,
+                    metadata.key.anchor.y,
+                    metadata.key.anchor.x,
+                )
+            });
+    }
     while budget.remaining > 0 {
         let Some((generation, metadata, retry_attempt)) = streaming.pending_chunks.pop_front()
         else {
@@ -458,14 +479,49 @@ pub(super) fn collect_lod_chunks(
         let key = metadata.key;
         let chunk_origin = metadata.origin;
         let min_grid = chunk_min_grid(key, metadata.origin);
-        let scene_path = GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone());
-        // Bevy's load request restarts an asset whose cached load state is Failed.
-        let asset = asset_server.load(scene_path);
-        profiler.observe_scene(asset.id(), &asset_server);
-        let expected_hash = metadata.content_hash.clone();
-        let hash_path = config.assets_dir.join(&metadata.payload_path);
-        let hash_task =
-            IoTaskPool::get().spawn(async move { verify_payload_hash(hash_path, expected_hash) });
+        let schedule_scenes = requests::enabled(&config);
+        let asset = if schedule_scenes {
+            None
+        } else {
+            let handle = asset_server
+                .load(GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone()));
+            profiler.observe_scene(handle.id(), &asset_server);
+            Some(handle)
+        };
+        let hash_task = if schedule_scenes {
+            None
+        } else {
+            let expected_hash = metadata.content_hash.clone();
+            let hash_path = config.assets_dir.join(&metadata.payload_path);
+            Some(
+                IoTaskPool::get()
+                    .spawn(async move { verify_payload_hash(hash_path, expected_hash) }),
+            )
+        };
+        let request = schedule_scenes.then(|| {
+            use bevy::math::DVec3;
+            let sequence = full_streaming.next_model_sequence;
+            full_streaming.next_model_sequence = sequence.saturating_add(1);
+            let side = f64::from(metadata.key.tier.side_cells()) * f64::from(CELL_SIZE);
+            requests::SceneRequest {
+                path: metadata.payload_path.clone(),
+                cell: None,
+                coarse_terrain: true,
+                retry_cleanup: None,
+                content_identity: Some(metadata.content_hash.clone()),
+                sequence,
+                center: DVec3::new(
+                    min_grid.0 as f64 * f64::from(CELL_SIZE) + side * 0.5,
+                    0.0,
+                    -(min_grid.1 as f64 * f64::from(CELL_SIZE) + side * 0.5),
+                ),
+                radius: Some(side * std::f64::consts::SQRT_2 * 0.5),
+                collision_candidate: false,
+                handle: None,
+                started: Instant::now(),
+                allow_retry: retry_count > 0,
+            }
+        });
         let local_grid_x = min_grid.0 - i64::from(origin.0.x);
         let local_grid_y = min_grid.1 - i64::from(origin.0.y);
         let root = commands
@@ -484,7 +540,6 @@ pub(super) fn collect_lod_chunks(
                     grid_x: min_grid.0,
                     grid_y: min_grid.1,
                 },
-                WorldAssetRoot(asset.clone()),
                 Transform::from_xyz(
                     local_grid_x as f32 * CELL_SIZE,
                     0.0,
@@ -493,14 +548,20 @@ pub(super) fn collect_lod_chunks(
                 Visibility::Hidden,
                 PendingLodChunk {
                     metadata,
-                    asset,
+                    asset: asset.clone(),
                     scene_spawned: false,
-                    hash_task: Some(hash_task),
+                    hash_task,
                     hash_verified: false,
                     started: Instant::now(),
                 },
             ))
             .id();
+        if let Some(handle) = asset {
+            commands.entity(root).insert(WorldAssetRoot(handle));
+        }
+        if let Some(request) = request {
+            commands.entity(root).insert(request);
+        }
         streaming.chunks.insert(
             key,
             LodChunkStatus::Loading {
@@ -519,6 +580,22 @@ pub(super) fn collect_lod_chunks(
     profiler.record_elapsed("lod/collect", started);
 }
 
+/// Start the existing integrity check only after this chunk's shared scene job is admitted.
+pub(super) fn start_admitted_chunk(world: &mut World, entity: Entity, handle: Handle<WorldAsset>) {
+    let assets = world.resource::<EngineConfig>().assets_dir.clone();
+    let Some(mut pending) = world.get_mut::<PendingLodChunk>(entity) else {
+        return;
+    };
+    if pending.asset.is_some() {
+        return;
+    }
+    let path = assets.join(&pending.metadata.payload_path);
+    let expected_hash = pending.metadata.content_hash.clone();
+    pending.asset = Some(handle);
+    pending.hash_task =
+        Some(IoTaskPool::get().spawn(async move { verify_payload_hash(path, expected_hash) }));
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn track_lod_readiness(
     mut commands: Commands,
@@ -535,15 +612,19 @@ pub(super) fn track_lod_readiness(
 ) {
     let started = Instant::now();
     for (entity, root, mut pending) in &mut pending_chunks {
-        let load_failure = asset_server.get_load_states(pending.asset.id()).and_then(
-            |(load, _, recursive)| match (load, recursive) {
-                (LoadState::Failed(error), _) => Some(classify_asset_load_failure(&error)),
-                (_, RecursiveDependencyLoadState::Failed(error)) => {
-                    Some(classify_asset_load_failure(&error))
-                }
-                _ => None,
-            },
-        );
+        let Some(asset) = pending.asset.clone() else {
+            continue;
+        };
+        let load_failure =
+            asset_server
+                .get_load_states(asset.id())
+                .and_then(|(load, _, recursive)| match (load, recursive) {
+                    (LoadState::Failed(error), _) => Some(classify_asset_load_failure(&error)),
+                    (_, RecursiveDependencyLoadState::Failed(error)) => {
+                        Some(classify_asset_load_failure(&error))
+                    }
+                    _ => None,
+                });
         if let Some(failure) = load_failure {
             fail_chunk(
                 (entity, root),
@@ -583,8 +664,8 @@ pub(super) fn track_lod_readiness(
         }
 
         if !pending.scene_spawned
-            || !asset_server.is_loaded_with_dependencies(pending.asset.id())
-            || world_assets.get(&pending.asset).is_none()
+            || !asset_server.is_loaded_with_dependencies(asset.id())
+            || world_assets.get(&asset).is_none()
         {
             continue;
         }

@@ -2,6 +2,8 @@
 
 Phase 1 of #202 adds opt-in observations of the existing streaming pipeline. It does not change asset admission, instance quotas, upload budgets, terrain handoff or movement policy. Enable CPU, queue, camera and completion-latency collection with `--profile-output <dir>`. GPU inventory is disabled by default; enable the separate expensive diagnostic with `--profile-gpu-inventory --profile-output <dir>`. The GPU flag alone does not enable collection.
 
+The subsequent [priority and scene-admission slice](streaming-priority.md) adds separate opt-in scheduling switches. Trace collection does not enable those switches. Its additive `scene_admission` sample is `null` in the default fixed path and reports configured limits, current unique jobs/subscribers and lifetime job transitions when admission is enabled. A completed admission job means recursive CPU readiness, not GPU preparation, drawing or collision readiness; the scene-job cap does not bound memory bytes or downstream backlog. Benchmark format 7 and the measured-frame CSV remain unchanged.
+
 The new artifact is `streaming-frames.json`, with `format_version: 1`. It is separate from the existing benchmark report (version 7), metadata (version 1) and two-column measured-only frame CSV. The bundle is written when a benchmark finishes; use `--benchmark-frames` or `--benchmark-duration` to export the trace. Collection outside a benchmark currently remains in memory. Preserve the profile bundle's run provenance when comparing captures: candidate revision, asset-pack identity, engine/backend, settings, hardware and cache conditions. A fresh process does not establish a cold filesystem cache.
 
 ## Frame correlation

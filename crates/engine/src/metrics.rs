@@ -130,6 +130,7 @@ fn sample_streaming_trace(
     samples: Res<BenchmarkSamples>,
     diagnostics: Res<DiagnosticsStore>,
     streaming: Option<Res<StreamingMetrics>>,
+    admission: Option<Res<crate::streaming::admission::SceneAdmission>>,
     bridge: Option<Res<StreamingGpuMetricsBridge>>,
     server: Option<Res<AssetServer>>,
     mut events: MessageReader<AssetEvent<WorldAsset>>,
@@ -159,6 +160,17 @@ fn sample_streaming_trace(
         benchmark_window: benchmark_window(&config, &samples),
         camera,
         streaming: streaming.as_deref().map(Into::into),
+        scene_admission: (config.prioritize_streaming || config.max_scene_loads != 0)
+            .then(|| {
+                admission
+                    .as_ref()
+                    .map(|admission| crate::streaming_trace::SceneAdmissionSnapshot {
+                        configured_job_limit: config.max_scene_loads,
+                        prioritization_enabled: config.prioritize_streaming,
+                        jobs: admission.stats(),
+                    })
+            })
+            .flatten(),
         scenes: Default::default(),
         cpu_spans_ms: profiler.frame_cpu_spans_ms.clone(),
         completion_latencies_ms: profiler.frame_completion_latencies_ms.clone(),

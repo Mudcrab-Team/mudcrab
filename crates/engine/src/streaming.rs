@@ -35,7 +35,10 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::time::Instant;
 
+pub(crate) mod admission;
 pub(crate) mod lod;
+mod priority;
+mod requests;
 
 // Wall-clock spans can include a short OS scheduler preemption. Keep the raw maximum in metrics,
 // but require a material overrun before classifying the frame as a commit-budget violation.
@@ -79,6 +82,8 @@ impl Plugin for StreamingPlugin {
             .init_resource::<TerrainContinuity>()
             .init_resource::<SceneSpawnBatch>()
             .init_resource::<StaticCollisionCache>()
+            .init_resource::<admission::SceneAdmission>()
+            .init_resource::<requests::SceneSchedulingState>()
             .add_observer(mark_world_instance_ready)
             .add_observer(lod::mark_lod_world_instance_ready)
             .add_systems(
@@ -89,6 +94,7 @@ impl Plugin for StreamingPlugin {
                     lod::plan_lod_chunks,
                     collect_cells,
                     lod::collect_lod_chunks,
+                    requests::dispatch_scene_requests,
                     arm_pending_models,
                     finish_streaming_commit_budget,
                     track_asset_readiness,
@@ -523,7 +529,18 @@ fn plan_cells(
             });
         }
     }
-    for key in &wanted {
+    let mut ordered: Vec<_> = wanted.iter().copied().collect();
+    if config.prioritize_streaming {
+        ordered.sort_by_key(|key| match *key {
+            CellKey::Exterior { grid_x, grid_y, .. } => {
+                let dx = i64::from(grid_x) - i64::from(center.x);
+                let dy = i64::from(grid_y) - i64::from(center.y);
+                (dx * dx + dy * dy, cell_order_key(*key))
+            }
+            _ => (0, cell_order_key(*key)),
+        });
+    }
+    for key in &ordered {
         // A retiring cell is still in the map, so `request_cell` never requests it a second time:
         // the retain pass below revives it with the root it kept.
         streaming.request_cell(&database, *key, &mut metrics, &mut profiler);
@@ -832,6 +849,7 @@ fn collect_cells(
                     origin.0,
                     config.lights,
                     config.interactive_world_physics(),
+                    requests::enabled(&config),
                     payload,
                     terrain,
                     &mut streaming.next_model_sequence,
@@ -948,6 +966,7 @@ fn spawn_cell(
     origin: IVec2,
     lights: bool,
     terrain_physics: bool,
+    schedule_scenes: bool,
     payload: CellPayload,
     terrain: Option<TerrainSnapshot>,
     model_sequence: &mut u64,
@@ -1169,11 +1188,34 @@ fn spawn_cell(
             if let Some(path) = reference.model_path.and_then(converted_model_path) {
                 let sequence = *model_sequence;
                 *model_sequence = model_sequence.saturating_add(1);
-                let handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(path.clone()));
-                profiler.observe_scene(handle.id(), asset_server);
+                if schedule_scenes {
+                    let (center, radius) =
+                        requests::reference_geometry(world_position, &transform, bounds);
+                    entity.insert(requests::SceneRequest {
+                        path: path.clone(),
+                        cell: Some(payload.key),
+                        coarse_terrain: false,
+                        retry_cleanup: None,
+                        content_identity: None,
+                        sequence,
+                        center,
+                        radius,
+                        collision_candidate: terrain_physics
+                            && fixed_collision_record_eligible(
+                                reference.base_record_type.as_deref(),
+                            ),
+                        handle: None,
+                        started: Instant::now(),
+                        allow_retry: false,
+                    });
+                } else {
+                    let handle =
+                        asset_server.load(GltfAssetLabel::Scene(0).from_asset(path.clone()));
+                    profiler.observe_scene(handle.id(), asset_server);
+                    entity.insert(PendingModel { handle, sequence });
+                }
                 entity.insert((
                     MeshHandle(path.clone()),
-                    PendingModel { handle, sequence },
                     PendingAssetProfile {
                         started: Instant::now(),
                         scene_spawned: false,
@@ -1636,39 +1678,107 @@ fn end_scene_spawn_batch(
 /// `SceneSpawnerSystems::WorldInstanceSpawn`, so the batch a frame pays to instantiate is the batch
 /// this system lets through. The budget is spent on the models that are ready and skipped over the
 /// ones that are still loading, so a slow load cannot hold the models behind it back; among the
-/// ready ones the oldest reference is armed first. `0` arms every ready model, the unbudgeted
-/// behaviour the engine had before this budget existed.
+/// ready ones the oldest reference is armed first in fixed mode. Optional priority scheduling
+/// rechecks camera and cell demand and shares this quota with LOD scenes. `0` arms every ready model.
+#[allow(clippy::too_many_arguments)]
 fn arm_pending_models(
     config: Res<EngineConfig>,
     asset_server: Res<AssetServer>,
     world_assets: Res<Assets<WorldAsset>>,
-    pending: Query<(Entity, &PendingModel)>,
+    pending: Query<(Entity, &PendingModel, Option<&requests::SceneRequest>)>,
+    cameras: Query<&Transform, With<StreamingCamera>>,
+    origin: Option<Res<RenderOrigin>>,
+    mut scheduling: Option<ResMut<requests::SceneSchedulingState>>,
+    streaming: Option<Res<StreamingWorld>>,
     mut commands: Commands,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    use bevy::math::DVec3;
     let started = Instant::now();
     let backlog = pending.iter().count();
-    let mut ready: Vec<(u64, Entity, Handle<WorldAsset>)> = pending
+    let origin = origin.map_or(IVec2::ZERO, |origin| origin.0);
+    let view = cameras
+        .single()
+        .ok()
+        .map(|camera| priority::PriorityView {
+            position: camera.translation.as_dvec3()
+                + DVec3::new(
+                    f64::from(origin.x) * f64::from(CELL_SIZE),
+                    0.0,
+                    -f64::from(origin.y) * f64::from(CELL_SIZE),
+                ),
+            forward: (camera.rotation * Vec3::NEG_Z).as_dvec3(),
+        })
+        .unwrap_or(priority::PriorityView {
+            position: DVec3::NAN,
+            forward: DVec3::NAN,
+        });
+    let mut ready: Vec<_> = pending
         .iter()
-        .filter(|(_, model)| model_can_spawn(&world_assets, &asset_server, &model.handle))
-        .map(|(entity, model)| (model.sequence, entity, model.handle.clone()))
+        .filter(|(_, model, request)| {
+            request.is_none_or(|request| {
+                streaming
+                    .as_ref()
+                    .is_none_or(|streaming| requests::relevant(request, streaming))
+            }) && model_can_spawn(&world_assets, &asset_server, &model.handle)
+        })
+        .map(|(entity, model, request)| {
+            let rank = request
+                .map(|request| {
+                    priority::DemandPriority::new(
+                        view,
+                        request.center,
+                        request.radius,
+                        request.collision_candidate,
+                        model.sequence,
+                    )
+                    .with_coarse_terrain(request.coarse_terrain)
+                })
+                .unwrap_or_else(|| {
+                    priority::DemandPriority::new(view, DVec3::NAN, None, false, model.sequence)
+                });
+            (model.sequence, entity, model.handle.clone(), rank)
+        })
         .collect();
-    ready.sort_by_key(|(sequence, _, _)| *sequence);
+    ready.sort_by_key(|(sequence, entity, _, _)| (*sequence, entity.to_bits()));
     let budget = config.max_model_spawns_per_frame;
     let armed = if budget == 0 {
         ready.len()
     } else {
         budget.min(ready.len())
     };
-    for (_, entity, handle) in ready.drain(..armed) {
+    let mut choices = scheduling
+        .as_ref()
+        .map_or(0, |state| state.activation_choices);
+    let selected: Vec<_> = if config.prioritize_streaming {
+        let indices = priority::ordered_choices(
+            &ready
+                .iter()
+                .map(|(_, _, _, rank)| *rank)
+                .collect::<Vec<_>>(),
+            choices,
+            armed,
+        );
+        choices = choices.saturating_add(indices.len() as u64);
+        indices
+            .into_iter()
+            .map(|index| ready[index].clone())
+            .collect()
+    } else {
+        // Preserve the linear FIFO drain when priority scheduling is disabled.
+        choices = choices.saturating_add(armed as u64);
+        ready.drain(..armed).collect()
+    };
+    for (_, entity, handle, _) in selected {
         commands
             .entity(entity)
             .insert(WorldAssetRoot(handle))
             .remove::<PendingModel>();
     }
-    // The depth is what is left waiting once the budget has been spent; the peak is the backlog the
-    // pacer was handed, which is the number that says how far behind on a burst it is.
+    if let Some(state) = scheduling.as_mut() {
+        state.activation_choices = choices;
+    }
     let depth = backlog.saturating_sub(armed);
     metrics.arming_queue_depth = depth;
     metrics.peak_arming_queue_depth = metrics.peak_arming_queue_depth.max(backlog);
@@ -1717,7 +1827,7 @@ fn track_asset_readiness(
     config: Res<EngineConfig>,
     asset_server: Res<AssetServer>,
     pending: PendingAssetQuery,
-    unarmed: Query<(), (With<PendingAssetProfile>, With<PendingModel>)>,
+    unarmed: Query<(), (With<PendingAssetProfile>, Without<WorldAssetRoot>)>,
     children: Query<&Children>,
     scene_extras: Query<&GltfSceneExtras>,
     primitives: RenderPrimitiveQuery,
@@ -5333,6 +5443,7 @@ mod tests {
             IVec2::ZERO,
             false,
             false,
+            false,
             CellPayload {
                 generation: 1,
                 key: CellKey::Exterior {
@@ -5486,6 +5597,172 @@ mod tests {
             );
             assert_eq!(armed_and_pending(&mut app), (frame + 1, 3 - frame));
         }
+    }
+
+    fn add_priority_request(
+        app: &mut App,
+        entity: Entity,
+        center: bevy::math::DVec3,
+        radius: Option<f64>,
+        collision_candidate: bool,
+        coarse_terrain: bool,
+        cell: Option<CellKey>,
+    ) {
+        let model = app.world().get::<PendingModel>(entity).unwrap();
+        let request = requests::SceneRequest {
+            path: "fixture.glb".to_owned(),
+            cell,
+            coarse_terrain,
+            retry_cleanup: None,
+            content_identity: None,
+            sequence: model.sequence,
+            center,
+            radius,
+            collision_candidate,
+            handle: Some(model.handle.clone()),
+            started: Instant::now(),
+            allow_retry: false,
+        };
+        app.world_mut().entity_mut(entity).insert(request);
+    }
+
+    #[test]
+    fn priority_activation_rechecks_turns_and_shares_the_quota_with_coarse_lod() {
+        use bevy::math::DVec3;
+        let mut app = model_app();
+        let handle = add_converted_model(&mut app, empty_converted_scene());
+        app.insert_resource(EngineConfig {
+            prioritize_streaming: true,
+            max_model_spawns_per_frame: 1,
+            ..default()
+        })
+        .init_resource::<requests::SceneSchedulingState>()
+        .insert_resource(RenderOrigin(IVec2::new(-4, 7)));
+        let camera = app
+            .world_mut()
+            .spawn((StreamingCamera, Transform::default()))
+            .id();
+        let origin = DVec3::new(
+            -4.0 * f64::from(CELL_SIZE),
+            0.0,
+            -7.0 * f64::from(CELL_SIZE),
+        );
+        let coarse = spawn_pending_reference(&mut app, handle.clone(), 0);
+        add_priority_request(&mut app, coarse, origin, Some(40000.0), false, true, None);
+        let front = spawn_pending_reference(&mut app, handle.clone(), 1);
+        add_priority_request(
+            &mut app,
+            front,
+            origin + DVec3::NEG_Z * 1000.0,
+            Some(100.0),
+            false,
+            false,
+            None,
+        );
+        let back = spawn_pending_reference(&mut app, handle.clone(), 2);
+        add_priority_request(
+            &mut app,
+            back,
+            origin + DVec3::Z * 1000.0,
+            Some(100.0),
+            false,
+            false,
+            None,
+        );
+        let front_clutter = spawn_pending_reference(&mut app, handle, 3);
+        add_priority_request(
+            &mut app,
+            front_clutter,
+            origin + DVec3::NEG_Z * 500.0,
+            Some(2.0),
+            false,
+            false,
+            None,
+        );
+
+        app.update();
+        assert!(app.world().get::<WorldAssetRoot>(front).is_some());
+        assert!(app.world().get::<WorldAssetRoot>(coarse).is_none());
+        assert_eq!(armed_and_pending(&mut app), (1, 3));
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .rotation = Quat::from_rotation_y(std::f32::consts::PI);
+        app.update();
+        assert!(app.world().get::<WorldAssetRoot>(back).is_some());
+        assert!(app.world().get::<WorldAssetRoot>(front_clutter).is_none());
+        assert_eq!(armed_and_pending(&mut app), (2, 2));
+        // The eighth actual activation reserves service for the old coarse request.
+        app.world_mut()
+            .resource_mut::<requests::SceneSchedulingState>()
+            .activation_choices = 7;
+        app.update();
+        assert!(app.world().get::<WorldAssetRoot>(coarse).is_some());
+        assert_eq!(armed_and_pending(&mut app), (3, 1));
+    }
+
+    #[test]
+    fn priority_activation_protects_collision_and_holds_retiring_work_until_revival() {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::math::DVec3;
+        let mut app = model_app();
+        let handle = add_converted_model(&mut app, empty_converted_scene());
+        app.insert_resource(EngineConfig {
+            prioritize_streaming: true,
+            max_model_spawns_per_frame: 1,
+            ..default()
+        })
+        .init_resource::<requests::SceneSchedulingState>();
+        app.world_mut()
+            .spawn((StreamingCamera, Transform::default()));
+        let cell = app.world_mut().spawn_empty().id();
+        let key = exterior_key(-2, -3);
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(key, CellStatus::Retiring { root: cell });
+        let retired = spawn_pending_reference(&mut app, handle.clone(), 0);
+        add_priority_request(
+            &mut app,
+            retired,
+            DVec3::NEG_Z * 20.0,
+            Some(10.0),
+            true,
+            false,
+            Some(key),
+        );
+        let building = spawn_pending_reference(&mut app, handle.clone(), 1);
+        add_priority_request(
+            &mut app,
+            building,
+            DVec3::NEG_Z * 1000.0,
+            Some(100.0),
+            false,
+            false,
+            None,
+        );
+        let collision = spawn_pending_reference(&mut app, handle, 2);
+        add_priority_request(
+            &mut app,
+            collision,
+            DVec3::Z * 100.0,
+            Some(10.0),
+            true,
+            false,
+            None,
+        );
+
+        app.world_mut().run_system_once(arm_pending_models).unwrap();
+        assert!(app.world().get::<WorldAssetRoot>(collision).is_some());
+        assert!(app.world().get::<WorldAssetRoot>(building).is_none());
+        assert!(app.world().get::<WorldAssetRoot>(retired).is_none());
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(key, CellStatus::Resident { root: cell });
+        app.world_mut().run_system_once(arm_pending_models).unwrap();
+        assert!(app.world().get::<WorldAssetRoot>(retired).is_some());
+        assert!(app.world().get::<WorldAssetRoot>(building).is_none());
     }
 
     /// A budget is spent on the models that can spawn now: a model whose converted scene has not
@@ -6211,6 +6488,7 @@ mod tests {
                 &mut water_materials,
                 IVec2::ZERO,
                 config.lights,
+                false,
                 false,
                 CellPayload {
                     generation: 1,
