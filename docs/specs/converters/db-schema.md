@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS references (
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
     scale REAL NOT NULL DEFAULT 1.0,    -- Scale multiplier
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
-    header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
+    header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP flags; NULL when absent
     data BLOB                           -- Subrecords payload
@@ -137,8 +137,11 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header; `enable_parent_id` and
+metadata for initial spawn filtering (#165) and later object LOD (#106).
+The engine resolves parent chains before spawning. With no parent, header bit
+`0x800` marks an initially disabled reference; the documented rule and
+runtime limits are in [reference enable-state evidence](../../research/reference-enable-state-20261005.md).
+Current terrain LOD does not consume them. `header_flags` comes from the record header; `enable_parent_id` and
 `enable_parent_flags` are the two little-endian words of the eight-byte XESP
 subrecord, with the parent FormID resolved through plugin load order. The raw
 subrecord payload remains in `data`. An invalid parent link is published as

@@ -950,7 +950,12 @@ fn spawn_cell(
     profiler: &mut ProfilingState,
 ) -> Result<Entity, String> {
     let spawn_started = Instant::now();
-    let reference_count = payload.references.len();
+    let reference_count = payload
+        .references
+        .iter()
+        .filter(|row| row.initially_enabled)
+        .count();
+    let suppressed_count = payload.references.len() - reference_count;
     let root_translation = cell_translation(payload.key, origin);
     let terrain_grid = match payload.key {
         CellKey::Exterior { grid_x, grid_y, .. } => Some(IVec2::new(grid_x, grid_y)),
@@ -1099,6 +1104,9 @@ fn spawn_cell(
             }
         }
         for reference in payload.references {
+            if !reference.initially_enabled {
+                continue;
+            }
             let creation_position = Vec3::from_array(reference.position);
             let world_position = WorldPosition::from_creation_units(creation_position);
             let translation = match payload.key {
@@ -1187,6 +1195,7 @@ fn spawn_cell(
         }
     });
     profiler.increment("streaming/references_spawned", reference_count as u64);
+    profiler.increment("streaming/references_suppressed", suppressed_count as u64);
     profiler.record_elapsed("streaming/spawn_cell", spawn_started);
     Ok(root)
 }
@@ -5341,6 +5350,7 @@ mod tests {
                 cell_id: 0x02D4E0,
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
+                    initially_enabled: true,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
                     base_record_type: None,
@@ -6162,6 +6172,7 @@ mod tests {
     ) -> ReferenceRow {
         ReferenceRow {
             form_id,
+            initially_enabled: true,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
             base_record_type: None,
@@ -6284,6 +6295,83 @@ mod tests {
                     .is_some_and(|id| id.0 == form_id)
             })
             .expect("the reference spawned")
+    }
+
+    #[test]
+    fn disabled_references_spawn_no_roots_models_lights_or_collider_work() {
+        let mut hidden = lit_reference(1, Some(light_row(256.0, [255; 3], 0)), None);
+        hidden.initially_enabled = false;
+        hidden.model_path = Some("architecture/hidden-wall.nif".to_owned());
+        hidden.base_record_type = Some("STAT".to_owned());
+        let visible = lit_reference(2, Some(light_row(256.0, [255; 3], 0)), None);
+        let mut app = spawn_reference_cell_app(vec![hidden, visible], true);
+        let mut ids = app.world_mut().query::<&FormId>();
+        assert_eq!(
+            ids.iter(app.world()).map(|id| id.0).collect::<Vec<_>>(),
+            [2]
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&PointLight>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&PendingModel>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&PendingAssetProfile>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&Collider>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            profile_output_dir: Some(directory.path().to_owned()),
+            ..default()
+        };
+        let profiler = app.world().resource::<ProfilingState>();
+        profiler
+            .write_bundle(&config, &serde_json::json!({}), None, &default(), None)
+            .unwrap();
+        let profile: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("cpu-spans.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(profile["counters"]["streaming/references_spawned"], 1);
+        assert_eq!(profile["counters"]["streaming/references_suppressed"], 1);
+    }
+
+    #[test]
+    fn a_cell_with_only_disabled_references_still_loads() {
+        let mut hidden = lit_reference(1, None, None);
+        hidden.initially_enabled = false;
+        let mut app = spawn_reference_cell_app(vec![hidden], false);
+        let root = app.world().resource::<SpawnedCellRoot>().0.unwrap();
+        assert_eq!(
+            app.world()
+                .entity(root)
+                .get::<Children>()
+                .map_or(0, |children| children.len()),
+            0
+        );
+        assert_eq!(
+            app.world_mut().query::<&FormId>().iter(app.world()).count(),
+            0
+        );
     }
 
     /// One lit reference, one negative light, one flagged off by default and one plain reference:
