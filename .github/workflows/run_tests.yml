@@ -62,7 +62,7 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '\.ps1$'
+          check_pattern "check_scripts" '\.(ps1|py)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -97,6 +97,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+
+      - name: Test repeated terrain startup runner
+        run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
