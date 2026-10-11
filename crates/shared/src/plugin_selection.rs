@@ -14,6 +14,11 @@ pub const OFFICIAL_MASTERS: [&str; 5] = [
     "Dragonborn.esm",
 ];
 
+/// Use one Unicode lowercase identity for installed, selected and master plugin names.
+pub fn normalize_plugin_name(name: &str) -> String {
+    name.to_lowercase()
+}
+
 /// Decode Windows-1252 without discarding accented plugin or master names.
 pub fn decode_windows_1252(bytes: &[u8]) -> String {
     const HIGH: [char; 32] = [
@@ -95,7 +100,7 @@ impl Warnings {
     }
 }
 
-/// A valid player-list entry, with its original name and ASCII-normalized key.
+/// A valid player-list entry, with its original name and Unicode lowercase plugin key.
 #[derive(Debug, Clone)]
 pub struct PluginEntry {
     pub name: String,
@@ -124,7 +129,7 @@ fn parse_entries(
             warnings.add(format!("invalid {source} plugin entry {name:?}; skipping"));
             continue;
         }
-        let key = name.to_ascii_lowercase();
+        let key = normalize_plugin_name(name);
         if last.insert(key.clone(), entries.len()).is_some() {
             let retained = if checkbox {
                 "position and checkbox"
@@ -167,7 +172,7 @@ pub fn parse_plugin_order(text: &str, warnings: &mut Warnings) -> Vec<String> {
 
 /// Select installed official masters, CCC Creations, and active player entries.
 ///
-/// Installed names and supplied ordering use ASCII-normalized keys. An ordering source controls
+/// Installed names and supplied ordering use `normalize_plugin_name` keys. An ordering source controls
 /// player entries after the fixed implicit prefix; omitted active entries append in player-list
 /// order. Callers may supply explicit INI activation and append unlisted INI entries by file time.
 pub fn select_plugin_names(
@@ -180,7 +185,7 @@ pub fn select_plugin_names(
 ) -> Vec<String> {
     let always: HashSet<_> = always_active
         .iter()
-        .map(|name| name.to_ascii_lowercase())
+        .map(|name| normalize_plugin_name(name))
         .collect();
     let mut active: Vec<_> = entries
         .iter()
@@ -188,7 +193,7 @@ pub fn select_plugin_names(
         .map(|entry| entry.key.clone())
         .collect();
     let mut active_keys: HashSet<_> = active.iter().cloned().collect();
-    for key in always_active.iter().map(|name| name.to_ascii_lowercase()) {
+    for key in always_active.iter().map(|name| normalize_plugin_name(name)) {
         if active_keys.insert(key.clone()) {
             active.push(key);
         }
@@ -197,12 +202,12 @@ pub fn select_plugin_names(
         .iter()
         .copied()
         .chain(creations.iter().map(String::as_str))
-        .map(str::to_ascii_lowercase)
+        .map(normalize_plugin_name)
         .collect();
     let mut selected = Vec::new();
     let mut seen = HashSet::new();
     let mut add = |name: &str, warnings: &mut Warnings| {
-        let key = name.to_ascii_lowercase();
+        let key = normalize_plugin_name(name);
         if !seen.insert(key.clone()) {
             return;
         }
@@ -253,4 +258,80 @@ pub fn read_skyrim_ccc(path: &Path) -> Result<Vec<String>> {
         .filter(|name| plugin_name(name))
         .map(str::to_owned)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Warnings, decode_windows_1252, parse_plugin_entries, parse_plugin_order,
+        select_plugin_names,
+    };
+    use std::collections::HashSet;
+
+    /// Accented spellings share the last checkbox and last ordering position.
+    #[test]
+    fn unicode_plugin_entries_share_last_checkbox_and_order() {
+        let mut warnings = Warnings::default();
+        let entries = parse_plugin_entries(
+            &decode_windows_1252(b"*CAF\xc9.esp\n*Other.esp\ncaf\xe9.esp\n"),
+            false,
+            &mut warnings,
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.key.as_str())
+                .collect::<Vec<_>>(),
+            ["other.esp", "café.esp"]
+        );
+        assert!(!entries[1].checked, "the last unchecked spelling wins");
+        let order = parse_plugin_order(
+            &decode_windows_1252(b"CAF\xc9.esp\nOther.esp\ncaf\xe9.esp\n"),
+            &mut warnings,
+        );
+        assert_eq!(order, ["other.esp", "café.esp"]);
+        let mut notices = Vec::new();
+        warnings.finish(&mut notices);
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert!(notices.iter().all(|notice| notice.contains("café.esp")));
+    }
+
+    /// Checked Windows-1252 names match the installed Unicode lowercase key.
+    #[test]
+    fn unicode_player_entries_match_installed_plugin_names() {
+        let mut warnings = Warnings::default();
+        let entries = parse_plugin_entries(
+            &decode_windows_1252(b"*CAF\xc9.esp\n*Plain.esp\n"),
+            false,
+            &mut warnings,
+        );
+        let installed = HashSet::from(["café.esp".to_owned(), "plain.esp".to_owned()]);
+        assert_eq!(
+            select_plugin_names(&entries, &installed, &[], &[], None, &mut warnings),
+            ["café.esp", "plain.esp"]
+        );
+    }
+
+    /// CCC and explicit INI activation share the same accented plugin identity.
+    #[test]
+    fn unicode_implicit_and_ini_names_match_installed_plugin_names() {
+        let mut warnings = Warnings::default();
+        let entries = parse_plugin_entries(
+            &decode_windows_1252(b"r\xe9sum\xe9.esm\n"),
+            false,
+            &mut warnings,
+        );
+        let installed = HashSet::from(["café.esp".to_owned(), "résumé.esm".to_owned()]);
+        assert_eq!(
+            select_plugin_names(
+                &entries,
+                &installed,
+                &["CAFÉ.esp".to_owned()],
+                &["RÉSUMÉ.esm".to_owned()],
+                None,
+                &mut warnings,
+            ),
+            ["café.esp", "résumé.esm"]
+        );
+    }
 }

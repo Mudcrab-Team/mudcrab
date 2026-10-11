@@ -381,7 +381,7 @@ fn remap_record_form_ids(
             warnings.out_of_range(plugin_name, form_id, record_type);
         }
         let owner = if local_index < masters.len() {
-            masters[local_index].to_ascii_lowercase()
+            shared::plugin_selection::normalize_plugin_name(&masters[local_index])
         } else {
             plugin_name.to_owned()
         };

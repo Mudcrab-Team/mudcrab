@@ -6,8 +6,8 @@ use color_eyre::{
 };
 use serde::{Deserialize, Serialize};
 use shared::plugin_selection::{
-    Warnings, decode_windows_1252, parse_plugin_entries, parse_plugin_order, read_skyrim_ccc,
-    select_plugin_names,
+    Warnings, decode_windows_1252, normalize_plugin_name, parse_plugin_entries, parse_plugin_order,
+    read_skyrim_ccc, select_plugin_names,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -36,6 +36,7 @@ pub struct Instance {
 }
 
 /// Winning source paths indexed by lowercase Data-relative paths, and active plugin order.
+/// Direct plugin names use Unicode lowercase; other asset paths retain ASCII lowercase.
 #[derive(Debug)]
 pub struct Resolved {
     pub files: BTreeMap<String, PathBuf>,
@@ -485,6 +486,25 @@ fn configured_dir(instance: &Path, base: &Path, value: &str) -> Result<PathBuf> 
     Ok(fs::canonicalize(resolved)?)
 }
 
+/// Normalize direct plugin filenames consistently with selection, preserving other asset rules.
+fn data_file_key(relative: &Path) -> String {
+    let name = relative.to_string_lossy().replace('\\', "/");
+    let direct_plugin = !name.contains('/')
+        && matches!(
+            relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("esm" | "esp" | "esl")
+        );
+    if direct_plugin {
+        normalize_plugin_name(&name)
+    } else {
+        name.to_ascii_lowercase()
+    }
+}
+
 /// Overlays a directory onto winning file paths, skipping `.mohidden` entries and checking cancellation.
 ///
 /// Rejects symlinks/reparse points, unsafe components, and case-insensitive collisions within the layer.
@@ -525,10 +545,7 @@ fn overlay(
                     .ok_or_else(|| color_eyre::eyre::eyre!("MO2 asset path is not UTF-8"))?,
             )?;
         }
-        let key = relative
-            .to_string_lossy()
-            .replace('\\', "/")
-            .to_ascii_lowercase();
+        let key = data_file_key(relative);
         ensure!(
             layer.insert(key.clone(), entry.into_path()).is_none(),
             "case-insensitive asset collision in {}: {key}",

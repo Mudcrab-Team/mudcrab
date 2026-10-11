@@ -375,9 +375,9 @@ async fn explicit_regular_override_beats_a_master_listed_after_it() {
     );
 }
 
-/// Dependency hoisting must terminate on cycles and preserve validation failures.
+/// Dependency inversions stay strict; a selection consisting only of a cycle has no usable plugins.
 #[test]
-fn explicit_order_rejects_inversions_and_cycles() {
+fn explicit_inversions_stay_strict_and_cycle_only_selection_is_empty() {
     let cases: &[&[(&str, &[&str])]] = &[
         &[("Dependent.esm", &["Base.esm"]), ("Base.esm", &[])],
         &[
@@ -395,7 +395,13 @@ fn explicit_order_rejects_inversions_and_cycles() {
         }
         let path = dir.path().join("plugins.txt");
         fs::write(&path, list).unwrap();
-        let paths = read_plugins_txt(&path, dir.path()).unwrap();
+        let selected = read_plugins_txt(&path, dir.path());
+        if plugins.len() == 3 {
+            let error = format!("{:?}", selected.unwrap_err());
+            assert!(error.contains("no usable active plugins"), "{error}");
+            continue;
+        }
+        let paths = selected.unwrap();
         let error = format!("{:?}", LoadOrder::read(&paths).err().unwrap());
         assert!(error.contains("must precede"), "{error}");
         assert!(

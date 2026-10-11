@@ -12,7 +12,7 @@ use crate::{
         cell_cache::write_cell_cache,
         exporter::validate_database,
         lodsettings::{LodSettings, sidecar_path},
-        plugins_txt::read_with_notices,
+        plugins_txt::read_with_diagnostics,
     },
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
@@ -84,13 +84,19 @@ pub struct PipelineReport {
     /// advisory messages that do not affect completeness
     #[serde(default)]
     pub notices: Vec<String>,
+    /// Original plugin filenames omitted by cycle or slot-capacity recovery, in selection order.
+    /// Full exclusions stay available without expanding the bounded user-facing warning summaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_plugins: Vec<String>,
     pub artifacts: Vec<PathBuf>,
     pub inputs_by_kind: BTreeMap<String, u64>,
     pub elapsed_ms: u128,
     pub integration: Option<IntegrationReport>,
 }
 
-/// A run is complete when nothing was skipped and nothing warned. Pruned dangling
+/// A run is complete when no asset conversion was skipped and no conversion warnings remain.
+/// Recoverable plugin-selection exclusions are advisory notices and `skipped_plugins` entries.
+/// Pruned dangling
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
@@ -478,8 +484,11 @@ impl AssetPipeline {
             Some(plugins) => {
                 let profile = &config.mo2.as_ref().unwrap().profile;
                 let mut recovery_notices = Vec::new();
-                let plugins =
-                    crate::esm::plugins_txt::recover_with_notices(plugins, &mut recovery_notices);
+                let plugins = crate::esm::plugins_txt::recover_with_diagnostics(
+                    plugins,
+                    &mut recovery_notices,
+                    &mut report.skipped_plugins,
+                )?;
                 report.notices.extend(
                     recovery_notices
                         .into_iter()
@@ -497,7 +506,12 @@ impl AssetPipeline {
                 })?;
                 plugins
             }
-            None => plugin_paths(config, &files, &mut report.notices)?,
+            None => plugin_paths_with_diagnostics(
+                config,
+                &files,
+                &mut report.notices,
+                &mut report.skipped_plugins,
+            )?,
         };
         // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
         // prints them without splicing into its status line and the launcher shows them in its
@@ -509,7 +523,10 @@ impl AssetPipeline {
                 None,
                 &format!(
                     "{}: {notice}",
-                    if config.plugins_file.is_some() || config.mo2.is_some() {
+                    if config.plugins_file.is_some()
+                        || config.mo2.is_some()
+                        || !report.skipped_plugins.is_empty()
+                    {
                         "warning"
                     } else {
                         "note"
@@ -2231,13 +2248,24 @@ pub(crate) fn plugin_paths(
     files: &[PathBuf],
     notices: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    plugin_paths_with_diagnostics(config, files, notices, &mut Vec::new())
+}
+
+/// Select surviving plugin paths before hashes, archive priorities, merging and publication.
+fn plugin_paths_with_diagnostics(
+    config: &PipelineConfig,
+    files: &[PathBuf],
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
     if let Some(path) = &config.plugins_file {
-        return read_with_notices(
+        return read_with_diagnostics(
             path,
             &config.data_dir,
             config.skyrim_ccc_file.as_deref(),
             config.skyrim_ini_file.as_deref(),
             notices,
+            skipped_plugins,
         );
     }
     let discovered: Vec<_> = files
@@ -2268,18 +2296,30 @@ pub(crate) fn plugin_paths(
         ));
     }
     plugins.sort_by_key(|path| {
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
+        let name = shared::plugin_selection::normalize_plugin_name(
+            &path.file_name().unwrap_or_default().to_string_lossy(),
+        );
         let rank = crate::esm::OFFICIAL_MASTERS
             .iter()
             .position(|official| official.eq_ignore_ascii_case(&name))
             .unwrap_or(10);
         (rank, name)
     });
-    crate::esm::load_order::order_discovered_plugins(plugins)
+    let had_plugins = !plugins.is_empty();
+    let plugins = crate::esm::load_order::order_discovered_plugins_with_notices(
+        plugins,
+        notices,
+        skipped_plugins,
+    )?;
+    ensure!(
+        !had_plugins || !plugins.is_empty(),
+        "no usable plugins remain after automatic dependency/slot recovery: {}",
+        notices
+            .last()
+            .map(String::as_str)
+            .unwrap_or("empty selection"),
+    );
+    Ok(plugins)
 }
 
 /// Materializes winning loose LOD inputs for the compiler's filesystem-based VFS reads.
@@ -2351,16 +2391,14 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
 
 /// Checks whether an archive stem matches an active plugin, including suffixed companion archives.
 pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool {
-    let stem = archive
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
     plugins
         .iter()
         .filter_map(|path| path.file_stem())
         .any(|plugin| {
-            let plugin = plugin.to_string_lossy().to_ascii_lowercase();
+            let plugin = shared::plugin_selection::normalize_plugin_name(&plugin.to_string_lossy());
             stem == plugin
                 || stem
                     .strip_prefix(&plugin)
@@ -2386,13 +2424,11 @@ pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -
     let plugin_stems = plugins
         .iter()
         .filter_map(|path| path.file_stem())
-        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .map(|stem| shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy()))
         .collect::<Vec<_>>();
-    let stem = archive
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
     plugin_stems
         .iter()
         .enumerate()
@@ -4667,6 +4703,19 @@ mod tests {
                 PathBuf::from("Example - Textures.bsa"),
             ]
         );
+    }
+
+    /// Unicode plugin names retain companion archive activation and the owner's load-order priority.
+    #[test]
+    fn unicode_plugin_archive_names_match_activation_and_priority() {
+        let plugins = [PathBuf::from("Skyrim.esm"), PathBuf::from("CAF\u{c9}.esp")];
+        let archive = PathBuf::from("caf\u{e9} - Textures.bsa");
+        assert!(mo2_archive_is_active(&archive, &plugins));
+        assert_eq!(archive_load_order_priority(&archive, &plugins), Some(1));
+        assert!(!mo2_archive_is_active(
+            Path::new("caf\u{e9}Other.bsa"),
+            &plugins
+        ));
     }
 
     #[tokio::test]

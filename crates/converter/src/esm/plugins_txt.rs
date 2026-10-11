@@ -12,7 +12,8 @@ use std::{
 
 pub use shared::plugin_selection::{OFFICIAL_MASTERS, read_skyrim_ccc};
 use shared::plugin_selection::{
-    PluginEntry, Warnings, decode_windows_1252, parse_plugin_entries, select_plugin_names,
+    PluginEntry, Warnings, decode_windows_1252, normalize_plugin_name, parse_plugin_entries,
+    select_plugin_names,
 };
 
 /// Recognize plugin filenames directly inside Data, excluding path components.
@@ -86,10 +87,7 @@ fn usable_plugins(paths: Vec<PathBuf>, warnings: &mut Warnings) -> Vec<PathBuf> 
         .enumerate()
         .map(|(i, path)| {
             (
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_ascii_lowercase(),
+                normalize_plugin_name(&path.file_name().unwrap_or_default().to_string_lossy()),
                 i,
             )
         })
@@ -124,7 +122,7 @@ fn usable_plugins(paths: Vec<PathBuf>, warnings: &mut Warnings) -> Vec<PathBuf> 
                 continue;
             };
             for master in &header.masters {
-                let cause = match indices.get(&master.to_ascii_lowercase()) {
+                let cause = match indices.get(&normalize_plugin_name(master)) {
                     Some(&dependency) => missing[dependency].clone(),
                     None => Some(master.clone()),
                 };
@@ -158,12 +156,16 @@ fn usable_plugins(paths: Vec<PathBuf>, warnings: &mut Warnings) -> Vec<PathBuf> 
         .collect()
 }
 
-/// Apply the same header and missing-master closure recovery to a mod-manager selection.
-pub(crate) fn recover_with_notices(paths: Vec<PathBuf>, notices: &mut Vec<String>) -> Vec<PathBuf> {
+/// Apply header/master recovery and cycle/slot admission while retaining a mod-manager's order.
+pub(crate) fn recover_with_diagnostics(
+    paths: Vec<PathBuf>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
     let mut warnings = Warnings::default();
     let paths = usable_plugins(paths, &mut warnings);
     warnings.finish(notices);
-    paths
+    load_order::recover_ordered_plugins_with_notices(paths, notices, skipped_plugins)
 }
 
 /// Select plugins using explicit CCC/INI inputs, collecting bounded diagnostics.
@@ -173,6 +175,18 @@ pub(crate) fn read_with_notices(
     ccc: Option<&Path>,
     ini: Option<&Path>,
     notices: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
+    read_with_diagnostics(path, data_dir, ccc, ini, notices, &mut Vec::new())
+}
+
+/// Select usable player plugins, keeping full cycle/overflow exclusions separate from bounded notices.
+pub(crate) fn read_with_diagnostics(
+    path: &Path,
+    data_dir: &Path,
+    ccc: Option<&Path>,
+    ini: Option<&Path>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
     let bytes =
         std::fs::read(path).wrap_err_with(|| format!("reading plugins.txt {}", path.display()))?;
@@ -190,7 +204,7 @@ pub(crate) fn read_with_notices(
         if entry.path().is_file() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if plugin_name(&name) {
-                installed.insert(name.to_ascii_lowercase(), entry.path());
+                installed.insert(normalize_plugin_name(&name), entry.path());
             }
         }
     }
@@ -213,10 +227,10 @@ pub(crate) fn read_with_notices(
     let listed_names: HashSet<_> = listed.iter().map(|entry| entry.key.clone()).collect();
     let mut unlisted: Vec<_> = test_files
         .iter()
-        .filter(|name| !listed_names.contains(&name.to_ascii_lowercase()))
+        .filter(|name| !listed_names.contains(&normalize_plugin_name(name)))
         .collect();
     unlisted.sort_by_key(|name| {
-        let key = name.to_ascii_lowercase();
+        let key = normalize_plugin_name(name);
         let modified = installed
             .get(&key)
             .and_then(|path| std::fs::metadata(path).ok())
@@ -227,7 +241,7 @@ pub(crate) fn read_with_notices(
     for name in unlisted {
         listed.push(PluginEntry {
             name: name.clone(),
-            key: name.to_ascii_lowercase(),
+            key: normalize_plugin_name(name),
             checked: true,
         });
     }
@@ -246,11 +260,13 @@ pub(crate) fn read_with_notices(
         .collect();
     let selected = usable_plugins(selected, &mut warnings);
     warnings.finish(notices);
+    let selected =
+        load_order::order_explicit_plugins_with_notices(selected, notices, skipped_plugins)?;
     ensure!(
         !selected.is_empty(),
         "no usable active plugins remain after plugins.txt selection"
     );
-    load_order::order_explicit_plugins(selected)
+    Ok(selected)
 }
 
 /// Read an explicit player list with optional CCC and INI paths; omitted INI stays unused.
