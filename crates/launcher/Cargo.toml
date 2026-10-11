@@ -5,14 +5,16 @@ edition.workspace = true
 
 [dependencies]
 converter = { path = "../converter/" }
+mo2 = { path = "../mo2/" }
 shared = { path = "../shared/" }
 bevy.workspace = true
 serde_json.workspace = true
 crossbeam-channel = "0.5.16"
 tokio.workspace = true
 
+[dev-dependencies]
+tempfile = "3.20"
+rusqlite.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-
-[dev-dependencies]
-rusqlite.workspace = true

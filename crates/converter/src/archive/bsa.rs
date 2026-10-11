@@ -20,8 +20,12 @@ const SKYRIM_ANIMATION_FILE_FLAGS: u32 = 0x0052_0000;
 // (observed: 0x01000000, 0x02000000, 0x86110000 across the 93 shipped BSAs).
 // Like the animation flags above, these are advisory only.
 const CREATION_CLUB_FILE_FLAGS: u32 = 0x8711_0000;
-const KNOWN_FILE_FLAGS: u32 =
-    STANDARD_FILE_FLAGS | SKYRIM_ANIMATION_FILE_FLAGS | CREATION_CLUB_FILE_FLAGS;
+// UIExtensions.bsa uses 0x00670104; these classifier bits are advisory too.
+const UIEXTENSIONS_FILE_FLAGS: u32 = 0x0024_0000;
+const KNOWN_FILE_FLAGS: u32 = STANDARD_FILE_FLAGS
+    | SKYRIM_ANIMATION_FILE_FLAGS
+    | CREATION_CLUB_FILE_FLAGS
+    | UIEXTENSIONS_FILE_FLAGS;
 const FILE_COMPRESSION_TOGGLE: u32 = 0x4000_0000;
 const FILE_SIZE_MASK: u32 = 0x3fff_ffff;
 
@@ -379,8 +383,12 @@ mod tests {
         }
     }
 
+    /// Verifies accepted UI extension flags and rejection of unsupported BSA header values.
     #[test]
     fn rejects_unsupported_versions_offsets_and_flags() {
+        let mut ui_extensions = uncompressed_fixture();
+        ui_extensions[32..36].copy_from_slice(&0x0067_0104u32.to_le_bytes());
+        assert!(iter_raw_entries(&ui_extensions).is_ok());
         for (range, value, expected) in [
             (4..8, 103u32, "unsupported BSA version"),
             (8..12, 40u32, "unsupported BSA folder record offset"),

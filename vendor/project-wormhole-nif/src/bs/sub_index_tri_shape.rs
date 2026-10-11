@@ -33,10 +33,8 @@ impl Parse<&[u8]> for BSSubIndexTriShape {
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         let (i, bs_tri_shape) = BSTriShape::parse(i)?;
 
-        // Every Skyrim shape ends with a `u32` that `BSTriShape::parse` leaves
-        // unread, and the segment table starts after it. The value is zero in
-        // every shipped LOD block, so only its width matters here.
-        let (i, _trailing) = le_u32(i)?;
+        // BSTriShape consumes the particle-size word and its payload, so the
+        // segment table follows directly.
         let (i, num_segments) = le_u32(i)?;
         if num_segments as usize > i.len() / 9 {
             return Err(nom::Err::Failure(nom::error::Error::new(

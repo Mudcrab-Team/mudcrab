@@ -113,6 +113,9 @@ impl ControlButton {
 pub struct ControlLabel(pub ControlButton);
 
 #[derive(Component, Default, Clone)]
+pub struct DataPathLabel;
+
+#[derive(Component, Default, Clone)]
 pub struct DataPathText;
 
 #[derive(Component, Default, Clone)]
@@ -175,6 +178,7 @@ pub fn conversion_panel() -> impl Scene {
         BorderColor::all(BORDER)
         Children [
             ui_title(),
+            crate::mo2_settings::source_row(),
             ui_data_row(),
             ui_output_row(),
             ui_progress_row(),
@@ -204,6 +208,7 @@ fn row_label(text: &'static str) -> impl Scene {
     }
 }
 
+/// Builds the source-path row with its label, path text, and detection or MO2 settings button.
 fn ui_data_row() -> impl Scene {
     bsn! {
         Node {
@@ -213,7 +218,7 @@ fn ui_data_row() -> impl Scene {
             column_gap: Val::Px(10.0),
         }
         Children [
-            row_label("Skyrim Data"),
+            (DataPathLabel row_label("Skyrim Data")),
             (
                 DataPathText
                 Text::new("looking for Skyrim...")
@@ -408,11 +413,13 @@ pub fn detect_skyrim_at_start(
 
 /// Turns button presses into inputs. A press the table forbids is dropped here and refused by the
 /// state machine as well, so an unexpected event can never start a second run.
+#[allow(clippy::too_many_arguments)] // Bevy injects each system parameter.
 pub fn click_controls(
     buttons: Query<(&Interaction, &ControlButton), Changed<Interaction>>,
     state: Res<CurrentConversion>,
     has_manifest: Res<OutputHasManifest>,
     engine: Option<Res<EngineProcess>>,
+    mut source: Option<ResMut<crate::mo2_settings::SourceSettings>>,
     mut paths: ResMut<GamePathConfig>,
     mut inputs: ResMut<PendingInputs>,
     mut status: ResMut<ConversionStatus>,
@@ -422,8 +429,25 @@ pub fn click_controls(
             continue;
         }
         let controls = state::controls(&state.0);
+        if *control == ControlButton::Detect
+            && let Some(source) = source.as_mut().filter(|source| source.use_mo2)
+        {
+            if crate::mo2_settings::editable(&state.0) {
+                source.open = true;
+            }
+            continue;
+        }
         if !control.enabled(&controls) {
             continue;
+        }
+        if matches!(control, ControlButton::Start | ControlButton::Resume)
+            && let Some(source) = &source
+        {
+            let mut config = converter::PipelineConfig::new("", "");
+            if let Err(reason) = source.apply(&mut config) {
+                status.push_notice(&reason);
+                continue;
+            }
         }
         match control {
             ControlButton::Detect => match game_detection::find_skyrim_data_dir() {
@@ -481,6 +505,7 @@ pub fn click_controls(
 pub fn accept_dropped_folder(
     mut dropped: MessageReader<FileDragAndDrop>,
     state: Res<CurrentConversion>,
+    mut source: Option<ResMut<crate::mo2_settings::SourceSettings>>,
     mut paths: ResMut<GamePathConfig>,
     mut status: ResMut<ConversionStatus>,
 ) {
@@ -488,6 +513,14 @@ pub fn accept_dropped_folder(
         let FileDragAndDrop::DroppedFile { path_buf, .. } = event else {
             continue;
         };
+        if let Some(source) = &mut source
+            && source.open
+        {
+            if crate::mo2_settings::editable(&state.0) {
+                source.set_instance(path_buf);
+            }
+            continue;
+        }
         if !path_buf.is_dir() {
             if !handlers::is_mod_file(path_buf) {
                 status.push_notice(&format!(
@@ -523,6 +556,7 @@ pub fn accept_dropped_folder(
 type PathTexts = (
     Query<'static, 'static, &'static mut Text, With<DataPathText>>,
     Query<'static, 'static, &'static mut Text, With<OutputPathText>>,
+    Query<'static, 'static, &'static mut Text, With<DataPathLabel>>,
 );
 
 /// The status lines' texts; see `draw_labels`.
@@ -533,17 +567,36 @@ type LabelTexts = (
     Query<'static, 'static, &'static mut Text, With<NoticeText>>,
 );
 
+/// Updates source and output path labels for the selected Skyrim Data or MO2 source.
 pub fn draw_paths(
     paths: Res<GamePathConfig>,
-    // Two `&mut Text` queries: Bevy cannot tell from `With` filters alone that no entity carries
-    // both markers, so they share one set and are borrowed in turn.
+    source: Option<Res<crate::mo2_settings::SourceSettings>>,
+    // Bevy cannot prove these Text queries are disjoint from their With filters,
+    // so they share one set and are borrowed in turn.
     mut texts: ParamSet<PathTexts>,
 ) {
+    let mo2 = source.as_ref().filter(|source| source.use_mo2);
     for mut text in &mut texts.p0() {
-        text.0 = paths.data_label();
+        text.0 = if let Some(source) = mo2 {
+            source
+                .selection
+                .as_ref()
+                .map(|selection| crate::mo2_settings::display_path(&selection.instance_path))
+                .unwrap_or_else(|| "not configured - open MO2 settings".into())
+        } else {
+            paths.data_label()
+        };
     }
     for mut text in &mut texts.p1() {
         text.0 = paths.output_label();
+    }
+    for mut text in &mut texts.p2() {
+        text.0 = if mo2.is_some() {
+            "MO2 instance"
+        } else {
+            "Skyrim Data"
+        }
+        .into();
     }
 }
 
@@ -598,19 +651,41 @@ pub fn draw_labels(
     }
 }
 
+/// Updates button appearance and labels from conversion state, source readiness, and engine status.
+#[allow(clippy::too_many_arguments)] // Bevy injects each system parameter.
 pub fn draw_controls(
     state: Res<CurrentConversion>,
     paths: Res<GamePathConfig>,
     ready: Res<OutputReady>,
     has_manifest: Res<OutputHasManifest>,
     engine: Option<Res<EngineProcess>>,
-    mut buttons: Query<(&ControlButton, &Interaction, &mut BackgroundColor)>,
+    source: Option<Res<crate::mo2_settings::SourceSettings>>,
+    mut buttons: Query<(
+        &ControlButton,
+        &Interaction,
+        &mut BackgroundColor,
+        Option<&mut Node>,
+    )>,
     mut labels: Query<(&ControlLabel, &mut Text, &mut TextColor)>,
 ) {
     let controls = state::controls(&state.0);
     let game_running = engine.is_some();
-    for (control, interaction, mut background) in &mut buttons {
-        let enabled = control.available(&controls, &paths, has_manifest.0, game_running);
+    let source_ready = source
+        .as_ref()
+        .is_none_or(|source| !source.use_mo2 || source.selection.is_some());
+    let mo2 = source.as_ref().is_some_and(|source| source.use_mo2);
+    for (control, interaction, mut background, node) in &mut buttons {
+        let enabled = if mo2 && *control == ControlButton::Detect {
+            crate::mo2_settings::editable(&state.0)
+        } else {
+            control.available(&controls, &paths, has_manifest.0, game_running)
+                && (!control.needs_folders() || source_ready)
+        };
+        if *control == ControlButton::Detect
+            && let Some(mut node) = node
+        {
+            node.width = Val::Px(if mo2 { 120.0 } else { 90.0 });
+        }
         background.0 = match (enabled, *interaction) {
             (false, _) => BUTTON_OFF,
             (true, Interaction::Hovered) => BUTTON_ON_HOVER,
@@ -618,13 +693,22 @@ pub fn draw_controls(
         };
     }
     for (label, mut text, mut color) in &mut labels {
-        let wanted = label.0.label(&state.0, *ready);
+        let wanted = if mo2 && label.0 == ControlButton::Detect {
+            "MO2 settings"
+        } else {
+            label.0.label(&state.0, *ready)
+        };
         if text.0 != wanted {
             text.0 = wanted.to_owned();
         }
-        let enabled = label
-            .0
-            .available(&controls, &paths, has_manifest.0, game_running);
+        let enabled = if mo2 && label.0 == ControlButton::Detect {
+            crate::mo2_settings::editable(&state.0)
+        } else {
+            label
+                .0
+                .available(&controls, &paths, has_manifest.0, game_running)
+                && (!label.0.needs_folders() || source_ready)
+        };
         let wanted_color = if enabled { TEXT_COLOR } else { BUTTON_OFF_TEXT };
         if color.0 != wanted_color {
             color.0 = wanted_color;

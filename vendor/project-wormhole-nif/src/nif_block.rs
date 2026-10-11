@@ -289,6 +289,19 @@ fn take_lod_shape_trailing_word(i: &[u8]) -> &[u8] {
 }
 
 impl NifBlock {
+    /// Parses a named block using the legacy skin-partition layout for Bethesda versions below 100.
+    pub fn parse_with_version(
+        i: &[u8],
+        block_type: String,
+        bethesda_version: u32,
+    ) -> IResult<&[u8], Self> {
+        if block_type == "NiSkinPartition" && bethesda_version < 100 {
+            let (i, result) = NiSkinPartition::parse_legacy(i)?;
+            return Ok((i, NifBlock::NiSkinPartition(result)));
+        }
+        Self::parse(i, block_type)
+    }
+
     pub fn parse(i: &[u8], block_type: String) -> IResult<&[u8], Self> {
         match block_type.as_str() {
             "NiNode" => {
@@ -1638,13 +1651,20 @@ pub struct NiAVObject {
 }
 
 impl Parse<&[u8]> for NiAVObject {
+    /// Parses counted extra-data references first, falling back to a compact object with a valid transform.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
-        if let Ok((rest, av)) = parse_compact_av_object(i) {
-            if valid_av_transform(&av) {
-                return Ok((rest, av));
+        // Skyrim stores an extra-data count followed by references. A shifted
+        // compact interpretation can still look like a finite transform.
+        parse_counted_av_object(i).or_else(|_| {
+            let (rest, av) = parse_compact_av_object(i)?;
+            if !valid_av_transform(&av) {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    rest,
+                    nom::error::ErrorKind::Verify,
+                )));
             }
-        }
-        parse_counted_av_object(i)
+            Ok((rest, av))
+        })
     }
 }
 

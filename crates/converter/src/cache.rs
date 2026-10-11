@@ -192,6 +192,9 @@ pub struct ConversionManifest {
     pub inputs_by_kind: BTreeMap<String, u64>,
     #[serde(default)]
     pub failures: BTreeMap<String, String>,
+    /// Non-runtime inputs deliberately excluded, with an auditable reason.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub excluded_inputs: BTreeMap<String, String>,
     /// Texture references a published mesh omits because the game data does not
     /// contain that texture, keyed by the published `.glb` and holding the
     /// resolved texture paths it dropped. Kept out of `failures`: nothing failed
@@ -275,6 +278,7 @@ pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<Stri
     configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION)
 }
 
+/// Hashes conversion settings and MO2 identity; winning inputs are hashed per source.
 pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
@@ -285,6 +289,19 @@ pub fn configuration_hash_for_schema(
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
+    if let Some(selection) = &config.mo2 {
+        let instance = mo2::Instance::open(&selection.instance_path)?;
+        let profile = instance.profile_dir(&selection.profile)?;
+
+        relevant["mo2"] = serde_json::json!({
+            "instance": instance.instance_path,
+            "profile": profile,
+            "mods": instance.mods_dir,
+            "overwrite": instance.overwrite_dir,
+            "data": std::fs::canonicalize(&config.data_dir)?,
+
+        });
+    }
     if schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
     }

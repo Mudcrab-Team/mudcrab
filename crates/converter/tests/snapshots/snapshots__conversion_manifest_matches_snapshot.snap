@@ -73,13 +73,13 @@ expression: manifest
     "scripts/generated.pex": {
       "output": "scripts/generated.luau",
       "output_hash": "[output_hash]",
-      "output_size": 992,
+      "output_size": 1110,
       "source_hash": "[source_hash]"
     },
     "scripts/second.pex": {
       "output": "scripts/second.luau",
       "output_hash": "[output_hash]",
-      "output_size": 989,
+      "output_size": 1107,
       "source_hash": "[source_hash]"
     },
     "textures/generated_color.dds": {

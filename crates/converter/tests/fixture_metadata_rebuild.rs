@@ -677,7 +677,25 @@ async fn metadata_rebuild_replays_volcanic_prunes_with_legacy_and_scoped_source_
         let preprune = directory.path().join("preprune");
         generate(&data);
         add_volcanic_source(&data);
+        let skeleton_key = "meshes/landscape/grass/skeleton.nif";
+        fs::copy(
+            data.join(layout::GENERATED_MODEL_PATH),
+            data.join(skeleton_key),
+        )
+        .unwrap();
         convert(&data, &source).await;
+        let historical_hash = format!(
+            "{}:{}",
+            hash_file(&data.join(VOLCANIC_MODEL)).unwrap(),
+            hash_file(&data.join(skeleton_key)).unwrap()
+        );
+        let scoped_source_hash =
+            format!("{historical_hash}:volcanic-normal-repair:1:original=false:target=true");
+        let converted = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+        assert_eq!(
+            converted.entries[VOLCANIC_MODEL].source_hash,
+            scoped_source_hash
+        );
 
         // Build the historical raw GLB and retain a pure prune with no DLC02 repair available.
         let candidate = preprune.join(VOLCANIC_GLB);
@@ -730,13 +748,18 @@ async fn metadata_rebuild_replays_volcanic_prunes_with_legacy_and_scoped_source_
         let retained_nif = source.join("vfs").join(VOLCANIC_MODEL);
         fs::create_dir_all(retained_nif.parent().unwrap()).unwrap();
         fs::copy(data.join(VOLCANIC_MODEL), &retained_nif).unwrap();
+        fs::copy(
+            data.join(skeleton_key),
+            source.join("vfs").join(skeleton_key),
+        )
+        .unwrap();
         let mut manifest =
             ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
         let entry = manifest.entries.get_mut(VOLCANIC_MODEL).unwrap();
         entry.output_hash = original_hash;
         entry.output_size = original_size;
-        // No skeleton is present: the pre-repair contract is exactly the raw NIF checksum.
-        entry.source_hash = hash_file(&retained_nif).unwrap();
+        // Both historical contracts hash the discovered skeleton before the scoped suffix.
+        entry.source_hash = historical_hash;
         if scoped_hash {
             entry.source_hash.push_str(if wrong_presence {
                 ":volcanic-normal-repair:1:original=true:target=true"
