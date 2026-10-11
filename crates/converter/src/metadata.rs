@@ -356,6 +356,7 @@ async fn rebuild_into(
     compile_lod_chunks(
         config,
         staging,
+        source,
         plugins,
         plugin_hashes,
         progress,

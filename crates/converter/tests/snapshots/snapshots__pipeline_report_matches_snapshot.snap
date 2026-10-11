@@ -57,10 +57,13 @@ expression: report
     "unbounded_model_count": 0,
     "waters_with_flow_normal": 0
   },
+  "lod_cache_hits": 0,
   "lod_chunks": 6,
   "lod_elapsed_ms": "[lod_elapsed_ms]",
   "lod_warnings": [],
-  "notices": [],
+  "notices": [
+    "Terrain LOD GeneratedWorld: 0 reused, 6 rebuilt, 6 total chunks"
+  ],
   "pruned_texture_references": 0,
   "publication_elapsed_ms": "[publication_elapsed_ms]",
   "skipped": 0,

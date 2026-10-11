@@ -13,7 +13,10 @@
 //! stale root transform cannot smear one chunk's terrain onto another's.
 
 use super::albedo::{TerrainAtlas, TerrainTextures};
-use color_eyre::{Result, eyre::WrapErr};
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, ensure},
+};
 use rayon::prelude::*;
 use rusqlite::{Connection, params};
 use shared::lod::{
@@ -60,6 +63,37 @@ pub struct TerrainCellInput {
     pub layers: Vec<shared::TerrainLayer>,
 }
 
+impl TerrainCellInput {
+    /// Hash the consumed fields, including float bit patterns and ordered layers.
+    /// Water/normals are absent because this compiler does not consume them.
+    pub(crate) fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(self.cell_id.to_le_bytes());
+        hash.update(self.grid_x.to_le_bytes());
+        hash.update(self.grid_y.to_le_bytes());
+        hash.update((self.heights.len() as u64).to_le_bytes());
+        for height in &self.heights {
+            hash.update(height.to_le_bytes());
+        }
+        hash.update((self.vertex_colors.len() as u64).to_le_bytes());
+        hash.update(&self.vertex_colors);
+        hash.update((self.layers.len() as u64).to_le_bytes());
+        for layer in &self.layers {
+            hash.update(layer.texture_form_id.to_le_bytes());
+            hash.update([layer.quadrant]);
+            hash.update(layer.layer.to_le_bytes());
+            hash.update([u8::from(layer.is_base)]);
+            hash.update((layer.weights.len() as u64).to_le_bytes());
+            for weight in &layer.weights {
+                hash.update(weight.vertex.to_le_bytes());
+                hash.update(weight.opacity.to_le_bytes());
+            }
+        }
+        format!("{:x}", hash.finalize())
+    }
+}
+
 #[derive(Default)]
 struct TerrainGeometry {
     positions: Vec<f32>,
@@ -78,6 +112,23 @@ pub fn compile_world_terrain(
     cells: &[TerrainCellInput],
     textures: &TerrainTextures,
 ) -> Result<Vec<TerrainChunk>> {
+    terrain_jobs(worldspace_id, origin, cells)
+        .into_par_iter()
+        .map(|job| job.compile(origin, textures))
+        .collect()
+}
+
+/// A chunk is the unit of compilation/reuse; callers decide when to publish it.
+pub(crate) struct TerrainChunkInput<'a> {
+    pub key: ChunkKey,
+    pub members: Vec<&'a TerrainCellInput>,
+}
+
+pub(crate) fn terrain_jobs(
+    worldspace_id: u32,
+    origin: LodOrigin,
+    cells: &[TerrainCellInput],
+) -> Vec<TerrainChunkInput<'_>> {
     let mut jobs = Vec::new();
     for tier in LodTier::ALL {
         let mut by_anchor: BTreeMap<(i32, i32), Vec<&TerrainCellInput>> = BTreeMap::new();
@@ -88,14 +139,90 @@ pub fn compile_world_terrain(
                 .or_default()
                 .push(cell);
         }
-        for ((ax, ay), members) in by_anchor {
-            let key = ChunkKey::new(worldspace_id, tier, ChunkAnchor::new(ax, ay));
-            jobs.push((key, members));
+        for ((ax, ay), mut members) in by_anchor {
+            members.sort_by_key(|cell| (cell.grid_x, cell.grid_y));
+            jobs.push(TerrainChunkInput {
+                key: ChunkKey::new(worldspace_id, tier, ChunkAnchor::new(ax, ay)),
+                members,
+            });
         }
     }
-    jobs.into_par_iter()
-        .map(|(key, members)| compile_chunk(key, origin, &members, textures))
-        .collect()
+    jobs
+}
+
+impl TerrainChunkInput<'_> {
+    pub fn compile(&self, origin: LodOrigin, textures: &TerrainTextures) -> Result<TerrainChunk> {
+        compile_chunk(self.key, origin, &self.members, textures)
+    }
+
+    pub fn fingerprint(
+        &self,
+        origin: LodOrigin,
+        cell_hashes: &HashMap<u32, String>,
+        textures: &TerrainTextures,
+    ) -> Result<String> {
+        let cells: Vec<_> = self
+            .members
+            .iter()
+            .map(|cell| &cell_hashes[&cell.cell_id])
+            .collect();
+        let materials = textures.sources_for(&self.members);
+        Ok(crate::cache::hash_bytes(&serde_json::to_vec(
+            &serde_json::json!({
+                "compiler": super::TERRAIN_COMPILER_VERSION,
+                "producer": crate::cache::CONVERTER_SCHEMA_VERSION,
+                "world_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
+                "key": shared::lod::chunk_payload_path(self.key),
+                "origin": [origin.grid_x, origin.grid_y],
+                "tiling": shared::LAND_TEXTURE_REPEATS_PER_CELL,
+                "cells": cells,
+                "materials": materials,
+            }),
+        )?))
+    }
+
+    /// Derive index bounds from the same source samples as the geometry. Cached
+    /// index rows cannot supply their own bounds or resurrect removed cells.
+    pub fn bounds(&self, origin: LodOrigin) -> ([f32; 3], [f32; 3]) {
+        let side = self.key.tier.side_cells();
+        let min_x = origin.grid_x as f64 + self.key.anchor.x as f64 * side as f64;
+        let min_y = origin.grid_y as f64 + self.key.anchor.y as f64 * side as f64;
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for cell in &self.members {
+            for (_, _, ox, oy) in QUADRANTS {
+                for (x, y) in quadrant_samples() {
+                    let local_x = ((cell.grid_x as f64 - min_x) * CELL_SIZE
+                        + (ox + x) as f64 * CELL_SIZE / 32.0)
+                        as f32;
+                    let local_y = ((cell.grid_y as f64 - min_y) * CELL_SIZE
+                        + (oy + y) as f64 * CELL_SIZE / 32.0)
+                        as f32;
+                    let position = [
+                        (f64::from(local_x) + min_x * CELL_SIZE) as f32,
+                        (f64::from(local_y) + min_y * CELL_SIZE) as f32,
+                        cell.heights[(oy + y) * LAND_SIDE + ox + x],
+                    ];
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(position[axis]);
+                        max[axis] = max[axis].max(position[axis]);
+                    }
+                }
+            }
+        }
+        (min, max)
+    }
+}
+
+fn quadrant_samples() -> Vec<(usize, usize)> {
+    let n = TERRAIN_QUADRANT_INTERVALS;
+    let mut samples = Vec::with_capacity(TERRAIN_QUADRANT_VERTEX_COUNT);
+    samples.extend((0..=n).map(|x| (x, 0)));
+    samples.extend((1..=n).map(|y| (n, y)));
+    samples.extend((0..n).rev().map(|x| (x, n)));
+    samples.extend((1..n).rev().map(|y| (0, y)));
+    samples.push((n / 2, n / 2));
+    samples
 }
 
 fn compile_chunk(
@@ -104,37 +231,7 @@ fn compile_chunk(
     members: &[&TerrainCellInput],
     textures: &TerrainTextures,
 ) -> Result<TerrainChunk> {
-    color_eyre::eyre::ensure!(!members.is_empty(), "chunk {key:?} covers no source cells");
-    let mut seen = BTreeSet::new();
-    for cell in members {
-        color_eyre::eyre::ensure!(
-            seen.insert((cell.grid_x, cell.grid_y)),
-            "chunk {key:?} covers cell ({}, {}) twice",
-            cell.grid_x,
-            cell.grid_y
-        );
-        color_eyre::eyre::ensure!(
-            cell.heights.len() == 33 * 33,
-            "cell ({}, {}) has {} heights, expected 1089",
-            cell.grid_x,
-            cell.grid_y,
-            cell.heights.len()
-        );
-        color_eyre::eyre::ensure!(
-            cell.heights.iter().all(|height| height.is_finite()),
-            "cell ({}, {}) has a non-finite height",
-            cell.grid_x,
-            cell.grid_y
-        );
-        color_eyre::eyre::ensure!(
-            cell.vertex_colors.is_empty() || cell.vertex_colors.len() == 33 * 33 * 3,
-            "cell ({}, {}) has {} vertex-color bytes, expected 0 or {}",
-            cell.grid_x,
-            cell.grid_y,
-            cell.vertex_colors.len(),
-            33 * 33 * 3
-        );
-    }
+    validate_chunk_members(key, members)?;
     // Chunk-local layout: each member's coarse grid sits at its offset from
     // the chunk's minimum cell, in Creation units with the Creation axis
     // convention (x east, y north, z up). The (min_x, min_y) cell's southwest
@@ -168,24 +265,7 @@ fn compile_chunk(
         let base_y = rel_y as f64 * CELL_SIZE;
         let step = CELL_SIZE / (LAND_SIDE - 1) as f64;
         for (quadrant, (_, _, origin_x, origin_y)) in QUADRANTS.into_iter().enumerate() {
-            let mut perimeter = Vec::with_capacity(4 * TERRAIN_QUADRANT_INTERVALS);
-            perimeter.extend((0..=TERRAIN_QUADRANT_INTERVALS).map(|x| (x, 0)));
-            perimeter
-                .extend((1..=TERRAIN_QUADRANT_INTERVALS).map(|y| (TERRAIN_QUADRANT_INTERVALS, y)));
-            perimeter.extend(
-                (0..TERRAIN_QUADRANT_INTERVALS)
-                    .rev()
-                    .map(|x| (x, TERRAIN_QUADRANT_INTERVALS)),
-            );
-            perimeter.extend((1..TERRAIN_QUADRANT_INTERVALS).rev().map(|y| (0, y)));
-            let center = (
-                TERRAIN_QUADRANT_INTERVALS / 2,
-                TERRAIN_QUADRANT_INTERVALS / 2,
-            );
-            let mut samples = perimeter;
-            samples.push(center);
-
-            for (local_x, local_y) in samples {
+            for (local_x, local_y) in quadrant_samples() {
                 let x = origin_x + local_x;
                 let y = origin_y + local_y;
                 let height = cell.heights[y * LAND_SIDE + x];
@@ -246,6 +326,41 @@ fn compile_chunk(
         bounds_max,
         glb,
     })
+}
+
+pub(crate) fn validate_chunk_members(key: ChunkKey, members: &[&TerrainCellInput]) -> Result<()> {
+    color_eyre::eyre::ensure!(!members.is_empty(), "chunk {key:?} covers no source cells");
+    let mut seen = BTreeSet::new();
+    for cell in members {
+        color_eyre::eyre::ensure!(
+            seen.insert((cell.grid_x, cell.grid_y)),
+            "chunk {key:?} covers cell ({}, {}) twice",
+            cell.grid_x,
+            cell.grid_y
+        );
+        color_eyre::eyre::ensure!(
+            cell.heights.len() == 33 * 33,
+            "cell ({}, {}) has {} heights, expected 1089",
+            cell.grid_x,
+            cell.grid_y,
+            cell.heights.len()
+        );
+        color_eyre::eyre::ensure!(
+            cell.heights.iter().all(|height| height.is_finite()),
+            "cell ({}, {}) has a non-finite height",
+            cell.grid_x,
+            cell.grid_y
+        );
+        color_eyre::eyre::ensure!(
+            cell.vertex_colors.is_empty() || cell.vertex_colors.len() == 33 * 33 * 3,
+            "cell ({}, {}) has {} vertex-color bytes, expected 0 or {}",
+            cell.grid_x,
+            cell.grid_y,
+            cell.vertex_colors.len(),
+            33 * 33 * 3
+        );
+    }
+    Ok(())
 }
 
 /// A height-field normal from the source grid, in the compiler's axis
@@ -478,7 +593,7 @@ fn pad_to_4(bytes: &mut Vec<u8>) {
 
 /// Validates the emitted GLB container, accessor ranges, scene references,
 /// and every triangle index before the payload is indexed or published.
-fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
+pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
     color_eyre::eyre::ensure!(bytes.len() >= 28, "GLB is truncated");
     color_eyre::eyre::ensure!(&bytes[..4] == b"glTF", "GLB magic is invalid");
     color_eyre::eyre::ensure!(read_u32(bytes, 4)? == 2, "GLB version is not 2");
@@ -811,7 +926,11 @@ fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
                 "source cell node must have exactly one terrain group"
             );
             let group_index = json_usize(&children[0], "terrain group node")?;
-            let group = &nodes[group_index];
+            let group = nodes.get(group_index).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "source cell references missing terrain group {group_index}"
+                )
+            })?;
             color_eyre::eyre::ensure!(
                 group["name"].as_str() == Some(nodes::terrain_group()),
                 "source cell node does not contain a terrain group"
@@ -827,35 +946,54 @@ fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
             );
             for (quadrant, child) in quadrants.iter().enumerate() {
                 let child_index = json_usize(child, "terrain quadrant node")?;
+                let child = nodes.get(child_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "terrain quadrant {quadrant} references missing node {child_index}"
+                    )
+                })?;
                 let (short_name, full_name, _, _) = QUADRANTS[quadrant];
                 color_eyre::eyre::ensure!(
-                    nodes[child_index]["name"].as_str()
+                    child["name"].as_str()
                         == Some(format!("terrain_quadrant_{short_name}").as_str())
-                        && nodes[child_index]["extras"]["quadrant"].as_str() == Some(full_name),
+                        && child["extras"]["quadrant"].as_str() == Some(full_name),
                     "terrain quadrant {quadrant} has an invalid name"
                 );
                 color_eyre::eyre::ensure!(
-                    nodes[child_index].get("mesh").is_some(),
+                    child.get("mesh").is_some(),
                     "terrain quadrant {quadrant} has no mesh"
                 );
-                let mesh_index = json_usize(&nodes[child_index]["mesh"], "quadrant mesh")?;
+                let mesh_index = json_usize(&child["mesh"], "quadrant mesh")?;
+                let mesh = meshes.get(mesh_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "terrain quadrant {quadrant} references missing mesh {mesh_index}"
+                    )
+                })?;
                 color_eyre::eyre::ensure!(
-                    meshes[mesh_index]["name"].as_str()
+                    mesh["name"].as_str()
                         == Some(
                             format!("terrain_{grid_x}_{grid_y}_quadrant_{short_name}").as_str()
                         ),
                     "source cell ({grid_x}, {grid_y}) quadrant {quadrant} maps to the wrong mesh"
                 );
-                let primitive = &meshes[mesh_index]["primitives"][0];
+                let primitive = mesh["primitives"]
+                    .as_array()
+                    .and_then(|primitives| primitives.first())
+                    .ok_or_else(|| color_eyre::eyre::eyre!("terrain quadrant has no primitive"))?;
                 let position_index = json_usize(
                     &primitive["attributes"]["POSITION"],
                     "quadrant POSITION accessor",
                 )?;
                 let index_index = json_usize(&primitive["indices"], "quadrant index accessor")?;
+                let position = accessors.get(position_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("terrain quadrant POSITION accessor is missing")
+                })?;
+                let indices = accessors.get(index_index).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("terrain quadrant index accessor is missing")
+                })?;
                 color_eyre::eyre::ensure!(
-                    json_usize(&accessors[position_index]["count"], "quadrant vertex count")?
+                    json_usize(&position["count"], "quadrant vertex count")?
                         == TERRAIN_QUADRANT_VERTEX_COUNT
-                        && json_usize(&accessors[index_index]["count"], "quadrant index count")?
+                        && json_usize(&indices["count"], "quadrant index count")?
                             == TERRAIN_QUADRANT_INDEX_COUNT,
                     "terrain quadrant {quadrant} has an invalid boundary-preserving shape"
                 );
@@ -926,26 +1064,43 @@ pub fn publish_chunks(
         )?;
     }
     for chunk in chunks {
-        let relative = chunk_payload_path(chunk.key);
-        let path = staging_root.join(&relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, &chunk.glb)?;
-        // Validate what was written, not what was held: a short write or a
-        // corrupted buffer must fail the build, not ship a bad payload with
-        // a hash of the good bytes.
-        let written = std::fs::read(&path)?;
-        validate_terrain_glb(&written)
-            .wrap_err_with(|| format!("invalid terrain chunk GLB {relative}"))?;
-        let content_hash = crate::cache::hash_bytes(&written);
-        let source_cells = chunk
-            .cells
-            .iter()
-            .map(|(x, y)| format!("{x},{y}"))
-            .collect::<Vec<_>>()
-            .join(";");
-        tx.execute(
+        publish_chunk(&tx, staging_root, chunk)?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Publish a single payload/index row within the caller's world transaction.
+pub(crate) fn publish_chunk(
+    connection: &Connection,
+    staging_root: &Path,
+    chunk: &TerrainChunk,
+) -> Result<()> {
+    let relative = chunk_payload_path(chunk.key);
+    let path = staging_root.join(&relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &chunk.glb)?;
+    // Validate what was written, not what was held: a short write or a
+    // corrupted buffer must fail the build, not ship a bad payload with
+    // a hash of the good bytes.
+    let written = std::fs::read(&path)?;
+    validate_terrain_glb(&written)
+        .wrap_err_with(|| format!("invalid terrain chunk GLB {relative}"))?;
+    let content_hash = crate::cache::hash_bytes(&written);
+    ensure!(
+        content_hash == crate::cache::hash_bytes(&chunk.glb),
+        "terrain payload changed while being written: {relative}"
+    );
+    let source_cells = chunk
+        .cells
+        .iter()
+        .map(|(x, y)| format!("{x},{y}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    connection.execute(
             "INSERT OR REPLACE INTO lod_chunks(worldspace_id, tier, anchor_x, anchor_y, payload_path, content_hash, \
              bounds_min_x, bounds_min_y, bounds_min_z, bounds_max_x, bounds_max_y, bounds_max_z, source_cells) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
@@ -965,11 +1120,11 @@ pub fn publish_chunks(
                 source_cells,
             ],
         )?;
-        // Spatial index rows live in the rtree's own id space: the chunk key
-        // columns ride along as payload so a range query returns keys, not
-        // rowids the caller must join back. R-tree ids are not the chunk key,
-        // so remove every prior row for this key before assigning a fresh id.
-        tx.execute(
+    // Spatial index rows live in the rtree's own id space: the chunk key
+    // columns ride along as payload so a range query returns keys, not
+    // rowids the caller must join back. R-tree ids are not the chunk key,
+    // so remove every prior row for this key before assigning a fresh id.
+    connection.execute(
             "DELETE FROM lod_chunks_spatial WHERE worldspace_id = ?1 AND tier = ?2 AND anchor_x = ?3 AND anchor_y = ?4",
             params![
                 chunk.key.worldspace_id,
@@ -978,7 +1133,7 @@ pub fn publish_chunks(
                 chunk.key.anchor.y,
             ],
         )?;
-        tx.execute(
+    connection.execute(
             "INSERT OR REPLACE INTO lod_chunks_spatial(id, minX, maxX, minY, maxY, worldspace_id, tier, anchor_x, anchor_y) \
              VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM lod_chunks_spatial), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -992,8 +1147,6 @@ pub fn publish_chunks(
                 chunk.key.anchor.y,
             ],
         ).wrap_err("failed to index chunk bounds")?;
-    }
-    tx.commit()?;
     Ok(())
 }
 
@@ -1025,42 +1178,72 @@ pub fn read_cached_heights(
     cache_path: &Path,
     cell_ids: &HashMap<u32, (i32, i32)>,
 ) -> Result<Vec<TerrainCellInput>> {
-    let bytes = std::fs::read(cache_path)
-        .wrap_err_with(|| format!("failed to read {}", cache_path.display()))?;
-    let archived = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&bytes)
-        .wrap_err("invalid cell cache")?;
-    color_eyre::eyre::ensure!(
-        archived.version == shared::CELL_CACHE_VERSION,
-        "cell cache version {} is unsupported; expected {}",
-        archived.version,
-        shared::CELL_CACHE_VERSION
-    );
-    let mut cells = Vec::new();
-    for cell in archived.cells.iter() {
-        let cell_id: u32 = cell.cell_id.into();
-        let Some((grid_x, grid_y)) = cell_ids.get(&cell_id) else {
-            continue;
-        };
-        cells.push(TerrainCellInput {
-            cell_id,
-            grid_x: *grid_x,
-            grid_y: *grid_y,
-            heights: cell.heights.iter().copied().map(Into::into).collect(),
-            vertex_colors: cell.vertex_colors.iter().copied().collect(),
-            layers: cell
-                .layers
-                .iter()
-                .map(rkyv::deserialize::<shared::TerrainLayer, rkyv::rancor::Error>)
-                .collect::<Result<_, _>>()?,
-        });
+    let cache = TerrainCellCache::read(cache_path)?;
+    cache.cells(cell_ids)
+}
+
+/// One aligned, validated snapshot reused for every world in this stage.
+pub(crate) struct TerrainCellCache {
+    bytes: rkyv::util::AlignedVec,
+    index: HashMap<u32, usize>,
+}
+impl TerrainCellCache {
+    pub fn read(cache_path: &Path) -> Result<Self> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(cache_path)
+            .wrap_err_with(|| format!("failed to read {}", cache_path.display()))?;
+        let len = usize::try_from(file.metadata()?.len())?;
+        let mut bytes = rkyv::util::AlignedVec::with_capacity(len);
+        bytes.resize(len, 0);
+        file.read_exact(&mut bytes)?;
+        let archived = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&bytes)
+            .wrap_err("invalid cell cache")?;
+        color_eyre::eyre::ensure!(
+            archived.version == shared::CELL_CACHE_VERSION,
+            "cell cache version {} is unsupported; expected {}",
+            archived.version,
+            shared::CELL_CACHE_VERSION
+        );
+        let mut index = HashMap::with_capacity(archived.cells.len());
+        for (i, cell) in archived.cells.iter().enumerate() {
+            ensure!(
+                index.insert(cell.cell_id.into(), i).is_none(),
+                "duplicate cell in terrain cache"
+            );
+        }
+        Ok(Self { bytes, index })
     }
-    color_eyre::eyre::ensure!(
-        cells.len() == cell_ids.len(),
-        "cell cache holds {} of {} requested cells",
-        cells.len(),
-        cell_ids.len()
-    );
-    Ok(cells)
+    pub fn cells(&self, cell_ids: &HashMap<u32, (i32, i32)>) -> Result<Vec<TerrainCellInput>> {
+        // Safety: owned immutable aligned bytes were validated in `read`.
+        let archived = unsafe { rkyv::access_unchecked::<shared::ArchivedCellCache>(&self.bytes) };
+        let mut cells = Vec::new();
+        for (&cell_id, &(grid_x, grid_y)) in cell_ids {
+            let Some(&index) = self.index.get(&cell_id) else {
+                continue;
+            };
+            let cell = &archived.cells[index];
+            cells.push(TerrainCellInput {
+                cell_id,
+                grid_x,
+                grid_y,
+                heights: cell.heights.iter().copied().map(Into::into).collect(),
+                vertex_colors: cell.vertex_colors.iter().copied().collect(),
+                layers: cell
+                    .layers
+                    .iter()
+                    .map(rkyv::deserialize::<shared::TerrainLayer, rkyv::rancor::Error>)
+                    .collect::<Result<_, _>>()?,
+            });
+        }
+        color_eyre::eyre::ensure!(
+            cells.len() == cell_ids.len(),
+            "cell cache holds {} of {} requested cells",
+            cells.len(),
+            cell_ids.len()
+        );
+        cells.sort_by_key(|cell| (cell.grid_y, cell.grid_x));
+        Ok(cells)
+    }
 }
 
 #[cfg(test)]
@@ -1084,6 +1267,96 @@ mod tests {
             vertex_colors: Vec::new(),
             layers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn v171_cell_fingerprint_covers_consumed_fields() {
+        let mut cell = flat_cell(0, 0, 1.0);
+        let original = cell.fingerprint();
+        cell.heights[500] += 1.0;
+        assert_ne!(cell.fingerprint(), original);
+        cell.heights[500] -= 1.0;
+        assert_eq!(cell.fingerprint(), original);
+        cell.vertex_colors = vec![127; 33 * 33 * 3];
+        let colored = cell.fingerprint();
+        assert_ne!(colored, original);
+        cell.layers.push(shared::TerrainLayer {
+            texture_form_id: 2,
+            quadrant: 0,
+            layer: 1,
+            is_base: false,
+            weights: vec![shared::TerrainWeight {
+                vertex: 0,
+                opacity: 0.5,
+            }],
+        });
+        let layered = cell.fingerprint();
+        assert_ne!(layered, colored);
+        cell.layers[0].weights[0].opacity = 0.25;
+        assert_ne!(cell.fingerprint(), layered);
+        let weighted = cell.fingerprint();
+        cell.layers[0].texture_form_id = 3;
+        assert_ne!(cell.fingerprint(), weighted);
+        let textured = cell.fingerprint();
+        cell.grid_x += 1;
+        assert_ne!(cell.fingerprint(), textured);
+        let moved = cell.fingerprint();
+        cell.cell_id += 1;
+        assert_ne!(cell.fingerprint(), moved);
+    }
+
+    #[test]
+    fn v171_reuse_bounds_match_compiled_samples_in_all_tiers() {
+        let mut cells = vec![flat_cell(-5, 11, 1.0), flat_cell(-4, 11, 2.0)];
+        cells[0].heights[0] = -19.0;
+        cells[1].heights[16 * 33 + 32] = 99.0;
+        let origin = LodOrigin::new(8, -8);
+        for job in terrain_jobs(60, origin, &cells) {
+            let compiled = job.compile(origin, &TerrainTextures::default()).unwrap();
+            assert_eq!(
+                job.bounds(origin),
+                (compiled.bounds_min, compiled.bounds_max)
+            );
+        }
+    }
+
+    #[test]
+    fn v173_cell_cache_snapshot_serves_worlds_without_rereading() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cells.rkyv");
+        let cache = shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: [1, 2]
+                .into_iter()
+                .map(|cell_id| shared::CachedLand {
+                    cell_id,
+                    width: 33,
+                    height: 33,
+                    heights: vec![cell_id as f32; 1089],
+                    normals: Vec::new(),
+                    vertex_colors: Vec::new(),
+                    layers: Vec::new(),
+                    water_height: None,
+                    water_type_form_id: None,
+                })
+                .collect(),
+        };
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        let snapshot = TerrainCellCache::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            snapshot.cells(&HashMap::from([(1, (0, 0))])).unwrap()[0].heights[0],
+            1.0
+        );
+        assert_eq!(
+            snapshot.cells(&HashMap::from([(2, (8, 8))])).unwrap()[0].heights[0],
+            2.0
+        );
+        assert!(snapshot.cells(&HashMap::from([(3, (0, 0))])).is_err());
     }
 
     #[test]

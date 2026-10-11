@@ -1052,7 +1052,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     plugin(&data, "Light.esl", &["Skyrim.esm"], 0x201, Vec::new());
     let mut xtel = 0x0200_0801u32.to_le_bytes().to_vec();
     xtel.extend([0xAB; 28]);
-    let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat();
+    let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0x0D, 0xBF, 0x38]].concat();
     let xapr = [0x0200_0803u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat();
     let cell = 0x0200_0900;
     // Light.esl is local master 0, Skyrim.esm is 1; the plugin itself is 2.
@@ -1099,7 +1099,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             [
                                 sub(
                                     b"XESP",
-                                    &[0x0300_0802u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+                                    &[0x0300_0802u32.to_le_bytes(), [2, 0x0D, 0xBF, 0x38]].concat(),
                                 ),
                                 sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                             ]
@@ -1146,7 +1146,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                         sub(b"XAPR", &[0xAB; 12]),
                         sub(
                             b"XESP",
-                            &[0x0200_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat(),
+                            &[0x0200_0802u32.to_le_bytes(), [1, 0x0D, 0xBF, 0x38]].concat(),
                         ),
                         sub(
                             b"XAPR",
@@ -1192,7 +1192,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0806, b"XESP"),
-                [0u32.to_le_bytes(), [2, 0, 0, 0]].concat()
+                [0u32.to_le_bytes(), [2, 0x0D, 0xBF, 0x38]].concat()
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XTEL"),
@@ -1200,7 +1200,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XESP"),
-                [0xFE00_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat()
+                [0xFE00_0802u32.to_le_bytes(), [1, 0x0D, 0xBF, 0x38]].concat()
             );
             assert_eq!(
                 database_fields(&conn, table, 0x0300_0800, b"XAPR"),
