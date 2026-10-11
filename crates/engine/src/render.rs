@@ -253,26 +253,28 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainExtension {
     #[texture(100)]
-    #[sampler(101)]
     layer_0: Option<Handle<Image>>,
     #[texture(102)]
-    #[sampler(103)]
     layer_1: Option<Handle<Image>>,
     #[texture(104)]
-    #[sampler(105)]
     layer_2: Option<Handle<Image>>,
     #[texture(106)]
-    #[sampler(107)]
     layer_3: Option<Handle<Image>>,
     #[texture(108)]
-    #[sampler(109)]
     layer_4: Option<Handle<Image>>,
     #[texture(110)]
-    #[sampler(111)]
     layer_5: Option<Handle<Image>>,
+    // All diffuse and normal layers use the same repeating sampler. Sharing it keeps the full
+    // material below Metal's 16-sampler limit, including Bevy's standard material and view.
+    // The first present diffuse image supplies it even when the base layer has no texture.
+    // AsBindGroup requires the sampler's source image to have a texture binding on this field;
+    // the shader only uses its sampler, while bindings 100-110 supply the diffuse images.
+    #[texture(119)]
+    #[sampler(101)]
+    layer_sampler: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
-    // Each layer's normal map, sampled through `layer_0_sampler`: every terrain layer image is
+    // Each layer's normal map, sampled through `layer_sampler`: every terrain layer image is
     // loaded with the same repeating sampler (`terrain_layer_sampler`), so the six need no sampler
     // bindings of their own. Which layers have one is in `TerrainSettings::normal_layers_*`, since
     // Bevy's stand-in for a missing texture is white, which decodes to a steep tilt.
@@ -485,6 +487,7 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
+                layer_sampler: textures.iter().flatten().next().cloned(),
                 settings,
                 normal_0: normals[0].clone(),
                 normal_1: normals[1].clone(),
@@ -518,6 +521,7 @@ impl TerrainExtension {
             layer_3: Some(textures[3].clone()),
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
+            layer_sampler: Some(textures[0].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
             normal_0: None,
             normal_1: None,
@@ -567,6 +571,7 @@ impl Default for TerrainExtension {
             layer_3: None,
             layer_4: None,
             layer_5: None,
+            layer_sampler: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
             normal_0: None,
             normal_1: None,
