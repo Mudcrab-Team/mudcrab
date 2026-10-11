@@ -224,6 +224,9 @@ V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; su
 
 V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
 
+V180: Mutagen comparison ! reject every placement lacking record/winning-plugin metadata before type filtering; same-source checksums, independent full/light slots, winning plugin & interpreted placement fields; deleted overrides absent, no unexplained REFR/ACHR difference; finite comparisons; game inputs external.
+V181: Mutagen JSON flags ! preserve32-bit bitmask from signed/unsigned integers; non-integer & out-of-range flags fail.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -271,6 +274,8 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
+
+T80|x|Add ignored current-converter Mutagen reference comparison with explained deletion/type scope|V180,V181
 
 ## §B BUGS
 
@@ -357,3 +362,7 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
 B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
 B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets
+B180|2026-10-05|One-off oracle comparison unrepeatable in test suite; plan misclassified270 deleted overrides|V180
+B181|2026-10-05|Oracle accepted unloaded deleted winner & substituted zero for absent live placement|V180; validate winner before deletion shortcut & require live position/rotation
+B182|2026-10-05|Mutagen exported high-bit record flags as negative JSON integers; unsigned-only test rejected real oracle at line12664|V181; bounded signed/unsigned32-bit deserialization
+B183|2026-10-09|Oracle inner joins hid placements missing record or winning-plugin metadata, allowing deleted-row resurrection to pass as absent|V180; left-joined metadata completeness guard, procedural orphan and REFR/ACHR resurrection regressions
