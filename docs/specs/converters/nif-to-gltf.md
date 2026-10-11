@@ -170,11 +170,39 @@ produces one `CollisionBody`:
 | `max_linear_velocity` | 212 | x 70 |
 | `max_angular_velocity` | 216 | unchanged (rad/s) |
 
+Shapes are read from the body's shape block, through `bhkMoppBvTreeShape`,
+`bhkTransformShape`/`bhkConvexTransformShape` and `bhkListShape` wrappers, and map onto
+`shared::collision::CollisionShape`:
+
+| NIF block | Shape | Conversion |
+| --- | --- | --- |
+| `bhkCompressedMeshShape` | `Mesh` | decompressed vertices and triangles |
+| `bhkNiTriStripsShape` | `Mesh` | strip data as triangles |
+| `bhkBoxShape` | `Hull` | the eight transformed half-extent corners (16) |
+| `bhkConvexVerticesShape` | `Hull` | vertices from 36 |
+| `bhkCylinderShape` | `Hull` | two 16-point rings around the A-B axis (A @16, B @32), radius @48 |
+| `bhkCapsuleShape` | `Capsule` | A @16 and B @32, radius max(Radius 1 @28, Radius 2 @44) |
+| `bhkSphereShape` | `Capsule` | zero-length capsule (a = b = the shape origin), radius @4 |
+| `bhkMultiSphereShape` | `Capsule` per sphere | count @16 (1..=8), `NiBound {centre, radius}` from @20 |
+
+Points are Havok units scaled by 70 before the Creation-to-runtime basis; radii are scaled by
+70 and the transform scale, like the capsule arm. A sphere or multi-sphere under a non-uniform
+or sheared transform has no single radius and is skipped. A degenerate cylinder (A = B, radius
+below or equal to zero, non-finite), an out-of-range multi-sphere count and any malformed or
+unsupported shape land in `skipped` instead of becoming collision.
+
+Only bodies on physical Skyrim layers are read (`SkyrimLayer` in nif.xml): 0 UNIDENTIFIED,
+1 STATIC, 2 ANIMSTATIC, 3 TRANSPARENT, 4 CLUTTER, 5 WEAPON, 9 TREES, 10 PROPS, 13 TERRAIN,
+17 GROUND, 26 TRANSPARENT_SMALL, 27 INVISIBLE_WALL, 28 TRANSPARENT_SMALL_ANIM, 31 STAIRHELPER
+and 35 COLLISIONBOX. Layer 15 NONCOLLIDABLE (harvestable flora and other nonphysical objects)
+is dropped silently; layer 12 TRIGGER is skipped with the reason "trigger volume (layer 12) is
+not physical"; every other layer is reported as unsupported.
+
 `kind` is `dynamic` when the motion system is a simulated one (dynamic, sphere or box inertia,
 plain or stabilized, thin box: 1, 2, 3, 4, 5, 8), the quality type is a moving one (debris,
 moving, critical, bullet: 3, 4, 5, 6) and the mass is finite and above zero; `keyframed` for
-`MO_SYS_KEYFRAMED` (6) with mass 0; otherwise `fixed`. `convex` is true only when every shape of
-the body is a box, capsule or convex-vertex hull (sphere shapes are unsupported and skipped).
+`MO_SYS_KEYFRAMED` (6) with mass 0; otherwise `fixed`. `convex` is true when every shape of the
+body is a box, capsule or hull (a compressed or strip mesh makes it false).
 
 The `node` index and `target` name are checked against the GLB that is actually written, not the
 source NIF's static node list (skeletal and effect NIFs lay their nodes out differently): a body
@@ -182,8 +210,19 @@ is kept only when `target` is non-empty and the GLB's node at `node` has that na
 used by more than one node is trusted at its index only when the GLB's nodes start in the
 same order as the NIF's static scene, which the index was predicted from; otherwise, and
 always when the collision is added to a GLB built elsewhere (`annotate`), the name must be
-unique. A body that fails is listed in `skipped`. A body whose shapes or dynamics cannot be read
-is likewise listed in `skipped`; in every case its shapes stay as fixed collision.
+unique.
 
-There is no converter schema bump: conversions made before this change keep their cached GLBs,
-which have no `bodies`, until they are reconverted.
+A body on an unsupported layer, a trigger, a non-colliding body (a `HavokFilter` with the
+"No Collision" flag, or a collision response of 2 RESPONSE_REPORTING or 3 RESPONSE_NONE, in
+either of the two copies a body stores) or a body whose target node cannot be resolved is listed
+in `skipped` and contributes no collision. A body whose shapes cannot all be read is listed in
+`skipped`; the shapes it did read stay as fixed collision. A body whose dynamics cannot be read,
+or whose glTF node fails the check above, is listed in `skipped` but its shapes stay as fixed
+collision.
+
+A cylinder's 16-point rings are inscribed in the true circle (about 2% inside at the chord
+midpoints); like the box and hull arms, the Havok convex radius (a thin shell) is not added.
+
+Collision coverage (sphere, multi-sphere and cylinder shapes) moved the converter to schema 25:
+schema 24 outputs keep their verified scripts and archive ingestion and regenerate GLBs, textures
+and world data, so no cached GLB keeps the older collision extras.

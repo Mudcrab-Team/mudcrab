@@ -37,10 +37,12 @@ struct Census {
     skipped_reasons: BTreeMap<String, usize>,
     bodies_with_empty_target: usize,
     convex: usize,
+    /// Collision layer -> (bodies, up to five distinct install paths carrying one).
+    per_layer: BTreeMap<u8, (usize, Vec<String>)>,
 }
 
 impl Census {
-    fn add(&mut self, asset: &CollisionAsset) {
+    fn add(&mut self, asset: &CollisionAsset, source: Option<&str>) {
         if !asset.bodies.is_empty() {
             self.meshes_with_bodies += 1;
         }
@@ -61,6 +63,18 @@ impl Census {
         }
         for body in &asset.bodies {
             self.bodies += 1;
+            let layer = self
+                .per_layer
+                .entry(body.havok.collision_layer)
+                .or_default();
+            layer.0 += 1;
+            // One sample per file: a NIF with several bodies on a layer must not fill its samples.
+            if layer.1.len() < 5
+                && let Some(source) = source
+                && !layer.1.iter().any(|sample| sample == source)
+            {
+                layer.1.push(source.to_owned());
+            }
             let kind = match body.kind {
                 BodyKind::Fixed => "fixed",
                 BodyKind::Keyframed => "keyframed",
@@ -104,6 +118,10 @@ impl Census {
         match self.dynamic_mass {
             Some((lo, hi)) => println!("dynamic mass range: {lo} .. {hi} kg"),
             None => println!("dynamic mass range: none"),
+        }
+        println!("per collision layer: bodies, sample install paths");
+        for (layer, (count, samples)) in &self.per_layer {
+            println!("  layer {layer}: {count} {samples:?}");
         }
         println!(
             "bodies with an empty target name (skipped by node verification): {}",
@@ -219,13 +237,14 @@ fn main() {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
         let in_clutter = paths.get(&name).is_some_and(|path| is_clutter_path(path));
         let parsed = MeshConverter::extract_collision(file).ok();
+        let source = paths.get(&name).map(String::as_str);
         for census in [Some(&mut all), in_clutter.then_some(&mut clutter)]
             .into_iter()
             .flatten()
         {
             census.files += 1;
             match &parsed {
-                Some(asset) => census.add(asset),
+                Some(asset) => census.add(asset, source),
                 None => census.unparsable += 1,
             }
         }
@@ -243,5 +262,53 @@ fn main() {
             eprintln!("  {error}");
         }
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::collision::{COLLISION_ASSET_VERSION, CollisionBody, HavokBodyInfo};
+
+    fn asset_with_bodies_on_layer(count: usize, layer: u8) -> CollisionAsset {
+        let body = CollisionBody {
+            node: 0,
+            target: "Box".to_owned(),
+            shapes: Vec::new(),
+            kind: BodyKind::Dynamic,
+            havok: HavokBodyInfo {
+                motion_system: 1,
+                quality_type: 4,
+                deactivator_type: 1,
+                collision_layer: layer,
+            },
+            mass: 1.0,
+            inertia: [0.0; 9],
+            center_of_mass: [0.0; 3],
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            friction: 0.5,
+            restitution: 0.0,
+            max_linear_velocity: 100.0,
+            max_angular_velocity: 30.0,
+            convex: true,
+        };
+        CollisionAsset {
+            version: COLLISION_ASSET_VERSION,
+            authored: true,
+            shapes: Vec::new(),
+            skipped: Vec::new(),
+            bodies: vec![body; count],
+        }
+    }
+
+    #[test]
+    fn a_file_is_sampled_once_per_layer() {
+        let mut census = Census::default();
+        census.add(&asset_with_bodies_on_layer(5, 4), Some("meshes/a.nif"));
+        census.add(&asset_with_bodies_on_layer(2, 4), Some("meshes/b.nif"));
+        let (bodies, samples) = &census.per_layer[&4];
+        assert_eq!(*bodies, 7);
+        assert_eq!(samples, &["meshes/a.nif", "meshes/b.nif"]);
     }
 }

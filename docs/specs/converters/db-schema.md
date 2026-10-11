@@ -15,7 +15,7 @@ the combined producer exports grass and LOD tables. Schema 6 adds LOD origins, c
 its spatial index, and a build identity. The engine, `world-inspect` and
 launcher accept world schemas **3 through 7**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 24**. Legacy worlds render full detail without
+support schemas **15 through 25**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
 
 ```

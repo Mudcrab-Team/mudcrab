@@ -3395,6 +3395,32 @@ mod tests {
         assert_eq!(budget.remaining_for_cells(), 0);
     }
 
+    /// The converter writes a sphere as a zero-length capsule (a = b); Rapier must take it as a
+    /// sphere of that radius.
+    #[test]
+    fn zero_length_authored_capsule_becomes_a_sphere() {
+        let asset = CollisionAsset {
+            version: COLLISION_ASSET_VERSION,
+            authored: true,
+            shapes: vec![CollisionShape::Capsule {
+                a: [1.0, 2.0, 3.0],
+                b: [1.0, 2.0, 3.0],
+                radius: 5.0,
+            }],
+            skipped: Vec::new(),
+            bodies: Vec::new(),
+        };
+        let parts = collider_parts_from_authored(&asset).unwrap();
+        assert_eq!(parts.len(), 1);
+        let aabb = parts[0].collider.raw.compute_local_aabb();
+        let (mins, maxs) = (aabb.mins, aabb.maxs);
+        assert!(
+            (mins - Vec3::new(-4.0, -3.0, -2.0)).length() < 1e-4
+                && (maxs - Vec3::new(6.0, 7.0, 8.0)).length() < 1e-4,
+            "{mins:?} {maxs:?}"
+        );
+    }
+
     #[test]
     fn multiple_authored_meshes_attach_to_one_fixed_body_without_nested_composites() {
         let mut app = crate::physics::headless::fixture_app();

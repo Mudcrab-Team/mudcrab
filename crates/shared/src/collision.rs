@@ -63,8 +63,8 @@ pub struct CollisionBody {
     pub restitution: f32,
     pub max_linear_velocity: f32,
     pub max_angular_velocity: f32,
-    /// `true` only when every shape is a box, capsule or convex-vertex hull (sphere shapes are
-    /// unsupported and skipped).
+    /// `true` when every shape is a capsule (spheres are zero-length capsules), box or hull;
+    /// a triangle mesh makes it `false`.
     pub convex: bool,
 }
 
