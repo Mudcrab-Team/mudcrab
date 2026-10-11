@@ -1,0 +1,1306 @@
+{
+  "curation_status": "Selected project/source/static evidence only; no complete field denominator or runtime acceptance.",
+  "record_name_overrides": {
+    "CLDC": "CLDC — source name unresolved",
+    "PWAT": "PWAT — source name unresolved",
+    "SCPT": "SCPT — source name unresolved"
+  },
+  "record_mappings": [
+    {
+      "table": "cells",
+      "records": [
+        "CELL"
+      ],
+      "note": "Selected EDID/XCLC values and record-header flags; parsed payload retained.",
+      "anchor": "flags: record.flags,",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "worldspaces",
+      "records": [
+        "WRLD"
+      ],
+      "note": "Selected editor ID, parent link and record-header flags.",
+      "anchor": "INSERT OR REPLACE INTO worldspaces",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "references",
+      "records": [
+        "REFR",
+        "ACHR",
+        "ACRE",
+        "PGRE",
+        "PMIS"
+      ],
+      "note": "Selected placement, base link, scale, radius and XESP values; typed presence does not imply complete field interpretation.",
+      "anchor": "\"REFR\" | \"ACHR\" | \"ACRE\" | \"PGRE\" | \"PMIS\" =>",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "land",
+      "records": [
+        "LAND"
+      ],
+      "note": "Selected heightmap/texture/color/normal payloads keyed by owning cell.",
+      "anchor": "INSERT OR REPLACE INTO land(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "lights",
+      "records": [
+        "LIGH"
+      ],
+      "note": "Selected radius/color/DATA flags/falloff/fade. Every LIGH receives this path.",
+      "anchor": "insert_light(&tx, form_id, &view)?;",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "statics",
+      "records": [
+        "LIGH"
+      ],
+      "note": "Only LIGH records with a nonempty MODL path also receive a statics row.",
+      "anchor": "if let Some(model_path) = view.get_string(b\"MODL\")",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "statics",
+      "records": [
+        "STAT",
+        "MSTT",
+        "FURN",
+        "TREE",
+        "FLOR",
+        "CONT",
+        "DOOR",
+        "ACTI",
+        "WEAP",
+        "MISC",
+        "BOOK",
+        "AMMO",
+        "ALCH",
+        "INGR",
+        "SLGM",
+        "KEYM",
+        "SCRL",
+        "ARMO"
+      ],
+      "note": "Shared partial model projection. ARMO uses MOD2 then MOD3; other listed types use MODL. Header flags are retained.",
+      "anchor": "\"STAT\" | \"MSTT\" | \"FURN\" | \"TREE\"",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "npcs",
+      "records": [
+        "NPC_"
+      ],
+      "note": "Selected editor/full name, race/class links and record-header flags.",
+      "anchor": "INSERT OR REPLACE INTO npcs(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "race_movement_links",
+      "records": [
+        "RACE"
+      ],
+      "note": "Only selected WKMV/RNMV links and priority.",
+      "anchor": "INSERT OR REPLACE INTO race_movement_links(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "movement_types",
+      "records": [
+        "MOVT"
+      ],
+      "note": "Only NPC_Default_MT, resolved ID 0x0003580D. Other MOVT instances have no typed row in this path.",
+      "anchor": "\"MOVT\" if form_id == 0x0003_580D =>",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "movement_game_settings",
+      "records": [
+        "GMST"
+      ],
+      "note": "Only fMoveCharWalkBase and fJumpHeightMin, matched case-insensitively. Other GMST names have no typed row here.",
+      "anchor": "[\"fMoveCharWalkBase\", \"fJumpHeightMin\"]",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "waters",
+      "records": [
+        "WATR"
+      ],
+      "note": "Selected water fields and parsed payload; flags come from the record header.",
+      "anchor": "INSERT OR REPLACE INTO waters(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "texture_sets",
+      "records": [
+        "TXST"
+      ],
+      "note": "Selected TX00-TX07 texture paths.",
+      "anchor": "INSERT OR REPLACE INTO texture_sets(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "landscape_textures",
+      "records": [
+        "LTEX"
+      ],
+      "note": "Selected TNAM/MNAM links and HNAM byte values.",
+      "anchor": "INSERT OR REPLACE INTO landscape_textures(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "landscape_texture_grasses",
+      "records": [
+        "LTEX"
+      ],
+      "note": "Nonzero four-byte GNAM links become a deduplicated list.",
+      "anchor": "INSERT OR IGNORE INTO landscape_texture_grasses(",
+      "path": "crates/converter/src/esm/exporter.rs"
+    },
+    {
+      "table": "grass_types",
+      "records": [
+        "GRAS"
+      ],
+      "note": "Selected grass fields decoded by insert_grass.",
+      "anchor": "insert_grass(&tx, form_id, &view, record.load_order)?;",
+      "path": "crates/converter/src/esm/exporter.rs"
+    }
+  ],
+  "tables": {
+    "schema_info": {
+      "label": "Database format version",
+      "purpose": "Stamp for the current SQL product; distinct from game and record form versions.",
+      "group": "Metadata"
+    },
+    "plugins": {
+      "label": "Input plugins",
+      "purpose": "Conversion input order, filenames and SHA-256 digests. The plugins.txt path normalizes master priority before conversion.",
+      "group": "Metadata"
+    },
+    "records": {
+      "label": "Winning record projections",
+      "purpose": "Resolved-ID winner rows with serialized normalized subrecord tags/payloads. Selected FormIDs change and malformed optional subrecords are removed; original framing and prior occurrences are absent.",
+      "group": "Records"
+    },
+    "formid_map": {
+      "label": "Resolved identity mapping",
+      "purpose": "Resolved ID to owning plugin and plugin-local ID. Ownership and winning override are distinct.",
+      "group": "Metadata"
+    },
+    "worldspaces": {
+      "label": "Worldspace projections",
+      "purpose": "Selected world fields and LOD origin columns.",
+      "group": "World"
+    },
+    "cells": {
+      "label": "Cell projections",
+      "purpose": "Selected grid/identifier/header fields plus parsed subrecord payload.",
+      "group": "World"
+    },
+    "references": {
+      "label": "Placed references",
+      "purpose": "Partial placement/base-link/enable-parent projection shared by five record signatures.",
+      "group": "World"
+    },
+    "exterior_spatial": {
+      "label": "Exterior reference RTree",
+      "purpose": "Virtual spatial index over global placement coordinates with auxiliary cell/worldspace IDs. Module storage creates three excluded shadow tables.",
+      "group": "Spatial"
+    },
+    "land": {
+      "label": "Terrain payloads",
+      "purpose": "Selected LAND data keyed by owning cell. Terrain cache is a separate product.",
+      "group": "Terrain"
+    },
+    "statics": {
+      "label": "Base-object models",
+      "purpose": "Shared model projection for static and movable objects. A row is not fixed-collider eligibility.",
+      "group": "Objects"
+    },
+    "lights": {
+      "label": "Base lights",
+      "purpose": "Selected LIGH payload fields, including DATA flags.",
+      "group": "Objects"
+    },
+    "npcs": {
+      "label": "NPC projections",
+      "purpose": "Selected NPC names and race/class links.",
+      "group": "Objects"
+    },
+    "movement_types": {
+      "label": "Selected movement profile",
+      "purpose": "Only NPC_Default_MT at 0x0003580D is exported here.",
+      "group": "Movement"
+    },
+    "race_movement_links": {
+      "label": "Race movement links",
+      "purpose": "Selected optional walk/run movement links.",
+      "group": "Movement"
+    },
+    "movement_game_settings": {
+      "label": "Selected movement settings",
+      "purpose": "Only fMoveCharWalkBase and fJumpHeightMin.",
+      "group": "Movement"
+    },
+    "lod": {
+      "label": "Legacy per-cell LOD",
+      "purpose": "Derived mesh payloads keyed by cell and LOD level; not a record schema.",
+      "group": "LOD"
+    },
+    "lod_chunks": {
+      "label": "Combined LOD chunks",
+      "purpose": "Derived files and bounds keyed by worldspace, tier and X/Y anchor.",
+      "group": "LOD"
+    },
+    "lod_chunks_spatial": {
+      "label": "LOD chunk RTree",
+      "purpose": "Virtual spatial index for chunk bounds with auxiliary chunk identity. Three shadow tables are excluded.",
+      "group": "Spatial"
+    },
+    "lod_build": {
+      "label": "LOD build identity",
+      "purpose": "Single-row derived build identity; DDL CHECK requires id = 1.",
+      "group": "LOD"
+    },
+    "waters": {
+      "label": "Water projections",
+      "purpose": "Selected WATR fields and parsed subrecords. flags is the record header.",
+      "group": "World"
+    },
+    "texture_sets": {
+      "label": "Texture-set paths",
+      "purpose": "Selected TX00-TX07 paths.",
+      "group": "Terrain"
+    },
+    "landscape_textures": {
+      "label": "Landscape material links",
+      "purpose": "Selected LTEX texture/material/physics values.",
+      "group": "Terrain"
+    },
+    "grass_types": {
+      "label": "Grass projections",
+      "purpose": "Selected density/slope/water/jitter fields and priority.",
+      "group": "Terrain"
+    },
+    "landscape_texture_grasses": {
+      "label": "Landscape-to-grass links",
+      "purpose": "Deduplicated LTEX/GNAM pairs with a composite primary key.",
+      "group": "Terrain"
+    },
+    "scripts": {
+      "label": "Parsed VMAD scripts",
+      "purpose": "Conditional projection for records with a VMAD payload that the current parser accepts. Failed parses do not yield script rows.",
+      "group": "Records"
+    },
+    "conversion_cache": {
+      "label": "Conversion cache schema",
+      "purpose": "Created by the public conversion path, which does not read or write this table.",
+      "group": "Metadata"
+    }
+  },
+  "column_notes": {
+    "records.data": "Serialized parsed tags/payloads for the winner after selected FormID remaps, invalid optional IDs cleared to 0 and malformed optional subrecords removed. Original headers, GRUP/compression/XXXX framing and override/deletion history are absent.",
+    "records.load_order": "Winning record priority in the conversion input order; plugins.txt is normalized before conversion. Owner identity is separate.",
+    "records.form_id": "Resolved FormID, not a physical source-occurrence identity.",
+    "formid_map.plugin_name": "Owning plugin; may differ from the plugin that supplies the winner.",
+    "formid_map.internal_id": "Plugin-local ID after owner resolution.",
+    "cells.flags": "Record-header flags. CELL/DATA flags are separate and remain untyped here.",
+    "cells.interior_name": "EDID in the current helper; not an established localized display name.",
+    "cells.data": "Parsed subrecord tag/payload projection; includes untyped DATA/XCLC tail/XCLL and remapped LTMP. Malformed optional link subrecords are removed.",
+    "cells.worldspace_id": "Code-level worldspace link; SQLite declares no FK.",
+    "references.header_flags": "Raw record-header u32; bit meanings depend on record type.",
+    "references.enable_parent_flags": "Current u32 from XESP bytes 4-7: one declared flag byte plus three unresolved bytes. Not established padding.",
+    "references.enable_parent_id": "Remapped XESP parent FormID, or 0 for an invalid optional link; malformed XESP subrecords are removed. Code link, no SQLite FK.",
+    "references.base_form_id": "Selected NAME link; current helper uses 0 if absent. No SQLite FK.",
+    "references.scale": "XSCL projection defaults to 1.0 in code and SQL.",
+    "references.radius_override": "Selected XRDS little-endian f32; native consumer remains open in this pilot.",
+    "references.local_x": "Derived exterior-local coordinate; RTree uses global position.",
+    "references.local_y": "Derived exterior-local coordinate; RTree uses global position.",
+    "statics.flags": "Record-header flags for several base-object signatures.",
+    "statics.bounds_valid": "Defaults to 0; default bounds alone do not establish measured bounds.",
+    "lights.flags": "LIGH/DATA flags, distinct from the record header.",
+    "worldspaces.flags": "Record-header flags in this exporter.",
+    "npcs.flags": "Record-header flags in this exporter.",
+    "waters.flags": "Record-header flags in this exporter.",
+    "movement_types.id": "Only selected resolved ID 0x0003580D.",
+    "movement_game_settings.editor_id": "Two-name allowlist: fMoveCharWalkBase / fJumpHeightMin.",
+    "conversion_cache.plugin_path": "TEXT PRIMARY KEY without declared NOT NULL. SQLite rowid-table PK rules permit NULL.",
+    "scripts.properties_json": "Current parser output; not complete script/gameplay interpretation.",
+    "landscape_texture_grasses.ltex_id": "Code-level LTEX link; no SQLite FK.",
+    "landscape_texture_grasses.gras_id": "Code-level GRAS link; no SQLite FK."
+  },
+  "relationships": [
+    {
+      "from": "references.cell_id",
+      "to": "cells.id",
+      "kind": "Code relationship",
+      "note": "Export uses the owning cell metadata when deriving reference worldspace/grid context.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "cells.get(&cell_id).copied(),"
+    },
+    {
+      "from": "references.base_form_id",
+      "to": "records.form_id",
+      "kind": "Semantic link",
+      "note": "NAME is a base FormID; the database does not enforce target existence or type.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "let base_form_id = view.get_form_id(b\"NAME\")"
+    },
+    {
+      "from": "references.enable_parent_id",
+      "to": "references.id",
+      "kind": "Semantic link",
+      "note": "XESP parent FormID; not an enforced SQL relationship or proof of runtime enable behavior.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": ".find(b\"XESP\")"
+    },
+    {
+      "from": "records.form_id",
+      "to": "formid_map.form_id",
+      "kind": "Code relationship",
+      "note": "Exporter writes owner/local identity for each effective record in the load-order path.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "INSERT OR REPLACE INTO formid_map("
+    },
+    {
+      "from": "npcs.race_id",
+      "to": "records.form_id",
+      "kind": "Semantic link",
+      "note": "RNAM is projected as a race FormID; no SQL target/type constraint.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "INSERT OR REPLACE INTO npcs("
+    },
+    {
+      "from": "race_movement_links.walk_movt_id",
+      "to": "movement_types.id",
+      "kind": "Semantic link",
+      "note": "WKMV movement link. The target table contains only the selected default profile, so another valid link need not have a row there.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "let walk = optional_race_movement_link"
+    },
+    {
+      "from": "race_movement_links.run_movt_id",
+      "to": "movement_types.id",
+      "kind": "Semantic link",
+      "note": "RNMV movement link; target-row completeness is not guaranteed by this narrow profile export.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "let run = optional_race_movement_link"
+    },
+    {
+      "from": "landscape_textures.texture_set_id",
+      "to": "texture_sets.id",
+      "kind": "Semantic link",
+      "note": "TNAM texture-set link; SQLite does not enforce it.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "INSERT OR REPLACE INTO landscape_textures("
+    },
+    {
+      "from": "landscape_texture_grasses.gras_id",
+      "to": "grass_types.id",
+      "kind": "Code relationship",
+      "note": "Nonzero four-byte GNAM values are written as grass links.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "INSERT OR IGNORE INTO landscape_texture_grasses("
+    },
+    {
+      "from": "landscape_texture_grasses.ltex_id",
+      "to": "landscape_textures.id",
+      "kind": "Code relationship",
+      "note": "Pairs are replaced for each exported LTEX.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "DELETE FROM landscape_texture_grasses WHERE ltex_id=?1"
+    },
+    {
+      "from": "land.cell_id",
+      "to": "cells.id",
+      "kind": "Code relationship",
+      "note": "Uses owning cell ID, falling back to LAND FormID when absent; no SQLite FK.",
+      "path": "crates/converter/src/esm/exporter.rs",
+      "anchor": "let cell_id = record.cell_form_id.unwrap_or(form_id);"
+    }
+  ],
+  "fields": [
+    {
+      "record": "REFR",
+      "tag": "HEADER",
+      "label": "Record-header flags",
+      "declaration": "MCP F0002 labels header bit 0x800 Initially Disabled. Those flag names are declaration evidence.",
+      "projection": "The complete u32 header value is stored in references.header_flags; individual bits are not decoded.",
+      "native": "The selected loader scan does not establish initial visibility or parent-chain evaluation.",
+      "unknown": "Record-type-specific bit meanings and runtime enable effects remain unverified.",
+      "ledger_line": 30,
+      "columns": [
+        "references.header_flags"
+      ],
+      "anchors": [],
+      "mcp_ids": [
+        "F0002"
+      ]
+    },
+    {
+      "record": "REFR",
+      "tag": "NAME",
+      "label": "Base record link",
+      "declaration": "FormID; Mutagen calls this Base.",
+      "projection": "NAME becomes references.base_form_id; the current helper falls back to 0 when absent.",
+      "native": "RVA 0x2de330 reads the ID, resolves it through TESDataHandler::GetForm and checks a bound object. Local shard-0018.c:41997-42018.",
+      "unknown": "Bound-object validation is static evidence; subsequent consumers were not audited.",
+      "ledger_line": 29,
+      "columns": [
+        "references.base_form_id"
+      ],
+      "anchors": [
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 6
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 678
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "REFR",
+      "tag": "DATA",
+      "label": "Placement transform",
+      "declaration": "Sources describe six position/rotation floats.",
+      "projection": "Six floats become pos_x/y/z and rot_x/y/z; missing elements currently fall back to 0.",
+      "native": "The DATA branch exists at RVA 0x2de330 (local shard-0018.c:41920 onward). Destination/zeroing details do not establish an exact native value mapping.",
+      "unknown": "This pilot does not establish distance or angle units, or runtime transform parity.",
+      "ledger_line": 29,
+      "columns": [
+        "references.pos_x",
+        "references.pos_y",
+        "references.pos_z",
+        "references.rot_x",
+        "references.rot_y",
+        "references.rot_z"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9877
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Common Subrecords/Placement.xml",
+          "line": 3
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 662
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "REFR",
+      "tag": "XSCL",
+      "label": "Reference scale",
+      "declaration": "Scalar named Scale.",
+      "projection": "Typed scale with current default 1.0.",
+      "native": "RVA 0x2de330 calls TESFile::ReadData for XSCL. Local shard-0018.c:42028-42033.",
+      "unknown": "Downstream scaling behavior has not been independently traced.",
+      "ledger_line": 29,
+      "columns": [
+        "references.scale"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 2637
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 47
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 673
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "REFR",
+      "tag": "XRDS",
+      "label": "Radius override",
+      "declaration": "Mutagen names Radius.",
+      "projection": "First four bytes become references.radius_override as little-endian f32.",
+      "native": "REFR dispatches XRDS to RVA 0x15b040, which reads the payload and invokes a helper. Local shard-0018.c:42086-42090; shard-0011.c:21230-21240.",
+      "unknown": "Current exporter comments (lines 688-693) assert Creation units and light-reference use. This is a source-comment claim; this pilot has no independent native helper or final-consumer proof.",
+      "ledger_line": 29,
+      "columns": [
+        "references.radius_override"
+      ],
+      "anchors": [
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 25
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 694
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 688
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "REFR",
+      "tag": "XESP",
+      "label": "Enable parent and unresolved tail",
+      "declaration": "Parent FormID (bytes 0-3), flag byte (byte 4), three bytes xEdit labels unused (bytes 5-7). Declared bits 0/1 mean opposite-of-parent and Pop In.",
+      "projection": "The remapper handles XESP only at exactly 8 bytes across the 11 placed kinds. The parent ID is remapped, or cleared to 0 if invalid; malformed XESP subrecords are removed. Bytes 4-7 stay unchanged and become the little-endian u32 enable_parent_flags in the typed reference path.",
+      "native": "RVA 0x15b040 passes the parent ID to RVA 0x165660, removes an entry for zero, creates/updates it for nonzero and writes the following single flag byte. Local shard-0011.c:20925-20943,27595-27640.",
+      "unknown": "The u32 column includes three unresolved bytes. F0010 reports those bytes often nonzero; its historical corpus lacks an input-manifest hash. Native parent-chain effects remain unobserved. F0011 is a historical FormID link-remap diagnostic, not evidence of current remap failure or flag width.",
+      "ledger_line": 30,
+      "columns": [
+        "references.enable_parent_id",
+        "references.enable_parent_flags"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 3075
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Common Subrecords/EnableParent.xml",
+          "line": 3
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 704
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 366
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 498
+        }
+      ],
+      "mcp_ids": [
+        "F0002",
+        "F0010",
+        "F0011"
+      ]
+    },
+    {
+      "record": "REFR",
+      "tag": "XPRM",
+      "label": "Primitive extra",
+      "declaration": "xEdit labels primitive types 3/4 Portal Box/Line; Mutagen names 0-3 None/Box/Sphere/PortalBox.",
+      "projection": "No typed column; parsed tag/payload remains in references.data and records.data.",
+      "native": "RVA 0x15b040 passes parsed values to RVA 0x212710. Types 1-4 construct box, sphere, plane and line objects; other values return no primitive. Local shard-0011.c:20769-20800; shard-0015.c:17203-17336.",
+      "unknown": "Names differ between sources and native constructors. Collision and visibility consumers remain untraced.",
+      "ledger_line": 31,
+      "columns": [
+        "references.data",
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9632
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 87
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedPrimitive.cs",
+          "line": 6
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "REFR",
+      "tag": "XLIG",
+      "label": "Four light-extra values",
+      "declaration": "xEdit describes four floats; Mutagen names a light-data structure.",
+      "projection": "No typed column; tag/payload remains serialized.",
+      "native": "RVA 0x15b040 reads four values, byte-swaps when needed, and calls four setters in order. Local shard-0011.c:20393-20421; shard-0012.c:1643-1920.",
+      "unknown": "The native name-to-value mapping and final render effects remain provisional.",
+      "ledger_line": 31,
+      "columns": [
+        "references.data",
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9706
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 112
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "REFR",
+      "tag": "XEMI",
+      "label": "Emittance source link",
+      "declaration": "Emittance FormID in the source models.",
+      "projection": "The 4-byte XEMI link is remapped across the 11 placed kinds, or cleared to 0 if invalid; malformed lengths are removed. The normalized tag/payload is serialized with no typed emittance column.",
+      "native": "The reader stores ExtraEmittanceSource through a setter; zero removes the entry. Local shard-0011.c:20423-20432; shard-0012.c:69-103.",
+      "unknown": "Link storage does not establish its final render effect.",
+      "ledger_line": 31,
+      "columns": [
+        "references.data",
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 9704
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/PlacedObject.xml",
+          "line": 30
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 373
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 498
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "HEADER",
+      "label": "Cell record-header flags",
+      "declaration": "Record header and DATA subrecord are separate flag inputs.",
+      "projection": "cells.flags stores record.flags, the header u32.",
+      "native": "The selected DATA branch updates a different native cell-flags member.",
+      "unknown": "Do not interpret cells.flags as CELL/DATA flags.",
+      "ledger_line": 32,
+      "columns": [
+        "cells.flags"
+      ],
+      "anchors": [
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 290
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "EDID",
+      "label": "Cell editor identifier",
+      "declaration": "Source editor identifier.",
+      "projection": "The helper writes EDID to cells.interior_name after trimming a trailing NUL; the SQL name does not establish a localized display name.",
+      "native": "No EDID-specific native consumer was traced in this pilot.",
+      "unknown": "Human-facing naming and localization remain outside this selected field audit.",
+      "ledger_line": 33,
+      "columns": [
+        "cells.interior_name"
+      ],
+      "anchors": [
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/extractors.rs",
+          "line": 85
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "DATA",
+      "label": "Cell subrecord flags",
+      "declaration": "xEdit requires a 16-bit flags value; Mutagen declares a non-null two-byte enum.",
+      "projection": "Not typed by extract_cell_info; the payload remains in cells.data and records.data.",
+      "native": "RVA 0x2b82b0 has short one-byte and wider-payload paths. Bits select cell-state/LAND allocation and cleanup branches. Local shard-0018.c:10604-10663.",
+      "unknown": "The one-byte path has no target-corpus occurrence evidence. Source widths and values need a census.",
+      "ledger_line": 32,
+      "columns": [
+        "cells.data",
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4210
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Cell.xml",
+          "line": 21
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/extractors.rs",
+          "line": 79
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 290
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "XCLC",
+      "label": "Grid coordinates and unresolved tail",
+      "declaration": "Signed X/Y, then xEdit one-byte Land Flags plus three unused bytes; Mutagen describes a four-byte flags enum.",
+      "projection": "Only bytes 0-7 become signed grid_x/grid_y. The tail remains in parsed payload data.",
+      "native": "RVA 0x2b82b0 has a 12-byte path, length-sensitive endian handling and a one-byte store. Local shard-0018.c:10730-10754.",
+      "unknown": "The trailing field and source width disagreement remain unresolved; no typed tail column exists.",
+      "ledger_line": 33,
+      "columns": [
+        "cells.grid_x",
+        "cells.grid_y",
+        "cells.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsCommon.pas",
+          "line": 8690
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Cell.xml",
+          "line": 71
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/extractors.rs",
+          "line": 81
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "XCLL",
+      "label": "Interior cell lighting",
+      "declaration": "xEdit makes members after the first eleven optional; Mutagen describes extended lighting fields.",
+      "projection": "No lighting members materialized; raw parsed payload only.",
+      "native": "RVA 0x2b82b0 reads a 0x60-byte payload into a lighting object with byte-order handling. Local shard-0018.c:10808-10818.",
+      "unknown": "Occurrence lengths, optional-tail rules and downstream lighting consumers remain unverified.",
+      "ledger_line": 34,
+      "columns": [
+        "cells.data",
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4226
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Cell.xml",
+          "line": 77
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "LTMP",
+      "label": "Lighting template link",
+      "declaration": "xEdit permits LGTM or NULL; Mutagen marks the link non-nullable.",
+      "projection": "The 4-byte LTMP link is remapped on CELL and WRLD, or cleared to 0 if invalid; malformed lengths are removed. The normalized payload remains serialized with no typed template column.",
+      "native": "RVA 0x2b82b0 consumes LTMP and clears eight bytes in an adjacent member. Local shard-0018.c:10869-10879.",
+      "unknown": "The inspected native load path does not show resolution. Native nullability and later initialization remain open. F0011 is a historical FormID link-remap diagnostic, not evidence of current remap failure or nullability.",
+      "ledger_line": 34,
+      "columns": [
+        "cells.data",
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 4261
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Cell.xml",
+          "line": 29
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 381
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/mod.rs",
+          "line": 498
+        }
+      ],
+      "mcp_ids": [
+        "F0011"
+      ]
+    },
+    {
+      "record": "CELL",
+      "tag": "XCLW",
+      "label": "Cell water height",
+      "declaration": "Cell-specific height input in the current cache path.",
+      "projection": "The terrain cache uses a normalized XCLW value, with WRLD/DNAM fallback for absent or sentinel heights; no water-height SQL column in cells.",
+      "native": "No field-specific native consumer was traced in this pilot.",
+      "unknown": "Cache behavior is current source evidence; complete water semantics and native parity remain open.",
+      "ledger_line": 49,
+      "columns": [
+        "cells.data"
+      ],
+      "anchors": [
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/cell_cache.rs",
+          "line": 145
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "CELL",
+      "tag": "XCWT",
+      "label": "Cell water type link",
+      "declaration": "Cell-specific water FormID in the current cache path.",
+      "projection": "The terrain cache uses XCWT, falling back to WRLD/NAM2; no water-type SQL column in cells.",
+      "native": "No field-specific native consumer was traced in this pilot.",
+      "unknown": "This is a cache projection, not complete canonical water interpretation.",
+      "ledger_line": 49,
+      "columns": [
+        "cells.data"
+      ],
+      "anchors": [
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/cell_cache.rs",
+          "line": 156
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "STAT",
+      "tag": "HEADER",
+      "label": "Static record-header flags",
+      "declaration": "Record-type-specific header flags.",
+      "projection": "statics.flags stores record.flags. The statics table also holds other base-object record types.",
+      "native": "No individual STAT header-bit behavior was established in this pilot.",
+      "unknown": "A statics row alone does not establish fixed-collision eligibility.",
+      "ledger_line": 35,
+      "columns": [
+        "statics.flags"
+      ],
+      "anchors": [
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 399
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "STAT",
+      "tag": "EDID",
+      "label": "Static editor identifier",
+      "declaration": "EDID identifier in the source record.",
+      "projection": "Typed statics.editor_id.",
+      "native": "No EDID-specific native consumer was traced in this pilot.",
+      "unknown": "Typed presence does not make the full STAT schema complete.",
+      "ledger_line": 35,
+      "columns": [
+        "statics.editor_id"
+      ],
+      "anchors": [
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 399
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "STAT",
+      "tag": "MODL",
+      "label": "Model path",
+      "declaration": "Generic source model includes MODL, MODT and MODS.",
+      "projection": "Typed statics.model_path for STAT. ARMO takes MOD2 then MOD3 in the shared projection path.",
+      "native": "This pilot traces MODS handling, not complete MODL consumers.",
+      "unknown": "Full model selection and downstream behavior remain outside the selected scan.",
+      "ledger_line": 35,
+      "columns": [
+        "statics.model_path"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 873
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Common Subrecords/Model.xml",
+          "line": 3
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 396
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "STAT",
+      "tag": "DNAM",
+      "label": "Directional material and angle fields",
+      "declaration": "Sources describe a 12-byte SSE form. xEdit default angle 90 differs from Mutagen MaxAngle default 30.",
+      "projection": "No typed statics column; payload remains in generic records.data.",
+      "native": "RVA 0x287520 branches on FormVersion < 0x2C; the extended path can consume four trailing bytes. Local shard-0017.c:15000-15071.",
+      "unknown": "Per-record versions/lengths, trailing bytes, angle units, source defaults and downstream meaning are unresolved. F0012 supersedes the stale F0007 presence/use description.",
+      "ledger_line": 35,
+      "columns": [
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10097
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Static.xml",
+          "line": 7
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 301
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 386
+        }
+      ],
+      "mcp_ids": [
+        "F0012"
+      ]
+    },
+    {
+      "record": "STAT",
+      "tag": "MODS",
+      "label": "Alternate model texture sets",
+      "declaration": "Model-texture payload in xEdit and Mutagen source models.",
+      "projection": "Parsed payload only; no typed statics column.",
+      "native": "RVA 0x287520 passes MODS to the model-texture handler. Local shard-0017.c:15073-15082.",
+      "unknown": "Downstream texture behavior remains unestablished.",
+      "ledger_line": 35,
+      "columns": [
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 873
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Common Subrecords/Model.xml",
+          "line": 3
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 301
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 386
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "STAT",
+      "tag": "MNAM",
+      "label": "Distant LOD model data",
+      "declaration": "xEdit labels Distant LOD; Mutagen has a model field.",
+      "projection": "Parsed payload only; no typed statics column.",
+      "native": "No direct MNAM case appears in the inspected TESObjectSTAT::Load body. Local shard-0017.c:15000-15082.",
+      "unknown": "Another loader or LOD consumer may handle it. Absence of a direct case does not establish absence of support.",
+      "ledger_line": 35,
+      "columns": [
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 10113
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Major Records/Static.xml",
+          "line": 3
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 301
+        },
+        {
+          "source": "project",
+          "path": "crates/converter/src/esm/exporter.rs",
+          "line": 386
+        }
+      ],
+      "mcp_ids": []
+    },
+    {
+      "record": "STAT",
+      "tag": "MODT",
+      "label": "Model metadata payload",
+      "declaration": "Generic model field in xEdit/Mutagen.",
+      "projection": "Parsed payload only; no typed statics column.",
+      "native": "No MODT-specific native path was inspected in this pilot.",
+      "unknown": "Payload meaning and downstream consumer remain undocumented here.",
+      "ledger_line": 35,
+      "columns": [
+        "records.data"
+      ],
+      "anchors": [
+        {
+          "source": "xedit",
+          "path": "Core/wbDefinitionsTES5.pas",
+          "line": 873
+        },
+        {
+          "source": "mutagen",
+          "path": "Mutagen.Bethesda.Skyrim/Records/Common Subrecords/Model.xml",
+          "line": 3
+        }
+      ],
+      "mcp_ids": []
+    }
+  ],
+  "variants": [
+    {
+      "id": "variant.STAT.DNAM",
+      "record": "STAT",
+      "tag": "DNAM",
+      "label": "DNAM form-version branch",
+      "source": "xEdit IsSSE adds Considered Snow plus three unused bytes; Mutagen also describes 12-byte SSE layout.",
+      "native": "FormVersion < 0x2C takes the older angle/material path. The extended path can consume four more bytes.",
+      "unknown": "Retail per-record FormVersion, payload lengths and trailing-byte meanings have no accepted census.",
+      "ledger_line": 19
+    },
+    {
+      "id": "variant.CELL.DATA",
+      "record": "CELL",
+      "tag": "DATA",
+      "label": "One-byte versus wider cell flags",
+      "source": "Both source models declare a two-byte flag value.",
+      "native": "Separate short one-byte and wider/endian-handled branches exist.",
+      "unknown": "The selected static scan does not establish a one-byte occurrence in the target corpus.",
+      "ledger_line": 20
+    },
+    {
+      "id": "variant.CELL.XCLC",
+      "record": "CELL",
+      "tag": "XCLC",
+      "label": "Grid-tail width disagreement",
+      "source": "xEdit: one Land Flags byte + three unused bytes. Mutagen: four-byte enum.",
+      "native": "12-byte path with length-sensitive endian handling and a one-byte store.",
+      "unknown": "Exact trailing-byte semantics remain unresolved; current projection types only X/Y.",
+      "ledger_line": 21
+    },
+    {
+      "id": "variant.CELL.XCLL",
+      "record": "CELL",
+      "tag": "XCLL",
+      "label": "Optional lighting tail",
+      "source": "xEdit makes fields after the first eleven optional; Mutagen describes extended members.",
+      "native": "0x60-byte read path exists.",
+      "unknown": "Occurrence/length census, optional-tail rules and downstream consumers remain open.",
+      "ledger_line": 22
+    },
+    {
+      "id": "variant.CELL.LTMP",
+      "record": "CELL",
+      "tag": "LTMP",
+      "label": "Template-link nullability",
+      "source": "xEdit permits LGTM or NULL; Mutagen says non-nullable.",
+      "native": "Consumes the payload and clears an adjacent runtime member; no resolved link shown.",
+      "unknown": "Null-link occurrences and subsequent initialization must resolve the disagreement.",
+      "ledger_line": 23
+    }
+  ],
+  "dataflow": {
+    "current": [
+      {
+        "label": "Plugin bytes + conversion order",
+        "text": "read_plugins_txt normalizes master priority through order_explicit_plugins; regular dependencies stay ahead of their masters. Direct convert_plugins consumes caller order. LoadOrder::read rejects dependency inversions and assigns full/light slots. An accepted installed-game load order remains unavailable.",
+        "path": "crates/converter/src/esm/load_order.rs",
+        "line": 23
+      },
+      {
+        "label": "Parsed RawRecord",
+        "text": "Selected header values, ordered parsed tags/payloads and cell/worldspace links. Original group/compression/XXXX framing is reduced.",
+        "path": "crates/converter/src/esm/records/mod.rs",
+        "line": 9
+      },
+      {
+        "label": "Remap and winner merge",
+        "text": "Selected links are remapped; invalid IDs in optional FormID layouts become 0 and malformed optional subrecords are removed. Later overrides replace earlier records and deleted winners remove forms. GMST uses a case-insensitive EDID identity rule.",
+        "path": "crates/converter/src/esm/mod.rs",
+        "line": 61
+      },
+      {
+        "label": "Current SQL + terrain cache",
+        "text": "Effective winner rows, selected typed values and normalized parsed payload blobs. SQL/cache use the same merged view; no byte-exact source archive.",
+        "path": "crates/converter/src/esm/mod.rs",
+        "line": 33
+      }
+    ],
+    "planned": [
+      {
+        "label": "Immutable source document/archive",
+        "text": "Preserve original bytes, all headers, groups, source occurrences, encoded streams and framing. Exact no-op writer is a required future gate."
+      },
+      {
+        "label": "Version-aware physical registry",
+        "text": "Select evidenced layouts from declared context and observations; preserve unknown/ambiguous outcomes."
+      },
+      {
+        "label": "Mudcrab canonical definitions",
+        "text": "Complete data with source ranges and evidence, independent of xEdit/Mutagen object models and current gameplay use."
+      },
+      {
+        "label": "Resolved SQL/cache projections",
+        "text": "Derived winners and runtime products from canonical/source data; they do not replace source authority."
+      }
+    ]
+  },
+  "glossary": [
+    {
+      "term": "Signature",
+      "meaning": "Four-byte record tag such as REFR. Multiple source model classes may share one signature."
+    },
+    {
+      "term": "TES4",
+      "meaning": "Plugin file-header signature; counted separately from the 133 plugin-record candidates."
+    },
+    {
+      "term": "Subrecord",
+      "meaning": "Tagged payload inside a major record, such as REFR/XESP. Its framing is separate from its decoded value."
+    },
+    {
+      "term": "GRUP",
+      "meaning": "Group envelope and hierarchy in the source plugin. The current parsed record projection flattens group context."
+    },
+    {
+      "term": "XXXX",
+      "meaning": "Extended-length subrecord framing. Current serialized parsed tags/payloads do not preserve that original encoding."
+    },
+    {
+      "term": "FormID",
+      "meaning": "Plugin-local or resolved record identity, depending on context. It does not identify a physical source occurrence by itself."
+    },
+    {
+      "term": "Source occurrence",
+      "meaning": "One definition at a physical position/ordinal in a specific immutable source. Planned archive provenance retains it separately."
+    },
+    {
+      "term": "Owner",
+      "meaning": "Plugin that owns the resolved local record ID. A later plugin may provide its winning override."
+    },
+    {
+      "term": "Winner",
+      "meaning": "Effective record selected by override/deletion resolution. Earlier occurrences are not retained in the current winner database."
+    },
+    {
+      "term": "FormVersion",
+      "meaning": "Serialized per-record version. It differs from executable version, source-tool commit and database schema version."
+    },
+    {
+      "term": "Declaration evidence",
+      "meaning": "What a pinned tool source model names or describes. It does not prove retail applicability or native behavior."
+    },
+    {
+      "term": "Static native evidence",
+      "meaning": "What a pinned executable load path reads, stores or dispatches. Runtime effects require additional observation."
+    },
+    {
+      "term": "Current projection",
+      "meaning": "Fields or parsed payloads produced by the inspected current converter. Partial typed data does not establish a complete schema."
+    },
+    {
+      "term": "RTree",
+      "meaning": "SQLite virtual spatial index. Each shown virtual table creates three implementation shadow tables, excluded from the logical table catalog."
+    },
+    {
+      "term": "Declared NOT NULL",
+      "meaning": "PRAGMA table_info notnull flag. PK behavior is separate: INTEGER PRIMARY KEY aliases rowid and can auto-assign on NULL; other rowid-table PKs can allow NULL unless declared NOT NULL."
+    },
+    {
+      "term": "Canonical registry",
+      "meaning": "Planned Mudcrab-owned data contract and interpretation registry. Current SQL columns are not its completeness boundary."
+    }
+  ]
+}

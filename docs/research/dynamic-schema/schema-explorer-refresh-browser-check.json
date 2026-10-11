@@ -1,0 +1,26 @@
+{
+  "status": "passed",
+  "artifact_kind": "focused_schema_explorer_refresh_browser_smoke",
+  "html_sha256": "b8c9d26edb31b0cb634a196d4d1e6c5f498ac34b14fbafc778b7e718c4926143",
+  "checks": [
+    {
+      "route": "evidence/REFR.XESP",
+      "status": "passed",
+      "checks": "rendered current projection and historical evidence labels, pinned links"
+    },
+    {
+      "route": "guide/dataflow",
+      "status": "passed",
+      "checks": "rendered current projection and historical evidence labels, pinned links"
+    },
+    {
+      "route": "guide/sources",
+      "status": "passed",
+      "checks": "rendered current projection and historical evidence labels, pinned links"
+    }
+  ],
+  "scope": "Three data/label routes in Chromium; historical 18-check report is retained separately.",
+  "observed_at_utc": "2026-10-06T08:42:34.203411+00:00",
+  "browser": "Chromium 138.0.7204.49",
+  "source_code_pin": "44499b22274e3e951f8aa5e630c833e39acf88cb"
+}

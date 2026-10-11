@@ -8,9 +8,13 @@ The 2026-10-04 author-run observation targeted Steam Skyrim SE/AE `1.7.104.0`, b
 
 The Data scan found 80 plugin files. All 80 had a bounded TES4 header that decoded, the dependency closure had no missing or ambiguous masters, and all five required base masters were present. The ordered `Skyrim.ccc` list had 75 names, all matching Data plugin filenames. That list is recorded as a declared content list; it does not establish active load order, official status, or entitlement.
 
-No loose `.strings`, `.dlstrings`, or `.ilstrings` files were present. The tool observed 93 BSA/BA2 filenames and sizes without hashing archive contents. Bundled string tables, active load order, and locale therefore remain unresolved. Plugin and loose-table hashes are first observations; no prior accepted corpus digest set was supplied. These gaps block `complete` and `successful_pin` even when the runtime pin and observed file metadata validate.
+No loose `.strings`, `.dlstrings`, or `.ilstrings` files were present. The version-2 scan hashes all 93 installed BSA/BA2 archives (20,336,627,877 bytes). No scan issue was reported. Bundled table payloads, active load order, locale, official provenance and an accepted corpus digest set remain unresolved; the verdict stays incomplete. Whole-archive hashes do not inspect entries or establish localized text resolution.
 
-The full output was saved to the author-host local-only path `/tmp/mudcrab-schema-p0-corpus.json` (297,635 bytes; SHA-256 `dce890a64ac05cd6065275e6c9055589c2ffcdf61b02a99289f3fd8cefc16042`). It contains source names, paths, file hashes/sizes, and TES4 metadata; proprietary file bytes and localization/record dumps remain outside the repository. This observation closes only the installed-file-manifest tooling slice. The broader P0 catalog, validator, archive/localization, and baseline gates remain open.
+A separate read-only `BSArch64.exe -list` observation enumerated all 93 archive file lists, with 181,654 entries and 2,160 string-table names across 76 archives. This identifies bundled table candidates without extracting game assets or interpreting table bytes. The manifest itself still reports bundled tables uninspected. See [the delivery notes](p0-next-delivery.md) for tool pins, local artifacts and limits.
+
+The optional `--corpus-evidence` contract records hash-bound profile, locale and ordered active/optional plugin declarations. It validates file identity and dependency ordering; it does not independently verify the semantic claims or accept the supplied corpus. [The tool README](../../../scripts/schema/README.md) defines the strict input fields.
+
+The historical version-2 author-host local-only output is `/home/dev/.cache/mudcrab-schema-p0-next-evidence/corpus.json` (300,001 bytes; SHA-256 `eda27707f636fbe7793054d58f2b63be57ff99d81b9957feca22f6d31899bc66`). The prior version-1 author-host local-only observation remains at `/tmp/mudcrab-schema-p0-corpus.json` (297,635 bytes; SHA-256 `dce890a64ac05cd6065275e6c9055589c2ffcdf61b02a99289f3fd8cefc16042`). It contains source names, paths, file hashes/sizes, and TES4 metadata; proprietary file bytes and localization/record dumps remain outside the repository. This observation closes only the installed-file-manifest tooling slice. The broader P0 catalog, validator, archive/localization, and baseline gates remain open.
 
 The recorded invocation uses explicit local-only game paths. Replace them with the actual installation and an output path available on the host running a new scan:
 
@@ -19,5 +23,5 @@ python3 scripts/schema/corpus_manifest.py \
   --game-root '/home/dev/skyrim/Skyrim Special Edition' \
   --data-dir '/home/dev/skyrim/Skyrim Special Edition/Data' \
   --executable '/home/dev/skyrim/Skyrim Special Edition/SkyrimSE.exe' \
-  --output /tmp/mudcrab-schema-p0-corpus.json
+  --output /tmp/mudcrab-schema-p0-corpus-v2.json
 ```

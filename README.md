@@ -147,6 +147,7 @@ For detailed technical specifications, format breakdowns, and architectural guid
 - **[`nif-to-gltf.md`](docs/specs/converters/nif-to-gltf.md)** — 3D mesh converter specification (`mesh-tools`).
 - **[`dds-to-ktx2.md`](docs/specs/converters/dds-to-ktx2.md)** — Texture compressor specification (`basis-universal` + `ddsfile`).
 - **[`esm-to-sqlite.md`](docs/specs/converters/esm-to-sqlite.md)** — Master database specification (`libSQL` + `rkyv`).
+- **[Schema explorer](docs/research/dynamic-schema/schema-explorer.html)** — Offline P0 source catalog, current SQL columns, selected field evidence and open questions.
 - **[`pex-to-lua.md`](docs/specs/converters/pex-to-lua.md)** — Papyrus bytecode to Luau transpilation spec (`mlua`).
 - **[`mods-and-ui.md`](docs/specs/modding/mods-and-ui.md)** — Integrated Mod Manager & Flash-to-Bevy UI strategy.
 - **[`launcher.md`](docs/specs/modding/launcher.md)** — First-run setup wizard & launcher workflow.

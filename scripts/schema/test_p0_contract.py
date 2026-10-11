@@ -3,6 +3,7 @@ import json
 import os
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import p0_fixtures
+import p0_tools
 import run_mutagen_p0
 
 
@@ -188,6 +190,106 @@ class P0WireFixtureTests(unittest.TestCase):
 
 
 class P0RunnerContractTests(unittest.TestCase):
+    def test_v156_mutagen_decode_failures_save_raw_checked_case_and_legacy_evidence(self):
+        for timeout in (None, 45):
+            for command_kind in ("checked", "case", "legacy"):
+                with self.subTest(timeout=timeout, command_kind=command_kind), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    stdout, stderr = b"\xf0\x9f", b"raw diagnostics"
+                    failure = p0_tools.ProcessOutputDecodeError(
+                        "synthetic", "utf-8", stdout, stderr, stream="stdout",
+                        error=UnicodeDecodeError("utf-8", stdout, 0, 2, "unexpected end"), timeout=timeout,
+                    )
+                    with mock.patch.object(run_mutagen_p0, "_run_supervised", side_effect=failure):
+                        if command_kind == "case":
+                            summary, accepted = run_mutagen_p0._case_run(
+                                dotnet=Path(sys.executable), assembly=root / "synthetic.dll",
+                                filename="bad.esp", input_bytes=b"synthetic malformed plugin",
+                                fixtures_dir=root, observations_dir=root, env={}, expect_failure=True,
+                            )
+                            self.assertEqual(summary["status"], "failed")
+                            self.assertFalse(summary["completed_verdict_saved"])
+                            self.assertIsNone(accepted)
+                            base = root / "bad"
+                            self.assertFalse((root / "bad.json").exists())
+                        elif command_kind == "legacy":
+                            with self.assertRaises(run_mutagen_p0.QualificationError):
+                                run_mutagen_p0._run_legacy_command(
+                                    ["synthetic"], cwd=root, env={}, label="legacy", observations_dir=root,
+                                )
+                            base = root / "legacy"
+                        else:
+                            with self.assertRaises(run_mutagen_p0.QualificationError):
+                                run_mutagen_p0._run_checked(
+                                    ["synthetic"], cwd=root, env={}, label="checked", log_dir=root, timeout=45,
+                                )
+                            base = root / "checked"
+                    evidence = json.loads(base.with_suffix(".decode-error.json").read_text(encoding="utf-8"))
+                    self.assertEqual(evidence["status"], "incomplete")
+                    self.assertFalse(evidence["completed_verdict_saved"])
+                    self.assertEqual(evidence["decoded_output"], "unavailable")
+                    self.assertEqual(evidence["timed_out"], timeout is not None)
+                    self.assertEqual(evidence["raw_stdout_sha256"], hashlib.sha256(stdout).hexdigest())
+                    self.assertEqual(evidence["raw_stderr_size_bytes"], len(stderr))
+                    self.assertEqual((root / evidence["raw_stdout_file"]).read_bytes(), stdout)
+                    self.assertEqual((root / evidence["raw_stderr_file"]).read_bytes(), stderr)
+                    self.assertTrue(base.with_suffix(".command.json").is_file())
+
+    def test_v156_sdk_version_decode_failure_saves_raw_startup_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifacts"
+            oracle = root / "oracle"
+            oracle.mkdir()
+            program = (run_mutagen_p0.ORACLE_ENTRY + "\n").encode()
+            project, extension = b"synthetic project", b"static class MutagenP0Inspect {}"
+            stdout = b"\xf0\x9f"
+            failure = p0_tools.ProcessOutputDecodeError(
+                "dotnet-version", "utf-8", stdout, b"startup stderr", stream="stdout",
+                error=UnicodeDecodeError("utf-8", stdout, 0, 2, "unexpected end"), timeout=15,
+            )
+            args = SimpleNamespace(artifact_dir=str(artifact), oracle_source=str(oracle), dotnet=sys.executable)
+            sources = [
+                (run_mutagen_p0.PINNED_PROGRAM_SHA256, len(program), program),
+                (run_mutagen_p0.PINNED_CSPROJ_SHA256, len(project), project),
+                (hashlib.sha256(extension).hexdigest(), len(extension), extension),
+            ]
+            with mock.patch.object(run_mutagen_p0, "_read_verified_bytes", side_effect=sources), \
+                 mock.patch.object(run_mutagen_p0, "_run_supervised", side_effect=failure) as external:
+                with self.assertRaises(run_mutagen_p0.QualificationError):
+                    run_mutagen_p0.run_suite(args)
+            self.assertEqual(external.call_count, 1)
+            logs = artifact / "logs"
+            evidence = json.loads((logs / "dotnet-version.decode-error.json").read_text(encoding="utf-8"))
+            self.assertEqual(evidence["decoded_output"], "unavailable")
+            self.assertFalse(evidence["completed_verdict_saved"])
+            self.assertEqual(evidence["raw_stdout_sha256"], hashlib.sha256(stdout).hexdigest())
+            self.assertEqual((logs / evidence["raw_stdout_file"]).read_bytes(), stdout)
+            self.assertEqual(list((artifact / "observations").iterdir()), [])
+
+    def test_v147_custom_sdk_directory_rejected_by_runner_and_cli_before_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = root / "sdk"
+            sdk.mkdir()
+            dotnet = sdk / "dotnet.exe"
+            dotnet.write_bytes(b"synthetic SDK path; never executed")
+            artifact = sdk / "artifacts"
+            oracle = root / "oracle"
+            args = SimpleNamespace(artifact_dir=str(artifact), oracle_source=str(oracle), dotnet=str(dotnet))
+            with mock.patch.object(run_mutagen_p0, "_read_verified_bytes") as read:
+                with self.assertRaisesRegex(run_mutagen_p0.QualificationError, "protected path"):
+                    run_mutagen_p0.run_suite(args)
+                read.assert_not_called()
+            with mock.patch.object(run_mutagen_p0, "run_suite") as suite:
+                status = run_mutagen_p0.main([
+                    "--artifact-dir", str(artifact), "--oracle-source", str(oracle),
+                    "--dotnet", str(dotnet),
+                ])
+                suite.assert_not_called()
+            self.assertEqual(status, 1)
+            self.assertFalse(artifact.exists())
+
     def test_dispatch_patch_anchors_before_commands_and_preserves_legacy_body(self):
         original = (
             "using System.Text.Json;\n"
