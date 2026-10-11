@@ -63,9 +63,11 @@ jobs:
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '\.ps1$'
+          check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
+      check_z_fighting_audit: ${{ steps.filter.outputs.check_z_fighting_audit }}
 
   format:
     needs: [orchestrate]
@@ -110,6 +112,23 @@ jobs:
             fi
           done < <(git ls-files '*.ps1')
           exit "$failed"
+
+  z_fighting_audit:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_z_fighting_audit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test static depth-risk audit
+        run: python3 -m unittest discover -s scripts/tests -p test_audit_z_fighting.py -v
 
   clippy:
     needs: [orchestrate]
@@ -240,6 +259,7 @@ jobs:
       - orchestrate
       - format
       - scripts
+      - z_fighting_audit
       - clippy
       - test
       - security
@@ -263,6 +283,7 @@ jobs:
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
+          check_result "z_fighting_audit" "$RESULT_Z_FIGHTING_AUDIT"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -273,6 +294,7 @@ jobs:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
+          RESULT_Z_FIGHTING_AUDIT: ${{ needs.z_fighting_audit.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
