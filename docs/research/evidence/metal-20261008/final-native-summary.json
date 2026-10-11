@@ -1,0 +1,3418 @@
+{
+  "schema_version": 1,
+  "generated_utc": "2026-10-09T02:27:51.655548+00:00",
+  "status": "completed native captures with guarded moving CPU, bounded mesh counts and separate visual scope",
+  "ordinary_comparison": {
+    "path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/ordinary-v4-comparison.json",
+    "sha256": "f96df063b119f069d88f31ee0400c247063f15abfb7e661c71b850d7174e2c68",
+    "status": "valid comparable HUD observations",
+    "baseline_label": "fixes-ordinary-baseline-2",
+    "final_label": "fixes-ordinary-final-v4-1",
+    "changes": [
+      {
+        "metric": "Mean present interval",
+        "unit": "ms",
+        "baseline": 20.640789096126255,
+        "final": 16.674815028901737,
+        "absolute_change": -3.9659740672245185,
+        "percent_change": -19.214256047840873
+      },
+      {
+        "metric": "Median present interval",
+        "unit": "ms",
+        "baseline": 16.67,
+        "final": 16.67,
+        "absolute_change": 0.0,
+        "percent_change": 0.0
+      },
+      {
+        "metric": "P95 present interval",
+        "unit": "ms",
+        "baseline": 25.0,
+        "final": 16.67,
+        "absolute_change": -8.329999999999998,
+        "percent_change": -33.31999999999999
+      },
+      {
+        "metric": "P99 present interval",
+        "unit": "ms",
+        "baseline": 25.0,
+        "final": 16.67,
+        "absolute_change": -8.329999999999998,
+        "percent_change": -33.31999999999999
+      },
+      {
+        "metric": "Presented FPS from mean interval",
+        "unit": "FPS",
+        "baseline": 48.44776017733131,
+        "final": 59.97068023043993,
+        "absolute_change": 11.52292005310862,
+        "percent_change": 23.784216258773895
+      },
+      {
+        "metric": "Mean command-buffer GPU time",
+        "unit": "ms",
+        "baseline": 17.722256097560976,
+        "final": 15.859465317919074,
+        "absolute_change": -1.8627907796419017,
+        "percent_change": -10.511025060168656
+      },
+      {
+        "metric": "Median command-buffer GPU time",
+        "unit": "ms",
+        "baseline": 17.71,
+        "final": 15.84,
+        "absolute_change": -1.870000000000001,
+        "percent_change": -10.559006211180133
+      },
+      {
+        "metric": "P95 command-buffer GPU time",
+        "unit": "ms",
+        "baseline": 18.07,
+        "final": 16.14,
+        "absolute_change": -1.9299999999999997,
+        "percent_change": -10.680686220254564
+      },
+      {
+        "metric": "P99 command-buffer GPU time",
+        "unit": "ms",
+        "baseline": 18.23,
+        "final": 16.27,
+        "absolute_change": -1.9600000000000009,
+        "percent_change": -10.751508502468464
+      },
+      {
+        "metric": "Sampled CPU core equivalents",
+        "unit": "cores",
+        "baseline": 1.9363760267933334,
+        "final": 1.629268008716965,
+        "absolute_change": -0.30710801807636834,
+        "percent_change": -15.859937007428437
+      }
+    ]
+  },
+  "moving": {
+    "label": "fixes-moving-v4-16mib-1",
+    "revision": "V4",
+    "completed_exit_code": 0,
+    "report_passed": true,
+    "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+    "started_utc": "2026-10-09T02:16:09.027818+00:00",
+    "finished_utc": "2026-10-09T02:18:36.240984+00:00",
+    "frame_timing": {
+      "frames": 8436,
+      "warmup_frames": 1200,
+      "elapsed_seconds": 120.01315099999967,
+      "average_fps": 70.29229655006745,
+      "frame_ms_mean": 14.226309981033625,
+      "frame_ms_p50": 13.880042,
+      "frame_ms_p95": 20.685125,
+      "frame_ms_p99": 23.964416,
+      "frame_ms_worst": 33.814167
+    },
+    "acceptance_thresholds": {
+      "minimum_average_fps": 0.0,
+      "maximum_p95_frame_ms": 1000.0,
+      "maximum_memory_growth_gib": 4.0,
+      "no_streaming_failures": true,
+      "commit_budget_respected": true,
+      "streaming_lifecycle_validated": true,
+      "renderer_path_active": true,
+      "screenshot_captured": true
+    },
+    "measured_wall_stages": {
+      "extract": {
+        "count": 8435,
+        "total": 3895.883529999993,
+        "mean": 0.46187119502074603,
+        "p50": 0.42012499999999997,
+        "p95": 0.690375,
+        "p99": 1.536459,
+        "worst": 5.411041999999999,
+        "minimum": 0.218334
+      },
+      "main_world": {
+        "count": 8435,
+        "total": 35565.50703500002,
+        "mean": 4.216420513930055,
+        "p50": 3.22725,
+        "p95": 12.140167,
+        "p99": 16.220625,
+        "worst": 27.392166999999997,
+        "minimum": 1.810833
+      },
+      "render/cleanup": {
+        "count": 8435,
+        "total": 268.0283459999997,
+        "mean": 0.03177573752222877,
+        "p50": 0.025917,
+        "p95": 0.06870799999999999,
+        "p99": 0.106333,
+        "worst": 1.2080000000000002,
+        "minimum": 0.01175
+      },
+      "render/extract_commands_and_assets": {
+        "count": 8435,
+        "total": 11478.048493000011,
+        "mean": 1.360764492353291,
+        "p50": 1.1065420000000001,
+        "p95": 2.827958,
+        "p99": 6.6835,
+        "worst": 14.990584,
+        "minimum": 0.699209
+      },
+      "render/graph_and_present": {
+        "count": 8435,
+        "total": 48751.34313700008,
+        "mean": 5.779649453112043,
+        "p50": 5.791625,
+        "p95": 8.206458,
+        "p99": 9.325208,
+        "worst": 18.700791000000002,
+        "minimum": 2.037541
+      },
+      "render/prepare": {
+        "count": 8435,
+        "total": 29161.13233200005,
+        "mean": 3.4571585455838822,
+        "p50": 3.470958,
+        "p95": 4.855125,
+        "p99": 5.691083000000001,
+        "worst": 8.566083,
+        "minimum": 1.460875
+      },
+      "render/queue": {
+        "count": 8434,
+        "total": 1396.4362869999989,
+        "mean": 0.16557224175954458,
+        "p50": 0.14875000000000002,
+        "p95": 0.26887500000000003,
+        "p99": 0.563917,
+        "worst": 1.6413339999999998,
+        "minimum": 0.045833
+      },
+      "render/specialize_and_views": {
+        "count": 8434,
+        "total": 23949.555164000016,
+        "mean": 2.8396437235001204,
+        "p50": 0.741916,
+        "p95": 9.017917,
+        "p99": 10.280584000000001,
+        "worst": 15.137709,
+        "minimum": 0.27
+      },
+      "render/swapchain_acquire": {
+        "count": 8434,
+        "total": 19482.004255999993,
+        "mean": 2.3099364780649743,
+        "p50": 0.12725,
+        "p95": 8.535875,
+        "p99": 9.843625,
+        "worst": 14.542334,
+        "minimum": 0.042333
+      },
+      "render_thread": {
+        "count": 8435,
+        "total": 115038.175906,
+        "mean": 13.638195128156491,
+        "p50": 13.303084,
+        "p95": 20.151,
+        "p99": 22.582792,
+        "worst": 31.69425,
+        "minimum": 5.957459
+      },
+      "wait_for_render_thread": {
+        "count": 8435,
+        "total": 79155.17359700029,
+        "mean": 9.384134392056941,
+        "p50": 8.750459000000001,
+        "p95": 16.533792,
+        "p99": 18.259874,
+        "worst": 24.73775,
+        "minimum": 0.012916
+      }
+    },
+    "rss": {
+      "method": "Saved run.json process RSS monitor; GiB = rss_kib / 1048576.",
+      "full_capture_sample_count": 137,
+      "full_capture_peak_gib": 3.2263641357421875,
+      "cpu_crop_sample_count": 113,
+      "cpu_crop_median_gib": 3.1788482666015625,
+      "cpu_crop_peak_gib": 3.2263641357421875,
+      "report_peak_process_memory_gib": null
+    },
+    "quality": {
+      "visual_validation": {
+        "status": "not observed",
+        "reason": "No moving PNG; counter-only evidence does not prove rendered pixel correctness."
+      },
+      "recorded_failure_counters": {
+        "failed_cells": 0,
+        "asset_load_failures": 0,
+        "material_validation_failures": 0,
+        "terrain_validation_failures": 0,
+        "water_validation_failures": 0,
+        "transform_bounds_validation_failures": 0,
+        "lod_query_submission_failures": 0,
+        "failed_lod_queries": 0,
+        "unrecovered_lod_queries": 0,
+        "failed_lod_chunks": 0,
+        "unrecovered_lod_chunks": 0,
+        "streaming_invariant_failures": 0,
+        "streaming_fixture_failures": 0,
+        "physics_fixture_failures": 0,
+        "asset_failures": []
+      },
+      "renderer": {
+        "gpu_preprocessing_active": true,
+        "gpu_culling_active": true,
+        "indirect_drawing_active": true,
+        "occlusion_culling_views": 2,
+        "hzb_views": 2,
+        "indirect_phase_buffers": 9,
+        "indirect_batch_sets": 309,
+        "proof_frames": 9634,
+        "renderer_fixture_validated": false,
+        "renderer_validation_failures": 0
+      },
+      "near_terrain_patches_validated": 1320,
+      "near_terrain_seams_validated": 589,
+      "water_surfaces_validated": 330,
+      "selected_lod_quadrants": 44624,
+      "ready_lod_quadrants": 85704,
+      "evidence_scope": "Counter and lifecycle checks only. No moving screenshot was captured or manually reviewed."
+    },
+    "final_workload_gauges": {
+      "assets/images": 473.0,
+      "assets/instances_completed_this_scan": 4.0,
+      "assets/meshes": 70327.0,
+      "assets/pending_instances": 6.0,
+      "assets/pending_surface_instances": 0.0,
+      "lod/batched_selected_triangles": 2855936.0,
+      "lod/batched_terrain_quadrants": 65224.0,
+      "lod/pending_chunks": 0.0,
+      "lod/pending_initial_terrain_upload_chunks": 0.0,
+      "lod/pending_terrain_batch_chunks": 0.0,
+      "lod/ready_terrain_patches": 65224.0,
+      "lod/resident_chunks": 184.0,
+      "lod/resident_terrain_batches": 4160.0,
+      "lod/visible_terrain_batches": 2952.0,
+      "lod/visible_terrain_patches": 44624.0,
+      "scene/bounded_instances": 3014.0,
+      "scene/instances_armed_this_frame": 4.0,
+      "scene/instances_spawned_this_frame": 4.0,
+      "scene/lod_terrain_batches": 4160.0,
+      "scene/mesh_entities": 9094.0,
+      "scene/structural_nodes_no_cpu_culling": 16123.0,
+      "scene/terrain_patches": 120.0,
+      "scene/visible_terrain_patches": 120.0,
+      "scene/water_surfaces": 30.0,
+      "streaming/active_requests": 0.0,
+      "streaming/arming_queue_depth": 2.0,
+      "streaming/commits_this_frame": 1.0,
+      "streaming/despawns_this_frame": 0.0,
+      "streaming/loading_cells": 0.0,
+      "streaming/max_despawns_per_frame": 2.0,
+      "streaming/peak_arming_queue_depth": 2078.0,
+      "streaming/resident_cells": 30.0,
+      "streaming/resident_roots": 30.0,
+      "streaming/retiring_cells": 0.0
+    },
+    "whole_record_counters": {
+      "lod/chunks_ready": 392,
+      "lod/chunks_requested": 392,
+      "lod/queries_submitted": 213,
+      "lod/selection_refreshes": 719,
+      "lod/terrain_batch_chunks_activated": 384,
+      "lod/terrain_batch_chunks_committed": 384,
+      "lod/terrain_batch_chunks_prepared": 384,
+      "lod/terrain_batches_created": 5472,
+      "lod/terrain_batches_updated": 10945,
+      "lod/terrain_patches_ready": 85704,
+      "streaming/despawned_cells": 300,
+      "streaming/despawned_entities": 157056,
+      "streaming/models_armed": 19769,
+      "streaming/origin_rebases": 60,
+      "streaming/references_spawned": 23781,
+      "streaming/requests": 330,
+      "terrain/patches_validated": 1320,
+      "water/surfaces_validated": 330
+    },
+    "whole_record_lod_span_summaries": {
+      "lod/chunk_ready": {
+        "count": 392,
+        "total": 24644.667214,
+        "mean": 62.869049015306125,
+        "p50": 43.182916,
+        "p95": 138.831292,
+        "p99": 352.417916,
+        "worst": 781.59475,
+        "minimum": 26.808917
+      },
+      "lod/collect": {
+        "count": 9636,
+        "total": 52.905766000000135,
+        "mean": 0.005490428185969296,
+        "p50": 0.00275,
+        "p95": 0.026542,
+        "p99": 0.048416,
+        "worst": 0.15412499999999998,
+        "minimum": 0.001
+      },
+      "lod/db_query": {
+        "count": 213,
+        "total": 327.00600000000003,
+        "mean": 1.5352394366197184,
+        "p50": 1.024,
+        "p95": 2.987,
+        "p99": 3.583,
+        "worst": 3.629,
+        "minimum": 0.481
+      },
+      "lod/db_queue_wait": {
+        "count": 213,
+        "total": 1885.2439999999995,
+        "mean": 8.850910798122063,
+        "p50": 7.517,
+        "p95": 28.114,
+        "p99": 32.969,
+        "worst": 37.932,
+        "minimum": 0.007
+      },
+      "lod/db_request_total": {
+        "count": 213,
+        "total": 2212.377,
+        "mean": 10.386746478873238,
+        "p50": 8.509,
+        "p95": 28.784,
+        "p99": 36.596,
+        "worst": 41.195,
+        "minimum": 0.554
+      },
+      "lod/plan": {
+        "count": 9636,
+        "total": 189.58016300000105,
+        "mean": 0.019674155562474163,
+        "p50": 0.015541,
+        "p95": 0.039667,
+        "p99": 0.06820799999999999,
+        "worst": 0.22075,
+        "minimum": 0.003208
+      },
+      "lod/readiness": {
+        "count": 9636,
+        "total": 188.77535100000028,
+        "mean": 0.019590634184308873,
+        "p50": 0.0022500000000000003,
+        "p95": 0.020959000000000002,
+        "p99": 0.482541,
+        "worst": 2.930833,
+        "minimum": 0.000833
+      },
+      "lod/terrain_batch_activation": {
+        "count": 384,
+        "total": 45.62742200000001,
+        "mean": 0.11882141145833336,
+        "p50": 0.045209,
+        "p95": 0.466166,
+        "p99": 0.71575,
+        "worst": 0.7666660000000001,
+        "minimum": 0.021124999999999998
+      },
+      "lod/terrain_batch_commit": {
+        "count": 384,
+        "total": 255.16683700000007,
+        "mean": 0.6644969713541669,
+        "p50": 0.339916,
+        "p95": 2.648292,
+        "p99": 3.4564169999999996,
+        "worst": 5.659458,
+        "minimum": 0.12879100000000002
+      },
+      "lod/terrain_batch_gpu_poll": {
+        "count": 8146,
+        "total": 9.568042000000137,
+        "mean": 0.0011745693591947136,
+        "p50": 0.000792,
+        "p95": 0.0022500000000000003,
+        "p99": 0.007708,
+        "worst": 0.097584,
+        "minimum": 4.1e-05
+      },
+      "lod/terrain_batch_inventory": {
+        "count": 1459,
+        "total": 32.79994600000003,
+        "mean": 0.022481114461960265,
+        "p50": 0.020999999999999998,
+        "p95": 0.059417,
+        "p99": 0.090209,
+        "worst": 0.138292,
+        "minimum": 0.00033299999999999996
+      },
+      "lod/terrain_batch_upload_activation": {
+        "count": 34,
+        "total": 3.048333,
+        "mean": 0.08965685294117647,
+        "p50": 0.017292,
+        "p95": 0.279334,
+        "p99": 0.577333,
+        "worst": 0.577333,
+        "minimum": 0.007333
+      },
+      "lod/visibility": {
+        "count": 719,
+        "total": 4867.872458000001,
+        "mean": 6.770337215577191,
+        "p50": 7.453666,
+        "p95": 10.357,
+        "p99": 11.309666,
+        "worst": 11.729750000000001,
+        "minimum": 0.003292
+      }
+    },
+    "streaming_budget": {
+      "commit_frames": 1490,
+      "commit_budget_micros": 16670,
+      "commit_budget_violations": 0,
+      "max_frame_commit_micros": 12894
+    },
+    "final_queue_snapshot": {
+      "pending_asset_instances": 6,
+      "pending_surface_instances": 0,
+      "pending_lod_chunks": 0,
+      "pending_lod_queries": 0,
+      "active_requests": 0,
+      "loading_cells": 0,
+      "arming_queue_depth": 2
+    },
+    "late_mesh_retry": {
+      "status": "observed",
+      "event_count": 22,
+      "last_cumulative": {
+        "render_frame": 8762,
+        "candidates": 57,
+        "newly_tracked": 0,
+        "pending": 0,
+        "pending_peak": 62,
+        "resumed": 4,
+        "canceled": 0,
+        "tracked_total": 101,
+        "resumed_total": 101,
+        "canceled_total": 0,
+        "extraction_retry_available": true
+      },
+      "last_event_utc": "2026-10-09T02:18:16.277234Z",
+      "all_events_before_cpu_crop": false,
+      "events": [
+        {
+          "utc": "2026-10-09T02:16:10.184494Z",
+          "values": {
+            "render_frame": 4,
+            "candidates": 21,
+            "newly_tracked": 6,
+            "pending": 6,
+            "pending_peak": 6,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 6,
+            "resumed_total": 0,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.184494Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=4 candidates=21 newly_tracked=6 pending=6 pending_peak=6 resumed=0 canceled=0 tracked_total=6 resumed_total=0 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.247960Z",
+          "values": {
+            "render_frame": 6,
+            "candidates": 24,
+            "newly_tracked": 2,
+            "pending": 8,
+            "pending_peak": 8,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 8,
+            "resumed_total": 0,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.247960Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=6 candidates=24 newly_tracked=2 pending=8 pending_peak=8 resumed=0 canceled=0 tracked_total=8 resumed_total=0 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.299987Z",
+          "values": {
+            "render_frame": 7,
+            "candidates": 28,
+            "newly_tracked": 6,
+            "pending": 14,
+            "pending_peak": 14,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 14,
+            "resumed_total": 0,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.299987Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=7 candidates=28 newly_tracked=6 pending=14 pending_peak=14 resumed=0 canceled=0 tracked_total=14 resumed_total=0 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.318665Z",
+          "values": {
+            "render_frame": 8,
+            "candidates": 165,
+            "newly_tracked": 16,
+            "pending": 30,
+            "pending_peak": 30,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 30,
+            "resumed_total": 0,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.318665Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=8 candidates=165 newly_tracked=16 pending=30 pending_peak=30 resumed=0 canceled=0 tracked_total=30 resumed_total=0 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.330588Z",
+          "values": {
+            "render_frame": 9,
+            "candidates": 187,
+            "newly_tracked": 32,
+            "pending": 62,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 62,
+            "resumed_total": 0,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.330588Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=9 candidates=187 newly_tracked=32 pending=62 pending_peak=62 resumed=0 canceled=0 tracked_total=62 resumed_total=0 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.383100Z",
+          "values": {
+            "render_frame": 10,
+            "candidates": 25,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 62,
+            "canceled": 0,
+            "tracked_total": 62,
+            "resumed_total": 62,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.383100Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=10 candidates=25 newly_tracked=0 pending=0 pending_peak=62 resumed=62 canceled=0 tracked_total=62 resumed_total=62 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.469246Z",
+          "values": {
+            "render_frame": 12,
+            "candidates": 88,
+            "newly_tracked": 4,
+            "pending": 4,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 66,
+            "resumed_total": 62,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.469246Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=12 candidates=88 newly_tracked=4 pending=4 pending_peak=62 resumed=0 canceled=0 tracked_total=66 resumed_total=62 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.484788Z",
+          "values": {
+            "render_frame": 13,
+            "candidates": 24,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 4,
+            "canceled": 0,
+            "tracked_total": 66,
+            "resumed_total": 66,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.484788Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=13 candidates=24 newly_tracked=0 pending=0 pending_peak=62 resumed=4 canceled=0 tracked_total=66 resumed_total=66 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.501687Z",
+          "values": {
+            "render_frame": 14,
+            "candidates": 84,
+            "newly_tracked": 4,
+            "pending": 4,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 70,
+            "resumed_total": 66,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.501687Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=14 candidates=84 newly_tracked=4 pending=4 pending_peak=62 resumed=0 canceled=0 tracked_total=70 resumed_total=66 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.510510Z",
+          "values": {
+            "render_frame": 15,
+            "candidates": 88,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 4,
+            "canceled": 0,
+            "tracked_total": 70,
+            "resumed_total": 70,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.510510Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=15 candidates=88 newly_tracked=0 pending=0 pending_peak=62 resumed=4 canceled=0 tracked_total=70 resumed_total=70 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.653339Z",
+          "values": {
+            "render_frame": 26,
+            "candidates": 104,
+            "newly_tracked": 4,
+            "pending": 4,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 74,
+            "resumed_total": 70,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.653339Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=26 candidates=104 newly_tracked=4 pending=4 pending_peak=62 resumed=0 canceled=0 tracked_total=74 resumed_total=70 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.698172Z",
+          "values": {
+            "render_frame": 27,
+            "candidates": 41,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 4,
+            "canceled": 0,
+            "tracked_total": 74,
+            "resumed_total": 74,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.698172Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=27 candidates=41 newly_tracked=0 pending=0 pending_peak=62 resumed=4 canceled=0 tracked_total=74 resumed_total=74 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.732756Z",
+          "values": {
+            "render_frame": 28,
+            "candidates": 226,
+            "newly_tracked": 2,
+            "pending": 2,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 76,
+            "resumed_total": 74,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.732756Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=28 candidates=226 newly_tracked=2 pending=2 pending_peak=62 resumed=0 canceled=0 tracked_total=76 resumed_total=74 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.747386Z",
+          "values": {
+            "render_frame": 29,
+            "candidates": 238,
+            "newly_tracked": 3,
+            "pending": 5,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 79,
+            "resumed_total": 74,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.747386Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=29 candidates=238 newly_tracked=3 pending=5 pending_peak=62 resumed=0 canceled=0 tracked_total=79 resumed_total=74 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.765602Z",
+          "values": {
+            "render_frame": 30,
+            "candidates": 42,
+            "newly_tracked": 4,
+            "pending": 9,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 83,
+            "resumed_total": 74,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.765602Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=30 candidates=42 newly_tracked=4 pending=9 pending_peak=62 resumed=0 canceled=0 tracked_total=83 resumed_total=74 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.781177Z",
+          "values": {
+            "render_frame": 31,
+            "candidates": 113,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 9,
+            "canceled": 0,
+            "tracked_total": 83,
+            "resumed_total": 83,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.781177Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=31 candidates=113 newly_tracked=0 pending=0 pending_peak=62 resumed=9 canceled=0 tracked_total=83 resumed_total=83 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.821992Z",
+          "values": {
+            "render_frame": 34,
+            "candidates": 34,
+            "newly_tracked": 4,
+            "pending": 4,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 87,
+            "resumed_total": 83,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.821992Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=34 candidates=34 newly_tracked=4 pending=4 pending_peak=62 resumed=0 canceled=0 tracked_total=87 resumed_total=83 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:16:10.834733Z",
+          "values": {
+            "render_frame": 35,
+            "candidates": 101,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 4,
+            "canceled": 0,
+            "tracked_total": 87,
+            "resumed_total": 87,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:16:10.834733Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=35 candidates=101 newly_tracked=0 pending=0 pending_peak=62 resumed=4 canceled=0 tracked_total=87 resumed_total=87 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:17:06.204147Z",
+          "values": {
+            "render_frame": 3694,
+            "candidates": 1310,
+            "newly_tracked": 10,
+            "pending": 10,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 97,
+            "resumed_total": 87,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:17:06.204147Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=3694 candidates=1310 newly_tracked=10 pending=10 pending_peak=62 resumed=0 canceled=0 tracked_total=97 resumed_total=87 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:17:06.216578Z",
+          "values": {
+            "render_frame": 3695,
+            "candidates": 53,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 10,
+            "canceled": 0,
+            "tracked_total": 97,
+            "resumed_total": 97,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:17:06.216578Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=3695 candidates=53 newly_tracked=0 pending=0 pending_peak=62 resumed=10 canceled=0 tracked_total=97 resumed_total=97 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:18:16.259344Z",
+          "values": {
+            "render_frame": 8761,
+            "candidates": 59,
+            "newly_tracked": 4,
+            "pending": 4,
+            "pending_peak": 62,
+            "resumed": 0,
+            "canceled": 0,
+            "tracked_total": 101,
+            "resumed_total": 97,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:18:16.259344Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=8761 candidates=59 newly_tracked=4 pending=4 pending_peak=62 resumed=0 canceled=0 tracked_total=101 resumed_total=97 canceled_total=0 extraction_retry_available=true"
+        },
+        {
+          "utc": "2026-10-09T02:18:16.277234Z",
+          "values": {
+            "render_frame": 8762,
+            "candidates": 57,
+            "newly_tracked": 0,
+            "pending": 0,
+            "pending_peak": 62,
+            "resumed": 4,
+            "canceled": 0,
+            "tracked_total": 101,
+            "resumed_total": 101,
+            "canceled_total": 0,
+            "extraction_retry_available": true
+          },
+          "line": "2026-10-09T02:18:16.277234Z  INFO engine::mesh_preparation_retry: late mesh preparation retry drain render_frame=8762 candidates=57 newly_tracked=0 pending=0 pending_peak=62 resumed=4 canceled=0 tracked_total=101 resumed_total=101 canceled_total=0 extraction_retry_available=true"
+        }
+      ],
+      "scope": "Whole-record events; explicit render_frame identifies startup, not exact main benchmark clock."
+    },
+    "drawable_proof": {
+      "periodic_count": 32,
+      "max_periodic_measured_missing_frames": 0,
+      "last_healthy_periodic": {
+        "utc": "2026-10-09T02:18:30.177914Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 9600,
+          "warmup_plus_five": 1205,
+          "present_frames": 9600,
+          "missing_frames": 0,
+          "measured_present_frames": 8395,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:18:30.177914Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=9600 warmup_plus_five=1205 present_frames=9600 missing_frames=0 measured_present_frames=8395 measured_missing_frames=0"
+      },
+      "final_drop_summary": {
+        "utc": "2026-10-09T02:18:31.102826Z",
+        "values": {
+          "final_summary": true,
+          "render_frames": 9636,
+          "warmup_plus_five": 1205,
+          "present_frames": 9635,
+          "missing_frames": 1,
+          "measured_present_frames": 8430,
+          "measured_missing_frames": 1
+        },
+        "line": "2026-10-09T02:18:31.102826Z  INFO engine::profiling: native profiling primary drawable proof final_summary=true render_frames=9636 warmup_plus_five=1205 present_frames=9635 missing_frames=1 measured_present_frames=8430 measured_missing_frames=1"
+      },
+      "observed_occlusion_lines": [],
+      "interpretation": "Terminal Drop may include teardown. Only last healthy periodic proof defines guarded CPU endpoint.",
+      "benchmark_complete_utc": "2026-10-09T02:18:30.924080Z",
+      "excluded_precompletion_tail_seconds": 0.746166,
+      "raw_summary_drawable_proof_valid": false
+    },
+    "window_metadata": {
+      "physical_resolution": [
+        3200,
+        1802
+      ],
+      "logical_resolution": [
+        1600.0,
+        901.0
+      ],
+      "scale_factor": 2.0
+    },
+    "physical_resolution": [
+      3200,
+      1802
+    ],
+    "cpu": {
+      "crop_status": "guarded_last_healthy_periodic",
+      "window": {
+        "start_profile_ms": 23799.960205078125,
+        "end_profile_ms": 141085.98901367188,
+        "duration_seconds": 117.28602880859376,
+        "start_utc": "2026-10-09T02:16:32.891885+00:00",
+        "end_utc": "2026-10-09T02:18:30.177914+00:00",
+        "boundary_evidence": {
+          "warmup": {
+            "file": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-moving-v4-16mib-1/engine.stderr.log",
+            "line": 112,
+            "text": "2026-10-09T02:16:30.891885Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=1205 present_frames=1200 missing_frames=0 measured_present_frames=0 measured_missing_frames=0"
+          },
+          "benchmark_end": {
+            "file": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-moving-v4-16mib-1/engine.stderr.log",
+            "line": 172,
+            "text": "2026-10-09T02:18:30.924080Z  INFO engine::metrics: acceptance benchmark complete path=/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-moving-v4-16mib-1/report.json average_fps=70.29229655006745 p95_ms=20.685125 passed=true"
+          },
+          "end_override_utc": "2026-10-09T02:18:30.177914Z"
+        }
+      },
+      "verified_render_crop": {
+        "end_utc": "2026-10-09T02:18:30.177914Z",
+        "proof_line": "2026-10-09T02:18:30.177914Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=9600 warmup_plus_five=1205 present_frames=9600 missing_frames=0 measured_present_frames=8395 measured_missing_frames=0",
+        "policy": "Last cumulative and measured zero-missing periodic proof; excludes terminal teardown and the unproven tail before benchmark completion."
+      },
+      "unproven_tail_seconds": 0,
+      "totals": {
+        "thread_count": 646,
+        "cpu_ms": 228009.3800000014,
+        "cpu_ms_per_second": 1944.045529686267,
+        "cpu_core_equivalents": 1.9440455296862669,
+        "cpu_at_blocked_leaf_observations_ms": 130892.01100000186,
+        "cpu_at_other_leaf_observations_ms": 97117.36899999937,
+        "unattributed_cpu_ms": 0,
+        "start_boundary_cpu_uncertainty_upper_ms": 1.4060000000000001,
+        "end_boundary_omitted_cpu_uncertainty_upper_ms": 1.8719999999999999,
+        "symbol_resolution": {
+          "resolved_leaf_cpu_ms": 202287.4039999842,
+          "unresolved_leaf_cpu_ms": 25721.97600000009
+        }
+      },
+      "exclusive_observation_groups": [
+        {
+          "group": "recognized_blocking_endpoint",
+          "cpu_ms": 130892.0109999924,
+          "cpu_ms_per_second": 1116.0068452279434,
+          "approximate_cpu_ms_per_frame": 15.87665932116814
+        },
+        {
+          "group": "other_or_unresolved_endpoint",
+          "cpu_ms": 75475.29500000179,
+          "cpu_ms_per_second": 643.5147968320638,
+          "approximate_cpu_ms_per_frame": 9.154840977114814
+        },
+        {
+          "group": "Apple_Metal_driver_leaf",
+          "cpu_ms": 7197.652999999973,
+          "cpu_ms_per_second": 61.36837501546125,
+          "approximate_cpu_ms_per_frame": 0.8730455260022709
+        },
+        {
+          "group": "other_render_command_encoding",
+          "cpu_ms": 6817.880999999992,
+          "cpu_ms_per_second": 58.13037639058024,
+          "approximate_cpu_ms_per_frame": 0.826980753846553
+        },
+        {
+          "group": "directional_shadow_visibility_culling",
+          "cpu_ms": 3796.5760000000055,
+          "cpu_ms_per_second": 32.3702323163816,
+          "approximate_cpu_ms_per_frame": 0.4605089590909168
+        },
+        {
+          "group": "wgpu_indirect_draw_validation",
+          "cpu_ms": 2741.4929999999968,
+          "cpu_ms_per_second": 23.3744208738963,
+          "approximate_cpu_ms_per_frame": 0.3325317569791917
+        },
+        {
+          "group": "camera_visibility_culling",
+          "cpu_ms": 1088.4710000000002,
+          "cpu_ms_per_second": 9.280483029878543,
+          "approximate_cpu_ms_per_frame": 0.1320270283567743
+        }
+      ],
+      "per_frame_denominator": {
+        "frames_per_second": 70.29229655006745,
+        "evidence": "native report.json average_fps for the complete benchmark report, approximately matching this cropped window",
+        "limits": "CPU ms per frame is an approximate sum across threads, not a wall-clock frame cost. FPS denominator and crop may have different time boundaries."
+      },
+      "coverage": {
+        "selected_sample_rows": 914834,
+        "missing_cpu_delta_rows": 0,
+        "unattributed_cpu_ms": 0,
+        "unresolved_leaf_cpu_ms": 25721.97600000009,
+        "unresolved_leaf_percent_of_process_cpu": 11.281104312462904,
+        "dropped_sample_count": null,
+        "dropped_sample_count_status": "Not exposed by existing analyzer; missing deltas/unattributed CPU are not a sampling-drop counter."
+      },
+      "top_physical_nonblocking_endpoints": [
+        {
+          "function_id": 2676,
+          "cpu_ms": 7003.680000000001,
+          "cpu_ms_per_second": 59.7145292678443,
+          "approximate_cpu_ms_per_frame": 0.8495174037358579,
+          "percent_of_process_cpu": 3.071663104386301,
+          "module": "engine-production-v4",
+          "function": "ruzstd::decoding::literals_section_decoder::decode_literals",
+          "library_debug_identity": [
+            "engine-production-v4",
+            "F167A24C851B30FC923D313BDBEFB44E"
+          ],
+          "physical_symbol_RVA": 44341096,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 7003.679999999991
+          }
+        },
+        {
+          "function_id": 79,
+          "cpu_ms": 5900.112000000003,
+          "cpu_ms_per_second": 50.305326729313656,
+          "approximate_cpu_ms_per_frame": 0.7156591717483924,
+          "percent_of_process_cpu": 2.5876619637314775,
+          "module": "libsystem_platform.dylib",
+          "function": "_platform_memmove",
+          "library_debug_identity": [
+            "libsystem_platform.dylib",
+            "EDB83A19EC1732DE93506145970A85D6"
+          ],
+          "physical_symbol_RVA": 13152,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 5524.15799999999,
+            "directional_shadow_visibility_culling": 108.07800000000006,
+            "camera_visibility_culling": 24.775,
+            "other_render_command_encoding": 86.32100000000001,
+            "wgpu_indirect_draw_validation": 156.78
+          }
+        },
+        {
+          "function_id": 899,
+          "cpu_ms": 3893.255000000004,
+          "cpu_ms_per_second": 33.19453339454135,
+          "approximate_cpu_ms_per_frame": 0.4722357217465176,
+          "percent_of_process_cpu": 1.7074977354001752,
+          "module": "IOKit",
+          "function": "0x1eae0",
+          "library_debug_identity": [
+            "IOKit",
+            "12372585DF9233EFB632714FAA13260A"
+          ],
+          "physical_symbol_RVA": null,
+          "symbol_confidence": "unresolved_RVA",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 3882.3900000000035,
+            "other_render_command_encoding": 7.399,
+            "wgpu_indirect_draw_validation": 3.466
+          }
+        },
+        {
+          "function_id": 224,
+          "cpu_ms": 3183.7680000000028,
+          "cpu_ms_per_second": 27.14533037175117,
+          "approximate_cpu_ms_per_frame": 0.3861778844060989,
+          "percent_of_process_cpu": 1.3963320280946263,
+          "module": "libsystem_kernel.dylib",
+          "function": "__psynch_cvsignal",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 23132,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 3121.1010000000088,
+            "camera_visibility_culling": 25.504000000000005,
+            "directional_shadow_visibility_culling": 37.16300000000001
+          }
+        },
+        {
+          "function_id": 279,
+          "cpu_ms": 2346.9900000000016,
+          "cpu_ms_per_second": 20.010823316647528,
+          "approximate_cpu_ms_per_frame": 0.28468017547832314,
+          "percent_of_process_cpu": 1.0293392315702043,
+          "module": "libsystem_platform.dylib",
+          "function": "_platform_memset",
+          "library_debug_identity": [
+            "libsystem_platform.dylib",
+            "EDB83A19EC1732DE93506145970A85D6"
+          ],
+          "physical_symbol_RVA": 12432,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 1803.1530000000007,
+            "directional_shadow_visibility_culling": 7.189,
+            "camera_visibility_culling": 1.818,
+            "other_render_command_encoding": 483.6830000000002,
+            "wgpu_indirect_draw_validation": 51.14700000000002
+          }
+        },
+        {
+          "function_id": 3379,
+          "cpu_ms": 1995.6399999999996,
+          "cpu_ms_per_second": 17.01515534520149,
+          "approximate_cpu_ms_per_frame": 0.24206287431627757,
+          "percent_of_process_cpu": 0.8752446938805708,
+          "module": "engine-production-v4",
+          "function": "<bevy_camera::primitives::Frustum>::intersects_obb",
+          "library_debug_identity": [
+            "engine-production-v4",
+            "F167A24C851B30FC923D313BDBEFB44E"
+          ],
+          "physical_symbol_RVA": 12114312,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "directional_shadow_visibility_culling": 1995.6399999999967
+          }
+        },
+        {
+          "function_id": 3473,
+          "cpu_ms": 1540.6809999999998,
+          "cpu_ms_per_second": 13.13609997414382,
+          "approximate_cpu_ms_per_frame": 0.18687823017401778,
+          "percent_of_process_cpu": 0.6757094817765787,
+          "module": "engine-production-v4",
+          "function": "engine::streaming::lod::update_terrain_lod_visibility",
+          "library_debug_identity": [
+            "engine-production-v4",
+            "F167A24C851B30FC923D313BDBEFB44E"
+          ],
+          "physical_symbol_RVA": 37705744,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 1540.681000000002
+          }
+        },
+        {
+          "function_id": 131,
+          "cpu_ms": 1504.6839999999997,
+          "cpu_ms_per_second": 12.829183623017755,
+          "approximate_cpu_ms_per_frame": 0.18251194302465062,
+          "percent_of_process_cpu": 0.6599219733854766,
+          "module": "Metal",
+          "function": "0x85834",
+          "library_debug_identity": [
+            "Metal",
+            "493E76D974D4333BA3B2E5F9BC86429D"
+          ],
+          "physical_symbol_RVA": null,
+          "symbol_confidence": "unresolved_RVA",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 1406.2360000000028,
+            "directional_shadow_visibility_culling": 35.903,
+            "camera_visibility_culling": 10.986,
+            "wgpu_indirect_draw_validation": 51.55899999999999
+          }
+        },
+        {
+          "function_id": 374,
+          "cpu_ms": 1433.508,
+          "cpu_ms_per_second": 12.22232532349978,
+          "approximate_cpu_ms_per_frame": 0.17387858874114495,
+          "percent_of_process_cpu": 0.6287057137737014,
+          "module": "libsystem_platform.dylib",
+          "function": "__bzero",
+          "library_debug_identity": [
+            "libsystem_platform.dylib",
+            "EDB83A19EC1732DE93506145970A85D6"
+          ],
+          "physical_symbol_RVA": 12336,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 1379.6330000000028,
+            "directional_shadow_visibility_culling": 19.933,
+            "camera_visibility_culling": 16.907,
+            "wgpu_indirect_draw_validation": 7.4319999999999995,
+            "other_render_command_encoding": 9.603000000000002
+          }
+        },
+        {
+          "function_id": 2957,
+          "cpu_ms": 1266.6739999999986,
+          "cpu_ms_per_second": 10.799871159992648,
+          "approximate_cpu_ms_per_frame": 0.1536423148772806,
+          "percent_of_process_cpu": 0.5555359169872708,
+          "module": "libsystem_kernel.dylib",
+          "function": "madvise",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 14760,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 417.4409999999999,
+            "wgpu_indirect_draw_validation": 482.81800000000004,
+            "other_render_command_encoding": 366.4149999999998
+          }
+        },
+        {
+          "function_id": 7199,
+          "cpu_ms": 1253.8010000000002,
+          "cpu_ms_per_second": 10.690113841659306,
+          "approximate_cpu_ms_per_frame": 0.1520808732439835,
+          "percent_of_process_cpu": 0.5498900966267232,
+          "module": "libsystem_pthread.dylib",
+          "function": "start_wqthread",
+          "library_debug_identity": [
+            "libsystem_pthread.dylib",
+            "A373F0B09880326A88B4DD8BE4E33072"
+          ],
+          "physical_symbol_RVA": 7176,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 1253.801000000005
+          }
+        },
+        {
+          "function_id": 2679,
+          "cpu_ms": 1002.0740000000001,
+          "cpu_ms_per_second": 8.5438479772842,
+          "approximate_cpu_ms_per_frame": 0.12154742975567216,
+          "percent_of_process_cpu": 0.4394880596578939,
+          "module": "engine-production-v4",
+          "function": "ruzstd::decoding::sequence_section_decoder::decode_sequences",
+          "library_debug_identity": [
+            "engine-production-v4",
+            "F167A24C851B30FC923D313BDBEFB44E"
+          ],
+          "physical_symbol_RVA": 44343116,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 1002.0740000000001
+          }
+        },
+        {
+          "function_id": 2770,
+          "cpu_ms": 904.2799999999996,
+          "cpu_ms_per_second": 7.710040225470925,
+          "approximate_cpu_ms_per_frame": 0.10968542221378776,
+          "percent_of_process_cpu": 0.3965977189184033,
+          "module": "engine-production-v4",
+          "function": "sha2::sha256::compress256",
+          "library_debug_identity": [
+            "engine-production-v4",
+            "F167A24C851B30FC923D313BDBEFB44E"
+          ],
+          "physical_symbol_RVA": 44405340,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 904.28
+          }
+        },
+        {
+          "function_id": 8955,
+          "cpu_ms": 827.4779999999988,
+          "cpu_ms_per_second": 7.055213723285071,
+          "approximate_cpu_ms_per_frame": 0.10036965740989581,
+          "percent_of_process_cpu": 0.3629140169584224,
+          "module": "AGXMetalG13X",
+          "function": "AGX::RenderContext<AGX::G13::Encoders, AGX::G13::Classes, AGX::G13::ObjClasses, AGX::G13::CommandEncoding>::encodeAndEmitRenderState(AGX::G13::VertexProgramVariant const*, AGX::G13::FragmentProgramVariant const*, AGX::G13::FixedLayoutUserArgumentTable*, AGX::G13::FixedLayoutUserArgumentTable*, AGX::RenderDirtyBits<AGX::G13::Classes>&, bool)",
+          "library_debug_identity": [
+            "AGXMetalG13X",
+            "E368C4029A9335F5AE47B1E561825A06"
+          ],
+          "physical_symbol_RVA": 3360560,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "Apple_Metal_driver_leaf": 827.4779999999988
+          }
+        },
+        {
+          "function_id": 351,
+          "cpu_ms": 822.1950000000007,
+          "cpu_ms_per_second": 7.010169995113323,
+          "approximate_cpu_ms_per_frame": 0.09972885137022311,
+          "percent_of_process_cpu": 0.3605970070178673,
+          "module": "engine-production-v4",
+          "function": "<wgpu_core::device::queue::Queue>::submit",
+          "library_debug_identity": [
+            "engine-production-v4",
+            "F167A24C851B30FC923D313BDBEFB44E"
+          ],
+          "physical_symbol_RVA": 45987164,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": false,
+          "self_observation_groups": {
+            "other_or_unresolved_endpoint": 822.1950000000006
+          }
+        }
+      ],
+      "top_physical_blocking_endpoints": [
+        {
+          "function_id": 32,
+          "cpu_ms": 74309.50100000184,
+          "cpu_ms_per_second": 633.575045168185,
+          "approximate_cpu_ms_per_frame": 9.013434988809982,
+          "percent_of_process_cpu": 32.590545617027416,
+          "module": "libsystem_kernel.dylib",
+          "function": "__psynch_cvwait",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 17668,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 74309.5009999953
+          }
+        },
+        {
+          "function_id": 106,
+          "cpu_ms": 26275.033000000003,
+          "cpu_ms_per_second": 224.02525916262232,
+          "approximate_cpu_ms_per_frame": 3.1870527804288584,
+          "percent_of_process_cpu": 11.523663193154528,
+          "module": "libsystem_kernel.dylib",
+          "function": "mach_msg2_trap",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 3116,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 26275.032999999912
+          }
+        },
+        {
+          "function_id": 7198,
+          "cpu_ms": 24105.789000000026,
+          "cpu_ms_per_second": 205.5299275188159,
+          "approximate_cpu_ms_per_frame": 2.923932459262048,
+          "percent_of_process_cpu": 10.572279526394869,
+          "module": "libsystem_kernel.dylib",
+          "function": "__workq_kernreturn",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 10728,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 24105.789000000354
+          }
+        },
+        {
+          "function_id": 93,
+          "cpu_ms": 3084.5950000000016,
+          "cpu_ms_per_second": 26.299765038800494,
+          "approximate_cpu_ms_per_frame": 0.37414860987032666,
+          "percent_of_process_cpu": 1.3528368876754029,
+          "module": "libsystem_kernel.dylib",
+          "function": "__psynch_mutexwait",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 14804,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 3084.5949999999934
+          }
+        },
+        {
+          "function_id": 537,
+          "cpu_ms": 1603.0360000000014,
+          "cpu_ms_per_second": 13.667748974740153,
+          "approximate_cpu_ms_per_frame": 0.19444163365760794,
+          "percent_of_process_cpu": 0.7030570408989277,
+          "module": "libsystem_kernel.dylib",
+          "function": "kevent_id",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 10860,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 1603.0359999999973
+          }
+        },
+        {
+          "function_id": 2398,
+          "cpu_ms": 636.8050000000002,
+          "cpu_ms_per_second": 5.429504319216411,
+          "approximate_cpu_ms_per_frame": 0.07724181148853361,
+          "percent_of_process_cpu": 0.27928894855115005,
+          "module": "libsystem_kernel.dylib",
+          "function": "semaphore_timedwait_trap",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 3008,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 636.8049999999996
+          }
+        },
+        {
+          "function_id": 428,
+          "cpu_ms": 340.468,
+          "cpu_ms_per_second": 2.9028862470536074,
+          "approximate_cpu_ms_per_frame": 0.041297359590263975,
+          "percent_of_process_cpu": 0.14932192701896646,
+          "module": "libsystem_kernel.dylib",
+          "function": "semaphore_wait_trap",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 2984,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 340.468
+          }
+        },
+        {
+          "function_id": 8900,
+          "cpu_ms": 279.3510000000001,
+          "cpu_ms_per_second": 2.381792638370339,
+          "approximate_cpu_ms_per_frame": 0.03388412038400037,
+          "percent_of_process_cpu": 0.12251732801518886,
+          "module": "libsystem_kernel.dylib",
+          "function": "semaphore_wait_signal_trap",
+          "library_debug_identity": [
+            "libsystem_kernel.dylib",
+            "C6A4A4CB92E63BAFAAE0E8306259209A"
+          ],
+          "physical_symbol_RVA": 2996,
+          "symbol_confidence": "exact_sampled_RVA_physical_symbol",
+          "recognized_blocking_endpoint": true,
+          "self_observation_groups": {
+            "recognized_blocking_endpoint": 279.3510000000001
+          }
+        }
+      ],
+      "provenance": {
+        "command": [
+          "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/analyze_cpu_profile.py",
+          "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-moving-v4-16mib-1",
+          "--end-utc",
+          "2026-10-09T02:18:30.177914Z",
+          "--output",
+          "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-moving-v4-16mib-1/cpu-analysis.json"
+        ],
+        "analyzer_sha256": "d27ada91696eac02957a1a9849ea28eedc799afb5dd2015834f285168c973f1f",
+        "input_sha256": {
+          "cpu-profile.json.gz": "6b0f73ccd3d0757d91e1c763ad1edd0a5c8e8e7023ee51f4721f8e99df855283",
+          "cpu-profile.json.syms.json": "df0037ccec3d1d7fb2886daedaa7b53ef72c03106c2c773923c84bbceeb10813",
+          "run.json": "77ac300273e7602f1291bd3bf0f0b2ce63492b6cbb3d12e526d9bf857ce16c0c",
+          "report.json": "6c60ecbb7afc4cf43406b870be3227c14b3622985422267f8043e41046cd7f75",
+          "engine.stderr.log": "ddbf11be2b06b615b422844cc70ce793a4f2468be84ec19a597c39ae21430676",
+          "engine.stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "comparison_scope": "One moving-route capture. CPU groups and FPS are not compared to a static camera or another flight endpoint."
+    },
+    "provenance": {
+      "run.json": "77ac300273e7602f1291bd3bf0f0b2ce63492b6cbb3d12e526d9bf857ce16c0c",
+      "report.json": "6c60ecbb7afc4cf43406b870be3227c14b3622985422267f8043e41046cd7f75",
+      "cpu-analysis.json": "777e0f84a077da4f4d29cf4e50fb9592e128a62b7eb30f6ace68202335e5da2f",
+      "engine.stderr.log": "ddbf11be2b06b615b422844cc70ce793a4f2468be84ec19a597c39ae21430676",
+      "profile/metadata.json": "f857e2e2712eee1ff38cc6a9adad0bffb2cc76950d476256ab3a902c54f7085f",
+      "profile/cpu-spans.json": "22249134c5a5d2c313d73b3bf79da2da4aab7b978f55b146a867d745657f46a2",
+      "profile/gpu-passes.json": "b3dc72c7534a117744f43284f9f8a7b5781c60bf7d198a7769e7ff62de9d5863"
+    },
+    "acceptance_thresholds_origin": {
+      "path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-moving-v4-16mib-1/report.json",
+      "field": "thresholds",
+      "interpretation": "Raw report gate results, copied unchanged; a gate value is not evidence that a requested action occurred."
+    },
+    "screenshot_capture_gate": {
+      "raw_report_value": true,
+      "screenshot_requested_by_command": false,
+      "archived_frame_png_present": false,
+      "actual_screenshot_capture_proven": false,
+      "interpretation": "The raw screenshot_captured=true gate passes vacuously because no screenshot was requested. It does not establish a moving screenshot or visual review."
+    },
+    "gpu_timing_status": {
+      "timestamp_queries_supported": true,
+      "timestamp_measurements_available": false,
+      "timestamp_measurement_status": "all_zero",
+      "device": {
+        "backend": "Metal",
+        "timestamp_queries_supported": true,
+        "timestamp_queries_inside_passes_supported": false,
+        "timestamp_queries_inside_encoders_supported": true,
+        "pipeline_statistics_supported": false,
+        "multi_draw_indirect_count_supported": false
+      }
+    }
+  },
+  "draw_counts": {
+    "run_folder": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1",
+    "label": "fixes-drawcounts-v4-1",
+    "exit_code": 0,
+    "report_passed": true,
+    "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+    "visual_validation": {
+      "status": "passed",
+      "reviewer": "root agent manual PNG review",
+      "evidence_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1/frame.png",
+      "evidence_sha256": "c80105c375da350486b36a21f0a050f9ee64424d4f66d7ed2d46fa0f47278df5",
+      "finding": "Terrain ground intact; no blue ground holes or floating buildings seen.",
+      "scope": "Only the static draw-count screenshot at this captured view; no moving-route visual validation.",
+      "review_record_basis": "Parent message after the completed native draw-count capture, 2026-10-09."
+    },
+    "analysis": {
+      "alignment": "explicit_render_clock_bounds",
+      "requested_render_elapsed_window_seconds": [
+        24.100423208,
+        34.100423208
+      ],
+      "selected_complete_schedules": 468,
+      "selected_render_frames": [
+        1153,
+        1620
+      ],
+      "selected_interval_seconds": [
+        24.122463375,
+        34.096578333
+      ],
+      "selected_frame_gaps": [],
+      "capture_dropped_frame_samples": 0,
+      "capture_coverage_complete": false,
+      "phases": {
+        "opaque": {
+          "coverage": {
+            "phase": "opaque",
+            "registry_present": true,
+            "registered_draw_variants": 1,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 80028,
+              "mean_per_completed_render_frame": 171.0,
+              "minimum": 171,
+              "p50": 171,
+              "p95": 171,
+              "maximum": 171
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 80028,
+              "mean_per_completed_render_frame": 171.0,
+              "minimum": 171,
+              "p50": 171,
+              "p95": 171,
+              "maximum": 171
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 80028,
+              "mean_per_completed_render_frame": 171.0,
+              "minimum": 171,
+              "p50": 171,
+              "p95": 171,
+              "maximum": 171
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 264420,
+              "mean_per_completed_render_frame": 565.0,
+              "minimum": 565,
+              "p50": 565,
+              "p95": 565,
+              "maximum": 565
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 264420,
+              "mean_per_completed_render_frame": 565.0,
+              "minimum": 565,
+              "p50": 565,
+              "p95": 565,
+              "maximum": 565
+            },
+            "fixed_indexed_api_calls": {
+              "total": 80028,
+              "mean_per_completed_render_frame": 171.0,
+              "minimum": 171,
+              "p50": 171,
+              "p95": 171,
+              "maximum": 171
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "alpha_mask": {
+          "coverage": {
+            "phase": "alpha_mask",
+            "registry_present": true,
+            "registered_draw_variants": 1,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 16848,
+              "mean_per_completed_render_frame": 36.0,
+              "minimum": 36,
+              "p50": 36,
+              "p95": 36,
+              "maximum": 36
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 16848,
+              "mean_per_completed_render_frame": 36.0,
+              "minimum": 36,
+              "p50": 36,
+              "p95": 36,
+              "maximum": 36
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 16848,
+              "mean_per_completed_render_frame": 36.0,
+              "minimum": 36,
+              "p50": 36,
+              "p95": 36,
+              "maximum": 36
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 121212,
+              "mean_per_completed_render_frame": 259.0,
+              "minimum": 259,
+              "p50": 259,
+              "p95": 259,
+              "maximum": 259
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 121212,
+              "mean_per_completed_render_frame": 259.0,
+              "minimum": 259,
+              "p50": 259,
+              "p95": 259,
+              "maximum": 259
+            },
+            "fixed_indexed_api_calls": {
+              "total": 16848,
+              "mean_per_completed_render_frame": 36.0,
+              "minimum": 36,
+              "p50": 36,
+              "p95": 36,
+              "maximum": 36
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "transparent": {
+          "coverage": {
+            "phase": "transparent",
+            "registry_present": true,
+            "registered_draw_variants": 4,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 3,
+            "coverage_complete": false
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 9360,
+              "mean_per_completed_render_frame": 20.0,
+              "minimum": 20,
+              "p50": 20,
+              "p95": 20,
+              "maximum": 20
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 9360,
+              "mean_per_completed_render_frame": 20.0,
+              "minimum": 20,
+              "p50": 20,
+              "p95": 20,
+              "maximum": 20
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 9360,
+              "mean_per_completed_render_frame": 20.0,
+              "minimum": 20,
+              "p50": 20,
+              "p95": 20,
+              "maximum": 20
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 10296,
+              "mean_per_completed_render_frame": 22.0,
+              "minimum": 22,
+              "p50": 22,
+              "p95": 22,
+              "maximum": 22
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 10296,
+              "mean_per_completed_render_frame": 22.0,
+              "minimum": 22,
+              "p50": 22,
+              "p95": 22,
+              "maximum": 22
+            },
+            "fixed_indexed_api_calls": {
+              "total": 9360,
+              "mean_per_completed_render_frame": 20.0,
+              "minimum": 20,
+              "p50": 20,
+              "p95": 20,
+              "maximum": 20
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "transmissive": {
+          "coverage": {
+            "phase": "transmissive",
+            "registry_present": true,
+            "registered_draw_variants": 1,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "opaque_prepass": {
+          "coverage": {
+            "phase": "opaque_prepass",
+            "registry_present": true,
+            "registered_draw_variants": 2,
+            "wrapped_draw_variants": 2,
+            "expected_draw_variants": 2,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 7488,
+              "mean_per_completed_render_frame": 16.0,
+              "minimum": 16,
+              "p50": 16,
+              "p95": 16,
+              "maximum": 16
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 7488,
+              "mean_per_completed_render_frame": 16.0,
+              "minimum": 16,
+              "p50": 16,
+              "p95": 16,
+              "maximum": 16
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 7488,
+              "mean_per_completed_render_frame": 16.0,
+              "minimum": 16,
+              "p50": 16,
+              "p95": 16,
+              "maximum": 16
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 497016,
+              "mean_per_completed_render_frame": 1062.0,
+              "minimum": 1062,
+              "p50": 1062,
+              "p95": 1062,
+              "maximum": 1062
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 497016,
+              "mean_per_completed_render_frame": 1062.0,
+              "minimum": 1062,
+              "p50": 1062,
+              "p95": 1062,
+              "maximum": 1062
+            },
+            "fixed_indexed_api_calls": {
+              "total": 7488,
+              "mean_per_completed_render_frame": 16.0,
+              "minimum": 16,
+              "p50": 16,
+              "p95": 16,
+              "maximum": 16
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "alpha_mask_prepass": {
+          "coverage": {
+            "phase": "alpha_mask_prepass",
+            "registry_present": true,
+            "registered_draw_variants": 1,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 32760,
+              "mean_per_completed_render_frame": 70.0,
+              "minimum": 70,
+              "p50": 70,
+              "p95": 70,
+              "maximum": 70
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 32760,
+              "mean_per_completed_render_frame": 70.0,
+              "minimum": 70,
+              "p50": 70,
+              "p95": 70,
+              "maximum": 70
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 32760,
+              "mean_per_completed_render_frame": 70.0,
+              "minimum": 70,
+              "p50": 70,
+              "p95": 70,
+              "maximum": 70
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 234936,
+              "mean_per_completed_render_frame": 502.0,
+              "minimum": 502,
+              "p50": 502,
+              "p95": 502,
+              "maximum": 502
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 234936,
+              "mean_per_completed_render_frame": 502.0,
+              "minimum": 502,
+              "p50": 502,
+              "p95": 502,
+              "maximum": 502
+            },
+            "fixed_indexed_api_calls": {
+              "total": 32760,
+              "mean_per_completed_render_frame": 70.0,
+              "minimum": 70,
+              "p50": 70,
+              "p95": 70,
+              "maximum": 70
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "opaque_deferred": {
+          "coverage": {
+            "phase": "opaque_deferred",
+            "registry_present": true,
+            "registered_draw_variants": 1,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "alpha_mask_deferred": {
+          "coverage": {
+            "phase": "alpha_mask_deferred",
+            "registry_present": true,
+            "registered_draw_variants": 1,
+            "wrapped_draw_variants": 1,
+            "expected_draw_variants": 1,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        },
+        "shadow": {
+          "coverage": {
+            "phase": "shadow",
+            "registry_present": true,
+            "registered_draw_variants": 2,
+            "wrapped_draw_variants": 2,
+            "expected_draw_variants": 2,
+            "unwrapped_draw_variants": 0,
+            "coverage_complete": true
+          },
+          "steady_frame_metrics": {
+            "leaf_mesh_commands_reached": {
+              "total": 6552,
+              "mean_per_completed_render_frame": 14.0,
+              "minimum": 14,
+              "p50": 14,
+              "p95": 14,
+              "maximum": 14
+            },
+            "leaf_mesh_commands_skipped": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "leaf_mesh_command_failures": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "issued_api_calls": {
+              "total": 6552,
+              "mean_per_completed_render_frame": 14.0,
+              "minimum": 14,
+              "p50": 14,
+              "p95": 14,
+              "maximum": 14
+            },
+            "direct_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "direct_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_indirect_api_calls": {
+              "total": 6552,
+              "mean_per_completed_render_frame": 14.0,
+              "minimum": 14,
+              "p50": 14,
+              "p95": 14,
+              "maximum": 14
+            },
+            "fixed_indexed_argument_slots": {
+              "total": 206388,
+              "mean_per_completed_render_frame": 441.0,
+              "minimum": 441,
+              "p50": 441,
+              "p95": 441,
+              "maximum": 441
+            },
+            "fixed_non_indexed_argument_slots": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "empty_fixed_indirect_ranges": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_indirect_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "dynamic_argument_slot_upper_bound": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "unclassified_successes": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            },
+            "fixed_argument_slots_total": {
+              "total": 206388,
+              "mean_per_completed_render_frame": 441.0,
+              "minimum": 441,
+              "p50": 441,
+              "p95": 441,
+              "maximum": 441
+            },
+            "fixed_indexed_api_calls": {
+              "total": 6552,
+              "mean_per_completed_render_frame": 14.0,
+              "minimum": 14,
+              "p50": 14,
+              "p95": 14,
+              "maximum": 14
+            },
+            "fixed_non_indexed_api_calls": {
+              "total": 0,
+              "mean_per_completed_render_frame": 0.0,
+              "minimum": 0,
+              "p50": 0,
+              "p95": 0,
+              "maximum": 0
+            }
+          },
+          "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+          "unavailable_splits": [
+            "dynamic_indexed_api_calls",
+            "dynamic_non_indexed_api_calls",
+            "dynamic_indexed_argument_slot_upper_bound",
+            "dynamic_non_indexed_argument_slot_upper_bound"
+          ]
+        }
+      },
+      "caveats": [
+        "Counts describe mesh API calls and argument slots, including zero-instance records; non-mesh render nodes are excluded.",
+        "Indirect API-call splits were not captured. Fixed call splits are deduced only for single-kind, nonempty frames; dynamic splits remain unavailable and GPU-counted ranges are upper bounds.",
+        "The render sequence and plugin-build elapsed clock are independent of the benchmark main-frame counter.",
+        "The count capture adds CPU overhead and must remain separate from matched timing runs.",
+        "Draw registry coverage is incomplete; inspect each phase's coverage record."
+      ],
+      "capture": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1/profile/draw-submission.json",
+      "benchmark_context": {
+        "path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1/report.json",
+        "measured_frames": 469,
+        "main_warmup_frames": 1200,
+        "measured_seconds": 10.007092792
+      }
+    },
+    "aggregate_covered_mesh_counts_per_completed_schedule": {
+      "leaf_mesh_commands_reached": {
+        "total": 153036,
+        "mean_per_completed_render_frame": 327.0,
+        "minimum": 327,
+        "p50": 327,
+        "p95": 327,
+        "maximum": 327
+      },
+      "leaf_mesh_commands_skipped": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "leaf_mesh_command_failures": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "issued_api_calls": {
+        "total": 153036,
+        "mean_per_completed_render_frame": 327.0,
+        "minimum": 327,
+        "p50": 327,
+        "p95": 327,
+        "maximum": 327
+      },
+      "direct_indexed_api_calls": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "direct_non_indexed_api_calls": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "fixed_indirect_api_calls": {
+        "total": 153036,
+        "mean_per_completed_render_frame": 327.0,
+        "minimum": 327,
+        "p50": 327,
+        "p95": 327,
+        "maximum": 327
+      },
+      "fixed_indexed_argument_slots": {
+        "total": 1334268,
+        "mean_per_completed_render_frame": 2851.0,
+        "minimum": 2851,
+        "p50": 2851,
+        "p95": 2851,
+        "maximum": 2851
+      },
+      "fixed_non_indexed_argument_slots": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "empty_fixed_indirect_ranges": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "dynamic_indirect_api_calls": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "dynamic_argument_slot_upper_bound": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "unclassified_successes": {
+        "total": 0,
+        "mean_per_completed_render_frame": 0.0,
+        "minimum": 0,
+        "p50": 0,
+        "p95": 0,
+        "maximum": 0
+      },
+      "fixed_argument_slots_total": {
+        "total": 1334268,
+        "mean_per_completed_render_frame": 2851.0,
+        "minimum": 2851,
+        "p50": 2851,
+        "p95": 2851,
+        "maximum": 2851
+      }
+    },
+    "all_expected_mesh_variants_wrapped": true,
+    "whole_registry_coverage_complete": false,
+    "transparent_registry_source_evidence": {
+      "path": "/Users/taylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_gizmos_render-0.19.0/src/pipeline_3d.rs",
+      "sha256": "9351fb056632e60eaeb98dd72b74e52d4fb1ee244669dc5ddd707de3a632915d",
+      "registrations": [
+        ".add_render_command::<Transparent3d, DrawLineGizmo3d>()",
+        ".add_render_command::<Transparent3d, DrawLineGizmo3dStrip>()",
+        ".add_render_command::<Transparent3d, DrawLineJointGizmo3d>()"
+      ],
+      "interpretation": "The three gizmo registrations account for the three additional transparent variants in source. Their actual invocation counts are not captured; no zero count is assumed."
+    },
+    "crop_scope": "Explicit completed render-schedule clock bounds: last completed schedule minus 1 second, then 10 seconds back. Frames 1153\u20131620 include the final warmup tail; this is not an exact main-benchmark clock crop.",
+    "main_warmup_frames": 1200,
+    "crop_observations_at_or_before_numeric_1200_boundary": 48,
+    "render_frame_and_main_frame_identity_proven": false,
+    "final_workload_gauges": {
+      "assets/images": 454.0,
+      "assets/instances_completed_this_scan": 0.0,
+      "assets/meshes": 68073.0,
+      "assets/pending_instances": 0.0,
+      "assets/pending_surface_instances": 0.0,
+      "lod/batched_selected_triangles": 2857216.0,
+      "lod/batched_terrain_quadrants": 63176.0,
+      "lod/pending_chunks": 0.0,
+      "lod/pending_initial_terrain_upload_chunks": 0.0,
+      "lod/pending_terrain_batch_chunks": 0.0,
+      "lod/ready_terrain_patches": 63176.0,
+      "lod/resident_chunks": 176.0,
+      "lod/resident_terrain_batches": 4032.0,
+      "lod/visible_terrain_batches": 2952.0,
+      "lod/visible_terrain_patches": 44644.0,
+      "scene/bounded_instances": 2275.0,
+      "scene/instances_armed_this_frame": 0.0,
+      "scene/instances_spawned_this_frame": 0.0,
+      "scene/lod_terrain_batches": 4032.0,
+      "scene/mesh_entities": 7905.0,
+      "scene/structural_nodes_no_cpu_culling": 13298.0,
+      "scene/terrain_patches": 100.0,
+      "scene/visible_terrain_patches": 100.0,
+      "scene/water_surfaces": 25.0,
+      "streaming/active_requests": 0.0,
+      "streaming/arming_queue_depth": 0.0,
+      "streaming/commits_this_frame": 1.0,
+      "streaming/despawns_this_frame": 0.0,
+      "streaming/loading_cells": 0.0,
+      "streaming/peak_arming_queue_depth": 1859.0,
+      "streaming/resident_cells": 25.0,
+      "streaming/resident_roots": 25.0,
+      "streaming/retiring_cells": 0.0
+    },
+    "whole_record_counters": {
+      "lod/chunks_ready": 176,
+      "lod/chunks_requested": 176,
+      "lod/queries_submitted": 3,
+      "lod/selection_refreshes": 154,
+      "lod/terrain_batch_chunks_activated": 176,
+      "lod/terrain_batch_chunks_committed": 176,
+      "lod/terrain_batch_chunks_prepared": 176,
+      "lod/terrain_batches_created": 4032,
+      "lod/terrain_batches_updated": 0,
+      "lod/terrain_patches_ready": 63176,
+      "streaming/models_armed": 2029,
+      "streaming/references_spawned": 2365,
+      "streaming/requests": 25,
+      "terrain/patches_validated": 100,
+      "water/surfaces_validated": 25
+    },
+    "whole_record_lod_span_summaries": {
+      "lod/chunk_ready": {
+        "count": 176,
+        "total": 11036.045085999998,
+        "mean": 62.70480162499999,
+        "p50": 50.178417,
+        "p95": 133.051834,
+        "p99": 354.075958,
+        "worst": 394.999541,
+        "minimum": 29.950292
+      },
+      "lod/collect": {
+        "count": 1669,
+        "total": 11.303229999999989,
+        "mean": 0.0067724565608148525,
+        "p50": 0.0027080000000000003,
+        "p95": 0.030291,
+        "p99": 0.063791,
+        "worst": 0.399541,
+        "minimum": 0.001209
+      },
+      "lod/db_query": {
+        "count": 3,
+        "total": 7.009,
+        "mean": 2.3363333333333336,
+        "p50": 2.843,
+        "p95": 2.881,
+        "p99": 2.881,
+        "worst": 2.881,
+        "minimum": 1.285
+      },
+      "lod/db_queue_wait": {
+        "count": 3,
+        "total": 290.955,
+        "mean": 96.985,
+        "p50": 97.504,
+        "p95": 98.789,
+        "p99": 98.789,
+        "worst": 98.789,
+        "minimum": 94.662
+      },
+      "lod/db_request_total": {
+        "count": 3,
+        "total": 297.964,
+        "mean": 99.32133333333333,
+        "p50": 98.789,
+        "p95": 101.67,
+        "p99": 101.67,
+        "worst": 101.67,
+        "minimum": 97.505
+      },
+      "lod/plan": {
+        "count": 1669,
+        "total": 27.97219499999999,
+        "mean": 0.016759853205512276,
+        "p50": 0.015041,
+        "p95": 0.025083,
+        "p99": 0.037834,
+        "worst": 0.32537499999999997,
+        "minimum": 0.003292
+      },
+      "lod/readiness": {
+        "count": 1669,
+        "total": 103.19597199999997,
+        "mean": 0.06183101977231874,
+        "p50": 0.002208,
+        "p95": 0.341833,
+        "p99": 1.5018340000000001,
+        "worst": 3.388125,
+        "minimum": 0.0006659999999999999
+      },
+      "lod/terrain_batch_activation": {
+        "count": 176,
+        "total": 30.244041999999997,
+        "mean": 0.17184114772727271,
+        "p50": 0.108708,
+        "p95": 0.587542,
+        "p99": 0.676917,
+        "worst": 0.738375,
+        "minimum": 0.025625
+      },
+      "lod/terrain_batch_commit": {
+        "count": 176,
+        "total": 185.89267500000005,
+        "mean": 1.0562083806818185,
+        "p50": 0.5941660000000001,
+        "p95": 3.321667,
+        "p99": 4.3015,
+        "worst": 5.4485,
+        "minimum": 0.143125
+      },
+      "lod/terrain_batch_gpu_poll": {
+        "count": 1115,
+        "total": 0.9369979999999928,
+        "mean": 0.0008403569506726392,
+        "p50": 0.0007080000000000001,
+        "p95": 0.0014169999999999999,
+        "p99": 0.003,
+        "worst": 0.032291,
+        "minimum": 0.000292
+      },
+      "lod/terrain_batch_inventory": {
+        "count": 504,
+        "total": 6.533503000000006,
+        "mean": 0.012963299603174615,
+        "p50": 0.00675,
+        "p95": 0.03925,
+        "p99": 0.068334,
+        "worst": 0.100666,
+        "minimum": 0.00033299999999999996
+      },
+      "lod/visibility": {
+        "count": 154,
+        "total": 348.79063000000014,
+        "mean": 2.264874220779222,
+        "p50": 1.289708,
+        "p95": 7.888084,
+        "p99": 8.767166999999999,
+        "worst": 9.048832999999998,
+        "minimum": 0.002875
+      }
+    },
+    "final_queue_snapshot": {
+      "pending_asset_instances": 0,
+      "pending_surface_instances": 0,
+      "pending_lod_chunks": 0,
+      "pending_lod_queries": 0,
+      "active_requests": 0,
+      "loading_cells": 0,
+      "arming_queue_depth": 0
+    },
+    "streaming_budget": {
+      "commit_frames": 553,
+      "commit_budget_micros": 16670,
+      "commit_budget_violations": 0,
+      "max_frame_commit_micros": 14104
+    },
+    "renderer": {
+      "gpu_preprocessing_active": true,
+      "gpu_culling_active": true,
+      "indirect_drawing_active": true,
+      "occlusion_culling_views": 2,
+      "hzb_views": 2,
+      "indirect_phase_buffers": 9,
+      "indirect_batch_sets": 284,
+      "proof_frames": 1667,
+      "renderer_fixture_validated": false,
+      "renderer_validation_failures": 0
+    },
+    "failure_counters": {
+      "failed_cells": 0,
+      "asset_load_failures": 0,
+      "material_validation_failures": 0,
+      "terrain_validation_failures": 0,
+      "water_validation_failures": 0,
+      "transform_bounds_validation_failures": 0,
+      "lod_query_submission_failures": 0,
+      "failed_lod_queries": 0,
+      "unrecovered_lod_queries": 0,
+      "failed_lod_chunks": 0,
+      "unrecovered_lod_chunks": 0,
+      "streaming_invariant_failures": 0,
+      "streaming_fixture_failures": 0,
+      "physics_fixture_failures": 0,
+      "asset_failures": []
+    },
+    "drawable_proofs": [
+      {
+        "utc": "2026-10-09T02:19:34.661885Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 300,
+          "warmup_plus_five": 1205,
+          "present_frames": 300,
+          "missing_frames": 0,
+          "measured_present_frames": 0,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:19:34.661885Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=300 warmup_plus_five=1205 present_frames=300 missing_frames=0 measured_present_frames=0 measured_missing_frames=0"
+      },
+      {
+        "utc": "2026-10-09T02:19:40.755885Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 600,
+          "warmup_plus_five": 1205,
+          "present_frames": 600,
+          "missing_frames": 0,
+          "measured_present_frames": 0,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:19:40.755885Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=600 warmup_plus_five=1205 present_frames=600 missing_frames=0 measured_present_frames=0 measured_missing_frames=0"
+      },
+      {
+        "utc": "2026-10-09T02:19:47.123881Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 900,
+          "warmup_plus_five": 1205,
+          "present_frames": 900,
+          "missing_frames": 0,
+          "measured_present_frames": 0,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:19:47.123881Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=900 warmup_plus_five=1205 present_frames=900 missing_frames=0 measured_present_frames=0 measured_missing_frames=0"
+      },
+      {
+        "utc": "2026-10-09T02:19:53.526365Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 1200,
+          "warmup_plus_five": 1205,
+          "present_frames": 1200,
+          "missing_frames": 0,
+          "measured_present_frames": 0,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:19:53.526365Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=1205 present_frames=1200 missing_frames=0 measured_present_frames=0 measured_missing_frames=0"
+      },
+      {
+        "utc": "2026-10-09T02:19:59.924178Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 1500,
+          "warmup_plus_five": 1205,
+          "present_frames": 1500,
+          "missing_frames": 0,
+          "measured_present_frames": 295,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:19:59.924178Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1500 warmup_plus_five=1205 present_frames=1500 missing_frames=0 measured_present_frames=295 measured_missing_frames=0"
+      },
+      {
+        "utc": "2026-10-09T02:20:03.664308Z",
+        "values": {
+          "final_summary": true,
+          "render_frames": 1669,
+          "warmup_plus_five": 1205,
+          "present_frames": 1668,
+          "missing_frames": 1,
+          "measured_present_frames": 463,
+          "measured_missing_frames": 1
+        },
+        "line": "2026-10-09T02:20:03.664308Z  INFO engine::profiling: native profiling primary drawable proof final_summary=true render_frames=1669 warmup_plus_five=1205 present_frames=1668 missing_frames=1 measured_present_frames=463 measured_missing_frames=1"
+      }
+    ],
+    "raw_summary_drawable_proof_valid": false,
+    "late_mesh_retry_last_cumulative": {
+      "render_frame": 64,
+      "candidates": 245,
+      "newly_tracked": 0,
+      "pending": 0,
+      "pending_peak": 176,
+      "resumed": 134,
+      "canceled": 0,
+      "tracked_total": 382,
+      "resumed_total": 382,
+      "canceled_total": 0,
+      "extraction_retry_available": true
+    },
+    "gpu_timing_status": {
+      "timestamp_queries_supported": true,
+      "timestamp_measurements_available": false,
+      "timestamp_measurement_status": "all_zero",
+      "device": {
+        "backend": "Metal",
+        "timestamp_queries_supported": true,
+        "timestamp_queries_inside_passes_supported": false,
+        "timestamp_queries_inside_encoders_supported": true,
+        "pipeline_statistics_supported": false,
+        "multi_draw_indirect_count_supported": false
+      }
+    },
+    "provenance": {
+      "run.json": "5fa4694f9bbb6bf826f5a57f39544ae9147931ce8883033f3b6d7f9a001b1a4f",
+      "report.json": "882ae4d9e1f34ce3d4cd1a59146bc14d5f60bd2b533139d23dcf3565dc4fd069",
+      "summary.json": "96036149b076a4b2cff5214092dfe4c3029cefa0064b4f21628659ee246d4791",
+      "engine.stderr.log": "0f64348e1242acb51ee8d21b9b37c7ce72f5d5fb94efaf59692fdd8866a4fa98",
+      "draw-count-analysis.json": "8e66c363f9e1dac8ca16f991d784b96655413fdb19264028f1d1b4eaf1d61e7c",
+      "frame.png": "c80105c375da350486b36a21f0a050f9ee64424d4f66d7ed2d46fa0f47278df5",
+      "visual-validation.json": "3c7a2e64f0962a073f56a200617d94286bcbcbc8bdebe89daa15257064eec5b9",
+      "profile/draw-submission.json": "c8659fa29d50ba7094307c40ab1145b382f24c6656bf8bab2c2d3266307d38e3",
+      "profile/cpu-spans.json": "1ee08bb3ad62629b537c98f7b0b72688e832bebdb18584f2ee3851f9b0715302",
+      "profile/gpu-passes.json": "f340715e801bb506ce1cca5c83591a84224aa8bfc25eecf610effa0bfb85c590"
+    }
+  },
+  "caveats": [
+    "Moving acceptance has permissive FPS thresholds. Its route and final workload differ from the static camera; no FPS equality or static speedup is inferred.",
+    "CPU endpoint groups are exclusive sampled attribution estimates; blocking endpoints and physical-symbol clones remain separate. They do not measure GPU work.",
+    "Moving wall-stage reports cover the full benchmark; guarded CPU uses a smaller window. Overlapping stages are not summed.",
+    "Budget and LOD span summaries and counters cover the whole record, including loading; final gauges and pending counts are endpoint snapshots.",
+    "Moving has 6 pending model assets and arming depth 2 at the endpoint despite zero terrain upload/chunk/surface queues and zero failures.",
+    "Terminal missing drawable occurs after benchmark completion. Guarded moving CPU ends at last cumulative and measured zero-missing periodic proof; raw false summary status is retained.",
+    "Draw instrumentation adds overhead. No count-capture FPS is used as matched timing evidence.",
+    "All expected standard/extended mesh variants are wrapped, but three transparent variants and non-mesh render nodes are outside the count coverage. Argument slots include zero-instance records, not actual GPU-visible draws.",
+    "Historical allocated indirect records are capacity observations and are not compared to current issued slots as if they were the same measure.",
+    "The requested 10-second draw-clock crop includes a warmup tail and is independent of the main benchmark frame/time clock. Counts are identical in every selected schedule.",
+    "GPU timestamp support is reported by hardware, but sampled Bevy GPU values are all zero and unavailable as performance evidence.",
+    "Moving validation remains counter-only. Static manual PNG review proves the recorded screenshot, not every view or frame."
+  ],
+  "analysis_script_sha256": "753d975a27f70ab2f74e4c159da05cb80694a69ec546987368b0e86e9e55fd35"
+}

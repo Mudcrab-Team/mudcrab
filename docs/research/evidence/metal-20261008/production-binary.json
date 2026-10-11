@@ -1,0 +1,11 @@
+{
+  "path": "/Users/taylor/Projects/mudcrab/target/release/engine",
+  "archived_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+  "sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+  "bytes": 118240824,
+  "archived_utc": "2026-10-09T01:54:27.220875+00:00",
+  "profile": "release thin LTO, 1 codegen unit, debug=1",
+  "build_log": "release-v4-final.log",
+  "temporary_controls_present": false,
+  "drawable_acquisition_evidence": "enabled only for requested --profile-output bundles"
+}

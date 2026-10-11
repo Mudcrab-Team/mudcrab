@@ -1,0 +1,51 @@
+{
+  "status": "passed",
+  "checkedAtUTC": "2026-10-09 02:40:12 UTC",
+  "html": "fps-dashboard-inline.html",
+  "previews": [
+    {
+      "width": 728,
+      "contentHeight": 8139,
+      "capturedHeight": 4000,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "{\"bins\":59,\"finite\":true,\"hotspots\":5,\"range\":[28.948832,86.948832]}"
+        }
+      ],
+      "screenshot": {
+        "mimeType": "image/png",
+        "width": 728,
+        "height": 4000
+      }
+    },
+    {
+      "width": 360,
+      "contentHeight": 1449,
+      "capturedHeight": 1449,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "FINAL_ORIGINAL_QA {\"bodyWidth\":360,\"viewport\":360,\"childColorScheme\":\"light\",\"srcdocLength\":37098}"
+        },
+        {
+          "level": "log",
+          "text": "{\"bins\":59,\"finite\":true,\"hotspots\":5,\"range\":[28.948832,86.948832]}"
+        }
+      ],
+      "screenshot": {
+        "mimeType": "image/png",
+        "width": 360,
+        "height": 1449
+      }
+    }
+  ],
+  "checks": [
+    "Final V4 desktop dark renders without console errors.",
+    "Original view mobile light has bodyWidth=viewport=360; source document is 37098 characters.",
+    "Ordinary view mobile checked; table wrappers scroll horizontally and body remains viewport width.",
+    "Original view dark checked with matching child color scheme; headings, chart and function names readable."
+  ],
+  "originalProtectedSha256": "1d438088fc3fbf2c5cc5b858764aedc4be1d6f207b8fbee2c8d87b9dd07c8eda",
+  "note": "Tab-switch instrumentation was added only to preview copies. Published HTML is the unmodified saved final artifact."
+}

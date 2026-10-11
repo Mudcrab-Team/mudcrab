@@ -64,6 +64,10 @@ retains the complete bundles as CI artifacts.
 
 ## Interpretation
 
+For native function names, library/driver stacks and thread waits, see the
+[native profiling guide](../contributing/native-profiling.md). It covers Samply, Firefox Profiler,
+Metal HUD captures and the limits of CPU/GPU timing interpretation.
+
 Compare identical scenario, resolution, release profile and hardware. Start with frame P95/P99,
 then inspect the top CPU spans, GPU passes and streaming timeline in the same run. A missing GPU
 counter means unsupported instrumentation, not a zero value. Real-asset and target-hardware sign-off
@@ -96,3 +100,8 @@ load request to the model appearing falls from 692-704 ms at 4 a frame to 168 ms
 worst frame (20.5 -> 22.2 ms), p95 (10.2 -> 10.8 ms) and peak memory (1.51 GiB both) barely move.
 More IO threads did not load faster (the ranges overlap) and lengthened the worst loading frame, so
 the automatic size stays; the load was waiting on the arming limit, not on IO.
+
+The [archived 2026-10-08 Metal investigation](../research/metal-performance-fixes-20261008.md)
+records a separate batching candidate, not a speedup established by this diagnostics change.
+See [measurement validity](../research/profiling-measurement-validity-20261008.md) for observed
+resolution, diagnostic timestamps and optional completed-frame draw counts.
