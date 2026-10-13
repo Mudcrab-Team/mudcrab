@@ -61,10 +61,12 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '(\.ps1$|^scripts/tests/test_lod_acceptance_summary\.py$|^scripts/lod-performance/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_scripts" '(\.ps1$|^scripts/tests/test_lod_acceptance_summary\.py$|^scripts/lod-performance/|^scripts/lod-experiment/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
+      check_lod_experiment: ${{ steps.filter.outputs.check_lod_experiment }}
 
   format:
     needs: [orchestrate]
@@ -115,6 +117,14 @@ jobs:
 
       - name: Verify terrain LOD helper commands
         run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v
+
+      - name: Build and verify pinned object LOD experiment
+        if: needs.orchestrate.outputs.check_lod_experiment == 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.3 https://github.com/zeux/meshoptimizer.git "$RUNNER_TEMP/meshoptimizer"
+          python3 scripts/lod-experiment/build.py --meshoptimizer "$RUNNER_TEMP/meshoptimizer" --output "$RUNNER_TEMP/lod-builder"
+          LOD_EXPERIMENT_BUILDER="$RUNNER_TEMP/lod-builder" python3 -m unittest discover -s scripts/lod-experiment/tests -p 'test_*.py' -v
 
   clippy:
     needs: [orchestrate]

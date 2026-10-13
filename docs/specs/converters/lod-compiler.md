@@ -19,6 +19,11 @@ or generated chunks. Default conversion builds LOD and reuses unchanged chunks o
 when current input fingerprints and prior payloads verify. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
 for same-output locking, read-only installations and unowned backups.
 
+The implemented compiler produces terrain LOD. Object source selection below
+describes Phase 2 work; the optional cluster experiment in
+[hybrid object LOD](../engine/hybrid-object-lod.md) is a proposed extension,
+not an implemented output or a new default.
+
 ## Inputs
 
 - `references` (placement, rotation, scale, `radius_override`), `statics`
@@ -50,6 +55,12 @@ current exporter passes only each block's base `BSTriShape` to the generic
 mesh path. Those per-level counts and segment ranges are lost. Preserve and
 validate them before using these blocks as tier-specific sources. Missing
 source means omit-with-reason, never silent near-match substitution (RULE-05).
+Verified automatically generated conventional LOD and cluster hierarchies are
+also candidate sources under the hybrid experiment. Missing an authored
+variant does not imply missing source geometry. Generate both candidates
+from the same resolved primitive and preserve its source GLB as the usable
+fallback; reject invalid derived data with a reason. This does not authorize
+an unreviewed full-detail substitution in distant batches.
 The first static pass admits only verified, unconditionally enabled fixed
 `STAT` references. `statics` is a model catalog, not an eligibility flag;
 unknown, initially disabled, XESP-controlled, movable, animated, and
@@ -113,6 +124,49 @@ GLB vertex and accessor bounds are chunk-local, relative to the chunk root.
 Database bounds and R-tree XY bounds are world-space Creation units: translate
 the chunk-local X/Y extent by `(origin + anchor * tier_side_cells) * 4096`; Z
 is unchanged. Never index chunk-local coordinates as world-space bounds.
+
+### Proposed object sidecars
+
+Keep the terrain GLB and spatial-index contract. The hybrid experiment adds
+an optional, independently versioned cluster sidecar beside a model GLB.
+Resolved world data and model GLBs remain authoritative; sidecars are derived
+render data. Their presence cannot change reference eligibility, world
+residency, gameplay ownership, or terrain compilation.
+
+The sidecar contract must identify source GLB bytes, consumed material and
+texture inputs, primitive/attribute layout, compiler and meshoptimizer
+revision, settings, hierarchy/error convention, payload version and output
+checksum. Preserve stable source primitive/material identities, index and
+attribute mappings, conservative geometry and error bounds, group replacement
+links, and a complete fallback cut. Grouped simplification may recluster its
+output; validators cannot assume every cluster has an independent tree
+parent. Validate complete group replacement without overlap or missing
+coverage, valid indices, finite errors, acyclic links, and preserved locked
+borders. Conservative bounds do not prove silhouette or material quality.
+
+Review the serialized ABI before runtime consumption: integer widths,
+endianness, alignment, lengths, allocation limits, and unknown-version
+handling need independent golden fixtures and malformed-payload checks.
+Do not serialize meshoptimizer's in-memory demo structures as an implicit
+stable format. Actual filenames, version values, and any database migration
+are assigned in the implementation change; this proposal allocates none.
+
+Bill's approximately 128-triangle clusters and grouped halving are starting
+parameters, not compatibility requirements. Compare them with generated
+conventional LOD at matched quality using the same source inputs. Record
+conversion time, cache reuse, payload size, memory, attributes, border behavior,
+and silhouette/material error. His small converter spike and linear estimates
+are research evidence, not measurements of this compiler stage.
+
+Integrate optional outputs into the existing immutable-input, hash, staging,
+lock, and publication boundary. Missing, stale, corrupt, or unsupported
+sidecars must leave verified source/conventional rendering available and
+record why the cluster route is unavailable. A build requesting sidecars
+cannot report that category complete after invalid output; its strict/error
+policy must be explicit. Reuse requires exact consumed-input, algorithm,
+settings, format, and output proof. Removing inputs or disabling generation
+removes owned obsolete sidecars. Identical clean and incremental experiments
+must agree without changing retained model bytes or producer provenance.
 
 ## Incremental builds
 

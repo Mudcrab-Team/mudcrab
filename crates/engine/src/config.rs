@@ -2071,6 +2071,7 @@ mod tests {
                 "run_validation_plan.py",
                 "test_helpers.py",
             ],
+            "lod-experiment" => &["build.py", "experiment.py", "synthetic.py"],
             _ => panic!("unvalidated CLI owner {owner} in {}", path.display()),
         };
         let relative = path.strip_prefix(root).expect("script inside scan root");
@@ -2240,6 +2241,41 @@ mod tests {
                 directory.path(),
                 &utility,
                 "# mudcrab-cli-owner: lod-performance\n"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn experiment_cli_ownership_is_exact_and_unambiguous() {
+        let root = std::path::Path::new("scripts");
+        let marker = "# mudcrab-cli-owner: lod-experiment\n";
+        for name in ["build.py", "experiment.py", "synthetic.py"] {
+            assert!(has_validated_script_owner(
+                root,
+                &root.join("lod-experiment").join(name),
+                marker
+            ));
+        }
+        for relative in [
+            "nested/lod-experiment/build.py",
+            "lod-experiment/unregistered.py",
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| has_validated_script_owner(
+                    root,
+                    &root.join(relative),
+                    marker
+                ))
+                .is_err()
+            );
+        }
+        let duplicate = format!("{marker}{marker}");
+        assert!(
+            std::panic::catch_unwind(|| has_validated_script_owner(
+                root,
+                &root.join("lod-experiment/build.py"),
+                &duplicate
             ))
             .is_err()
         );
