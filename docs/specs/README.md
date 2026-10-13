@@ -50,6 +50,7 @@ Offline asset transpilation specs handled by the `converter` crate:
 
 Core runtime specifications handled by the `engine` and `scripting` crates:
 
+- **[`bug-reporting.md`](engine/bug-reporting.md)** — Local diagnostic bundles and reviewed GitHub bug-report workflow for #88.
 - **[`landscape-texture-scale.md`](engine/landscape-texture-scale.md)** — Shared default LAND texture frequency, evidence, and terrain LOD agreement.
 - 📄 **[`architecture.md`](engine/architecture.md)** — 4-crate Cargo workspace structure, Bevy ECS setup, and `crates/scripting` isolation.
 - 📄 **[`vercidium-optimizations.md`](engine/vercidium-optimizations.md)** — GPU instanced indirect rendering (`DrawMeshInstancedIndirect`) and GPU culling.

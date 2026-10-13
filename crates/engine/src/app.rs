@@ -190,6 +190,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 })
                 .set(LogPlugin {
                     level: Level::INFO,
+                    custom_layer: crate::bug_report::logging::report_log_layer,
                     ..default()
                 }),
         )
@@ -208,6 +209,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::mesh_preparation_retry::MeshPreparationRetryPlugin,
             SkyPlugin,
             ConsolePlugin,
+            crate::bug_report::BugReportPlugin,
             crate::nif_material::NifMaterialPlugin,
         ))
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,

@@ -67,6 +67,8 @@ impl TerrainLodDistances {
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
     pub assets_dir: PathBuf,
+    /// Explicit local report destination. `None` uses the per-user application-data directory.
+    pub bug_report_dir: Option<PathBuf>,
     pub worldspace_id: u32,
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
@@ -142,6 +144,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             assets_dir: PathBuf::from("modern_assets"),
+            bug_report_dir: None,
             worldspace_id: 0x3c,
             start_grid: (0, 0),
             // Skyrim's default `uGridsToLoad=5`.
@@ -260,6 +263,7 @@ Benchmark and profiling:
   --profile-hardware <text>             hardware recorded in the profile (default: unspecified)
 
 Diagnostics:
+  --bug-report-dir <dir>                local bug-report directory (default: per-user application data)
   --diagnostic-asset-fallbacks          log every fallback asset substitution
   --material-fixture                    run the material fixture (no world database)
   --terrain-water-fixture               run the terrain-water fixture (no world database)
@@ -509,6 +513,21 @@ impl EngineConfig {
                         "a directory holding converted assets",
                         args.next(),
                     )?;
+                }
+                "--bug-report-dir" => {
+                    let path = take_raw(
+                        "--bug-report-dir",
+                        "a nonempty local report directory path",
+                        args.next(),
+                    )?;
+                    if path.trim().is_empty() {
+                        return Err(ConfigError::invalid_value(
+                            "--bug-report-dir",
+                            Some(path),
+                            "a nonempty local report directory path",
+                        ));
+                    }
+                    config.bug_report_dir = Some(PathBuf::from(path));
                 }
                 "--worldspace" => {
                     let value = take_raw(
@@ -1762,6 +1781,39 @@ mod tests {
             EngineConfig::from_args(["--ini".into(), "--help".into()]),
             Ok(ConfigAction::Help)
         ));
+    }
+
+    #[test]
+    fn bug_report_directory_override_preserves_relative_absolute_and_spaced_paths() {
+        assert!(EngineConfig::default().bug_report_dir.is_none());
+        for path in ["reports", "/tmp/Mudcrab Reports", "-reports", r"C:\Reports"] {
+            assert_eq!(
+                run_config(&["--bug-report-dir", path]).bug_report_dir,
+                Some(PathBuf::from(path))
+            );
+        }
+        assert_eq!(
+            run_config(&["--bug-report-dir", "old", "--bug-report-dir", "new"]).bug_report_dir,
+            Some(PathBuf::from("new"))
+        );
+    }
+
+    #[test]
+    fn bug_report_directory_override_refuses_missing_empty_and_option_shaped_values() {
+        for args in [
+            &["--bug-report-dir"][..],
+            &["--bug-report-dir", ""],
+            &["--bug-report-dir", "  "],
+            &["--bug-report-dir", "--headless"],
+        ] {
+            assert!(matches!(
+                parse_error(args),
+                ConfigError::InvalidValue {
+                    option: "--bug-report-dir",
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

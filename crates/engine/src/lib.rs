@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bug_report;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;

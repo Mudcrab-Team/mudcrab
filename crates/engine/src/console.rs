@@ -125,6 +125,8 @@ fn format_help_line(command: &RegisteredCommand) -> String {
 #[derive(Resource, Default)]
 pub struct ConsoleState {
     pub open: bool,
+    /// Hide the overlay for a bug-report image without relinquishing console input ownership.
+    pub capture_suppressed: bool,
     pub buffer: String,
     pub scrollback: Vec<String>,
     /// Cursor capture the player had when the console opened.
@@ -144,7 +146,7 @@ pub struct ConsoleState {
 /// It stays false on the frame the console closes, so the keys that closing frame carried
 /// (typed into the console) do not reach the game.
 pub fn console_closed(state: Option<Res<ConsoleState>>) -> bool {
-    state.is_none_or(|state| !state.open && !state.closing)
+    state.is_none_or(|state| !state.open && !state.closing && !state.capture_suppressed)
 }
 
 pub trait AppConsoleExt {
@@ -163,6 +165,11 @@ impl AppConsoleExt for App {
 
 pub struct ConsolePlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ConsoleSystems {
+    Ui,
+}
+
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConsoleRegistry>()
@@ -178,7 +185,7 @@ impl Plugin for ConsolePlugin {
                     .chain()
                     .after(InputSystems),
             )
-            .add_systems(Update, refresh_console_ui);
+            .add_systems(Update, refresh_console_ui.in_set(ConsoleSystems::Ui));
     }
 }
 
@@ -408,9 +415,13 @@ fn console_input_system(
 ) {
     if state.closing {
         state.closing = false;
-        if let Some(restored) = state.restore_capture.take() {
-            *capture = restored;
-        }
+    }
+    // A report hides UI without yielding gameplay input. Preserve the user's pending backtick
+    // restoration until readback ends; Escape still leaves it released permanently.
+    if !state.capture_suppressed
+        && let Some(restored) = state.restore_capture.take()
+    {
+        *capture = restored;
     }
     // The physical key under Escape on every layout (the same key Skyrim uses), not the character.
     if keys.just_pressed(KeyCode::Backquote) {
@@ -419,7 +430,7 @@ fn console_input_system(
         } else {
             state.open = true;
             state.buffer.clear();
-            state.previous_capture = *capture;
+            state.previous_capture = state.restore_capture.take().unwrap_or(*capture);
             state.was_paused = time.is_paused();
             *capture = CursorCapture::Released;
             // Virtual time already advanced this frame in `First`; the pause bites from the next.
@@ -545,7 +556,7 @@ fn refresh_console_ui(
         return;
     }
     for mut node in &mut root {
-        node.display = if state.open {
+        node.display = if state.open && !state.capture_suppressed {
             Display::Flex
         } else {
             Display::None
