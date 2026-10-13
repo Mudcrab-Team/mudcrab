@@ -224,6 +224,8 @@ V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; su
 
 V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
 
+V200: Real-output timing validation ! propagate full selected-set failure; missing configuration, empty selection & semantics collection errors fail; diagnostics never certify passing subset.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -271,6 +273,8 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
+
+T100|x|Make validation timing fail on bad output; valid/broken generated artifact regression|V200
 
 ## §B BUGS
 
@@ -357,3 +361,4 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
 B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
 B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets
+B200|2026-10-05|Timing harness discarded invalid artifacts & asserted passing subset|V200

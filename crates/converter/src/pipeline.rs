@@ -6637,21 +6637,17 @@ mod tests {
     /// core, as a conversion does). Run with
     /// `cargo test --release -p converter validation_timing_on_a_real_output -- --ignored --nocapture`.
     ///
-    /// The timed call is the pipeline's own `validate_artifacts`. If it fails (an output from an
-    /// older converter, say), the failures are counted per kind and the passing artifacts are
-    /// timed again; that second timing runs with the files already in the OS cache.
+    /// Checks every manifest artifact present in this output (packages can contain a subset).
+    /// Failures are counted per kind and fail the test; timing never discards invalid artifacts.
     #[test]
     #[ignore = "needs a converted output; set MUDCRAB_VALIDATE_OUTPUT"]
     fn validation_timing_on_a_real_output() {
         use std::time::Instant;
 
-        let Some(output) = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
+        let output = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
             .or_else(|| std::env::var_os("OPENSKYRIM_VALIDATE_OUTPUT"))
             .map(PathBuf::from)
-        else {
-            eprintln!("MUDCRAB_VALIDATE_OUTPUT is not set; nothing to time");
-            return;
-        };
+            .expect("set MUDCRAB_VALIDATE_OUTPUT to run real-output validation");
         let limit = std::env::var("MUDCRAB_VALIDATE_LIMIT")
             .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_LIMIT"))
             .ok()
@@ -6692,20 +6688,10 @@ mod tests {
             *by_kind.entry(artifact_kind(relative)).or_default() += 1;
         }
 
-        // Collecting semantics reads every GLB and takes minutes on a full install;
-        // `MUDCRAB_VALIDATE_SEMANTICS=skip` validates textures without them instead.
+        // Collecting semantics reads every GLB and takes minutes on a full install.
         let started = Instant::now();
-        let texture_semantics = if std::env::var("MUDCRAB_VALIDATE_SEMANTICS")
-            .or_else(|_| std::env::var("OPENSKYRIM_VALIDATE_SEMANTICS"))
-            .is_ok_and(|value| value == "skip")
-        {
-            BTreeMap::new()
-        } else {
-            collect_texture_semantics(&output, &BTreeSet::new()).unwrap_or_else(|error| {
-                eprintln!("texture semantics unavailable, validating without them: {error:#}");
-                BTreeMap::new()
-            })
-        };
+        let texture_semantics = collect_texture_semantics(&output, &BTreeSet::new())
+            .expect("collect texture semantics");
         eprintln!(
             "texture semantics: {} textures in {:.2} s (not part of the timing)",
             texture_semantics.len(),
@@ -6717,48 +6703,139 @@ mod tests {
             artifacts.len(),
             output.display()
         );
-        let started = Instant::now();
-        let result = validate_artifacts(&output, &artifacts, &texture_semantics, jobs);
-        let elapsed = started.elapsed().as_secs_f64();
-        match result {
-            Ok(()) => {
-                eprintln!(
-                    "RESULT artifacts={} seconds={elapsed:.2} errors=0",
-                    artifacts.len()
-                );
-                return;
-            }
-            Err(error) => {
-                eprintln!("validation failed after {elapsed:.2} s: {error:#}");
-            }
-        }
+        time_artifact_validation(&output, &artifacts, &texture_semantics, jobs)
+            .expect("all selected output artifacts must validate");
+    }
 
+    fn time_artifact_validation(
+        output: &Path,
+        artifacts: &[PathBuf],
+        texture_semantics: &BTreeMap<String, BTreeSet<TextureSemantic>>,
+        jobs: usize,
+    ) -> Result<()> {
+        ensure!(
+            !artifacts.is_empty(),
+            "no output artifacts selected for validation"
+        );
+        let started = std::time::Instant::now();
+        let result = validate_artifacts(output, artifacts, texture_semantics, jobs);
+        let elapsed = started.elapsed().as_secs_f64();
         let mut errors = BTreeMap::<String, (usize, String)>::new();
-        let mut passing = Vec::new();
-        let mut lua = None;
-        for relative in &artifacts {
-            match validate_artifact(&output, relative, &texture_semantics, &mut lua) {
-                Ok(()) => passing.push(relative.clone()),
-                Err(error) => {
+        if result.is_err() {
+            let mut lua = None;
+            for relative in artifacts {
+                if let Err(error) = validate_artifact(output, relative, texture_semantics, &mut lua)
+                {
                     let slot = errors
                         .entry(artifact_kind(relative))
                         .or_insert_with(|| (0, format!("{error:#}")));
                     slot.0 += 1;
+                    if slot.0 <= 10 {
+                        eprintln!("invalid output {}: {error:#}", relative.display());
+                    }
                 }
             }
-        }
-        for (kind, (count, first)) in &errors {
-            eprintln!("errors[{kind}] = {count}; first: {first}");
+            for (kind, (count, first)) in &errors {
+                eprintln!("errors[{kind}] = {count}; first: {first}");
+            }
         }
         let failed: usize = errors.values().map(|(count, _)| count).sum();
-        let started = Instant::now();
-        validate_artifacts(&output, &passing, &texture_semantics, jobs)
-            .expect("the passing artifacts validate");
-        let elapsed = started.elapsed().as_secs_f64();
         eprintln!(
-            "RESULT artifacts={} seconds={elapsed:.2} errors={failed} (passing set, warm cache)",
-            passing.len()
+            "RESULT artifacts={} seconds={elapsed:.2} errors={failed}",
+            artifacts.len()
         );
+        // Keep the original result even if files change during diagnostic enumeration.
+        result
+    }
+
+    #[test]
+    fn timing_validation_collects_semantics_in_subprocess_even_if_skip_is_set() {
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path();
+        fs::create_dir_all(output.join("textures")).unwrap();
+        fs::create_dir_all(output.join("meshes")).unwrap();
+
+        let dds = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::X8R8G8B8, 4, 4),
+            &mut dummy_content::rng::Rng::new(1),
+        )
+        .unwrap();
+        let ktx2 = TextureConverter::convert(&dds, TextureEncoding::ColorSrgb).unwrap();
+        fs::write(output.join("textures/srgb.ktx2"), ktx2).unwrap();
+
+        let mut json = serde_json::to_vec(&serde_json::json!({
+            "asset": { "version": "2.0" },
+            "images": [{ "uri": "../textures/srgb.ktx2" }],
+            "textures": [{ "source": 0 }],
+            "materials": [{
+                "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
+            }]
+        }))
+        .unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&u32::try_from(20 + json.len()).unwrap().to_le_bytes());
+        glb.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        fs::write(output.join("meshes/material.glb"), glb).unwrap();
+        fs::write(
+            output.join("conversion-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "entries": {
+                    "textures/srgb.dds": { "output": "textures/srgb.ktx2" },
+                    "meshes/material.nif": { "output": "meshes/material.glb" }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pipeline::tests::validation_timing_on_a_real_output",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MUDCRAB_VALIDATE_OUTPUT", output)
+            .env("MUDCRAB_VALIDATE_LIMIT", "0")
+            .env("MUDCRAB_VALIDATE_JOBS", "2")
+            .env("MUDCRAB_VALIDATE_SEMANTICS", "skip")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            result.status.success(),
+            "real-output timing subprocess failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("1 passed")
+                && stdout.contains("pipeline::tests::validation_timing_on_a_real_output"),
+            "subprocess did not run the ignored timing test\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("RESULT artifacts=2") && stderr.contains("errors=0"),
+            "real-output test did not validate the complete artifact set\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn v200_timing_validation_rejects_any_bad_artifact_and_empty_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path();
+        let (artifacts, semantics) = staging_with_valid_artifacts(output, 2);
+        time_artifact_validation(output, &artifacts, &semantics, 2).unwrap();
+        fs::write(output.join("meshes/m1.glb"), b"broken").unwrap();
+        let error = time_artifact_validation(output, &artifacts, &semantics, 2).unwrap_err();
+        assert!(format!("{error:#}").contains("invalid GLB artifact"));
+        assert!(time_artifact_validation(output, &[], &semantics, 2).is_err());
     }
 
     fn artifact_kind(relative: &Path) -> String {
