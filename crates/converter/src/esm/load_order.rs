@@ -168,6 +168,53 @@ impl PluginHeaders {
         ));
         skipped
     }
+
+    /// Skip plugins the established order places before one of their masters, plus their
+    /// dependents, without moving anything; one bounded warning names the first inversion.
+    fn skip_inversions(
+        &self,
+        ordered: &[usize],
+        mut skipped: Vec<bool>,
+        notices: &mut Vec<String>,
+    ) -> Vec<bool> {
+        let mut position = vec![usize::MAX; self.names.len()];
+        for (at, &index) in ordered.iter().enumerate() {
+            position[index] = at;
+        }
+        let mut inverted = vec![false; self.names.len()];
+        let mut first = None;
+        for &index in ordered {
+            if let Some(&master) = self.dependencies[index]
+                .iter()
+                .find(|&&dependency| position[dependency] > position[index])
+            {
+                inverted[index] = true;
+                first.get_or_insert((index, master));
+            }
+        }
+        let Some((plugin, master)) = first else {
+            return skipped;
+        };
+        let count = inverted.iter().filter(|member| **member).count();
+        let closure = self.dependent_closure(&inverted);
+        let dependents = |index: usize| closure[index] && !inverted[index] && !skipped[index];
+        let dependent_count = (0..self.names.len())
+            .filter(|&index| dependents(index))
+            .count();
+        let first_dependent = (0..self.names.len())
+            .find(|&index| dependents(index))
+            .map(|index| &self.names[index]);
+        notices.push(format!(
+            "plugins listed before their masters: skipped {count} plugins (first: {} before {}); {}",
+            diagnostic_name(&self.names[plugin]),
+            diagnostic_name(&self.names[master]),
+            dependent_diagnostic(dependent_count, first_dependent)
+        ));
+        for (skip, excluded) in skipped.iter_mut().zip(closure) {
+            *skip |= excluded;
+        }
+        skipped
+    }
 }
 
 /// Limit warning examples independently of the complete structured skipped-name list.
@@ -203,11 +250,12 @@ fn dependent_diagnostic(count: usize, first: Option<&String>) -> String {
 
 /// Enforce slot prefixes in the established order, then remove their dependent closure.
 /// Removed dependents do not cause later overflow plugins to be backfilled or reordered.
+/// `order_skipped` holds earlier cycle and inversion exclusions for the complete skipped list.
 fn admit_slots(
     paths: Vec<PathBuf>,
     headers: &PluginHeaders,
     ordered: Vec<usize>,
-    cycle_skipped: &[bool],
+    order_skipped: &[bool],
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
 ) -> Vec<PathBuf> {
@@ -247,10 +295,10 @@ fn admit_slots(
             }
         }
         let dependent_count = (0..paths.len())
-            .filter(|&index| overflow_skipped[index] && !overflow[index] && !cycle_skipped[index])
+            .filter(|&index| overflow_skipped[index] && !overflow[index] && !order_skipped[index])
             .count();
         let first_dependent = (0..paths.len())
-            .find(|&index| overflow_skipped[index] && !overflow[index] && !cycle_skipped[index])
+            .find(|&index| overflow_skipped[index] && !overflow[index] && !order_skipped[index])
             .map(|index| &headers.names[index]);
         summaries.push(dependent_diagnostic(dependent_count, first_dependent));
         notices.push(summaries.join("; "));
@@ -260,7 +308,7 @@ fn admit_slots(
         .map(|name| normalize_plugin_name(name))
         .collect();
     for (index, name) in headers.names.iter().enumerate() {
-        if (cycle_skipped[index] || overflow_skipped[index])
+        if (order_skipped[index] || overflow_skipped[index])
             && existing.insert(normalize_plugin_name(name))
         {
             skipped_plugins.push(name.clone());
@@ -284,10 +332,10 @@ fn loads_with_masters(path: &Path, metadata: &PluginMetadata) -> bool {
 
 /// Give master files priority without moving them ahead of their regular dependencies.
 /// Keep master order and each regular dependency closure's listed order, hoisting the
-/// closure immediately before its master. Remaining regular plugins keep their list
-/// order; `LoadOrder::read` rejects any dependency inversions left after normalization.
-/// Cyclic plugins and their dependents are removed before that existing ordering;
-/// slot overflow and its dependents are removed afterward, with bounded notices.
+/// closure immediately before its master. Remaining regular plugins keep their list order.
+/// Cyclic plugins and their dependents are removed before that existing ordering. Plugins
+/// still placed before a master, slot overflow, and their dependents are removed afterward,
+/// with bounded notices; nothing is moved to repair an inversion.
 pub(crate) fn order_explicit_plugins_with_notices(
     paths: Vec<PathBuf>,
     notices: &mut Vec<String>,
@@ -329,6 +377,8 @@ pub(crate) fn order_explicit_plugins_with_notices(
         emitted[index] = true;
     }
     ordered.extend((0..paths.len()).filter(|&index| !emitted[index] && !skipped[index]));
+    let skipped = headers.skip_inversions(&ordered, skipped, notices);
+    ordered.retain(|&index| !skipped[index]);
     Ok(admit_slots(
         paths,
         &headers,
@@ -344,6 +394,7 @@ pub(crate) fn order_explicit_plugins_with_notices(
 /// The ESL header flag alone controls slot width, not early-load priority.
 /// This fallback cannot infer user-selected override priorities from plugins.txt.
 /// It shares cycle/overflow recovery with explicit selection before slot validation.
+/// Callers remove plugins with missing masters first (see `plugins_txt::recover_discovered`).
 pub(crate) fn order_discovered_plugins_with_notices(
     paths: Vec<PathBuf>,
     notices: &mut Vec<String>,
@@ -407,6 +458,7 @@ pub(crate) fn order_discovered_plugins_with_notices(
 }
 
 /// Recover a profile's existing order without hoisting or inventing a new order.
+/// Plugins placed before one of their masters are skipped with their dependents.
 pub(crate) fn recover_ordered_plugins_with_notices(
     paths: Vec<PathBuf>,
     notices: &mut Vec<String>,
@@ -414,7 +466,9 @@ pub(crate) fn recover_ordered_plugins_with_notices(
 ) -> Result<Vec<PathBuf>> {
     let headers = PluginHeaders::read(&paths)?;
     let skipped = headers.skip_cycles(notices);
-    let ordered = (0..paths.len()).filter(|&index| !skipped[index]).collect();
+    let mut ordered: Vec<_> = (0..paths.len()).filter(|&index| !skipped[index]).collect();
+    let skipped = headers.skip_inversions(&ordered, skipped, notices);
+    ordered.retain(|&index| !skipped[index]);
     Ok(admit_slots(
         paths,
         &headers,
@@ -445,7 +499,7 @@ pub struct LoadOrder {
 impl LoadOrder {
     /// Validate an already recovered plugin order and assign full and light slots.
     /// This strict API keeps metadata aligned with every supplied path; callers must
-    /// remove cyclic/overflow plugins and their dependents before reading this order.
+    /// remove cyclic, inverted and overflow plugins and their dependents before reading it.
     pub fn read(paths: &[PathBuf]) -> Result<Self> {
         let mut result = Self {
             names: Vec::new(),

@@ -84,7 +84,8 @@ pub struct PipelineReport {
     /// advisory messages that do not affect completeness
     #[serde(default)]
     pub notices: Vec<String>,
-    /// Original plugin filenames omitted by cycle or slot-capacity recovery, in selection order.
+    /// Original plugin filenames omitted by cycle, master-order or slot-capacity recovery, in
+    /// selection order.
     /// Full exclusions stay available without expanding the bounded user-facing warning summaries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_plugins: Vec<String>,
@@ -516,6 +517,10 @@ impl AssetPipeline {
         // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
         // prints them without splicing into its status line and the launcher shows them in its
         // notice pane. They stay in `report.notices` for the summary and the JSON report.
+        // Automatic discovery with no usable plugins can only carry the subfolder note; once a
+        // plugin is selected, every selection notice reports a recovery and is a warning.
+        let selection_warns =
+            config.plugins_file.is_some() || config.mo2.is_some() || !plugins.is_empty();
         for notice in &report.notices {
             send_notice(
                 progress_tx,
@@ -523,14 +528,7 @@ impl AssetPipeline {
                 None,
                 &format!(
                     "{}: {notice}",
-                    if config.plugins_file.is_some()
-                        || config.mo2.is_some()
-                        || !report.skipped_plugins.is_empty()
-                    {
-                        "warning"
-                    } else {
-                        "note"
-                    }
+                    if selection_warns { "warning" } else { "note" }
                 ),
             )
             .await;
@@ -2306,14 +2304,10 @@ fn plugin_paths_with_diagnostics(
         (rank, name)
     });
     let had_plugins = !plugins.is_empty();
-    let plugins = crate::esm::load_order::order_discovered_plugins_with_notices(
-        plugins,
-        notices,
-        skipped_plugins,
-    )?;
+    let plugins = crate::esm::plugins_txt::recover_discovered(plugins, notices, skipped_plugins)?;
     ensure!(
         !had_plugins || !plugins.is_empty(),
-        "no usable plugins remain after automatic dependency/slot recovery: {}",
+        "no usable plugins remain after automatic master/dependency/slot recovery: {}",
         notices
             .last()
             .map(String::as_str)

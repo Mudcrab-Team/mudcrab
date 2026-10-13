@@ -251,3 +251,41 @@ fn full_slot_prefix_is_measured_after_existing_master_dependency_hoist() {
     assert_eq!(notices.len(), 1);
     assert!(notices[0].contains("first: Full253.esp"));
 }
+
+/// A regular plugin listed before its regular master is skipped with its dependents rather
+/// than moved; neighbors keep their listed order and slots in explicit and profile ordering.
+#[test]
+fn plugin_listed_before_its_master_is_skipped_with_dependents_not_reordered() {
+    for profile in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = vec![
+            plugin(dir.path(), "Base.esm", &[], 1),
+            plugin(dir.path(), "Patch.esp", &["Base.esm", "ZMod.esp"], 0),
+            plugin(dir.path(), "PatchAddon.esp", &["Patch.esp"], 0x200),
+            plugin(dir.path(), "Neighbor.esp", &["Base.esm"], 0),
+            plugin(dir.path(), "ZMod.esp", &["Base.esm"], 0),
+        ];
+        let mut notices = Vec::new();
+        let mut skipped = Vec::new();
+        let ordered = if profile {
+            recover_ordered_plugins_with_notices(paths, &mut notices, &mut skipped)
+        } else {
+            order_explicit_plugins_with_notices(paths, &mut notices, &mut skipped)
+        }
+        .unwrap();
+        let order = LoadOrder::read(&ordered);
+        assert!(
+            order.is_ok(),
+            "inversion recovery must keep usable neighbors (profile: {profile})"
+        );
+        let order = order.unwrap();
+        assert_eq!(order.names, ["base.esm", "neighbor.esp", "zmod.esp"]);
+        assert_eq!(order.normal["neighbor.esp"], 1);
+        assert_eq!(order.normal["zmod.esp"], 2);
+        assert_eq!(skipped, ["Patch.esp", "PatchAddon.esp"]);
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("plugins listed before their masters"));
+        assert!(notices[0].contains("first: Patch.esp before ZMod.esp"));
+        assert!(notices[0].contains("skipped 1 dependent plugins (first: PatchAddon.esp)"));
+    }
+}
