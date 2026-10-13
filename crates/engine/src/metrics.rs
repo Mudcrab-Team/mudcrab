@@ -645,4 +645,98 @@ mod tests {
             false
         ));
     }
+
+    /// The `collect_and_finish` app: a measurement that has already completed, a renderer on its
+    /// final path, and the screenshot at `screenshot`, with the screenshot wait seeded `waited` ago
+    /// rather than slept through. Every threshold but the screenshot's passes, so `passed` says
+    /// what the screenshot gate alone decided. The report goes to `directory`.
+    fn acceptance_report_app(
+        directory: &std::path::Path,
+        screenshot: Option<&std::path::Path>,
+        waited: std::time::Duration,
+    ) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig {
+                benchmark_frames: Some(1),
+                benchmark_output: directory.join("benchmark-report.json"),
+                acceptance_screenshot: screenshot.map(std::path::Path::to_path_buf),
+                accept_min_fps: 0.0,
+                ..default()
+            })
+            .insert_resource(BenchmarkSamples {
+                measurement_complete: true,
+                screenshot_wait_started: Some(std::time::Instant::now() - waited),
+                ..default()
+            })
+            .insert_resource(RendererMetrics {
+                gpu_preprocessing_active: true,
+                gpu_culling_active: true,
+                indirect_drawing_active: true,
+                occlusion_culling_views: 1,
+                hzb_views: 1,
+                indirect_phase_buffers: 1,
+                indirect_batch_sets: 1,
+                proof_frames: 1,
+                ..default()
+            })
+            .init_resource::<RenderTimings>()
+            .init_resource::<DiagnosticsStore>()
+            .insert_resource(ProfilingState::default())
+            .add_systems(Update, collect_and_finish);
+        app
+    }
+
+    fn written_report(directory: &std::path::Path) -> serde_json::Value {
+        let report = fs::read_to_string(directory.join("benchmark-report.json")).unwrap();
+        serde_json::from_str(&report).unwrap()
+    }
+
+    /// A missing acceptance screenshot fails the run once the 10-second wait is past, instead of
+    /// passing on it or hanging; the same run with the PNG written passes. The wait is seeded past
+    /// rather than slept through.
+    #[test]
+    fn the_screenshot_wait_fails_a_missing_capture_instead_of_passing_it() {
+        use bevy::app::AppExit;
+        use bevy::ecs::message::Messages;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("acceptance.png");
+
+        // The wait has only just started: the run waits for the screenshot instead of finishing.
+        let mut waiting = acceptance_report_app(directory.path(), Some(&missing), Duration::ZERO);
+        waiting.update();
+        assert!(!waiting.world().resource::<BenchmarkSamples>().finished);
+        assert!(!directory.path().join("benchmark-report.json").exists());
+
+        // Past the wait: the run finishes with the screenshot gate failed, and says so.
+        let mut expired =
+            acceptance_report_app(directory.path(), Some(&missing), Duration::from_secs(11));
+        expired.update();
+        assert!(expired.world().resource::<BenchmarkSamples>().finished);
+        let exits: Vec<AppExit> = expired
+            .world()
+            .resource::<Messages<AppExit>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(
+            exits,
+            vec![AppExit::error()],
+            "a missing screenshot fails the run"
+        );
+        let report = written_report(directory.path());
+        assert_eq!(report["thresholds"]["screenshot_captured"], false);
+        assert_eq!(report["passed"], false);
+
+        // The screenshot the capture system queues is what that gate reads: write it and the same
+        // run passes without waiting at all.
+        fs::write(&missing, b"png").unwrap();
+        let mut captured = acceptance_report_app(directory.path(), Some(&missing), Duration::ZERO);
+        captured.update();
+        let report = written_report(directory.path());
+        assert_eq!(report["thresholds"]["screenshot_captured"], true);
+        assert_eq!(report["passed"], true);
+    }
 }
