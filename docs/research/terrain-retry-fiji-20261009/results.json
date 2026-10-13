@@ -1,0 +1,2038 @@
+{
+  "format_version": 1,
+  "build": {
+    "created_utc": "2026-10-09T03:25:30.640246+00:00",
+    "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+    "baseline_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+    "build_profile": "quick",
+    "build_command": "cargo build --locked --offline --profile quick -p engine --bin engine",
+    "cargo_target_dir": "/var/tmp/mudcrab-terrain-retry-20261008-f40ca1df/target",
+    "cache_note": "engine package cleaned before final patched build to prevent archive mtime reuse; dependencies reused",
+    "system": {
+      "hostname": "fiji-desktop",
+      "kernel": "7.2.4",
+      "gpu": "AMD Radeon RX 6700 XT",
+      "backend": "Vulkan / RADV"
+    },
+    "asset_directory": "/home/taylor/Projects/mudcrab-lod-performance/target/lod-performance/fiji-final-3ffcd9c/assets",
+    "mesh_retry_source_sha256": "105206c7a89cb26f9ac71bbf707fe9589d1c91d992eac343e7abd97ef772c7d1",
+    "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+    "baseline_binary_sha256": "0757c08b65ddf4b958410907b1ce8d4e1a84ed99a647383f0567f7f49039f124",
+    "build_environment_sha256": "67a7d958847dc7514e03767e5bfb1817010dac95356bfe15f390b40b629d0c3f",
+    "runtime_wrapper_sha256": "ab9f4cead2fc01c0dde39f1ab59b70238bd357a4677f79c2b20210c84ce4629c",
+    "measurement_purpose": "functional startup coverage, no FPS performance comparison"
+  },
+  "review_validator_sha256": "73654a7d780c4b9e29b38ee60214b01f4a555bae08337c1085610871bafbac2b",
+  "capture_policy": "fresh process; operating-system and GPU caches preserved",
+  "scene": {
+    "worldspace": 60,
+    "grid": [
+      5,
+      -12
+    ],
+    "radius": 2,
+    "initial_camera": [
+      2048,
+      5976,
+      5952
+    ],
+    "initial_target": [
+      2048,
+      -24,
+      -2048
+    ]
+  },
+  "performance_claim": "none; quick-profile functional captures",
+  "runs": [
+    {
+      "cohort": "control-before-valid",
+      "run_id": "16mib-01",
+      "started_utc": "2026-10-09T03:15:25.131854+00:00",
+      "ended_utc": "2026-10-09T03:16:15.332541+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 242681,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00841382200002,
+      "measured_frames": 2413,
+      "source_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+      "binary_sha256": "0757c08b65ddf4b958410907b1ce8d4e1a84ed99a647383f0567f7f49039f124",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "8f68af0f4c6a6942c1abbe3d722b3fdf7b382e342aace615f25868b3b7343713",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 452,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "not_observed",
+          "note": "Retry path untriggered or retry logs unavailable; inspect the raw logs."
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "1b286e671a27a621b6f7eb1ae35eacce8633bb76e57165ecbaf31cb1240fccc8",
+      "report_sha256": "4ffc58d9586e3e6506e4242d85e78a4eb3f97f0a05b35f1cb6e16d16e970c8af"
+    },
+    {
+      "cohort": "control-before-valid",
+      "run_id": "1mib-01",
+      "started_utc": "2026-10-09T03:16:27.711685+00:00",
+      "ended_utc": "2026-10-09T03:17:18.004073+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 243106,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.006889608999977,
+      "measured_frames": 2959,
+      "source_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+      "binary_sha256": "0757c08b65ddf4b958410907b1ce8d4e1a84ed99a647383f0567f7f49039f124",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "1d1490663661e89edef7327c4fe1ada2be000cb3f9f1d918478734828b91f8a8",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 56,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 422,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "not_observed",
+          "note": "Retry path untriggered or retry logs unavailable; inspect the raw logs."
+        }
+      },
+      "visual_review": {
+        "status": "fail",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "broad missing landscape and village geometry",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "692e078e92c207f22c9efb2d3ae9a54b085cf735993d04223f3e84365e55e04f",
+      "report_sha256": "6e8f2e708865cdf902bd1dc78c36582d602471f29918b6a145716cebce5693df"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-01",
+      "started_utc": "2026-10-09T03:21:14.941226+00:00",
+      "ended_utc": "2026-10-09T03:22:04.421027+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 245038,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.000733519000015,
+      "measured_frames": 2358,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "cab46105e0b82b304c5524ea538830578e7642cbbb5168e667a9ec72cbd25821",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 421,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 8,
+          "last": {
+            "render_frame": 363,
+            "pending": 0,
+            "pending_peak": 56,
+            "resumed": 12,
+            "canceled": 0,
+            "tracked_total": 91,
+            "resumed_total": 91,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "60adc4a476cd0193f17cd939e8a7696c624f28118400bbc12b1eb72457f00569",
+      "report_sha256": "c48bedd0083a12a6d46dbba066ef024e09afc1488f44895a0f0c37f71f61ae57"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-02",
+      "started_utc": "2026-10-09T03:22:16.873236+00:00",
+      "ended_utc": "2026-10-09T03:23:07.118808+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 245403,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.001031172999987,
+      "measured_frames": 2432,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "b4a168bd52a3c5bb6574a416b07e9a83f6d73ecacb79c4e598213ace548bd9ca",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 438,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 11,
+          "last": {
+            "render_frame": 372,
+            "pending": 0,
+            "pending_peak": 158,
+            "resumed": 3,
+            "canceled": 0,
+            "tracked_total": 167,
+            "resumed_total": 167,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "e996d7107bbe231089dae4b1096730a80e6c5312639b71b713b1d7511a6834a3",
+      "report_sha256": "9d1083cb641067a84265f72ef925402a348707737842d9c088cbdcd0a29a9d87"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-03",
+      "started_utc": "2026-10-09T03:23:19.254335+00:00",
+      "ended_utc": "2026-10-09T03:24:09.337140+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 245898,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00508449499999,
+      "measured_frames": 2348,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "70dd65e88f93ea90a90957b3c4f629721d781727d0b24dd14da3938e2770171c",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 423,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 8,
+          "last": {
+            "render_frame": 301,
+            "pending": 0,
+            "pending_peak": 13,
+            "resumed": 3,
+            "canceled": 0,
+            "tracked_total": 22,
+            "resumed_total": 22,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "c74f27284c41b440ab06c91c0075e5f5f31b5fe4540cf25e2cc081d068c87be2",
+      "report_sha256": "7901d4f3d5b2e75258a593a1809be3149d881b8ed410169c0b602a28312fe7c2"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-04",
+      "started_utc": "2026-10-09T03:24:21.518560+00:00",
+      "ended_utc": "2026-10-09T03:25:12.069390+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 246459,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.005935513000026,
+      "measured_frames": 2311,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "a4a69b22857b088031b792786755bbf650553a34cd61c0579e8efba69e91259f",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 401,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 11,
+          "last": {
+            "render_frame": 307,
+            "pending": 0,
+            "pending_peak": 54,
+            "resumed": 54,
+            "canceled": 0,
+            "tracked_total": 61,
+            "resumed_total": 61,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "edd4f2ebda22e819c1acd1fedbc1472d11d8748a6416e0249def5ab378e0fd2f",
+      "report_sha256": "a711b07538820df86f83ffa71f78030b8ae7d47abbe628fe65584a25ce9a5f14"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-05",
+      "started_utc": "2026-10-09T03:25:24.665968+00:00",
+      "ended_utc": "2026-10-09T03:26:16.426292+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 246882,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00140283799996,
+      "measured_frames": 2290,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "fb33a43ffd55914238ef490f5677eb38c8f7cec07748553b7da03ff7c7b750fe",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 381,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 14,
+          "last": {
+            "render_frame": 297,
+            "pending": 0,
+            "pending_peak": 55,
+            "resumed": 45,
+            "canceled": 0,
+            "tracked_total": 154,
+            "resumed_total": 101,
+            "canceled_total": 53
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "fcf7f1177fc86806755402d80c7e4835e065ba796f11cc3c90ec4657c53c8b17",
+      "report_sha256": "db590d739baa9f956bc4bb66e01cff6ba222cb1f9e22e180246ddec876a1be1c"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-06",
+      "started_utc": "2026-10-09T03:26:28.901999+00:00",
+      "ended_utc": "2026-10-09T03:27:19.590553+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 247512,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.006519787000066,
+      "measured_frames": 2453,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "ee947fb17a98e3cdcd26918f6abfc5cc3e83f6e12d390104d5cb67b0df36d93c",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 401,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 16,
+          "last": {
+            "render_frame": 325,
+            "pending": 0,
+            "pending_peak": 74,
+            "resumed": 14,
+            "canceled": 0,
+            "tracked_total": 124,
+            "resumed_total": 124,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "11032a643e9568a97e9f8e4eb6f55be05cddb603ce15bd219f01df63179396e2",
+      "report_sha256": "60e16c5c12ec330579531f011ffc340ff823b561f3f20eda7ea9807d040c60dd"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-07",
+      "started_utc": "2026-10-09T03:27:31.920282+00:00",
+      "ended_utc": "2026-10-09T03:28:21.037696+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 247866,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00674002600006,
+      "measured_frames": 2555,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "81f1a7bac0a816d40084d31e392e261ede5994160cad25659d76482b5ed8484a",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 438,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 8,
+          "last": {
+            "render_frame": 308,
+            "pending": 0,
+            "pending_peak": 112,
+            "resumed": 112,
+            "canceled": 0,
+            "tracked_total": 119,
+            "resumed_total": 119,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "864759eb0341f3667ed038d3eabffcf9723ed24f8ac6382191f36928635fa8e1",
+      "report_sha256": "283e9063d01601a7f9a163592ab09c710c6b507aa7467e5c95e38e5765b03a28"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-08",
+      "started_utc": "2026-10-09T03:28:33.052189+00:00",
+      "ended_utc": "2026-10-09T03:29:22.280740+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 248210,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.004915043999986,
+      "measured_frames": 2383,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "674c42c7ef5934d3ad92dad3b4147536f4687d670ffabb8e956b59f1c786edd8",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 402,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 8,
+          "last": {
+            "render_frame": 343,
+            "pending": 0,
+            "pending_peak": 75,
+            "resumed": 34,
+            "canceled": 0,
+            "tracked_total": 110,
+            "resumed_total": 110,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "047c93f0412dd7000796c3ffe2516ce6b513f798f8e36ad683191a895c4f42eb",
+      "report_sha256": "f8b03d41d39fb236e2773c1f93191044b1dd058843afc825ef83f9308b664514"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-09",
+      "started_utc": "2026-10-09T03:29:34.683300+00:00",
+      "ended_utc": "2026-10-09T03:30:24.717279+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 248543,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00246537399998,
+      "measured_frames": 2459,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "8ce2fde4bddcda00a501e7569017cf004fa691216416e3aacf35978dd1689f7e",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 369,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 12,
+          "last": {
+            "render_frame": 331,
+            "pending": 0,
+            "pending_peak": 167,
+            "resumed": 34,
+            "canceled": 0,
+            "tracked_total": 232,
+            "resumed_total": 232,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "20a27dffaebdb50cb8e12f7f5dee7f8ec0ce7888a11a51c296452f1e63c5474e",
+      "report_sha256": "7be7670306883508e5f89e4fb2b6de33ce063b55223329a8459245b01ee41350"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "16mib-10",
+      "started_utc": "2026-10-09T03:30:36.685997+00:00",
+      "ended_utc": "2026-10-09T03:31:27.324158+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 248965,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.001593060999998,
+      "measured_frames": 2435,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "26d24dff6969139b82fbe7cf46bb0c1f48b08112362295b46eeebb2d16751cfa",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 435,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 15,
+          "last": {
+            "render_frame": 320,
+            "pending": 0,
+            "pending_peak": 126,
+            "resumed": 126,
+            "canceled": 0,
+            "tracked_total": 220,
+            "resumed_total": 220,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "da367129aa50700515f6d4b47d757971704c58c04ae8c04377a47861e9362f22",
+      "report_sha256": "f829ad8490b6110e43aeaa701990a8f43b6379fb4d21ebe6239b21f4bcfe8c1f"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-01",
+      "started_utc": "2026-10-09T03:31:39.768068+00:00",
+      "ended_utc": "2026-10-09T03:32:31.546903+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 249329,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.009602162000004,
+      "measured_frames": 2350,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "c3ecfdea53bbb089e14a5ebef2663a5feaa0160785e63f11faaec948077ec372",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 382,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 219,
+          "last": {
+            "render_frame": 666,
+            "pending": 0,
+            "pending_peak": 3780,
+            "resumed": 235,
+            "canceled": 0,
+            "tracked_total": 4507,
+            "resumed_total": 4507,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "b7309f3f340bab230522e61f0ad137c8d72080f73b20f05d5aaaab78a875cf0c",
+      "report_sha256": "e8cb833557d6baf5ebbf65c795effb2c93d8ada504718db948433700ad1bc114"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-02",
+      "started_utc": "2026-10-09T03:32:44.220339+00:00",
+      "ended_utc": "2026-10-09T03:33:38.664414+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 249610,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.008988218000034,
+      "measured_frames": 2255,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "a5a34e9571adf608891f7756560541b5fd0d8d999377e5518140a9672c657fff",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 375,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 211,
+          "last": {
+            "render_frame": 730,
+            "pending": 0,
+            "pending_peak": 3585,
+            "resumed": 31,
+            "canceled": 0,
+            "tracked_total": 4150,
+            "resumed_total": 4150,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "f12144cc56269b2b7426284aed624baedfc56b02f09ade666accc2454e918bdd",
+      "report_sha256": "44ff7d29ca5344ad5a22613e50267dd00ae07a700e70d91284e2bd81f5315893"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-03",
+      "started_utc": "2026-10-09T03:33:51.301603+00:00",
+      "ended_utc": "2026-10-09T03:34:43.580540+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 250009,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.010158368999992,
+      "measured_frames": 2446,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "ab1576b9ef2a3cde55f51c821c31ba94d2c7d346621e220c74f1fc492d2e83a3",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 386,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 221,
+          "last": {
+            "render_frame": 696,
+            "pending": 0,
+            "pending_peak": 3763,
+            "resumed": 397,
+            "canceled": 0,
+            "tracked_total": 4238,
+            "resumed_total": 4238,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "d9a0598f09a93f2100287f269698d13ffc33478f62b30715a6b9eb8576d29bb8",
+      "report_sha256": "15939f9da7fac651da014865db1158a8a94a935c100ecc71f0c4747b4066ca92"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-04",
+      "started_utc": "2026-10-09T03:34:55.902383+00:00",
+      "ended_utc": "2026-10-09T03:35:48.581932+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 250387,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.011949317999928,
+      "measured_frames": 2210,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "fe92143c85f182340c803dd6e6b587dc9fde082fc5a5d2270898967aaa761989",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 388,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 227,
+          "last": {
+            "render_frame": 715,
+            "pending": 0,
+            "pending_peak": 3656,
+            "resumed": 88,
+            "canceled": 0,
+            "tracked_total": 4380,
+            "resumed_total": 4380,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "cf9e7fd9774cb6178f2e5b019af0b4d6cccd9a510cf8bed48f7206fb995eafec",
+      "report_sha256": "0d522e6019954c5a835c87002528d4846024e482ff2a2ed703f33bf786818076"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-05",
+      "started_utc": "2026-10-09T03:36:01.097833+00:00",
+      "ended_utc": "2026-10-09T03:36:54.178890+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 250679,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.002338598999984,
+      "measured_frames": 2350,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "b56c108acc9904cae652439c18a21eee7421f07fa8def9492b58486b01dd08eb",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 418,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 211,
+          "last": {
+            "render_frame": 746,
+            "pending": 0,
+            "pending_peak": 3879,
+            "resumed": 415,
+            "canceled": 0,
+            "tracked_total": 4536,
+            "resumed_total": 4358,
+            "canceled_total": 178
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "030fb076b37747850ca100066b99f3b546efad1fe8640cb0e29e4aa1c16b48e1",
+      "report_sha256": "711330d2dc85a31b736b61cde61619e6ab45328b2b3e7b01a2ea3a1f839552df"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-06",
+      "started_utc": "2026-10-09T03:37:06.793492+00:00",
+      "ended_utc": "2026-10-09T03:38:00.636577+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 251099,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00021695100001,
+      "measured_frames": 2351,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "fa19d1e203ae3b7428824ffb27030f5d34cde598bb2d763e83a8b8282e81e4a6",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 381,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 230,
+          "last": {
+            "render_frame": 703,
+            "pending": 0,
+            "pending_peak": 3856,
+            "resumed": 509,
+            "canceled": 0,
+            "tracked_total": 4410,
+            "resumed_total": 4363,
+            "canceled_total": 47
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "817abda97a356077c5cf7b141de096e860f9f9fce40634eeeed734f4314912a7",
+      "report_sha256": "2b3f81fb6156bd290a3f92783572c381bf6032ce6e16b67a7186e909cf2965f1"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-07",
+      "started_utc": "2026-10-09T03:38:13.017688+00:00",
+      "ended_utc": "2026-10-09T03:39:07.123611+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 251664,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00814035000002,
+      "measured_frames": 2468,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "cdd8008a28f7a4eb4f94f63f4ab5014d37ffcff8fd844e1cca83e46895d1a20b",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 294,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 233,
+          "last": {
+            "render_frame": 639,
+            "pending": 0,
+            "pending_peak": 3529,
+            "resumed": 384,
+            "canceled": 0,
+            "tracked_total": 4390,
+            "resumed_total": 4236,
+            "canceled_total": 154
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "4f1c08e27b65c6aa4fe1dd390eef27eed9c63b3f60b9ad1d9580aeb06d1917f1",
+      "report_sha256": "198f14695af816e80d766f82522ccffc58a2e3e34386364f81074638f109e7ab"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-08",
+      "started_utc": "2026-10-09T03:39:19.563951+00:00",
+      "ended_utc": "2026-10-09T03:40:12.406815+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 252219,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00441376500002,
+      "measured_frames": 2409,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "6e8f4d0ab3b4845180d02e3f1802bcd94464155ed22875da5f362a22c83d940f",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 374,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 229,
+          "last": {
+            "render_frame": 648,
+            "pending": 0,
+            "pending_peak": 3811,
+            "resumed": 169,
+            "canceled": 0,
+            "tracked_total": 4753,
+            "resumed_total": 4753,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "131a6e5c6ce12024fb02e065136a8254296909417627fd8d6554566bc446a786",
+      "report_sha256": "f6d43482714caebfd186e8bfaf065fe203eab8435a158eff2f48815bece7e728"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-09",
+      "started_utc": "2026-10-09T03:40:25.137421+00:00",
+      "ended_utc": "2026-10-09T03:41:19.597490+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 252642,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.008154993000034,
+      "measured_frames": 2446,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "39f181428e1a66171275426bf9b48b31119ad5c5a2d10a6ef6ef3a4dcdca3f7b",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 342,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 244,
+          "last": {
+            "render_frame": 616,
+            "pending": 0,
+            "pending_peak": 3600,
+            "resumed": 494,
+            "canceled": 0,
+            "tracked_total": 4540,
+            "resumed_total": 4484,
+            "canceled_total": 56
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "502514f4cc31eb403e55c94161ddfd9183ddbdafc33bf5ea69251c8e00d12db8",
+      "report_sha256": "b0da71ae9d7a20051c0397fe14999bd27108633af552e03b0813b8b702faa427"
+    },
+    {
+      "cohort": "fixed",
+      "run_id": "1mib-10",
+      "started_utc": "2026-10-09T03:41:31.589878+00:00",
+      "ended_utc": "2026-10-09T03:42:23.581757+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 253291,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.000098933999947,
+      "measured_frames": 2223,
+      "source_revision": "2e47a1bbf70a01e6582226353837794613abc1a3",
+      "binary_sha256": "21567da5d9852e872f6e8a8d8e68a32531f69c226b529059fbe6cfafcacbdfd1",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "b6a389e70a76326788bab58c26f4e8d4a035f657c4fdec067ece4d69654c9ce9",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 411,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "observed",
+          "record_count": 217,
+          "last": {
+            "render_frame": 748,
+            "pending": 0,
+            "pending_peak": 3769,
+            "resumed": 310,
+            "canceled": 0,
+            "tracked_total": 4094,
+            "resumed_total": 4094,
+            "canceled_total": 0
+          }
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "e3a358f844c2ba8bc74ccbc0947aab2c2b722a64e8c7bc05466da8675eae657b",
+      "report_sha256": "01ba32e2ec5197035cbb537092c3366b87ff05197a6a79d1100865c21f290e38"
+    },
+    {
+      "cohort": "control-after",
+      "run_id": "16mib-01",
+      "started_utc": "2026-10-09T03:45:25.708048+00:00",
+      "ended_utc": "2026-10-09T03:46:15.898946+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 255040,
+      "upload_budget_mib": 16,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.00233493799998,
+      "measured_frames": 2405,
+      "source_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+      "binary_sha256": "0757c08b65ddf4b958410907b1ce8d4e1a84ed99a647383f0567f7f49039f124",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "1d8269d6674444c6401a3f8d26f8ec00e7dd6bc69dff93f0add53c090780c1b2",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 193,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 414,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "not_observed",
+          "note": "Retry path untriggered or retry logs unavailable; inspect the raw logs."
+        }
+      },
+      "visual_review": {
+        "status": "pass",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "no obvious terrain holes in the visible scene",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "cfffc107018539741731124a349f0348ab2b25d735b2d95621b35d7475417dbf",
+      "report_sha256": "d78e6ac8dd2837fca98443cdaadcc2ed31587b136b8e887b7718b635e50e670c"
+    },
+    {
+      "cohort": "control-after",
+      "run_id": "1mib-01",
+      "started_utc": "2026-10-09T03:46:28.222536+00:00",
+      "ended_utc": "2026-10-09T03:47:19.704991+00:00",
+      "exit_code": 0,
+      "timed_out": false,
+      "owned_process_group": 255452,
+      "upload_budget_mib": 1,
+      "warmup_frames": 1200,
+      "requested_duration_seconds": 30,
+      "measured_duration_seconds": 30.001235993000037,
+      "measured_frames": 2678,
+      "source_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+      "binary_sha256": "0757c08b65ddf4b958410907b1ce8d4e1a84ed99a647383f0567f7f49039f124",
+      "primary_input_hashes": {
+        "skyrim_world.db": "36f0fac0c6b1f4f29e483344ce39ad3d9678c7eda73fa6bcdf7b7383f71e3f10",
+        "cell_cache.rkyv": "2f4c6fd11910f7db4c3041a7682e9933a75f407bfa207d86eaabcddee3b44ab0",
+        "conversion-manifest.json": "67f2e79fdbf9c6690b366cd962705effcd3aa098da17357bad0ec88f79e13297",
+        "integration-report.json": "bda878e8a26a684b2be589299b60b872988c6a41ef6dba289dc73c823ae9d4f4",
+        "lod-manifest.json": "6fa2eeeaa9173cc710134bfbb715be7a6af15bc1257bed471d0ce709b474ce85"
+      },
+      "inputs_unchanged": true,
+      "png_sha256": "4339483ab16494c4b37075ec70f20e68fd9e9a9704b2d3c3fabeb7b0f04d585e",
+      "screenshot_save_log": [],
+      "renderer_indirect_batch_sets": 98,
+      "renderer_validation_failures": 0,
+      "functional_validation": {
+        "functional_checks_passed": true,
+        "visual_inspection": "pending",
+        "failures": [],
+        "notes": [
+          "Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage.",
+          "Warmup settlement covers recorded cell/model/LOD timeline events; final surface and upload gauges have no historical timestamps.",
+          "The runtime log proves the initial camera offset; the final image pose is not independently recorded. Keep the graphics session free of camera input.",
+          "Known compositor cursor warning retained in raw logs: [gamescope] [Error] xwm: NO CURSOR IMPL XDG",
+          "PNG dimensions match the metadata resolution fallback; that field records the requested resolution, not an independent physical surface measurement."
+        ],
+        "scene_counts": {
+          "resident_cells": 25,
+          "assets_ready": 2029,
+          "terrain_patches_validated": 100
+        },
+        "last_streaming_event_frame": 425,
+        "initial_camera_record": [
+          2048.0,
+          5976.0,
+          5952.0,
+          2048.0,
+          -24.0,
+          -2048.0
+        ],
+        "png_dimensions": [
+          1600,
+          900
+        ],
+        "retry_accounting": {
+          "status": "not_observed",
+          "note": "Retry path untriggered or retry logs unavailable; inspect the raw logs."
+        }
+      },
+      "visual_review": {
+        "status": "fail",
+        "method": "individual original-resolution inspection",
+        "scope": "visible post-warmup frame; fog and foliage limit coverage",
+        "finding": "broad missing landscape and village geometry",
+        "reviewers": [
+          "primary agent",
+          "independent subagent"
+        ]
+      },
+      "run_manifest_sha256": "5234a02ed47600e60f5a75608290578defd79f0c8e0864971561ac6efa729ef0",
+      "report_sha256": "96e9b32e3ee8829ea57b318bbd48572a17b312e50f0a83a10a4f27c25bdd1cb6"
+    }
+  ],
+  "capture_runner_sha256": "efd05928cb70f453de60623c0a4a1d3ec0df50a285a179be63dcb0ff80d4e2d8",
+  "archive": {
+    "filename": "terrain-startup-captures.tar.gz",
+    "sha256": "10d38ef482a142b8e04a5d7ed81e0d65306779b0b41ec4a7a1dc2ad3a3160b88",
+    "fiji_directory": "/var/tmp/mudcrab-terrain-pr-20261009-2e47a1b",
+    "scope": "build receipt, 24 raw captures, original and reviewed validators, and logs; excludes binaries and asset payloads"
+  },
+  "summary": {
+    "fixed_launches": 20,
+    "fixed_visible_failures": 0,
+    "baseline_launches": 4,
+    "baseline_visible_failures": 2,
+    "all_functional_checks_passed": true
+  }
+}

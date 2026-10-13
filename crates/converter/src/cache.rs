@@ -327,8 +327,8 @@ pub fn configuration_hash_for_schema(
 /// impossible otherwise, so a cross-volume or linkless filesystem falls back to a copy.
 ///
 /// Linking is safe because nothing writes a shared file in place: extraction and the loose-asset
-/// overlay replace the path (unlink, then write or copy over the new, unshared file) and no cache
-/// blob is ever written in place. An existing `to` is removed rather than written through, and is
+/// overlay replace the path with a new, unshared file (extraction renames it over the path, the
+/// overlay unlinks the path and copies) and no cache blob is ever written in place. An existing `to` is removed rather than written through, and is
 /// left alone when it already names `from`. The destination's parent directory must exist.
 pub(crate) fn link_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     link_or_copy_with(from, to, |from, to| fs::hard_link(from, to))
