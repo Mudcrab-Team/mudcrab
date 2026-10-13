@@ -8,6 +8,10 @@ MO2 profiles use the same official/Creation activation, Windows-1252 decoding, l
 
 All plugin-name keys share Unicode lowercase normalization, including TES4 master lookup, direct MO2 plugin overlays and plugin-to-archive matching. Player, MO2 and automatic discovery omit unusable headers, missing-master closures, dependency cycles and their transitive dependents. Player and MO2 orders also omit a plugin still placed before one of its masters, with its dependents, instead of moving it. After each path establishes its order, it keeps the first 254 full and 4,096 light plugins and omits overflow plus its dependents without backfilling. Bounded notices reach progress and the conversion report; `skipped_plugins` in that report lists every cycle, master-order and overflow exclusion. Surviving paths determine slots and all subsequent conversion work.
 
+Player selection rejects all installed files sharing a normalized filename, with one bounded notice per ambiguous identity. Header validation and master recovery use only the remaining files.
+
+Outside MO2, an archive belongs to an installed direct-Data plugin when its normalized stem equals the plugin stem or adds a ` - ` companion suffix, such as ` - Main` or ` - Textures`. The longest matching installed stem determines ownership. A companion is extracted only when a plugin with that owner stem survives selection; disabled and recovered-away companions cannot override surviving assets. Archives without an installed direct-Data owner retain standalone/base admission, including archive-only conversions. Ignored nested plugins do not claim ownership. MO2 retains its active-plugin archive matching, and both paths retain plugin load-order sorting and loose-file priority.
+
 ---
 
 ## 1. Pipeline Overview Diagram

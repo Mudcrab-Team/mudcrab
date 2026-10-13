@@ -29,6 +29,38 @@ fn plugin_name(name: &str) -> bool {
         )
 }
 
+/// Reject every file with an ambiguous normalized filename, with one notice per identity.
+fn installed_plugin_paths(
+    paths: impl IntoIterator<Item = PathBuf>,
+    warnings: &mut Warnings,
+) -> HashMap<String, PathBuf> {
+    let mut installed = HashMap::new();
+    for path in paths {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !plugin_name(&name) {
+            continue;
+        }
+        let key = normalize_plugin_name(&name);
+        match installed.entry(key.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Some(path));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get().is_some() {
+                    entry.insert(None);
+                    warnings.add(format!(
+                        "installed plugin name collision for {key}; skipping all matching files"
+                    ));
+                }
+            }
+        }
+    }
+    installed
+        .into_iter()
+        .filter_map(|(key, path)| path.map(|path| (key, path)))
+        .collect()
+}
+
 /// Ignore comments and blank lines without interpreting checkbox state.
 fn lines(contents: &str) -> impl Iterator<Item = &str> {
     contents
@@ -205,7 +237,7 @@ pub(crate) fn read_with_diagnostics(
         std::fs::read(path).wrap_err_with(|| format!("reading plugins.txt {}", path.display()))?;
     let text = decode_windows_1252(&bytes);
     let mut warnings = Warnings::default();
-    let mut installed = HashMap::new();
+    let mut installed_paths = Vec::new();
     for entry in std::fs::read_dir(data_dir)? {
         let entry = match entry {
             Ok(entry) => entry,
@@ -215,12 +247,10 @@ pub(crate) fn read_with_diagnostics(
             }
         };
         if entry.path().is_file() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if plugin_name(&name) {
-                installed.insert(normalize_plugin_name(&name), entry.path());
-            }
+            installed_paths.push(entry.path());
         }
     }
+    let installed = installed_plugin_paths(installed_paths, &mut warnings);
     let default_ccc = data_dir.parent().unwrap_or(data_dir).join("Skyrim.ccc");
     let ccc_path = ccc.unwrap_or(&default_ccc);
     let creations = match read_skyrim_ccc(ccc_path) {
@@ -300,4 +330,130 @@ pub fn read_plugins_txt_with_options(
 /// Read a player list with the game-folder CCC default and no ambient Skyrim.ini.
 pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
     read_plugins_txt_with_options(path, data_dir, None, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Warnings, installed_plugin_paths, parse_plugin_metadata};
+    use std::{fs, path::PathBuf};
+
+    /// Give each inventory candidate a real, independently distinguishable header and payload.
+    fn inventory_plugin(root: &std::path::Path, folder: &str, name: &str, flags: u32) -> PathBuf {
+        let directory = root.join(folder);
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join(name);
+        let payload = [
+            b"EDID".as_slice(),
+            &4u16.to_le_bytes(),
+            &flags.to_le_bytes(),
+        ]
+        .concat();
+        let bytes = [
+            b"TES4".as_slice(),
+            &(payload.len() as u32).to_le_bytes(),
+            &flags.to_le_bytes(),
+            &[0; 12],
+            &payload,
+        ]
+        .concat();
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(parse_plugin_metadata(&path).unwrap().flags, flags);
+        path
+    }
+
+    /// Reject either enumeration of differently cased real ASCII files, preserving unrelated keys.
+    #[test]
+    fn ambiguous_installed_ascii_names_are_rejected_in_both_orders() {
+        assert_both_orders("Mod.esp", "mod.esp", "mod.esp");
+    }
+
+    /// Apply the shared Unicode lowercase identity before deciding which real files are ambiguous.
+    #[test]
+    fn ambiguous_installed_unicode_names_are_rejected_in_both_orders() {
+        assert_both_orders("CAFÉ.esp", "café.esp", "café.esp");
+    }
+
+    /// Feed production indexing both permutations without needing a case-sensitive test volume.
+    fn assert_both_orders(first: &str, second: &str, key: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let first = inventory_plugin(dir.path(), "first", first, 0);
+        let second = inventory_plugin(dir.path(), "second", second, 0x200);
+        let good = inventory_plugin(dir.path(), "good", "Good.esp", 0);
+        assert_ne!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+        for duplicates in [[first.clone(), second.clone()], [second, first]] {
+            let mut warnings = Warnings::default();
+            let installed = installed_plugin_paths(
+                [duplicates[0].clone(), good.clone(), duplicates[1].clone()],
+                &mut warnings,
+            );
+            assert!(!installed.contains_key(key), "{installed:?}");
+            assert_eq!(installed.len(), 1);
+            assert_eq!(installed["good.esp"], good);
+            let mut notices = Vec::new();
+            warnings.finish(&mut notices);
+            assert_eq!(
+                notices,
+                [format!(
+                    "installed plugin name collision for {key}; skipping all matching files"
+                )]
+            );
+        }
+    }
+
+    /// A third spelling cannot revive an ambiguous key or produce repeated collision notices.
+    #[test]
+    fn ambiguous_installed_names_remain_rejected_after_third_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = [
+            inventory_plugin(dir.path(), "first", "Mod.esp", 0),
+            inventory_plugin(dir.path(), "second", "mod.esp", 0x200),
+            inventory_plugin(dir.path(), "third", "MOD.esp", 1),
+        ];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut warnings = Warnings::default();
+            let installed =
+                installed_plugin_paths(order.map(|index| paths[index].clone()), &mut warnings);
+            assert!(installed.is_empty(), "{installed:?}");
+            let mut notices = Vec::new();
+            warnings.finish(&mut notices);
+            assert_eq!(
+                notices,
+                ["installed plugin name collision for mod.esp; skipping all matching files"]
+            );
+        }
+    }
+
+    /// A corrupt copy cannot turn collision handling into an enumeration-dependent header failure.
+    #[test]
+    fn ambiguous_installed_unicode_name_with_corrupt_copy_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let usable = inventory_plugin(dir.path(), "usable", "CAFÉ.esp", 0);
+        let corrupt = inventory_plugin(dir.path(), "corrupt", "café.esp", 0x200);
+        fs::write(&corrupt, b"TES4 truncated").unwrap();
+        assert!(parse_plugin_metadata(&corrupt).is_err());
+        let good = inventory_plugin(dir.path(), "good", "Good.esp", 0);
+        for duplicates in [[usable.clone(), corrupt.clone()], [corrupt, usable]] {
+            let mut warnings = Warnings::default();
+            let installed = installed_plugin_paths(
+                [duplicates[0].clone(), good.clone(), duplicates[1].clone()],
+                &mut warnings,
+            );
+            assert!(!installed.contains_key("café.esp"), "{installed:?}");
+            assert_eq!(installed.len(), 1);
+            assert_eq!(installed["good.esp"], good);
+            let mut notices = Vec::new();
+            warnings.finish(&mut notices);
+            assert_eq!(
+                notices,
+                ["installed plugin name collision for café.esp; skipping all matching files"]
+            );
+        }
+    }
 }
