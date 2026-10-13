@@ -621,6 +621,12 @@ fn remap_record_form_ids(
                 .wrap_err("VMAD references")?;
             continue;
         }
+        // Legacy faction remapping recognizes only the exact eight-byte layout.
+        // Preserve other widths without guessing offsets, as required by main;
+        // the independent in-house decoder rejects malformed canonical fields.
+        if record_type == *b"NPC_" && tag.as_slice() == b"SNAM" && data.len() != 8 {
+            continue;
+        }
         if let Some(layout) = form_id_layout(&record.record_type, tag) {
             // Broken optional links, including wrong lengths, must not block unrelated
             // content. Drop a malformed subrecord: its FormID offsets cannot be trusted.
