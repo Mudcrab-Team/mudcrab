@@ -120,6 +120,9 @@ fn npc_faction_structures_publish_resolved_ids_and_preserve_rank_padding() {
             membership(0x0200_0803, 7),
             membership(0, 8),
             membership(0, 9),
+            // The legacy archive keeps malformed SNAM bytes opaque; the independent
+            // in-house typed reader still rejects malformed faction memberships.
+            vec![0xAB; 7],
         ]
     );
     assert_eq!(
