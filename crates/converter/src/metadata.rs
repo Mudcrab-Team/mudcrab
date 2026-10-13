@@ -277,8 +277,12 @@ fn settings_for_source_reader(
     ensure!(
         identity == &crate::esm::inhouse::reader_identity_with_schemas(reader, &schemas)
             || (reader == crate::config::RecordReader::Inhouse
-                && crate::cache::inhouse_adapter10_reader_identity(&schemas).as_ref()
-                    == Some(identity))
+                && [
+                    crate::cache::inhouse_adapter10_reader_identity(&schemas),
+                    crate::cache::inhouse_adapter11_reader_identity(&schemas),
+                ]
+                .iter()
+                .any(|prior| prior.as_ref() == Some(identity)))
             || (reader == crate::config::RecordReader::Legacy
                 && (identity == &serde_json::json!({"mode": "legacy"})
                     || identity
@@ -920,60 +924,62 @@ mod metadata_schema_controls {
     const ORIGINAL: &[u8] = br#"{"version":1,"name":"original_source","records":[{"signature":"ZMEX","source":"synthetic metadata fixture","fields":[{"signature":"SCAL","name":"value","kind":"u32"}]}]}"#;
     const REQUESTED: &[u8] = br#"{"version":1,"name":"requested_output","records":[{"signature":"ZMEX","source":"synthetic metadata fixture","fields":[{"signature":"SCAL","name":"value","kind":"i32"}]}]}"#;
 
-    /// Previous adapter-10 assets retain the exact original schema and reject unproven variants.
+    /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
-        let mut identity =
-            crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
-        identity["adapter_version"] = serde_json::json!(10);
-        let mut config = PipelineConfig::new("Data", "output");
-        config.record_reader = RecordReader::Inhouse;
-        config
-            .schema_addons
-            .push("missing-current-addon.json".into());
-        config.runtime_schemas = Some(Arc::new(
-            RuntimeSchemas::from_addon_bytes(&[REQUESTED]).unwrap(),
-        ));
-        let recovered = settings_for_source_reader(&config, &identity, original);
-        assert!(
-            recovered.is_ok(),
-            "adapter-10 producer identity must be retained: {recovered:?}"
-        );
-        let recovered = recovered.unwrap();
-        assert!(recovered.schema_addons.is_empty());
-        assert_eq!(
-            recovered.schemas().unwrap().addon_bytes().next().unwrap(),
-            ORIGINAL
-        );
-        assert_eq!(identity["adapter_version"], 10);
-        assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 11);
-        assert!(
-            settings_for_source_reader(
-                &config,
-                &identity,
-                RuntimeSchemas::from_addon_bytes(&[REQUESTED]).unwrap()
-            )
-            .is_err()
-        );
-        for (key, value) in [
-            ("adapter_version", serde_json::json!(8)),
-            ("schema_sha256", serde_json::json!("different-schema")),
-            ("schema_addons", serde_json::json!([])),
-            ("language", serde_json::json!("french")),
-            ("extra", serde_json::json!(true)),
-        ] {
-            let mut altered = identity.clone();
-            altered[key] = value;
+        for adapter in [10, 11] {
+            let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+            let mut identity =
+                crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
+            identity["adapter_version"] = serde_json::json!(adapter);
+            let mut config = PipelineConfig::new("Data", "output");
+            config.record_reader = RecordReader::Inhouse;
+            config
+                .schema_addons
+                .push("missing-current-addon.json".into());
+            config.runtime_schemas = Some(Arc::new(
+                RuntimeSchemas::from_addon_bytes(&[REQUESTED]).unwrap(),
+            ));
+            let recovered = settings_for_source_reader(&config, &identity, original);
+            assert!(
+                recovered.is_ok(),
+                "adapter-{adapter} producer identity must be retained: {recovered:?}"
+            );
+            let recovered = recovered.unwrap();
+            assert!(recovered.schema_addons.is_empty());
+            assert_eq!(
+                recovered.schemas().unwrap().addon_bytes().next().unwrap(),
+                ORIGINAL
+            );
+            assert_eq!(identity["adapter_version"], adapter);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 12);
             assert!(
                 settings_for_source_reader(
                     &config,
-                    &altered,
-                    RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap()
+                    &identity,
+                    RuntimeSchemas::from_addon_bytes(&[REQUESTED]).unwrap()
                 )
-                .is_err(),
-                "accepted altered {key}"
+                .is_err()
             );
+            for (key, value) in [
+                ("adapter_version", serde_json::json!(8)),
+                ("schema_sha256", serde_json::json!("different-schema")),
+                ("schema_addons", serde_json::json!([])),
+                ("language", serde_json::json!("french")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[key] = value;
+                assert!(
+                    settings_for_source_reader(
+                        &config,
+                        &altered,
+                        RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap()
+                    )
+                    .is_err(),
+                    "accepted altered {key}"
+                );
+            }
         }
     }
 

@@ -1163,14 +1163,22 @@ fn reusable_manifest(
                 settings.record_reader = reader;
                 matched |= recorded == current_configuration_hash_for_schema(&settings, producer)?;
                 matched |= recorded == configuration_hash_for_schema(&settings, producer)?;
-                if reader == crate::config::RecordReader::Inhouse
-                    && let Some(identity) = crate::cache::inhouse_adapter10_reader_identity(
-                        settings.schemas()?.as_ref(),
-                    )
-                {
-                    matched |= crate::cache::retained_configuration_matches_for_reader(
-                        &settings, producer, recorded, &identity,
-                    )?;
+                if reader == crate::config::RecordReader::Inhouse {
+                    for identity in [
+                        crate::cache::inhouse_adapter10_reader_identity(
+                            settings.schemas()?.as_ref(),
+                        ),
+                        crate::cache::inhouse_adapter11_reader_identity(
+                            settings.schemas()?.as_ref(),
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        matched |= crate::cache::retained_configuration_matches_for_reader(
+                            &settings, producer, recorded, &identity,
+                        )?;
+                    }
                 }
                 if reader == crate::config::RecordReader::Legacy {
                     matched |= recorded

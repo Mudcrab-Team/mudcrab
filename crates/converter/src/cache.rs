@@ -353,12 +353,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// This compatibility pair is deliberately limited to metadata adapter 11; a future
+/// These compatibility pairs are limited to metadata adapters 11 and 12; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 11 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11 | 12) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -366,6 +366,21 @@ pub(crate) fn inhouse_adapter10_reader_identity(
         schemas,
     );
     identity["adapter_version"] = serde_json::json!(10);
+    Some(identity)
+}
+
+/// Adapter 12 corrects metadata identities while retaining adapter-11 asset bytes.
+pub(crate) fn inhouse_adapter11_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 12 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+    );
+    identity["adapter_version"] = serde_json::json!(11);
     Some(identity)
 }
 
@@ -636,7 +651,12 @@ pub(crate) fn retained_configuration_matches_for_reader(
         return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
     }
     if config.record_reader == crate::config::RecordReader::Inhouse
-        && inhouse_adapter10_reader_identity(config.schemas()?.as_ref()).as_ref() == Some(identity)
+        && [
+            inhouse_adapter10_reader_identity(config.schemas()?.as_ref()),
+            inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
+        ]
+        .iter()
+        .any(|prior| prior.as_ref() == Some(identity))
     {
         return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
     }
@@ -674,88 +694,93 @@ pub fn hash_file(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// The exact adapter-10 settings proof retains asset bytes without accepting unknown readers.
+    /// Known prior adapter proofs retain asset bytes without accepting unknown readers.
     #[test]
     fn adapter10_retained_settings_keep_original_identity_and_require_exact_proofs() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Inhouse;
-        let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
-        original["adapter_version"] = serde_json::json!(10);
-        let recorded =
-            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
-                .unwrap();
-        assert!(
-            retained_configuration_matches_for_reader(
+        for adapter in [10, 11] {
+            let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
+            original["adapter_version"] = serde_json::json!(adapter);
+            let recorded = configuration_hash_with_identity(
                 &config,
                 CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &original
+                Some(&original),
             )
-            .unwrap(),
-            "the exact original adapter-10 proof must survive the metadata-only adapter change"
-        );
-        assert_ne!(recorded, configuration_hash(&config).unwrap());
-        assert_eq!(original["adapter_version"], 10);
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original
+                )
+                .unwrap(),
+                "the exact original adapter-{adapter} proof must survive the metadata-only adapter change"
+            );
+            assert_ne!(recorded, configuration_hash(&config).unwrap());
+            assert_eq!(original["adapter_version"], adapter);
 
-        let mut changed = config.clone();
-        changed.texture_fallback_quality = 191;
-        assert!(
-            !retained_configuration_matches_for_reader(
-                &changed,
-                CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &original
-            )
-            .unwrap()
-        );
-        let mut changed = config.clone();
-        changed.script_abi_version = 2;
-        assert!(
-            !retained_configuration_matches_for_reader(
-                &changed,
-                CONVERTER_SCHEMA_VERSION,
-                &recorded,
-                &original
-            )
-            .unwrap()
-        );
-        assert!(
-            !retained_configuration_matches_for_reader(
-                &config,
-                CONVERTER_SCHEMA_VERSION,
-                "different-proof",
-                &original
-            )
-            .unwrap()
-        );
-        for (key, value) in [
-            ("adapter_version", serde_json::json!(8)),
-            ("schema_sha256", serde_json::json!("different-schema")),
-            ("text_encoding", serde_json::json!("utf-8")),
-            ("extra", serde_json::json!(true)),
-        ] {
-            let mut altered = original.clone();
-            altered[key] = value;
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original
+                )
+                .unwrap()
+            );
+            let mut changed = config.clone();
+            changed.script_abi_version = 2;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original
+                )
+                .unwrap()
+            );
             assert!(
                 !retained_configuration_matches_for_reader(
                     &config,
                     CONVERTER_SCHEMA_VERSION,
-                    &recorded,
-                    &altered
+                    "different-proof",
+                    &original
                 )
-                .unwrap(),
-                "accepted altered {key}"
+                .unwrap()
             );
-        }
-        for kind in ["nif", "dds", "pex"] {
-            let mut legacy = config.clone();
-            legacy.record_reader = crate::config::RecordReader::Legacy;
-            assert_eq!(
-                asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, kind)
+            for (key, value) in [
+                ("adapter_version", serde_json::json!(8)),
+                ("schema_sha256", serde_json::json!("different-schema")),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = original.clone();
+                altered[key] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered
+                    )
                     .unwrap(),
-                asset_configuration_hash_for_schema(&legacy, CONVERTER_SCHEMA_VERSION, kind)
-                    .unwrap()
-            );
+                    "accepted altered {key}"
+                );
+            }
+            for kind in ["nif", "dds", "pex"] {
+                let mut legacy = config.clone();
+                legacy.record_reader = crate::config::RecordReader::Legacy;
+                assert_eq!(
+                    asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, kind)
+                        .unwrap(),
+                    asset_configuration_hash_for_schema(&legacy, CONVERTER_SCHEMA_VERSION, kind)
+                        .unwrap()
+                );
+            }
         }
     }
 

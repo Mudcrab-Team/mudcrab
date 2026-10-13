@@ -24,7 +24,7 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 11;
+pub const ADAPTER_VERSION: u32 = 12;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// This identity does not change the independent converted-asset producer/settings proofs.

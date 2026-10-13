@@ -65,8 +65,8 @@ fn export(data: &Path, names: &[&str], label: &str, signatures: &[[u8; 4]]) -> P
     converter::esm::inhouse::export_record_bundle_typed(data, &order, &output, signatures).unwrap();
     let identity: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
-    // Adapter 11 stamps projection-aware admission without changing master-index compatibility.
-    assert_eq!(identity["adapter_version"], 11);
+    // Adapter 12 keeps zero-ID GMST identities distinct without changing master-index compatibility.
+    assert_eq!(identity["adapter_version"], 12);
     output
 }
 
@@ -523,6 +523,275 @@ fn gmst_editor_identity_deletion_and_zero_restore_keep_existing_convention() {
             assert_eq!(source, 0);
         }
     }
+}
+
+/// Distinct EditorIDs remain independent when native zero headers override both settings.
+#[test]
+fn gmst_zero_id_overrides_in_one_plugin_keep_distinct_settings() {
+    let (_fixture, data) = test_data();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        0,
+        &[
+            setting(0x1800, "fFirstSetting", 11.5),
+            setting(0x1801, "fSecondSetting", 22.5),
+        ]
+        .concat(),
+    );
+    let first = setting(0, "fFirstSetting", 31.5);
+    let second = setting(0, "fSecondSetting", 42.5);
+    plugin(
+        &data,
+        "Patch.esp",
+        &["Base.esm"],
+        0,
+        &[first.clone(), second.clone()].concat(),
+    );
+    let output = export(
+        &data,
+        &["Base.esm", "Patch.esp"],
+        "zero_overrides",
+        &[*b"GMST"],
+    );
+    let db = database(&output);
+    assert_eq!(source_body(&db, 0x1800), first[24..]);
+    assert_eq!(source_body(&db, 0x1801), second[24..]);
+    assert_eq!(runtime_count(&db, 0x1800), 1);
+    assert_eq!(runtime_count(&db, 0x1801), 1);
+    assert_eq!(diagnostic(&output, "patch.esp", "skipped_records"), 0);
+}
+
+/// A zero-header restoration in one plugin cannot claim another plugin's zero-header setting.
+#[test]
+fn gmst_zero_id_restorations_in_different_plugins_keep_distinct_settings() {
+    let (_fixture, data) = test_data();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        0,
+        &[
+            setting(0x1800, "fFirstSetting", 11.5),
+            setting(0x1801, "fSecondSetting", 22.5),
+        ]
+        .concat(),
+    );
+    plugin(
+        &data,
+        "Delete.esp",
+        &["Base.esm"],
+        0,
+        &[
+            frame(b"GMST", 0x1800, 0x20, &[]),
+            frame(b"GMST", 0x1801, 0x20, &[]),
+        ]
+        .concat(),
+    );
+    let first = setting(0, "fFirstSetting", 31.5);
+    let second = setting(0, "fSecondSetting", 42.5);
+    plugin(&data, "RestoreFirst.esp", &["Base.esm"], 0, &first);
+    plugin(&data, "RestoreSecond.esp", &["Base.esm"], 0, &second);
+    let output = export(
+        &data,
+        &[
+            "Base.esm",
+            "Delete.esp",
+            "RestoreFirst.esp",
+            "RestoreSecond.esp",
+        ],
+        "zero_restorations",
+        &[*b"GMST"],
+    );
+    let db = database(&output);
+    assert_eq!(runtime_count(&db, 0x1800), 1);
+    assert_eq!(runtime_count(&db, 0x1801), 1);
+    assert_eq!(source_body(&db, 0x1800), first[24..]);
+    assert_eq!(source_body(&db, 0x1801), second[24..]);
+    assert_eq!(
+        diagnostic(&output, "restorefirst.esp", "skipped_records"),
+        0
+    );
+    assert_eq!(
+        diagnostic(&output, "restoresecond.esp", "skipped_records"),
+        0
+    );
+}
+
+/// Unidentified zero tombstones cannot borrow a setting's identity; EDID tombstones still work.
+#[test]
+fn gmst_zero_id_unidentified_deletion_preserves_editor_identified_setting() {
+    let (_fixture, data) = test_data();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        0,
+        &[
+            setting(0x1800, "fFirstSetting", 11.5),
+            setting(0x1801, "fSecondSetting", 22.5),
+        ]
+        .concat(),
+    );
+    let restored = setting(0, "fFirstSetting", 31.5);
+    plugin(&data, "Patch.esp", &["Base.esm"], 0, &restored);
+    plugin(
+        &data,
+        "Delete.esp",
+        &["Base.esm"],
+        0,
+        &[
+            frame(b"GMST", 0, 0x20, &[]),
+            frame(b"GMST", 0, 0x20, &sub(b"EDID", b"fSecondSetting\0")),
+        ]
+        .concat(),
+    );
+    let output = export(
+        &data,
+        &["Base.esm", "Patch.esp", "Delete.esp"],
+        "zero_deletions",
+        &[*b"GMST"],
+    );
+    let db = database(&output);
+    assert_eq!(runtime_count(&db, 0x1800), 1);
+    assert_eq!(source_body(&db, 0x1800), restored[24..]);
+    assert_eq!(runtime_count(&db, 0x1801), 0);
+    assert_eq!(diagnostic(&output, "delete.esp", "skipped_records"), 1);
+    let statuses = db
+        .prepare("SELECT status,reason FROM record_overrides WHERE plugin_id=?1 AND record_type='GMST' ORDER BY source_record_offset")
+        .unwrap()
+        .query_map([supplier_ordinal(&db, "Delete.esp")], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(statuses[0].0, "skipped");
+    assert!(
+        statuses[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .contains("no known identity")
+    );
+    assert_eq!(statuses[1], ("accepted".into(), None));
+}
+
+/// Unknown zero-header definitions cannot poison an existing setting; duplicate EDIDs keep first.
+#[test]
+fn gmst_zero_id_unknown_definition_and_duplicate_do_not_replace_valid_override() {
+    let (_fixture, data) = test_data();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        0,
+        &setting(0x1800, "fFirstSetting", 11.5),
+    );
+    let valid = setting(0, "fFirstSetting", 31.5);
+    plugin(
+        &data,
+        "Patch.esp",
+        &["Base.esm"],
+        0,
+        &[
+            setting(0, "fUnknownSetting", 91.5),
+            valid.clone(),
+            setting(0, "fFirstSetting", 99.5),
+        ]
+        .concat(),
+    );
+    let output = export(
+        &data,
+        &["Base.esm", "Patch.esp"],
+        "zero_duplicates",
+        &[*b"GMST"],
+    );
+    let db = database(&output);
+    assert_eq!(runtime_count(&db, 0), 0);
+    assert_eq!(runtime_count(&db, 0x1800), 1);
+    assert_eq!(source_body(&db, 0x1800), valid[24..]);
+    assert_eq!(diagnostic(&output, "patch.esp", "skipped_records"), 2);
+    let accepted: u32 = db
+        .query_row(
+            "SELECT count(*) FROM record_overrides WHERE plugin_id=?1 AND record_type='GMST' AND status='accepted'",
+            [supplier_ordinal(&db, "Patch.esp")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(accepted, 1);
+}
+
+/// A rejected native-ID alias cannot claim the duplicate key of a valid zero-header override.
+#[test]
+fn gmst_rejected_native_alias_does_not_claim_later_zero_setting() {
+    let (_fixture, data) = test_data();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        0,
+        &[
+            setting(0x1800, "fJumpHeightMin", 11.5),
+            setting(0x1801, "fInAirFallingCharGravityMult", 22.5),
+        ]
+        .concat(),
+    );
+    let valid = setting(0, "fJumpHeightMin", 31.5);
+    plugin(
+        &data,
+        "Patch.esp",
+        &["Base.esm"],
+        0,
+        &[
+            setting(0x1800, "fInAirFallingCharGravityMult", 99.5),
+            valid.clone(),
+            setting(0, "fJumpHeightMin", 42.5),
+        ]
+        .concat(),
+    );
+    let output = export(
+        &data,
+        &["Base.esm", "Patch.esp"],
+        "rejected_native_alias",
+        &[*b"GMST"],
+    );
+    let db = database(&output);
+    assert_eq!(source_body(&db, 0x1800), valid[24..]);
+    assert_eq!(
+        source_body(&db, 0x1801),
+        setting(0x1801, "fInAirFallingCharGravityMult", 22.5)[24..]
+    );
+    assert_eq!(runtime_count(&db, 0x1800), 1);
+    assert_eq!(runtime_count(&db, 0x1801), 1);
+    assert_eq!(diagnostic(&output, "patch.esp", "skipped_records"), 2);
+    let statuses = db
+        .prepare("SELECT status,reason FROM record_overrides WHERE plugin_id=?1 AND record_type='GMST' ORDER BY source_record_offset")
+        .unwrap()
+        .query_map([supplier_ordinal(&db, "Patch.esp")], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(statuses[0].0, "skipped");
+    assert!(
+        statuses[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .contains("colliding identity")
+    );
+    assert_eq!(statuses[1], ("accepted".into(), None));
+    assert_eq!(statuses[2].0, "skipped");
+    assert!(
+        statuses[2]
+            .1
+            .as_ref()
+            .unwrap()
+            .contains("duplicate/colliding")
+    );
 }
 
 #[test]

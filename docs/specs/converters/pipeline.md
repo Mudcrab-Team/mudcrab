@@ -29,6 +29,8 @@ to version 10's corrected schema layouts, GMST winner admission, union localizat
 and filename namespaces. Required runtime projection checks resolve localized
 fields before admission, so an unusable later candidate preserves its usable
 predecessor without crossing an admitted deletion.
+Version 12 keeps zero-FormID GMST settings distinct and prevents a rejected
+identity collision from blocking a later usable definition.
 In-house identity includes the
 authored schema SHA-256, adapter version and English localization choice, and
 `inhouse-reader-diagnostics.json` records bounded decoder and adapter issues.
@@ -60,10 +62,10 @@ their original recorded reader configuration. Older unstamped packs and the exac
 they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
-Adapter-11 metadata also recognizes the exact adapter-10 retained-asset contract
+Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
 with matching original schema/add-on bytes, reader fields and combined settings
-hash. Its original reader and asset producer remain recorded across repeated
-metadata rebuilds. This explicit compatibility pair does not authorize arbitrary
+hash. The original reader and asset producer remain recorded across repeated
+metadata rebuilds. These explicit compatibility pairs do not authorize arbitrary
 older in-house identities or automatically extend to future adapters.
 New full configuration hashes
 include the versioned legacy identity, while `configuration_hash_for_schema`

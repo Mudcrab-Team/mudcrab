@@ -355,7 +355,7 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
     }
 }
 
-/// Full-schema-only identity drift leaves existing per-kind asset and archive proofs usable.
+/// An earlier adapter rebuilds metadata while verified asset and archive proofs remain usable.
 #[tokio::test]
 async fn metadata_identity_drift_preserves_verified_assets_and_archives() {
     let fixture = Fixture::new(true);
@@ -364,6 +364,22 @@ async fn metadata_identity_drift_preserves_verified_assets_and_archives() {
     let expected = asset_bytes(&fixture.output);
     let original_archives = manifest(&fixture.output).archives;
     drift_metadata_identity(&fixture.output);
+    let mut prior_reader = json_artifact(&fixture.output, "record-reader.json");
+    prior_reader["adapter_version"] = serde_json::json!(11);
+    fs::write(
+        fixture.output.join("record-reader.json"),
+        serde_json::to_vec_pretty(&prior_reader).unwrap(),
+    )
+    .unwrap();
+    let database = Connection::open(fixture.output.join("skyrim_world.db")).unwrap();
+    database
+        .execute_batch("CREATE TABLE rv_b_previous_adapter(value INTEGER); INSERT INTO rv_b_previous_adapter VALUES(11);")
+        .unwrap();
+    drop(database);
+    let stale_cache = b"adapter-11 stale terrain cache";
+    for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
+        fs::write(fixture.output.join(name), stale_cache).unwrap();
+    }
 
     let rebuilt = publish(config).await;
     assert_eq!(
@@ -373,6 +389,22 @@ async fn metadata_identity_drift_preserves_verified_assets_and_archives() {
     assert_eq!(rebuilt.cache_hits, 6);
     assert_eq!(manifest(&fixture.output).archives, original_archives);
     assert_asset_bytes(&fixture.output, &expected);
+    assert_eq!(
+        json_artifact(&fixture.output, "record-reader.json"),
+        crate::esm::inhouse::reader_identity(RecordReader::Inhouse)
+    );
+    let database = Connection::open(fixture.output.join("skyrim_world.db")).unwrap();
+    let stale_tables: u32 = database
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='rv_b_previous_adapter'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale_tables, 0, "the database must be freshly rebuilt");
+    for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
+        assert_ne!(fs::read(fixture.output.join(name)).unwrap(), stale_cache);
+    }
 }
 
 /// Asset encoder settings do not alter the bytes an archive extractor must restore.

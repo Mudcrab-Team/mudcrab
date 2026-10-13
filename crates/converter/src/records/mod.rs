@@ -677,17 +677,26 @@ fn read_plugins_with_prepared(
                 return;
             }
             let source_id = record.source_form_id;
-            if let Some(previous) = seen.insert(record.form_id, source_id) {
+            // Zero-header GMST occurrences share no native identity. Only a known
+            // EditorID supplies a duplicate key; an unknown name cannot claim zero.
+            let duplicate_key = if record.record_type == *b"GMST" && record.form_id == 0 {
+                (candidate_id != 0).then_some(candidate_id)
+            } else {
+                Some(record.form_id)
+            };
+            if let Some(seen_id) = duplicate_key
+                && let Some(&previous) = seen.get(&seen_id)
+            {
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!(
                         "duplicate/colliding record {:08X}: source {previous:08X}, {source_id:08X}",
-                        record.form_id
+                        seen_id
                     ));
                 }
                 diagnostics.note("record", || {
                     format!(
                         "duplicate/colliding record {:08X}: source {previous:08X}, {source_id:08X}",
-                        record.form_id
+                        seen_id
                     )
                 });
                 return;
@@ -706,13 +715,14 @@ fn read_plugins_with_prepared(
                     let known = gmst_ids.get(&editor_id).copied();
                     let canonical = known.unwrap_or(record.form_id);
                     if canonical == 0
-                        || gmst_aliases
-                            .get(&record.form_id)
-                            .is_some_and(|&previous| known != Some(previous))
-                        || result
-                            .records
-                            .get(&record.form_id)
-                            .is_some_and(|previous| previous.record_type != *b"GMST")
+                        || record.form_id != 0
+                            && (gmst_aliases
+                                .get(&record.form_id)
+                                .is_some_and(|&previous| known != Some(previous))
+                                || result
+                                    .records
+                                    .get(&record.form_id)
+                                    .is_some_and(|previous| previous.record_type != *b"GMST"))
                     {
                         if let Some(entry) = history.borrow_mut().last_mut() {
                             entry.reason =
@@ -723,7 +733,10 @@ fn read_plugins_with_prepared(
                         });
                         return;
                     }
-                    gmst_aliases.insert(record.form_id, canonical);
+                    // Null native words cannot identify later header-only tombstones.
+                    if record.form_id != 0 {
+                        gmst_aliases.insert(record.form_id, canonical);
+                    }
                     gmst_ids.insert(editor_id, canonical);
                     record.form_id = canonical;
                 } else if record.flags & 0x20 != 0 {
@@ -757,6 +770,10 @@ fn read_plugins_with_prepared(
                     format!("record {:08X} collides with GMST identity", record.form_id)
                 });
                 return;
+            }
+            // Rejected identities cannot claim a later usable candidate's duplicate key.
+            if let Some(seen_id) = duplicate_key {
+                seen.insert(seen_id, source_id);
             }
             let source = RecordSource {
                 plugin_index: index as u32,
