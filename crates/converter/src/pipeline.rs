@@ -542,13 +542,18 @@ impl AssetPipeline {
             .filter(|path| extension(path, &["bsa", "ba2"]))
             .cloned()
             .collect();
-        let archive_owners = installed_archive_owners(&config.data_dir, &files, &plugins);
+        let archive_owners = if config.mo2.is_some() {
+            mo2_installed_archive_owners(&resolved_files, &plugins)
+        } else {
+            installed_archive_owners(&config.data_dir, &files, &plugins)
+        };
         let mut enabled_archives: Vec<_> = archives
             .into_iter()
             .filter(|archive| !extension(archive, &["ba2"]) || config.enable_ba2)
             .filter(|archive| {
                 if config.mo2.is_some() {
                     mo2_archive_is_active(archive, &plugins)
+                        && non_mo2_archive_is_active(archive, &archive_owners)
                 } else {
                     non_mo2_archive_is_active(archive, &archive_owners)
                 }
@@ -2393,7 +2398,7 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
 
 /// Record installed direct-Data archive owners, including disabled and recovered-away plugins.
 /// Plugins sharing a stem can share companions; any surviving plugin with that stem activates them.
-fn installed_archive_owners(
+pub(crate) fn installed_archive_owners(
     data_dir: &Path,
     files: &[PathBuf],
     plugins: &[PathBuf],
@@ -2419,10 +2424,38 @@ fn installed_archive_owners(
         .collect()
 }
 
+/// Keep all root plugin identities in the winning MO2 VFS, including unchecked and rejected owners.
+/// Physical sources can live outside Data; recovered winning source paths determine active status.
+fn mo2_installed_archive_owners(
+    files: &BTreeMap<String, PathBuf>,
+    plugins: &[PathBuf],
+) -> BTreeMap<String, bool> {
+    let active_sources: BTreeSet<_> = plugins.iter().cloned().collect();
+    let mut owners = BTreeMap::<String, bool>::new();
+    for (relative, source) in files {
+        let relative = Path::new(relative);
+        if relative.components().count() != 1 || !extension(relative, &["esm", "esp", "esl"]) {
+            continue;
+        }
+        let Some(stem) = relative.file_stem() else {
+            continue;
+        };
+        let stem = shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy());
+        let active = active_sources.contains(source);
+        // Distinct extensions can share a companion stem. An unchecked peer must not erase
+        // the activation contributed by a surviving plugin with that stem.
+        owners
+            .entry(stem)
+            .and_modify(|survives| *survives |= active)
+            .or_insert(active);
+    }
+    owners
+}
+
 /// Apply selection to owned companions while retaining unowned standalone and base archives.
 /// The longest matching installed stem owns the archive, so an active prefix cannot activate
 /// a more specifically named disabled or recovered-away plugin's companion.
-fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String, bool>) -> bool {
+pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String, bool>) -> bool {
     let stem = shared::plugin_selection::normalize_plugin_name(
         &archive.file_stem().unwrap_or_default().to_string_lossy(),
     );

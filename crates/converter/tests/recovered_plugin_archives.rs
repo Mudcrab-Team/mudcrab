@@ -52,8 +52,21 @@ impl Fixture {
 
     /// Put distinguishable, valid Papyrus bytecode at a shared or unique archive resource path.
     fn archive(&self, name: &str, resource: &str, object: &str) {
-        let bytes = pex::minimal(object).unwrap();
-        let archive = bsa::v105(&[Entry::new(resource, &bytes)], bsa::Compression::None).unwrap();
+        self.archive_entries(name, &[(resource, object)]);
+    }
+
+    /// Store several distinguishable script resources in one companion archive.
+    fn archive_entries(&self, name: &str, scripts: &[(&str, &str)]) {
+        let payloads: Vec<_> = scripts
+            .iter()
+            .map(|(_, object)| pex::minimal(object).unwrap())
+            .collect();
+        let entries: Vec<_> = scripts
+            .iter()
+            .zip(&payloads)
+            .map(|((resource, _), bytes)| Entry::new(resource, bytes))
+            .collect();
+        let archive = bsa::v105(&entries, bsa::Compression::None).unwrap();
         fs::write(self.data.join(name), archive).unwrap();
     }
 
@@ -68,6 +81,41 @@ impl Fixture {
             config.plugins_file = Some(list);
         }
         config
+    }
+
+    /// Put mod inputs outside physical Data and resolve them through a real MO2 profile.
+    fn mo2_config(&self, entries: &[u8]) -> (PipelineConfig, PathBuf) {
+        let instance = self._directory.path().join("MO2");
+        for folder in ["mods/Low", "mods/High", "profiles/Default", "overwrite"] {
+            fs::create_dir_all(instance.join(folder)).unwrap();
+        }
+        fs::write(
+            instance.join("ModOrganizer.ini"),
+            "[General]\ngameName=Skyrim Special Edition\n",
+        )
+        .unwrap();
+        fs::write(
+            instance.join("profiles/Default/modlist.txt"),
+            "+High\n+Low\n",
+        )
+        .unwrap();
+        fs::write(instance.join("profiles/Default/plugins.txt"), entries).unwrap();
+        for entry in fs::read_dir(&self.data).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != "Skyrim.esm" {
+                fs::rename(
+                    entry.path(),
+                    instance.join("mods/Low").join(entry.file_name()),
+                )
+                .unwrap();
+            }
+        }
+        let mut config = self.config(None);
+        config.mo2 = Some(mo2::Selection {
+            instance_path: instance.clone(),
+            profile: "Default".into(),
+        });
+        (config, instance)
     }
 
     /// Inspect the distinguishable script shipped after archive overlay and publication.
@@ -278,4 +326,183 @@ async fn ignored_nested_plugin_does_not_disable_unowned_archive() {
     run(fixture.config(None)).await;
     fixture.assert_script("scripts/standalone.pex", "StandaloneArchive");
     assert_eq!(fixture.archive_keys(), ["nested.bsa"]);
+}
+
+/// A surviving short name cannot admit archives owned by rejected or unchecked longer MO2 names.
+#[tokio::test]
+async fn mo2_recovery_excludes_longer_owner_archives() {
+    let fixture = Fixture::new();
+    fixture.plugin("Skyrim.esm", &[]);
+    fixture.plugin("Good.esp", &["Skyrim.esm"]);
+    fixture.plugin("Good - Broken.esp", &["Missing.esm"]);
+    fixture.plugin("Good - Disabled.esp", &["Skyrim.esm"]);
+    fixture.archive("Good.bsa", "scripts/shared.pex", "GoodArchive");
+    fixture.archive_entries(
+        "Good - Broken.bsa",
+        &[
+            ("scripts/shared.pex", "RejectedOverride"),
+            ("scripts/rejected.pex", "RejectedOnly"),
+        ],
+    );
+    fixture.archive(
+        "Good - Broken - Scripts.bsa",
+        "scripts/rejected_companion.pex",
+        "RejectedCompanion",
+    );
+    fixture.archive(
+        "Good - Disabled.bsa",
+        "scripts/disabled.pex",
+        "DisabledOnly",
+    );
+    let (config, instance) =
+        fixture.mo2_config(b"*Good.esp\n*Good - Broken.esp\nGood - Disabled.esp\n");
+    // The VFS includes rejected and unchecked installed identities from enabled source layers.
+    let resolved = mo2::Instance::open(&instance)
+        .unwrap()
+        .resolve(&fixture.data, "Default")
+        .unwrap();
+    for key in ["good - broken.esp", "good - disabled.esp"] {
+        assert!(resolved.files.contains_key(key));
+        assert!(!resolved.files[key].starts_with(&fixture.data));
+    }
+    let report = run(config).await;
+    assert!(
+        report.notices.iter().any(|notice| {
+            notice.contains("skipping Good - Broken.esp:") && notice.contains("Missing.esm")
+        }),
+        "{report:?}"
+    );
+    assert!(!fixture.output.join("scripts/rejected.luau").exists());
+    assert!(
+        !fixture
+            .output
+            .join("scripts/rejected_companion.luau")
+            .exists()
+    );
+    assert!(!fixture.output.join("scripts/disabled.luau").exists());
+    fixture.assert_script("scripts/shared.pex", "GoodArchive");
+    assert_eq!(fixture.archive_keys(), ["good.bsa"]);
+}
+
+/// Warm conversion must prune a recovered-away companion's archive and formerly shipped script.
+#[tokio::test]
+async fn mo2_warm_recovery_prunes_rejected_companion_scripts() {
+    let fixture = Fixture::new();
+    fixture.plugin("Skyrim.esm", &[]);
+    fixture.plugin("Good.esp", &["Skyrim.esm"]);
+    fixture.plugin("Good - Broken.esp", &["Skyrim.esm"]);
+    fixture.archive("Good.bsa", "scripts/survivor.pex", "SurvivorArchive");
+    fixture.archive(
+        "Good - Broken.bsa",
+        "scripts/rejected.pex",
+        "PreviouslyActive",
+    );
+    let (config, instance) = fixture.mo2_config(b"*Good.esp\n*Good - Broken.esp\n");
+    fs::create_dir_all(instance.join("overwrite/scripts")).unwrap();
+    fs::write(
+        instance.join("overwrite/scripts/loose.pex"),
+        pex::minimal("LooseOverwrite").unwrap(),
+    )
+    .unwrap();
+    run(config.clone()).await;
+    fixture.assert_script("scripts/rejected.pex", "PreviouslyActive");
+    fixture.assert_script("scripts/survivor.pex", "SurvivorArchive");
+    fixture.assert_script("scripts/loose.pex", "LooseOverwrite");
+    assert_eq!(fixture.archive_keys(), ["good - broken.bsa", "good.bsa"]);
+
+    // Only the installed winning plugin header changes; configuration and BSA bytes are unchanged.
+    fixture.plugin("Good - Broken.esp", &["Missing.esm"]);
+    fs::rename(
+        fixture.data.join("Good - Broken.esp"),
+        instance.join("mods/Low/Good - Broken.esp"),
+    )
+    .unwrap();
+    let report = run(config).await;
+    assert!(
+        report.notices.iter().any(|notice| {
+            notice.contains("skipping Good - Broken.esp:") && notice.contains("Missing.esm")
+        }),
+        "{report:?}"
+    );
+    assert!(!fixture.output.join("scripts/rejected.luau").exists());
+    fixture.assert_script("scripts/survivor.pex", "SurvivorArchive");
+    fixture.assert_script("scripts/loose.pex", "LooseOverwrite");
+    assert_eq!(fixture.archive_keys(), ["good.bsa"]);
+}
+
+/// MO2 keeps enabled-layer/overwrite priority, active Unicode companions and no-owner rejection.
+#[tokio::test]
+async fn mo2_active_companions_preserve_source_and_loose_priorities() {
+    let fixture = Fixture::new();
+    fixture.plugin("Skyrim.esm", &[]);
+    fixture.plugin("Good.esp", &["Skyrim.esm"]);
+    fixture.plugin("Good.esm", &["Skyrim.esm"]);
+    fixture.plugin("CAFÉ.esp", &["Skyrim.esm"]);
+    fixture.plugin("nested/Good - Nested.esp", &["Missing.esm"]);
+    fixture.archive("Good.bsa", "scripts/source.pex", "LowArchive");
+    fixture.archive("Good - Main.bsa", "scripts/main.pex", "ActiveMain");
+    fixture.archive(
+        "café - Textures.bsa",
+        "scripts/unicode.pex",
+        "UnicodeArchive",
+    );
+    fixture.archive(
+        "Good - Nested.bsa",
+        "scripts/nested.pex",
+        "ActivePrefixCompanion",
+    );
+    fixture.archive("Standalone.bsa", "scripts/unowned.pex", "UnownedArchive");
+    let (config, instance) = fixture.mo2_config(b"*Good.esp\nGood.esm\n*CAF\xC9.esp\n");
+    let high_script = pex::minimal("HighArchive").unwrap();
+    let archive = bsa::v105(
+        &[Entry::new("scripts/source.pex", &high_script)],
+        bsa::Compression::None,
+    )
+    .unwrap();
+    fs::write(instance.join("mods/High/GOOD.bsa"), archive).unwrap();
+    for (layer, object) in [("mods/Low", "LowLoose"), ("overwrite", "LooseOverwrite")] {
+        fs::create_dir_all(instance.join(layer).join("scripts")).unwrap();
+        fs::write(
+            instance.join(layer).join("scripts/loose.pex"),
+            pex::minimal(object).unwrap(),
+        )
+        .unwrap();
+    }
+    run(config).await;
+    fixture.assert_script("scripts/source.pex", "HighArchive");
+    fixture.assert_script("scripts/loose.pex", "LooseOverwrite");
+    fixture.assert_script("scripts/main.pex", "ActiveMain");
+    fixture.assert_script("scripts/unicode.pex", "UnicodeArchive");
+    fixture.assert_script("scripts/nested.pex", "ActivePrefixCompanion");
+    assert!(!fixture.output.join("scripts/unowned.luau").exists());
+    assert_eq!(fixture.archive_keys().len(), 4);
+}
+
+/// An unchecked ESP peer cannot erase companion activation supplied by the same-stem ESM.
+#[tokio::test]
+async fn mo2_same_stem_active_master_keeps_companions() {
+    let fixture = Fixture::new();
+    fixture.plugin("Skyrim.esm", &[]);
+    fixture.plugin("Good.esm", &["Skyrim.esm"]);
+    fixture.plugin("Good.esp", &["Skyrim.esm"]);
+    fixture.archive("Good.bsa", "scripts/exact.pex", "ActiveMaster");
+    fixture.archive(
+        "Good - Main.bsa",
+        "scripts/main.pex",
+        "ActiveMasterCompanion",
+    );
+    let (config, _) = fixture.mo2_config(b"*Good.esm\nGood.esp\n");
+    run(config).await;
+    fixture.assert_script("scripts/exact.pex", "ActiveMaster");
+    fixture.assert_script("scripts/main.pex", "ActiveMasterCompanion");
+    assert_eq!(fixture.archive_keys(), ["good - main.bsa", "good.bsa"]);
+    let connection = rusqlite::Connection::open(fixture.output.join("skyrim_world.db")).unwrap();
+    let plugins: Vec<String> = connection
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(plugins, ["Skyrim.esm", "Good.esm"]);
 }
