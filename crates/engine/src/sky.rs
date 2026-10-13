@@ -483,14 +483,28 @@ fn follow_sky_cameras(
     }
 }
 
+/// The palette with the player's sky-brightness multiplier applied.
+fn scaled_palette(
+    palette: &SkyPalette,
+    settings: Option<&crate::settings::RenderingSettings>,
+) -> SkyPalette {
+    let mut scaled = *palette;
+    if let Some(settings) = settings {
+        scaled.brightness *= settings.sky_brightness_scale;
+    }
+    scaled
+}
+
 fn apply_sky(
     palette: Res<SkyPalette>,
     space: Res<CameraSpace>,
     mut cameras: Query<&mut Camera, With<SkyCamera>>,
     mut domes: Query<(&MeshMaterial3d<SkyMaterial>, &mut Visibility), With<SkyDome>>,
     mut materials: ResMut<Assets<SkyMaterial>>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
-    let clear = palette.clear_colour(*space);
+    let adjusted_palette = scaled_palette(&palette, settings.as_deref());
+    let clear = adjusted_palette.clear_colour(*space);
     for mut camera in &mut cameras {
         let current = match camera.clear_color {
             ClearColorConfig::Custom(colour) => Some(colour),
@@ -500,16 +514,19 @@ fn apply_sky(
             camera.clear_color = ClearColorConfig::Custom(clear);
         }
     }
-    let visibility = match *space {
-        CameraSpace::Exterior => Visibility::Inherited,
-        CameraSpace::Interior => Visibility::Hidden,
+    let visibility = match (
+        *space,
+        settings.as_ref().is_none_or(|settings| settings.sky),
+    ) {
+        (CameraSpace::Exterior, true) => Visibility::Inherited,
+        _ => Visibility::Hidden,
     };
     for (material, mut dome_visibility) in &mut domes {
         dome_visibility.set_if_neq(visibility);
-        if palette.is_changed()
+        if (palette.is_changed() || settings.as_ref().is_some_and(|s| s.is_changed()))
             && let Some(mut sky_material) = materials.get_mut(&material.0)
         {
-            sky_material.sky = SkyUniform::new(&palette);
+            sky_material.sky = SkyUniform::new(&adjusted_palette);
         }
     }
 }
@@ -523,10 +540,23 @@ fn apply_fog(
     palette: Res<SkyPalette>,
     space: Res<CameraSpace>,
     cameras: Query<(Entity, Option<&DistanceFog>), With<FogCamera>>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
-    let wanted = match *space {
-        CameraSpace::Exterior => Some(fog_for(&palette)),
-        CameraSpace::Interior => None,
+    let wanted = match (
+        *space,
+        settings.as_deref().is_none_or(|settings| settings.fog),
+    ) {
+        (CameraSpace::Exterior, true) => {
+            // The fog is the clear colour, so it takes the same brightness scale as the sky.
+            let mut fog = fog_for(&scaled_palette(&palette, settings.as_deref()));
+            if let Some(settings) = settings.as_deref() {
+                fog.falloff = FogFalloff::Exponential {
+                    density: FOG_DENSITY * settings.fog_density_scale,
+                };
+            }
+            Some(fog)
+        }
+        _ => None,
     };
     for (camera, current) in &cameras {
         let up_to_date = match (&wanted, current) {
@@ -1012,5 +1042,36 @@ mod tests {
         *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Exterior;
         app.update();
         assert!(app.world().get::<DistanceFog>(camera).is_some());
+    }
+
+    #[test]
+    fn fog_follows_the_sky_brightness_scale_so_it_matches_the_clear_colour() {
+        let mut app = sky_app();
+        app.insert_resource(crate::settings::RenderingSettings {
+            sky_brightness_scale: 2.0,
+            ..default()
+        });
+        let sky = app
+            .world_mut()
+            .spawn((
+                Camera::default(),
+                Transform::default(),
+                SkyCamera,
+                FogCamera,
+            ))
+            .id();
+        app.update();
+
+        let ClearColorConfig::Custom(clear) = app.world().get::<Camera>(sky).unwrap().clear_color
+        else {
+            panic!("the sky camera clears to a custom colour");
+        };
+        let fog = app.world().get::<DistanceFog>(sky).expect("fog outside");
+        assert_eq!(fog.color.with_alpha(1.0), clear);
+        assert_ne!(
+            clear,
+            SkyPalette::SKYRIM_CLEAR_DAY.clear_colour(CameraSpace::Exterior),
+            "the multiplier must change the clear colour for this test to mean anything"
+        );
     }
 }

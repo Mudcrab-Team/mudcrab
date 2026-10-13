@@ -33,19 +33,14 @@ struct TerrainSettings {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var layer_0: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var layer_0_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var layer_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var layer_1: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var layer_1_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var layer_2: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var layer_2_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var layer_3: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(107) var layer_3_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var layer_4: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(109) var layer_4_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var layer_5: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(111) var layer_5_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(112) var<uniform> terrain: TerrainSettings;
-// Each layer's normal map; they share `layer_0_sampler` (every terrain layer image carries the same
+// Each layer's normal map; they share `layer_sampler` (every terrain layer image carries the same
 // repeating sampler), so they bind no samplers of their own.
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var normal_0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(114) var normal_1: texture_2d<f32>;
@@ -64,7 +59,7 @@ fn layer_normal(map: texture_2d<f32>, uv: vec2<f32>, present: f32) -> vec3<f32> 
     if present < 0.5 {
         return vec3<f32>(0.0, 0.0, 1.0);
     }
-    let xy = textureSample(map, layer_0_sampler, uv).xy * 2.0 - 1.0;
+    let xy = textureSample(map, layer_sampler, uv).xy * 2.0 - 1.0;
     let tilt = vec2<f32>(xy.x, NORMAL_GREEN_SIGN * xy.y);
     return vec3<f32>(tilt, sqrt(max(0.0, 1.0 - dot(tilt, tilt))));
 }
@@ -158,12 +153,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     weights[0] = max(0.0, 1.0 - weights[1] - weights[2] - weights[3] - weights[4] - weights[5]);
     let total = max(0.0001, weights[0] + weights[1] + weights[2] + weights[3] + weights[4] + weights[5]);
     let uv = in.uv * terrain.tiling_and_layer_count.xy;
-    var color = textureSample(layer_0, layer_0_sampler, uv) * weights[0];
-    color += textureSample(layer_1, layer_1_sampler, uv) * weights[1];
-    color += textureSample(layer_2, layer_2_sampler, uv) * weights[2];
-    color += textureSample(layer_3, layer_3_sampler, uv) * weights[3];
-    color += textureSample(layer_4, layer_4_sampler, uv) * weights[4];
-    color += textureSample(layer_5, layer_5_sampler, uv) * weights[5];
+    var color = textureSample(layer_0, layer_sampler, uv) * weights[0];
+    color += textureSample(layer_1, layer_sampler, uv) * weights[1];
+    color += textureSample(layer_2, layer_sampler, uv) * weights[2];
+    color += textureSample(layer_3, layer_sampler, uv) * weights[3];
+    color += textureSample(layer_4, layer_sampler, uv) * weights[4];
+    color += textureSample(layer_5, layer_sampler, uv) * weights[5];
     pbr_input.material.base_color *= color / total;
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.

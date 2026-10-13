@@ -62,6 +62,9 @@ struct AssetDirectoryReadLock {
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
+    let preferences = config
+        .interactive_world_physics()
+        .then(|| crate::settings::prepare_settings(&mut config));
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
     configure_io_task_pool(config.io_threads)?;
@@ -155,6 +158,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    if let Some((settings, file)) = preferences {
+        app.insert_resource(settings).insert_resource(file);
+    }
     if let Some(tuning) = movement_tuning {
         app.insert_resource(tuning);
     }
@@ -213,6 +219,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin);
+    if interactive_world_physics {
+        app.add_plugins(crate::settings_ui::SettingsPlugin);
+    }
     add_camera_and_capture_systems(&mut app);
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
@@ -1896,7 +1905,7 @@ const SUN_SHADOW_MAX_GRID_CELLS: i32 = 256;
 ///
 /// [sqrt(2)]: std::f32::consts::SQRT_2
 /// [`maximum_distance`]: CascadeShadowConfigBuilder::maximum_distance
-fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
+pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
     // Cells draw out to `unload_radius`, one ring past the requested `stream_radius`, and the
     // `+ 1` is the camera's own cell: the grid is `unload_radius` cells around that cell rather
     // than around the camera, which may stand at the far edge of its own. The radius is clamped
@@ -1960,6 +1969,7 @@ fn setup_world(
         Projection::Perspective(PerspectiveProjection { far, ..default() }),
         camera_transform,
         StreamingCamera,
+        IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
         // The sky draws a dome around this camera and clears it to the weather's fog colour.

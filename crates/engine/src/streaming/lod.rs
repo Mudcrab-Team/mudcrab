@@ -225,6 +225,7 @@ pub(super) fn plan_lod_chunks(
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    mut previous_distances: Local<Option<crate::config::TerrainLodDistances>>,
 ) {
     let started = Instant::now();
     let Ok(camera) = camera.single() else {
@@ -256,7 +257,9 @@ pub(super) fn plan_lod_chunks(
     }
 
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
-    if streaming.center != Some(center) {
+    let distances_changed = previous_distances.as_ref() != Some(&config.terrain_lod);
+    *previous_distances = Some(config.terrain_lod);
+    if streaming.center != Some(center) || distances_changed {
         streaming.move_center(center, config.worldspace_id, &config.terrain_lod);
     }
     let generation = streaming.generation;

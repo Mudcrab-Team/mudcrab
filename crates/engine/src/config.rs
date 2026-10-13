@@ -66,6 +66,8 @@ impl TerrainLodDistances {
 
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
+    /// Explicit launch options. Saved interactive settings defer to these and to `--ini`.
+    pub settings_overrides: Vec<String>,
     pub assets_dir: PathBuf,
     pub worldspace_id: u32,
     pub start_grid: (i32, i32),
@@ -141,6 +143,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
+            settings_overrides: Vec::new(),
             assets_dir: PathBuf::from("modern_assets"),
             worldspace_id: 0x3c,
             start_grid: (0, 0),
@@ -489,6 +492,11 @@ impl EngineConfig {
             }
         }
         ini.apply(&mut config);
+        config.settings_overrides.extend(
+            args.iter()
+                .filter(|argument| argument.starts_with("--"))
+                .cloned(),
+        );
         let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
             match argument.as_str() {

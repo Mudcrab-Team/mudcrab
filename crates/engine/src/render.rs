@@ -37,7 +37,7 @@ pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
-const WAVE_STRENGTH: f32 = 0.05;
+pub(crate) const WAVE_STRENGTH: f32 = 0.05;
 
 /// Skyrim's DefaultWater after Update.esm: Fresnel Amount 0.10 and a Reflectivity Amount of 0.8
 /// (WATR `DNAM`). Used when a water has no decoded colours yet, e.g. a database converted before
@@ -130,7 +130,8 @@ impl Plugin for VercidiumRendererPlugin {
                 animate_water_materials,
                 update_water_reflection_camera,
                 sync_renderer_metrics,
-            ),
+            )
+                .after(crate::settings_ui::SettingsUiSet),
         );
 
         add_placed_object_layer_propagation(app);
@@ -253,26 +254,28 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainExtension {
     #[texture(100)]
-    #[sampler(101)]
     layer_0: Option<Handle<Image>>,
     #[texture(102)]
-    #[sampler(103)]
     layer_1: Option<Handle<Image>>,
     #[texture(104)]
-    #[sampler(105)]
     layer_2: Option<Handle<Image>>,
     #[texture(106)]
-    #[sampler(107)]
     layer_3: Option<Handle<Image>>,
     #[texture(108)]
-    #[sampler(109)]
     layer_4: Option<Handle<Image>>,
     #[texture(110)]
-    #[sampler(111)]
     layer_5: Option<Handle<Image>>,
+    // All diffuse and normal layers use the same repeating sampler. Sharing it keeps the full
+    // material below Metal's 16-sampler limit, including Bevy's standard material and view.
+    // The first present diffuse image supplies it even when the base layer has no texture.
+    // AsBindGroup requires the sampler's source image to have a texture binding on this field;
+    // the shader only uses its sampler, while bindings 100-110 supply the diffuse images.
+    #[texture(119)]
+    #[sampler(101)]
+    layer_sampler: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
-    // Each layer's normal map, sampled through `layer_0_sampler`: every terrain layer image is
+    // Each layer's normal map, sampled through `layer_sampler`: every terrain layer image is
     // loaded with the same repeating sampler (`terrain_layer_sampler`), so the six need no sampler
     // bindings of their own. Which layers have one is in `TerrainSettings::normal_layers_*`, since
     // Bevy's stand-in for a missing texture is white, which decodes to a steep tilt.
@@ -485,6 +488,7 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
+                layer_sampler: textures.iter().flatten().next().cloned(),
                 settings,
                 normal_0: normals[0].clone(),
                 normal_1: normals[1].clone(),
@@ -518,6 +522,7 @@ impl TerrainExtension {
             layer_3: Some(textures[3].clone()),
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
+            layer_sampler: Some(textures[0].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
             normal_0: None,
             normal_1: None,
@@ -567,6 +572,7 @@ impl Default for TerrainExtension {
             layer_3: None,
             layer_4: None,
             layer_5: None,
+            layer_sampler: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
             normal_0: None,
             normal_1: None,
@@ -613,7 +619,7 @@ impl Default for WaterExtension {
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
                     DEFAULT_WATER_REFLECTIVITY,
-                    0.0,
+                    1.0,
                     0.0,
                 ),
             },
@@ -649,7 +655,7 @@ impl WaterExtension {
             settings: WaterSettings {
                 wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
-                fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 0.0, 0.0),
+                fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
             },
         }
     }
@@ -666,6 +672,7 @@ fn animate_water_materials(
     config: Option<Res<crate::config::EngineConfig>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
     let elapsed = if config.is_some_and(|config| config.terrain_water_fixture) {
@@ -675,6 +682,27 @@ fn animate_water_materials(
     };
     for (_, material) in materials.iter_mut() {
         material.extension.settings.wave_scale_speed_strength.w = elapsed;
+        if let Some(settings) = settings.as_deref() {
+            let water = &mut material.extension;
+            water.settings.wave_scale_speed_strength.x = settings.wave_scale;
+            water.settings.wave_scale_speed_strength.y = settings.wave_speed;
+            water.settings.wave_scale_speed_strength.z = if settings.water_waves {
+                settings.wave_strength
+            } else {
+                0.0
+            };
+            water.settings.flow_direction.w =
+                if settings.water_flow_normals && water.flow_normal.is_some() {
+                    1.0
+                } else {
+                    0.0
+                };
+            water.settings.fresnel_reflectivity.z = if settings.water_reflections {
+                settings.water_reflection_strength
+            } else {
+                0.0
+            };
+        }
     }
     profiler.record_elapsed("render/water_animation", started);
 }
@@ -683,7 +711,7 @@ fn animate_water_materials(
 pub struct WaterReflectionTexture(pub Handle<Image>);
 
 #[derive(Component)]
-struct WaterReflectionCamera;
+pub(crate) struct WaterReflectionCamera;
 
 /// Slack added to a water plane's bounds before the main camera frustum test, in world units (4096
 /// to a cell).
@@ -745,20 +773,26 @@ type WaterReflectionObserverView = (
     Option<&'static Exposure>,
 );
 
+type WaterReflectionView = (
+    Entity,
+    &'static mut Transform,
+    &'static mut Camera,
+    Option<&'static mut Exposure>,
+    Option<&'static mut Projection>,
+);
+
 fn update_water_reflection_camera(
     mut commands: Commands,
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
-    mut reflection_camera: Query<
-        (Entity, &mut Transform, &mut Camera, Option<&mut Exposure>),
-        With<WaterReflectionCamera>,
-    >,
+    mut reflection_camera: Query<WaterReflectionView, With<WaterReflectionCamera>>,
     mut profiler: ResMut<ProfilingState>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
     let (
         Ok((main, frustum, projection, exposure)),
-        Ok((entity, mut reflection, mut camera, reflection_exposure)),
+        Ok((entity, mut reflection, mut camera, reflection_exposure, reflection_projection)),
     ) = (main_camera.single(), reflection_camera.single_mut())
     else {
         return;
@@ -770,6 +804,17 @@ fn update_water_reflection_camera(
         reflection_exposure.ev100 = ev100;
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
+    }
+    // Keep the reflected view's lens aligned when settings or sprint change the main FOV.
+    // The render target retains its own aspect ratio, which Bevy updates for its dimensions.
+    if let (Some(Projection::Perspective(main)), Some(mut reflected)) =
+        (projection, reflection_projection)
+        && let Projection::Perspective(reflected) = &mut *reflected
+        && (reflected.fov != main.fov || reflected.near != main.near || reflected.far != main.far)
+    {
+        reflected.fov = main.fov;
+        reflected.near = main.near;
+        reflected.far = main.far;
     }
     // The surface nearest the main camera fixes the mirror plane; a further surface would put the
     // reflection at the wrong height when more than one water level is streamed in.
@@ -797,7 +842,8 @@ fn update_water_reflection_camera(
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
     *reflection = reflected_camera_transform(main, surface.translation().y);
-    camera.is_active = surface_in_view;
+    camera.is_active =
+        surface_in_view && settings.is_none_or(|settings| settings.water_reflections);
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
 

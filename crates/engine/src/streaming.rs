@@ -1206,26 +1206,31 @@ fn spawn_cell(
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
-            if lights
-                && let Some(light) = reference.light.as_ref().and_then(|row| {
-                    crate::lights::point_light(row, reference.light_radius_override)
-                })
+            if let Some(light) = reference
+                .light
+                .as_ref()
+                .and_then(|row| crate::lights::point_light(row, reference.light_radius_override))
             {
-                // A reference without a model has no visibility components, so its light child
-                // could never become visible: Bevy warned (B0004) and extract_lights dropped every
-                // such light. The reference needs Visibility for the hierarchy to propagate.
-                entity.insert(Visibility::default());
-                entity.with_child((
-                    Name::new(format!("Light {:08X}", reference.form_id)),
-                    light,
-                    crate::lights::SkyrimLight {
-                        form_id: reference.form_id,
-                        cell_id: reference.cell_id,
-                    },
-                    // Not the reference's propagated placed-object layer: a light keeps
-                    // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
-                    crate::render::light_render_layers(),
-                ));
+                let marker = crate::lights::SkyrimLight {
+                    form_id: reference.form_id,
+                    cell_id: reference.cell_id,
+                };
+                if !lights {
+                    entity.insert(crate::lights::DeferredPointLight { light, marker });
+                } else {
+                    // A reference without a model has no visibility components, so its light child
+                    // could never become visible: Bevy warned (B0004) and extract_lights dropped every
+                    // such light. The reference needs Visibility for the hierarchy to propagate.
+                    entity.insert(Visibility::default());
+                    entity.with_child((
+                        Name::new(format!("Light {:08X}", reference.form_id)),
+                        light,
+                        marker,
+                        // Not the reference's propagated placed-object layer: a light keeps
+                        // `LIGHT_LAYERS` so it reaches the world layer and both cameras.
+                        crate::render::light_render_layers(),
+                    ));
+                }
             }
             if let Some(path) = reference.model_path.and_then(converted_model_path) {
                 model_loads += 1;

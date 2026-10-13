@@ -143,9 +143,16 @@ pub struct ConsoleState {
 /// Run condition: true while the console is closed, and when there is no console at all.
 /// It stays false on the frame the console closes, so the keys that closing frame carried
 /// (typed into the console) do not reach the game.
-pub fn console_closed(state: Option<Res<ConsoleState>>) -> bool {
+pub fn console_closed(
+    state: Option<Res<ConsoleState>>,
+    menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
+) -> bool {
     state.is_none_or(|state| !state.open && !state.closing)
+        && menu.is_none_or(|menu| !menu.blocks_gameplay())
 }
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ConsoleInputSet;
 
 pub trait AppConsoleExt {
     fn add_console_command(&mut self, command: ConsoleCommand) -> &mut Self;
@@ -176,7 +183,8 @@ impl Plugin for ConsolePlugin {
                 PreUpdate,
                 (console_input_system, console_dispatch_system)
                     .chain()
-                    .after(InputSystems),
+                    .after(InputSystems)
+                    .in_set(ConsoleInputSet),
             )
             .add_systems(Update, refresh_console_ui);
     }
@@ -405,12 +413,17 @@ fn console_input_system(
     mut time: ResMut<Time<Virtual>>,
     registry: Res<ConsoleRegistry>,
     mut motion: MotionReset,
+    menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) {
     if state.closing {
         state.closing = false;
         if let Some(restored) = state.restore_capture.take() {
             *capture = restored;
         }
+    }
+    if menu.is_some_and(|menu| menu.blocks_gameplay()) {
+        events.clear();
+        return;
     }
     // The physical key under Escape on every layout (the same key Skyrim uses), not the character.
     if keys.just_pressed(KeyCode::Backquote) {
@@ -424,9 +437,10 @@ fn console_input_system(
             *capture = CursorCapture::Released;
             // Virtual time already advanced this frame in `First`; the pause bites from the next.
             time.pause();
-            // Reset the walk intent, sprint latch and character controllers so a key held while
-            // opening does not leave stale movement behind; `ButtonInput` itself is untouched.
-            motion.clear();
+            // Reset the walk intent, sprint latch and queued controller translation so a key held
+            // while opening does not leave stale movement behind. Velocity and jump state stay, so
+            // closing resumes an airborne arc; `ButtonInput` itself is untouched.
+            motion.clear_input();
         }
     }
     for event in events.read() {
@@ -461,7 +475,7 @@ fn console_input_system(
     }
 }
 
-/// Close the console. Escape leaves the cursor released, as it did before the console existed;
+/// Close the console. Escape leaves the cursor released;
 /// the backtick restores the capture the player had, one frame later (see `restore_capture`).
 fn close_console(
     state: &mut ConsoleState,
@@ -646,7 +660,7 @@ mod tests {
                 "ToggleCollisionGeometry",
                 Some("tcg"),
                 "ToggleCollisionGeometry",
-                "toggle the collision outlines (key F3)",
+                "toggle the collision outlines (also in Graphics settings)",
             ),
         ] {
             app.add_console_command(ConsoleCommand {
@@ -813,6 +827,34 @@ mod tests {
     }
 
     #[test]
+    fn opening_console_mid_jump_drops_input_but_keeps_the_airborne_state() {
+        use crate::physics::{SprintLatch, WalkIntent, WalkState};
+        let mut app = console_app();
+        app.insert_resource(WalkIntent {
+            jump_pressed: true,
+            ..default()
+        })
+        .insert_resource(SprintLatch(true));
+        let body = app
+            .world_mut()
+            .spawn(WalkState {
+                vertical_velocity: 200.0,
+                grounded: false,
+                jump_active: true,
+                ..default()
+            })
+            .id();
+        send_state(&mut app, KeyCode::Backquote, ButtonState::Pressed);
+        assert!(app.world().resource::<ConsoleState>().open);
+        assert!(!app.world().resource::<WalkIntent>().jump_pressed);
+        assert!(!app.world().resource::<SprintLatch>().0);
+        let state = app.world().get::<WalkState>(body).unwrap();
+        assert_eq!(state.vertical_velocity, 200.0);
+        assert!(state.jump_active);
+        assert!(!state.grounded);
+    }
+
+    #[test]
     fn console_closed_is_true_without_the_resource() {
         let mut world = World::new();
         assert!(world.run_system_once(console_closed).unwrap());
@@ -864,7 +906,7 @@ mod tests {
             "Help [text] - list every command",
             "ClearConsole - clear the console scrollback",
             "ToggleCollision [tcl] - toggle noclip flight and walking (key V)",
-            "ToggleCollisionGeometry [tcg] - toggle the collision outlines (key F3)",
+            "ToggleCollisionGeometry [tcg] - toggle the collision outlines (also in Graphics settings)",
         ] {
             assert!(text.contains(line), "Help is missing {line}: {text}");
         }

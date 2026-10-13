@@ -77,6 +77,7 @@ impl SkyrimIni {
                 {
                     config.stream_radius = (grids - 1) / 2;
                     config.unload_radius = config.stream_radius + 1;
+                    config.settings_overrides.push("ini:stream-radius".into());
                 }
                 _ => eprintln!(
                     "warning: ignoring uGridsToLoad={raw:?}; expected an odd whole number from 1 to {}",
@@ -95,7 +96,10 @@ impl SkyrimIni {
                 continue;
             };
             match raw.parse::<f32>() {
-                Ok(value) if value.is_finite() && value > 0.0 => *setting = value,
+                Ok(value) if value.is_finite() && value > 0.0 => {
+                    *setting = value;
+                    config.settings_overrides.push(format!("ini:{key}"));
+                }
                 _ => eprintln!("warning: ignoring {key}={raw:?}; expected a positive number"),
             }
         }
