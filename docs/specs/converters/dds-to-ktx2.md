@@ -90,7 +90,7 @@ The KTX2 header carries scheme 2 with compressed `byte_length` and true
 level and participates in the manifest configuration hash. No rate-distortion tuning is
 applied: this stage is lossless, and any lossy tuning stays a separate quality decision.
 
-The runtime enables Bevy `zstd_rust` so `ktx2_buffer_to_image` decodes each level before
+The runtime enables Bevy `zstd_c` so `ktx2_buffer_to_image` decodes each level before
 format mapping. A Bevy engine test asserts supercompressed and plain outputs decode to
 identical image bytes.
 

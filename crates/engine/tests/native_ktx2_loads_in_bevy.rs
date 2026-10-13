@@ -46,7 +46,7 @@ fn native_bc3_loads_as_bc3_without_transcoding() {
 #[test]
 fn zstd_supercompressed_bc3_loads_as_bc3() {
     let dds = bc3_fixture();
-    // Default conversion supercompresses each mip level; Bevy's zstd_rust
+    // Default conversion supercompresses each mip level; Bevy's zstd_c
     // decode path must restore the native blocks behind the same format.
     let ktx = TextureConverter::convert(&dds, TextureEncoding::ColorSrgb).unwrap();
     let reader = ktx2::Reader::new(&ktx).unwrap();
