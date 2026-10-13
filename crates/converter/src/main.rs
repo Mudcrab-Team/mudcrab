@@ -1023,7 +1023,8 @@ MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are no
 --plugins-file reads Windows-1252 player selection. Installed official masters and
 Skyrim.ccc Creations are always active. --skyrim-ccc-file overrides the game-folder
 CCC path. --skyrim-ini-file explicitly supplies General sTestFile settings; no
-ambient profile is read. Without --plugins-file, automatic discovery is unchanged.
+ambient profile is read. Without --plugins-file, automatic discovery orders plugins
+by dependency and skips unusable or ambiguously named plugins with bounded notices.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.

@@ -2426,7 +2426,7 @@ pub(crate) fn installed_archive_owners(
 
 /// Keep all root plugin identities in the winning MO2 VFS, including unchecked and rejected owners.
 /// Physical sources can live outside Data; recovered winning source paths determine active status.
-fn mo2_installed_archive_owners(
+pub(crate) fn mo2_installed_archive_owners(
     files: &BTreeMap<String, PathBuf>,
     plugins: &[PathBuf],
 ) -> BTreeMap<String, bool> {
@@ -2488,7 +2488,9 @@ pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool
         })
 }
 
-/// Sorts archives by plugin load order, then lowercase stem, placing unmatched archives last.
+/// Sort archives by their longest matching active stem's load order, then lowercase stem.
+/// Priority retains the legacy space/dash/underscore suffixes; unmatched archives sort last
+/// and same-stem plugins retain the first owner's priority.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     archives.sort_by_cached_key(|archive| {
         (
@@ -2502,6 +2504,7 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
     });
 }
 
+/// Resolve the most specific active owner, retaining the first slot when owner stems are equal.
 pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -> Option<usize> {
     let plugin_stems = plugins
         .iter()
@@ -2521,8 +2524,8 @@ pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -
                     .and_then(|suffix| suffix.chars().next())
                     .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
         })
+        .max_by_key(|(index, plugin)| (plugin.len(), std::cmp::Reverse(*index)))
         .map(|(index, _)| index)
-        .next()
 }
 
 fn extension(path: &Path, expected: &[&str]) -> bool {
@@ -4812,6 +4815,29 @@ mod tests {
             Path::new("caf\u{e9}Other.bsa"),
             &plugins
         ));
+    }
+
+    /// Overlapping active names use the longest owner, while equal stems keep their first slot.
+    #[test]
+    fn archive_priority_preserves_specific_owner_and_same_stem_first_slot() {
+        let plugins = [
+            PathBuf::from("Good.esp"),
+            PathBuf::from("Middle.esp"),
+            PathBuf::from("Good - Expansion.esp"),
+            PathBuf::from("Good.esl"),
+        ];
+        assert_eq!(
+            archive_load_order_priority(Path::new("Good.bsa"), &plugins),
+            Some(0)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Good - Expansion - Textures.bsa"), &plugins),
+            Some(2)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Standalone.bsa"), &plugins),
+            None
+        );
     }
 
     #[tokio::test]

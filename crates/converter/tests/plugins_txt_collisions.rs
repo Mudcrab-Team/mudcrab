@@ -1,4 +1,4 @@
-//! Real player selection must never pick an arbitrary file with a colliding plugin identity.
+//! Plugin selection must exclude ambiguous files while preserving usable neighboring plugins.
 use converter::esm::{EsmParser, binary::parse_plugin_metadata, read_plugins_txt_with_options};
 use std::{fs, io::Write, path::Path};
 
@@ -211,4 +211,157 @@ fn case_sensitive_implicit_collisions_omit_official_ccc_and_ini_dependents() {
         ),
         ["Good.esp"]
     );
+}
+
+/// Automatic discovery excludes Unicode-normalized filename collisions and preserves usable records.
+#[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "requires a filesystem preserving distinct K and Kelvin-sign filenames"
+)]
+async fn automatic_unicode_collision_preserves_neighbor_publication() {
+    for reverse_creation in [false, true] {
+        let dir = fixture();
+        let data = dir.path().join("Data");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::all(),
+        )
+        .unwrap();
+        let first = plugin_bytes(0, &[], "fCollisionFirst");
+        let second = plugin_bytes(0x200, &[], "fCollisionSecond");
+        let colliders = if reverse_creation {
+            [("\u{212A}.esp", &second), ("K.esp", &first)]
+        } else {
+            [("K.esp", &first), ("\u{212A}.esp", &second)]
+        };
+        for (name, bytes) in colliders {
+            write_distinct(&data, name, bytes);
+        }
+        assert_eq!(fs::read(data.join("K.esp")).unwrap(), first);
+        assert_eq!(fs::read(data.join("\u{212A}.esp")).unwrap(), second);
+        assert_eq!(parse_plugin_metadata(&data.join("K.esp")).unwrap().flags, 0);
+        assert_eq!(
+            parse_plugin_metadata(&data.join("\u{212A}.esp"))
+                .unwrap()
+                .flags,
+            0x200
+        );
+        for (name, master, editor) in [
+            ("Good.esp", b"Skyrim.esm".as_slice(), "fJumpHeightMin"),
+            ("Child.esp", b"K.esp".as_slice(), "fCollisionChild"),
+            (
+                "Grandchild.esp",
+                b"Child.esp".as_slice(),
+                "fCollisionGrandchild",
+            ),
+        ] {
+            write_distinct(&data, name, &plugin_bytes(0, &[master], editor));
+        }
+        let output = dir.path().join("pack");
+        let mut config = converter::PipelineConfig::new(&data, &output);
+        config.no_lod = true;
+        config.cpu_jobs = 2;
+        config.io_jobs = 1;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(128);
+        let drain = tokio::spawn(async move {
+            let mut notices = Vec::new();
+            while let Some(event) = rx.recv().await {
+                if event.notice {
+                    notices.push(event.message);
+                }
+            }
+            notices
+        });
+        let result = converter::AssetPipeline::run_async(config, tx).await;
+        let progress_notices = drain.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "recoverable automatic collision must preserve publication: {result:?}"
+        );
+        let report = result.unwrap();
+        assert!(report.complete, "{report:?}");
+        assert_eq!(report.skipped, 0, "{report:?}");
+        assert!(output.join("conversion-manifest.json").is_file());
+        assert!(output.join("meshes/generated.glb").is_file());
+        let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        converter::esm::exporter::validate_database(&conn).unwrap();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM plugins ORDER BY priority")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, ["Skyrim.esm", "Good.esp"]);
+        let good: f64 = conn
+            .query_row(
+                "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(good, 67.0);
+        let payloads: Vec<Vec<u8>> = conn
+            .prepare("SELECT data FROM records WHERE record_type='GMST'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let editors: Vec<_> = payloads
+            .iter()
+            .map(|payload| {
+                let record = rkyv::from_bytes::<
+                    converter::esm::types::ArchivedRecordData,
+                    rkyv::rancor::Error,
+                >(payload)
+                .unwrap();
+                let bytes = &record
+                    .subrecords
+                    .iter()
+                    .find(|subrecord| subrecord.tag == *b"EDID")
+                    .unwrap()
+                    .data;
+                String::from_utf8(bytes.strip_suffix(&[0]).unwrap_or(bytes).to_vec()).unwrap()
+            })
+            .collect();
+        assert!(editors.iter().any(|editor| editor == "fJumpHeightMin"));
+        assert!(
+            !editors
+                .iter()
+                .any(|editor| editor.starts_with("fCollision"))
+        );
+        let collision = "installed plugin name collision for k.esp; skipping all matching files";
+        assert_eq!(
+            report
+                .notices
+                .iter()
+                .filter(|notice| notice.as_str() == collision)
+                .count(),
+            1,
+            "{report:?}"
+        );
+        let collision_progress = format!("warning: {collision}");
+        assert_eq!(
+            progress_notices
+                .iter()
+                .filter(|notice| notice.as_str() == collision_progress.as_str())
+                .count(),
+            1,
+            "{progress_notices:?}"
+        );
+        for name in ["Child.esp", "Grandchild.esp"] {
+            assert!(
+                report
+                    .notices
+                    .iter()
+                    .any(|notice| notice.starts_with(&format!("skipping {name}:"))
+                        && notice.contains("K.esp")),
+                "{report:?}"
+            );
+        }
+    }
 }

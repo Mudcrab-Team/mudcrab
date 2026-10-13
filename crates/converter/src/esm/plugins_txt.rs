@@ -188,14 +188,24 @@ fn usable_plugins(paths: Vec<PathBuf>, warnings: &mut Warnings) -> Vec<PathBuf> 
         .collect()
 }
 
-/// Recover automatically discovered plugins: skip unusable headers and missing-master closures
-/// with bounded notices, then order the rest by dependency with cycle/slot recovery.
+/// Recover automatically discovered plugins: omit ambiguous normalized names before checking
+/// headers, skip unusable headers and missing-master closures with bounded notices, then order
+/// the rest by dependency with cycle/slot recovery.
 pub(crate) fn recover_discovered(
     paths: Vec<PathBuf>,
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
     let mut warnings = Warnings::default();
+    let installed = installed_plugin_paths(paths.iter().cloned(), &mut warnings);
+    let paths = paths
+        .into_iter()
+        .filter(|path| {
+            let name =
+                normalize_plugin_name(&path.file_name().unwrap_or_default().to_string_lossy());
+            installed.contains_key(&name)
+        })
+        .collect();
     let paths = usable_plugins(paths, &mut warnings);
     warnings.finish(notices);
     load_order::order_discovered_plugins_with_notices(paths, notices, skipped_plugins)
