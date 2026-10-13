@@ -251,3 +251,17 @@ LOD-B11|2026-09-30|native schema-16 config included Zstd settings absent in LOD 
 LOD-B12|2026-09-30|changed malformed source could leave its old staged output published outside the manifest|LOD-V8
 LOD-B13|2026-09-30|coarse quadrant edges omitted intermediate full terrain heights and opened visible cracks|LOD-V10
 LOD-B14|2026-09-30|globally generated atlas mips outgrew tile gutters and could sample adjacent or unused tiles|LOD-V11
+
+## Owned blocking compilation
+
+Terrain compilation runs on Tokio's blocking pool with owned configuration,
+paths, plugin proofs and report state. The async caller can drain progress or
+request cancellation on a current-thread runtime during a world transaction.
+Normal conversion retains its runtime output and repair leases in the worker;
+metadata rebuild retains both its source read lease and destination write lease.
+Dropping the caller signals cancellation without releasing those leases while
+the worker still runs. Cancellation also interrupts a full progress-channel
+wait. Transactions still check cancellation between bounded batches, roll back
+an unfinished world, and refuse publication of an interrupted or mixed-input
+build. The worker may finish its current batch before it stops; cancellation
+does not terminate an in-flight GPU dispatch or Rayon task.

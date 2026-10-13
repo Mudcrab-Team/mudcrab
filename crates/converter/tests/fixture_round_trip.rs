@@ -1,6 +1,8 @@
 //! Round-trip tests that feed generated `dummy-content` fixtures to the real
 //! converter parsers.
 
+mod common;
+
 use converter::{
     archive::ArchiveExtractor,
     script::ScriptConverter,
@@ -346,7 +348,7 @@ async fn generated_data_directory_converts_end_to_end() {
     .unwrap();
 
     let output = directory.path().join("modern");
-    let config = converter::PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = converter::AssetPipeline::run_async(config, tx)
@@ -394,7 +396,7 @@ async fn generated_data_directory_converts_end_to_end() {
         assert!(output.join(relative).is_file(), "missing {relative}");
     }
 
-    let config = converter::PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = converter::AssetPipeline::run_async(config, tx)
@@ -456,7 +458,7 @@ async fn generated_data_directory_converts_end_to_end() {
         manifest["configuration_hash"] = configuration_hash.into();
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         fs::write(&cache_path, &empty_cache).unwrap();
-        let config = converter::PipelineConfig::new(&data, &output);
+        let config = common::cpu_lod_config(&data, &output);
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = converter::AssetPipeline::run_async(config, tx)

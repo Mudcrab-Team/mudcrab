@@ -1,5 +1,7 @@
 //! #104 phase (a): rigid-body dynamics extracted from NIFs into the GLB collision extras.
 
+mod common;
+
 use converter::mesh::MeshConverter;
 use dummy_content::nif::{BoxBody, StaticShape, static_shape_with_bodies};
 use shared::collision::{BodyKind, COLLISION_ASSET_VERSION, CollisionAsset, CollisionShape};
@@ -272,7 +274,7 @@ async fn schema23_cached_mesh_rebuilds_body_dynamics_and_current24_reuses() {
         static_shape_with_bodies(&QUAD, &[crate_body()]).unwrap(),
     )
     .unwrap();
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     async fn run(config: PipelineConfig) -> converter::pipeline::PipelineReport {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });

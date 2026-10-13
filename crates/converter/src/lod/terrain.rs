@@ -155,6 +155,34 @@ impl TerrainChunkInput<'_> {
         compile_chunk(self.key, origin, &self.members, textures)
     }
 
+    pub(crate) fn prepare(
+        &self,
+        origin: LodOrigin,
+        textures: &TerrainTextures,
+    ) -> Result<(PreparedTerrainChunk, TerrainAtlas)> {
+        prepare_chunk(self.key, origin, &self.members, textures)
+    }
+
+    pub(crate) fn fingerprint_for_encoder(
+        &self,
+        origin: LodOrigin,
+        cell_hashes: &HashMap<u32, String>,
+        textures: &TerrainTextures,
+        encoder: crate::config::TextureEncoder,
+    ) -> Result<String> {
+        let input_hash = self.fingerprint(origin, cell_hashes, textures)?;
+        match encoder {
+            crate::config::TextureEncoder::Cpu => Ok(input_hash),
+            crate::config::TextureEncoder::Gpu { quality, .. } => Ok(crate::cache::hash_bytes(
+                format!(
+                    "{input_hash}:terrain-atlas{}",
+                    crate::texture_gpu::cache_label(quality)
+                )
+                .as_bytes(),
+            )),
+        }
+    }
+
     pub fn fingerprint(
         &self,
         origin: LodOrigin,
@@ -231,6 +259,38 @@ fn compile_chunk(
     members: &[&TerrainCellInput],
     textures: &TerrainTextures,
 ) -> Result<TerrainChunk> {
+    let (prepared, atlas) = prepare_chunk(key, origin, members, textures)?;
+    prepared.finish(&atlas.encode()?)
+}
+
+pub(crate) struct PreparedTerrainChunk {
+    key: ChunkKey,
+    cells: Vec<(i32, i32)>,
+    bounds_min: [f32; 3],
+    bounds_max: [f32; 3],
+    cell_ranges: Vec<(i32, i32, u32)>,
+    geometry: TerrainGeometry,
+}
+
+impl PreparedTerrainChunk {
+    pub(crate) fn finish(&self, albedo: &[u8]) -> Result<TerrainChunk> {
+        let glb = emit_chunk_glb(self.key, &self.cell_ranges, &self.geometry, albedo)?;
+        Ok(TerrainChunk {
+            key: self.key,
+            cells: self.cells.clone(),
+            bounds_min: self.bounds_min,
+            bounds_max: self.bounds_max,
+            glb,
+        })
+    }
+}
+
+fn prepare_chunk(
+    key: ChunkKey,
+    origin: LodOrigin,
+    members: &[&TerrainCellInput],
+    textures: &TerrainTextures,
+) -> Result<(PreparedTerrainChunk, TerrainAtlas)> {
     validate_chunk_members(key, members)?;
     // Chunk-local layout: each member's coarse grid sits at its offset from
     // the chunk's minimum cell, in Creation units with the Creation axis
@@ -300,7 +360,6 @@ fn compile_chunk(
         }
         cell_ranges.push((cell.grid_x, cell.grid_y, cell.cell_id));
     }
-    let glb = emit_chunk_glb(key, &cell_ranges, &geometry, &atlas.encode()?)?;
     // The GLB is placed under a chunk root, so its vertices stay local. The
     // database bounds instead describe that geometry in absolute cell-grid
     // Creation coordinates for world-space R-tree queries.
@@ -316,16 +375,20 @@ fn compile_chunk(
         (local_bounds_max[1] as f64 + chunk_world_y) as f32,
         local_bounds_max[2],
     ];
-    Ok(TerrainChunk {
-        key,
-        cells: members
-            .iter()
-            .map(|cell| (cell.grid_x, cell.grid_y))
-            .collect(),
-        bounds_min,
-        bounds_max,
-        glb,
-    })
+    Ok((
+        PreparedTerrainChunk {
+            key,
+            cells: members
+                .iter()
+                .map(|cell| (cell.grid_x, cell.grid_y))
+                .collect(),
+            bounds_min,
+            bounds_max,
+            cell_ranges,
+            geometry,
+        },
+        atlas,
+    ))
 }
 
 pub(crate) fn validate_chunk_members(key: ChunkKey, members: &[&TerrainCellInput]) -> Result<()> {

@@ -1077,11 +1077,14 @@ mod tests {
     /// The option literals the parser's `match` arms name, in source order.
     fn parser_options() -> Vec<&'static str> {
         CONFIG_SOURCE
+            .split_once("#[cfg(test)]")
+            .map_or(CONFIG_SOURCE, |(production, _)| production)
             .lines()
             .filter_map(|line| {
                 let (option, rest) = leading_quoted(line)?;
                 // The bare `--` arm is a no-op marker, not an option to document.
-                (rest.trim_start().starts_with("=>") && option != "--").then_some(option)
+                (rest.trim_start().starts_with("=>") && option.starts_with('-') && option != "--")
+                    .then_some(option)
             })
             .collect()
     }
@@ -2042,6 +2045,45 @@ mod tests {
         paths
     }
 
+    /// Registered converter/audit tools use their owning parser tests instead of the engine
+    /// parser. Keep walking their directory so a new, unregistered utility remains checked.
+    fn has_validated_script_owner(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        script: &str,
+    ) -> bool {
+        let mut owners = script
+            .lines()
+            .filter_map(|line| line.strip_prefix("# mudcrab-cli-owner: "));
+        let Some(owner) = owners.next() else {
+            return false;
+        };
+        assert!(
+            owners.next().is_none(),
+            "multiple CLI owners in {}",
+            path.display()
+        );
+        let registered: &[&str] = match owner {
+            "lod-performance" => &[
+                "audit_lod_pack.py",
+                "plan_lod_validation.py",
+                "run_conversion_observed.py",
+                "run_validation_plan.py",
+                "test_helpers.py",
+            ],
+            _ => panic!("unvalidated CLI owner {owner} in {}", path.display()),
+        };
+        let relative = path.strip_prefix(root).expect("script inside scan root");
+        assert!(
+            registered
+                .iter()
+                .any(|name| relative == std::path::Path::new(owner).join(name)),
+            "{} claims a CLI owner without registered parser validation",
+            path.display()
+        );
+        true
+    }
+
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
     /// included, is read from disk, so a script added later cannot pass an
     /// option the parser refuses without failing this test. The scan is skipped
@@ -2056,6 +2098,9 @@ mod tests {
         for path in script_paths(&scripts) {
             let script = std::fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+            if has_validated_script_owner(&scripts, &path, &script) {
+                continue;
+            }
             for flag in option_tokens(&script) {
                 if NON_ENGINE_FLAGS.contains(&flag) {
                     continue;
@@ -2165,6 +2210,39 @@ mod tests {
         let utility = directory.path().join("utils/capture.sh");
         std::fs::write(&utility, "--headless").unwrap();
         assert_eq!(script_paths(directory.path()), vec![utility]);
+    }
+
+    #[test]
+    fn converter_script_ownership_does_not_exempt_unregistered_utilities() {
+        let directory = tempfile::tempdir().unwrap();
+        let tools = directory.path().join("lod-performance");
+        std::fs::create_dir(&tools).unwrap();
+        let registered = tools.join("plan_lod_validation.py");
+        let utility = tools.join("capture.py");
+        std::fs::write(&registered, "# mudcrab-cli-owner: lod-performance\n").unwrap();
+        std::fs::write(&utility, "--headless").unwrap();
+        assert_eq!(
+            script_paths(directory.path()),
+            vec![utility.clone(), registered.clone()]
+        );
+        assert!(has_validated_script_owner(
+            directory.path(),
+            &registered,
+            &std::fs::read_to_string(&registered).unwrap()
+        ));
+        assert!(!has_validated_script_owner(
+            directory.path(),
+            &utility,
+            &std::fs::read_to_string(&utility).unwrap()
+        ));
+        assert!(
+            std::panic::catch_unwind(|| has_validated_script_owner(
+                directory.path(),
+                &utility,
+                "# mudcrab-cli-owner: lod-performance\n"
+            ))
+            .is_err()
+        );
     }
 
     /// True when a script spells out a finite number.

@@ -17,8 +17,9 @@ use crate::{
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
     pipeline::{
-        archive_load_order_priority, compile_lod_chunks, discover, overlay_loose_assets,
-        publish_new_directory, sort_archives_by_load_order, staging_path, validate_artifacts,
+        LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks, discover,
+        overlay_loose_assets, publish_new_directory, sort_archives_by_load_order, staging_path,
+        validate_artifacts,
     },
 };
 use color_eyre::{
@@ -32,6 +33,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 use tokio::sync::mpsc::Sender;
@@ -68,8 +70,8 @@ impl AssetPipeline {
         let source = fs::canonicalize(source_assets)?;
         config.data_dir = fs::canonicalize(&config.data_dir)?;
         config.output_dir = new_output_path(&config.output_dir, &source, &config.data_dir)?;
-        let _source_lock = AssetLock::acquire_shared(&source)?;
-        let output_lock = AssetLock::acquire_exclusive(&config.output_dir)?;
+        let source_lock = Arc::new(AssetLock::acquire_shared(&source)?);
+        let output_lock = Arc::new(AssetLock::acquire_exclusive(&config.output_dir)?);
         let source_manifest = fs::read(source.join("conversion-manifest.json"))?;
         // Read the original version; normal cache loading deliberately invalidates
         // GLBs during schema migration, which this explicit route verifies instead.
@@ -127,6 +129,10 @@ impl AssetPipeline {
             &source_manifest,
             &mut manifest,
             &progress_tx,
+            Arc::new(LodWorkerOwnership {
+                _runtime: vec![source_lock.clone(), output_lock.clone()],
+                _repair: None,
+            }),
         )
         .await;
         let mut report = match result {
@@ -215,6 +221,7 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
     Ok((plugins, hashes))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rebuild_into(
     config: &PipelineConfig,
     source: &Path,
@@ -223,6 +230,7 @@ async fn rebuild_into(
     source_manifest: &[u8],
     manifest: &mut ConversionManifest,
     progress: &Sender<ProgressEvent>,
+    ownership: Arc<LodWorkerOwnership>,
 ) -> Result<PipelineReport> {
     let (plugins, plugin_hashes) = matched;
     progress_event(
@@ -361,6 +369,7 @@ async fn rebuild_into(
         plugin_hashes,
         progress,
         &mut report,
+        Some(ownership),
     )
     .await?;
     report.lod_elapsed_ms = lod_started.elapsed().as_millis();

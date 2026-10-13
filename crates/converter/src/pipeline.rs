@@ -16,11 +16,11 @@ use crate::{
     },
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
-        albedo::{TerrainTextureCache, TerrainTextures},
+        albedo::{TerrainAtlas, TerrainTextureCache, TerrainTextures},
         reuse::{LodManifest, LodReuse},
         terrain::{
-            TerrainCellCache, exterior_terrain_cells, publish_chunk, read_cached_heights,
-            terrain_jobs, validate_chunk_members,
+            PreparedTerrainChunk, TerrainCellCache, TerrainChunk, exterior_terrain_cells,
+            publish_chunk, read_cached_heights, terrain_jobs, validate_chunk_members,
         },
     },
     mesh::MeshConverter,
@@ -76,6 +76,10 @@ pub struct PipelineReport {
     /// Verified prior-package chunks reused without baking/encoding.
     #[serde(default)]
     pub lod_cache_hits: u64,
+    #[serde(default)]
+    pub lod_gpu_chunks: u64,
+    #[serde(default)]
+    pub lod_cpu_fallback_chunks: u64,
     /// Wall time spent compiling terrain LOD, excluding other conversion stages.
     #[serde(default)]
     pub lod_elapsed_ms: u128,
@@ -110,6 +114,7 @@ fn conversion_is_complete(report: &PipelineReport) -> bool {
 #[derive(Clone, Default)]
 pub struct Cancellation {
     flag: Arc<AtomicBool>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl Cancellation {
@@ -119,10 +124,23 @@ impl Cancellation {
 
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Relaxed);
+        self.changed.notify_waiters();
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::Relaxed)
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -257,7 +275,7 @@ impl AssetPipeline {
                 .ok_or_else(|| color_eyre::eyre::eyre!("output has no parent"))?,
         )
         .wrap_err("failed to create asset output parent")?;
-        let output_lock = AssetLock::acquire_exclusive(&config.output_dir).map_err(|error| {
+        let output_lock = Arc::new(AssetLock::acquire_exclusive(&config.output_dir).map_err(|error| {
             let message = if error.is_held() {
                 format!(
                     "asset output {} is in use; close its engine or inspector before conversion",
@@ -270,11 +288,11 @@ impl AssetPipeline {
                 )
             };
             color_eyre::Report::from(error).wrap_err(message)
-        })?;
+        })?);
         // Hold the runtime lock before repair-journal recovery can write the pack,
         // and the distinct repair lock before directory recovery or publication.
         // Both guards remain alive through cache cleanup; publication reuses output_lock.
-        let ownership = crate::repair::OutputOwnership::acquire(&config.output_dir)?;
+        let ownership = Arc::new(crate::repair::OutputOwnership::acquire(&config.output_dir)?);
         config.output_dir = ownership.output().to_path_buf();
         recover_interrupted_publication(&config.output_dir)?;
         let started = Instant::now();
@@ -341,6 +359,10 @@ impl AssetPipeline {
             &previous_manifest,
             &progress_tx,
             &cancellation,
+            Arc::new(LodWorkerOwnership {
+                _runtime: vec![output_lock.clone()],
+                _repair: Some(ownership.clone()),
+            }),
         )
         .await;
         let mut report = match run_result {
@@ -407,6 +429,7 @@ impl AssetPipeline {
         previous: &ConversionManifest,
         progress_tx: &Sender<ProgressEvent>,
         cancellation: &Cancellation,
+        ownership: Arc<LodWorkerOwnership>,
     ) -> Result<PipelineReport> {
         let mut report = PipelineReport::default();
         let expected_configuration = configuration_hash(config)?;
@@ -998,6 +1021,7 @@ impl AssetPipeline {
             progress_tx,
             cancellation,
             &mut report,
+            Some(ownership),
         )
         .await?;
         report.lod_elapsed_ms = lod_started.elapsed().as_millis();
@@ -2722,6 +2746,7 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
 /// compiled chunk's content hash, the configuration hash, and the converter
 /// schema (BUILD-01/02). It is written to `lod_build` and to the published
 /// manifest; the runtime refuses chunks whose manifest identity differs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn compile_lod_chunks(
     config: &PipelineConfig,
     staging: &Path,
@@ -2730,6 +2755,7 @@ pub(crate) async fn compile_lod_chunks(
     plugin_hashes: &[String],
     progress_tx: &Sender<ProgressEvent>,
     report: &mut PipelineReport,
+    ownership: Option<Arc<LodWorkerOwnership>>,
 ) -> Result<()> {
     compile_lod_chunks_with_cancel(
         config,
@@ -2740,12 +2766,107 @@ pub(crate) async fn compile_lod_chunks(
         progress_tx,
         &Cancellation::new(),
         report,
+        ownership,
     )
     .await
 }
 
+/// The blocking compiler retains both publication leases if its caller is dropped.
+pub(crate) struct LodWorkerOwnership {
+    pub(crate) _runtime: Vec<Arc<AssetLock>>,
+    pub(crate) _repair: Option<Arc<crate::repair::OutputOwnership>>,
+}
+
+struct CancelLodWorkerOnDrop(Option<Cancellation>);
+
+impl Drop for CancelLodWorkerOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancellation) = &self.0 {
+            cancellation.cancel();
+        }
+    }
+}
+
+async fn run_owned_lod_worker<T: Send + 'static>(
+    cancellation: Cancellation,
+    ownership: Option<Arc<LodWorkerOwnership>>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
+    let mut guard = CancelLodWorkerOnDrop(Some(cancellation));
+    let worker = spawn_blocking(move || {
+        let _ownership = ownership;
+        work()
+    });
+    let result = worker.await.wrap_err("terrain LOD worker failed");
+    guard.0 = None;
+    result
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn compile_lod_chunks_with_cancel(
+    config: &PipelineConfig,
+    staging: &Path,
+    reuse_root: &Path,
+    plugins: &[PathBuf],
+    plugin_hashes: &[String],
+    progress_tx: &Sender<ProgressEvent>,
+    cancellation: &Cancellation,
+    report: &mut PipelineReport,
+    ownership: Option<Arc<LodWorkerOwnership>>,
+) -> Result<()> {
+    let config = config.clone();
+    let staging = staging.to_path_buf();
+    let reuse_root = reuse_root.to_path_buf();
+    let plugins = plugins.to_vec();
+    let plugin_hashes = plugin_hashes.to_vec();
+    let progress_tx = progress_tx.clone();
+    let worker_cancellation = cancellation.clone();
+    let mut worker_report = std::mem::take(report);
+    let runtime = tokio::runtime::Handle::current();
+    #[cfg(test)]
+    let fail_gpu_init = FAIL_LOD_GPU_INIT.with(std::cell::Cell::get);
+    let (result, returned_report) =
+        run_owned_lod_worker(cancellation.clone(), ownership, move || {
+            #[cfg(test)]
+            let _gpu_override = LodGpuInitOverride::new(fail_gpu_init);
+            let result = runtime.block_on(async {
+                // Cancellation must also release a worker waiting for a full progress
+                // channel. Synchronous transactions poll the same flag between batches.
+                tokio::select! {
+                    biased;
+                    _ = worker_cancellation.cancelled() => Err(Interrupted::new().into()),
+                    result = compile_lod_chunks_inline(
+                        &config, &staging, &reuse_root, &plugins, &plugin_hashes,
+                        &progress_tx, &worker_cancellation, &mut worker_report,
+                    ) => result,
+                }
+            });
+            (result, worker_report)
+        })
+        .await?;
+    *report = returned_report;
+    result
+}
+
+#[cfg(test)]
+struct LodGpuInitOverride(bool);
+
+#[cfg(test)]
+impl LodGpuInitOverride {
+    fn new(value: bool) -> Self {
+        Self(FAIL_LOD_GPU_INIT.with(|flag| flag.replace(value)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for LodGpuInitOverride {
+    fn drop(&mut self) {
+        FAIL_LOD_GPU_INIT.with(|flag| flag.set(self.0));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compile_lod_chunks_inline(
     config: &PipelineConfig,
     staging: &Path,
     reuse_root: &Path,
@@ -2822,6 +2943,12 @@ async fn compile_lod_chunks_with_cancel(
         .num_threads(config.cpu_jobs)
         .build()
         .wrap_err("failed to create terrain LOD compiler pool")?;
+    let mut gpu = None;
+    let mut gpu_attempted = false;
+    enum LodBatchItem {
+        Reused(TerrainChunk, String),
+        Prepared(PreparedTerrainChunk, TerrainAtlas, String, Option<String>),
+    }
     'world: for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
         interrupt(cancellation)?;
         let settings = match resolve_lod_settings(config, &staging.join("vfs"), editor_id) {
@@ -2938,10 +3065,12 @@ async fn compile_lod_chunks_with_cancel(
                 cell_hashes.insert(cell.cell_id, cell.fingerprint());
             }
         }
-        let (accepted, reused, refusals, content_error) = {
+        let (accepted, reused, gpu_chunks, fallback_chunks, refusals, content_error) = {
             let tx = connection.unchecked_transaction()?;
             let mut accepted = Vec::with_capacity(jobs.len());
             let mut reused = 0u64;
+            let mut gpu_chunks = 0u64;
+            let mut fallback_chunks = 0u64;
             let mut refusals = BTreeMap::<String, u64>::new();
             let mut content_error = validation.err();
             for batch in jobs.chunks(compiler_pool.current_num_threads()) {
@@ -2949,26 +3078,33 @@ async fn compile_lod_chunks_with_cancel(
                     break;
                 }
                 interrupt(cancellation)?;
-                // Baking, mip generation and encoding finish together per chunk. Only
-                // this bounded batch holds GLB payloads; SQLite remains on this thread.
+                // Prepare and encode a bounded chunk batch; SQLite stays on this thread.
                 let compiled: Result<Vec<_>> = compiler_pool.install(|| {
                     batch
                         .par_iter()
                         .map(|job| {
-                            let input_hash = job.fingerprint(origin, &cell_hashes, &textures)?;
+                            let input_hash = job.fingerprint_for_encoder(
+                                origin,
+                                &cell_hashes,
+                                &textures,
+                                config.lod_texture_encoder,
+                            )?;
                             let refusal = if let Some(reuse) = &reuse {
                                 match reuse.chunk(job, origin, &input_hash) {
-                                    Ok(chunk) => return Ok((chunk, input_hash, true, None)),
+                                    Ok(chunk) => {
+                                        return Ok(LodBatchItem::Reused(chunk, input_hash));
+                                    }
                                     Err(error) => Some(format!("{error:#}")),
                                 }
                             } else {
                                 None
                             };
-                            Ok((job.compile(origin, &textures)?, input_hash, false, refusal))
+                            let (geometry, atlas) = job.prepare(origin, &textures)?;
+                            Ok(LodBatchItem::Prepared(geometry, atlas, input_hash, refusal))
                         })
                         .collect()
                 });
-                let chunks = match compiled {
+                let items = match compiled {
                     Ok(chunks) => chunks,
                     Err(error) => {
                         content_error = Some(error);
@@ -2976,17 +3112,112 @@ async fn compile_lod_chunks_with_cancel(
                     }
                 };
                 interrupt(cancellation)?;
-                for (chunk, input_hash, hit, refusal) in chunks {
+                let mut chunks = (0..items.len()).map(|_| None).collect::<Vec<_>>();
+                let mut prepared = Vec::new();
+                let mut atlases = Vec::new();
+                for (position, item) in items.into_iter().enumerate() {
+                    match item {
+                        LodBatchItem::Reused(chunk, input_hash) => {
+                            chunks[position] = Some((chunk, input_hash, true, true, None))
+                        }
+                        LodBatchItem::Prepared(geometry, atlas, input_hash, refusal) => {
+                            prepared.push((position, geometry, input_hash, refusal));
+                            atlases.push(atlas);
+                        }
+                    }
+                }
+                if !atlases.is_empty() && !gpu_attempted {
+                    gpu_attempted = true;
+                    if let TextureEncoder::Gpu { quality, batch_mb } = config.lod_texture_encoder {
+                        match create_lod_gpu(quality, batch_mb) {
+                            Ok(encoder) => {
+                                report.notices.push(format!(
+                                    "Terrain atlas GPU encoder: {} (quality {quality}, batch {} MiB)",
+                                    encoder.adapter_name,
+                                    encoder.batch_bytes >> 20
+                                ));
+                                gpu = Some(encoder);
+                            }
+                            Err(error) => report.notices.push(format!(
+                                "Terrain atlas GPU unavailable ({error:#}); using CPU encoding"
+                            )),
+                        }
+                    }
+                }
+                // GPU post-processing and validation each use this many workers.
+                let post_threads = (compiler_pool.current_num_threads() / 2).max(1);
+                let encoded = compiler_pool
+                    .install(|| TerrainAtlas::encode_batch(atlases, gpu.as_ref(), post_threads));
+                let encoded = match encoded {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        content_error = Some(error);
+                        break;
+                    }
+                };
+                ensure!(
+                    encoded.len() == prepared.len(),
+                    "terrain atlas batch returned the wrong result count"
+                );
+                let finished: Result<Vec<_>> = compiler_pool.install(|| {
+                    prepared
+                        .into_par_iter()
+                        .zip(encoded)
+                        .map(|((position, geometry, input_hash, refusal), atlas)| {
+                            Ok((
+                                position,
+                                geometry.finish(&atlas.bytes)?,
+                                input_hash,
+                                atlas.gpu_used,
+                                atlas.fallback_reason,
+                                refusal,
+                            ))
+                        })
+                        .collect()
+                });
+                let finished = match finished {
+                    Ok(finished) => finished,
+                    Err(error) => {
+                        content_error = Some(error);
+                        break;
+                    }
+                };
+                for (position, chunk, input_hash, gpu_used, fallback_reason, refusal) in finished {
+                    let reusable =
+                        matches!(config.lod_texture_encoder, TextureEncoder::Cpu) || gpu_used;
+                    if gpu_used {
+                        gpu_chunks += 1;
+                    } else if matches!(config.lod_texture_encoder, TextureEncoder::Gpu { .. }) {
+                        fallback_chunks += 1;
+                    }
+                    if let Some(reason) = fallback_reason
+                        && !report
+                            .notices
+                            .iter()
+                            .any(|notice| notice.starts_with("Terrain atlas GPU fallback:"))
+                    {
+                        report
+                            .notices
+                            .push(format!("Terrain atlas GPU fallback: {reason}"));
+                    }
+                    chunks[position] = Some((chunk, input_hash, false, reusable, refusal));
+                }
+                if content_error.is_some() {
+                    break;
+                }
+                interrupt(cancellation)?;
+                for (chunk, input_hash, hit, reusable, refusal) in chunks.into_iter().flatten() {
                     publish_chunk(&tx, staging, &chunk)?;
                     let relative = shared::lod::chunk_payload_path(chunk.key);
-                    accepted.push((relative, input_hash, hash_bytes(&chunk.glb)));
+                    accepted.push((relative, input_hash, hash_bytes(&chunk.glb), reusable));
                     reused += u64::from(hit);
                     if let Some(reason) = refusal {
                         *refusals.entry(reason).or_default() += 1;
                     }
                 }
-                // Batch updates are replaceable; the committed totals below are awaited.
-                // Awaiting here would hold a non-Send SQLite transaction across suspension.
+                // A transaction borrows a non-Sync SQLite connection. Do not hold
+                // it across an await; batch progress is best-effort, while committed
+                // world totals below remain reliable notices and report fields.
                 let _ = progress_tx.try_send(ProgressEvent::new(
                     ProgressStage::LodChunks,
                     index as u64,
@@ -3005,7 +3236,14 @@ async fn compile_lod_chunks_with_cancel(
             } else {
                 tx.commit()?;
             }
-            (accepted, reused, refusals, content_error)
+            (
+                accepted,
+                reused,
+                gpu_chunks,
+                fallback_chunks,
+                refusals,
+                content_error,
+            )
         };
         if let Some(error) = content_error {
             let partial_world = staging.join(format!("lod/{worldspace_id:08x}"));
@@ -3056,10 +3294,14 @@ async fn compile_lod_chunks_with_cancel(
         terrain_sources.extend(textures.source_hashes);
         report.lod_chunks += accepted.len() as u64;
         report.lod_cache_hits += reused;
-        for (relative, input_hash, output_hash) in accepted {
+        report.lod_gpu_chunks += gpu_chunks;
+        report.lod_cpu_fallback_chunks += fallback_chunks;
+        for (relative, input_hash, output_hash, reusable) in accepted {
             chunk_hashes.push(format!("{relative}:{output_hash}"));
             report.artifacts.push(PathBuf::from(&relative));
-            chunk_inputs.insert(relative, input_hash);
+            if reusable {
+                chunk_inputs.insert(relative, input_hash);
+            }
         }
         compiled_worlds += 1;
         send(
@@ -3094,10 +3336,17 @@ async fn compile_lod_chunks_with_cancel(
         current_plugin_hashes == plugin_hashes,
         "plugin inputs changed during conversion; refusing to publish an LOD build from a mixed input generation"
     );
+    let lod_configuration = hash_bytes(&serde_json::to_vec(&serde_json::json!({
+        "assets": configuration_hash(config)?,
+        "atlas_encoder": match config.lod_texture_encoder {
+            TextureEncoder::Cpu => "cpu-terrain-uastc-v1".to_owned(),
+            TextureEncoder::Gpu { quality, .. } => format!("terrain-atlas{}", texture_gpu::cache_label(quality)),
+        },
+    }))?);
     let identity = build_identity(
         plugin_hashes,
         &chunk_hashes,
-        &configuration_hash(config)?,
+        &lod_configuration,
         &world_settings,
         &terrain_sources,
     )?;
@@ -3121,6 +3370,21 @@ async fn compile_lod_chunks_with_cancel(
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_LOD_GPU_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn create_lod_gpu(quality: u32, batch_mb: u64) -> Result<GpuUastc> {
+    #[cfg(test)]
+    if FAIL_LOD_GPU_INIT.with(std::cell::Cell::get) {
+        bail!("injected GPU initialization failure");
+    }
+    // Chunk batches are much smaller than DDS streaming batches. Bound the
+    // three reusable GPU slots to avoid reserving a gigabyte for small atlases.
+    GpuUastc::new(quality, batch_mb.min(64))
 }
 
 /// Whether a cache file name is a spill copy of a blob: 64 hex digits, a dot and a number.
@@ -3788,6 +4052,196 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn lod_worker_leaves_current_thread_free_and_retains_leases_after_abort() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("modern");
+        let ownership = Arc::new(LodWorkerOwnership {
+            _runtime: vec![Arc::new(AssetLock::acquire_exclusive(&output).unwrap())],
+            _repair: Some(Arc::new(
+                crate::repair::OutputOwnership::acquire(&output).unwrap(),
+            )),
+        });
+        let cancellation = Cancellation::new();
+        let observed = cancellation.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let worker_output = output.clone();
+        let task = tokio::spawn(run_owned_lod_worker(
+            cancellation,
+            Some(ownership),
+            move || {
+                started_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                if !observed.is_cancelled() {
+                    fs::create_dir_all(&worker_output).unwrap();
+                    fs::write(worker_output.join("unexpected-write"), b"bad").unwrap();
+                }
+                finished_tx.send(()).unwrap();
+            },
+        ));
+        // The worker waits synchronously. A current-thread runtime must still
+        // deliver this signal and run the abort rather than block in compilation.
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(AssetLock::acquire_shared(&output).is_err());
+        assert!(crate::repair::OutputOwnership::acquire(&output).is_err());
+        release_tx.send(()).unwrap();
+        finished_rx.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if AssetLock::acquire_exclusive(&output).is_ok()
+                    && crate::repair::OutputOwnership::acquire(&output).is_ok()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !output.exists(),
+            "aborted worker must observe cancellation before writing"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lod_worker_cancellation_releases_a_full_progress_channel() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = PipelineConfig {
+            no_lod: true,
+            ..cpu_lod_config(temp.path(), temp.path().join("out"))
+        };
+        let (tx, _rx) = mpsc::channel(1);
+        tx.send(ProgressEvent::notice(
+            ProgressStage::LodChunks,
+            None,
+            "full",
+        ))
+        .await
+        .unwrap();
+        let cancellation = Cancellation::new();
+        let trigger = cancellation.clone();
+        let task = tokio::spawn(async move {
+            compile_lod_chunks_with_cancel(
+                &config,
+                temp.path(),
+                temp.path(),
+                &[],
+                &[],
+                &tx,
+                &cancellation,
+                &mut PipelineReport::default(),
+                None,
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        trigger.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.downcast_ref::<Interrupted>().is_some());
+    }
+
+    fn cpu_lod_config(data: impl Into<PathBuf>, output: impl Into<PathBuf>) -> PipelineConfig {
+        let mut config = PipelineConfig::new(data, output);
+        config.lod_texture_encoder = TextureEncoder::Cpu;
+        config
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_lod_skips_initialization_with_the_default_gpu_encoder() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        let mut config = PipelineConfig::new(directory.path().join("Data"), &staging);
+        assert!(matches!(
+            config.lod_texture_encoder,
+            TextureEncoder::Gpu { .. }
+        ));
+        config.no_lod = true;
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut report = PipelineReport::default();
+        FAIL_LOD_GPU_INIT.with(|fail| fail.set(true));
+        let result = compile_lod_chunks(
+            &config,
+            &staging,
+            &staging,
+            &[],
+            &[],
+            &tx,
+            &mut report,
+            None,
+        )
+        .await;
+        FAIL_LOD_GPU_INIT.with(|fail| fail.set(false));
+        result.unwrap();
+        assert_eq!(report.lod_chunks, 0);
+        assert_eq!(report.lod_gpu_chunks, 0);
+        assert_eq!(report.lod_cpu_fallback_chunks, 0);
+        assert_eq!(
+            report.notices,
+            ["Terrain LOD compilation disabled by --no-lod"]
+        );
+        assert_eq!(rx.try_recv().unwrap().stage, ProgressStage::LodChunks);
+        assert!(!staging.exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gpu_init_fallback_does_not_claim_gpu_reuse_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("assets");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.cpu_jobs = 2;
+        let cpu = run_without_progress(config.clone()).await;
+        assert!(cpu.complete && cpu.lod_chunks > 0);
+        let cpu_manifest: LodManifest =
+            serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
+        assert_eq!(cpu_manifest.chunk_inputs.len() as u64, cpu.lod_chunks);
+        config.lod_texture_encoder = TextureEncoder::Gpu {
+            quality: 2,
+            batch_mb: 16,
+        };
+        FAIL_LOD_GPU_INIT.with(|fail| fail.set(true));
+        let fallback = run_without_progress(config.clone()).await;
+        let retry = run_without_progress(config).await;
+        FAIL_LOD_GPU_INIT.with(|fail| fail.set(false));
+        for report in [fallback, retry] {
+            assert!(report.complete);
+            assert_eq!(report.lod_cache_hits, 0);
+            assert_eq!(report.lod_gpu_chunks, 0);
+            assert_eq!(report.lod_cpu_fallback_chunks, cpu.lod_chunks);
+            assert_eq!(
+                report.converted, 0,
+                "LOD recipe changes must preserve ordinary assets"
+            );
+        }
+        let manifest: LodManifest =
+            serde_json::from_slice(&fs::read(output.join("lod-manifest.json")).unwrap()).unwrap();
+        assert!(
+            manifest.chunk_inputs.is_empty(),
+            "fallback must be retried on a healthy GPU"
+        );
+    }
+
     #[test]
     fn a_dotted_output_name_keeps_its_whole_name_in_the_staging_folder() {
         let staging = staging_path(Path::new("converted/Skyrim.Converted"));
@@ -3806,7 +4260,7 @@ mod tests {
 
     #[test]
     fn lod_settings_change_lod_identity_without_invalidating_asset_cache() {
-        let config = PipelineConfig::new("/data", "/output");
+        let config = cpu_lod_config("/data", "/output");
         let cache_identity = configuration_hash(&config).unwrap();
         let mut changed = config;
         changed.lod_origins.insert("Tamriel".to_owned(), [-64, 32]);
@@ -3836,7 +4290,7 @@ mod tests {
         let vfs = directory.path().join("vfs");
         fs::create_dir_all(vfs.join("lodsettings")).unwrap();
         fs::write(vfs.join("lodsettings/tamriel.lod"), b"invalid").unwrap();
-        let mut config = PipelineConfig::new("/data", "/output");
+        let mut config = cpu_lod_config("/data", "/output");
         assert!(resolve_lod_settings(&config, &vfs, "Tamriel").is_err());
         config.lod_origins.insert("Tamriel".into(), [-2, 4]);
         assert_eq!(
@@ -3952,7 +4406,7 @@ mod tests {
                 dummy_content::layout::Formats::parse("dds,nif,pex,esm,lodsettings").unwrap(),
             )
             .unwrap();
-            let mut config = PipelineConfig::new(&data, &output);
+            let mut config = cpu_lod_config(&data, &output);
             config.cpu_jobs = 2;
             let report = run_without_progress(config).await;
             assert!(report.complete);
@@ -4138,7 +4592,7 @@ mod tests {
             dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
         )
         .unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.cpu_jobs = 2;
         let report = run_without_progress(config).await;
         assert!(report.complete);
@@ -4228,7 +4682,7 @@ mod tests {
             dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
         )
         .unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.cpu_jobs = 2;
         run_without_progress(config.clone()).await;
         let path = output.join("conversion-manifest.json");
@@ -4301,7 +4755,7 @@ mod tests {
             rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
         )
         .unwrap();
-        let mut config = PipelineConfig::new(&data, directory.path().join("output"));
+        let mut config = cpu_lod_config(&data, directory.path().join("output"));
         config.cpu_jobs = 2;
         let (tx, _rx) = mpsc::channel(64);
         let mut report = PipelineReport::default();
@@ -4317,6 +4771,7 @@ mod tests {
             &hashes,
             &tx,
             &mut report,
+            None,
         )
         .await
         .unwrap();
@@ -4368,6 +4823,7 @@ mod tests {
             &hashes,
             &tx,
             &mut mixed,
+            None,
         )
         .await
         .unwrap();
@@ -4457,7 +4913,7 @@ mod tests {
             rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
         )
         .unwrap();
-        let mut config = PipelineConfig::new(&data, directory.path().join("output"));
+        let mut config = cpu_lod_config(&data, directory.path().join("output"));
         config.cpu_jobs = 1;
         let hashes = plugins
             .iter()
@@ -4473,6 +4929,7 @@ mod tests {
             &hashes,
             &tx,
             &mut report,
+            None,
         )
         .await
         .unwrap();
@@ -4511,7 +4968,7 @@ mod tests {
         fs::create_dir(&output).unwrap();
         let _reader = AssetLock::acquire_shared(&output).unwrap();
         let (tx, _rx) = mpsc::channel(1);
-        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        let error = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx)
             .await
             .unwrap_err();
         assert!(format!("{error:?}").contains("before conversion"));
@@ -4929,7 +5386,7 @@ mod tests {
             dummy_content::pex::minimal("Two").unwrap(),
         )
         .unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.cpu_jobs = 2;
         let (tx, mut rx) = mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -4974,7 +5431,7 @@ mod tests {
                 fs::write(output.join("conversion-manifest.json"), manifest).unwrap();
             }
 
-            let mut config = PipelineConfig::new(&data, &output);
+            let mut config = cpu_lod_config(&data, &output);
             config.resume_staging = Some(staging);
             let report = run_without_progress(config).await;
 
@@ -5010,7 +5467,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let config = PipelineConfig::new(&data, &output);
+        let config = cpu_lod_config(&data, &output);
 
         let cache_root = config.ingestion_cache_dir();
         let first = run_without_progress(config.clone()).await;
@@ -5054,7 +5511,7 @@ mod tests {
             }
             events
         });
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.fail_fast = true;
         let failure = AssetPipeline::run_async(config, tx).await.unwrap_err();
         let events = collect.await.unwrap();
@@ -5113,7 +5570,7 @@ mod tests {
         crate::cache::FAIL_JOURNAL_WRITES.with(|fail| fail.set(true));
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let result = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx).await;
+        let result = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx).await;
         crate::cache::FAIL_JOURNAL_WRITES.with(|fail| fail.set(false));
 
         let error = result.unwrap_err();
@@ -5142,7 +5599,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        let error = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx)
             .await
             .unwrap_err();
 
@@ -5192,7 +5649,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        let error = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx)
             .await
             .unwrap_err();
 
@@ -5210,7 +5667,7 @@ mod tests {
         // Once the backup is gone the same staging directory publishes, and
         // neither the output nor its parent keeps the journal.
         fs::remove_dir_all(&backup).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging[0].clone());
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -5236,13 +5693,10 @@ mod tests {
         cancellation.cancel();
         let (tx, mut rx) = mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let failure = AssetPipeline::run_async_with_cancel(
-            PipelineConfig::new(&data, &output),
-            tx,
-            cancellation,
-        )
-        .await
-        .unwrap_err();
+        let failure =
+            AssetPipeline::run_async_with_cancel(cpu_lod_config(&data, &output), tx, cancellation)
+                .await
+                .unwrap_err();
         drain.await.unwrap();
 
         assert!(failure.cancelled);
@@ -5254,7 +5708,7 @@ mod tests {
         assert!(staging.is_dir());
 
         // The kept folder is a working resume point: the run finishes from it.
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
         let report = run_without_progress(config).await;
         assert!(report.complete);
@@ -5278,7 +5732,7 @@ mod tests {
             }
             events
         });
-        let report = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        let report = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx)
             .await
             .unwrap();
         let events = collect.await.unwrap();
@@ -5402,7 +5856,7 @@ mod tests {
         assert_ne!(dds, override_dds);
         let target_source = data.join("textures/dlc02/landscape/grass/volcanicashgrass02_n.dds");
         fs::write(&target_source, b"invalid DDS, still present in the VFS").unwrap();
-        let failed = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let failed = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(
             !failed.complete,
             "invalid target texture cannot complete publication"
@@ -5421,7 +5875,7 @@ mod tests {
             } else if source.exists() {
                 fs::remove_file(&source).unwrap();
             }
-            let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+            let report = run_without_progress(cpu_lod_config(&data, &output)).await;
             assert!(report.complete, "{:?}", report.warnings);
             let control = fs::read(output.join("meshes/landscape/grass/control.glb")).unwrap();
             if let Some(previous) = &control_bytes {
@@ -5541,7 +5995,7 @@ mod tests {
             .unwrap();
         }
 
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(cpu_lod_config(&data, &output)).await;
 
         assert_eq!(report.skipped, 0);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
@@ -5607,7 +6061,7 @@ mod tests {
         fs::create_dir_all(&data).unwrap();
         fs::write(data.join("broken.bsa"), b"not a BSA archive").unwrap();
 
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(cpu_lod_config(&data, &output)).await;
 
         assert_eq!(report.skipped, 1);
         assert_eq!(report.warnings.len(), 1);
@@ -5694,7 +6148,7 @@ mod tests {
         let root_end = bytes.len() - body.len() + root_size as usize;
         bytes.splice(root_end..root_end, u32::MAX.to_le_bytes());
         fs::write(&nif, bytes).unwrap();
-        let config = PipelineConfig::new(&data, &output);
+        let config = cpu_lod_config(&data, &output);
         assert!(run_without_progress(config.clone()).await.complete);
         let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
         let texture = output.join("textures/present.ktx2");
@@ -5733,7 +6187,7 @@ mod tests {
                 dummy_content::pex::minimal("One").unwrap(),
             )
             .unwrap();
-            let config = PipelineConfig::new(&data, &output);
+            let config = cpu_lod_config(&data, &output);
             assert!(run_without_progress(config.clone()).await.complete);
             let expected_mesh = fs::read(output.join(PRUNED_MESH)).unwrap();
             let texture_path = output.join("textures/present.ktx2");
@@ -5798,7 +6252,7 @@ mod tests {
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
 
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(first.complete);
         assert_eq!(first.pruned_texture_references, 1);
         assert_eq!(
@@ -5813,7 +6267,7 @@ mod tests {
         // pass has nothing left to remove from it.
         let staging = temp.path().join("modern.staging-resume");
         copy_tree(&output, &staging);
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
 
         let (resumed, events) = run_collecting_progress(config).await;
@@ -5868,7 +6322,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        let error = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx)
             .await
             .unwrap_err();
         assert!(format!("{error:?}").contains("stale backup"));
@@ -5880,7 +6334,7 @@ mod tests {
         );
 
         fs::remove_dir_all(&backup).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
         let resumed = run_without_progress(config).await;
 
@@ -5896,7 +6350,7 @@ mod tests {
         assert!(!uris.iter().any(|uri| uri.contains("absent")), "{uris:?}");
 
         // A normal rerun still reuses the pruned mesh and keeps its record.
-        let rerun = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let rerun = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(rerun.complete);
         assert_eq!(rerun.converted, 0);
         assert_eq!(rerun.pruned_texture_references, 1);
@@ -5908,7 +6362,7 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
-        run_without_progress(PipelineConfig::new(&data, &output)).await;
+        run_without_progress(cpu_lod_config(&data, &output)).await;
         let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
 
         // The staged copy of the pruned mesh keeps its length but no longer matches the hash the
@@ -5921,7 +6375,7 @@ mod tests {
         assert_ne!(tampered, expected);
         fs::write(staging.join(PRUNED_MESH), tampered).unwrap();
         fs::remove_file(output.join(PRUNED_MESH)).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
 
         let resumed = run_without_progress(config).await;
@@ -5943,7 +6397,7 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(first.complete);
         assert_eq!(first.pruned_texture_references, 1);
         let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
@@ -5951,7 +6405,7 @@ mod tests {
         let staging = temp.path().join("modern.staging-resume");
         copy_tree(&output, &staging);
         fs::remove_file(output.join(PRUNED_MESH)).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
 
         let resumed = run_without_progress(config).await;
@@ -5981,7 +6435,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let restored = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let restored = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(restored.complete);
         assert_eq!(restored.pruned_texture_references, 0);
         let uris = MeshConverter::glb_texture_uris(&output.join(PRUNED_MESH)).unwrap();
@@ -6002,7 +6456,7 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(first.complete);
         assert_eq!(first.pruned_texture_references, 1);
         let expected = fs::read(output.join(PRUNED_MESH)).unwrap();
@@ -6016,7 +6470,7 @@ mod tests {
         let mut rebuilt = expected.clone();
         rebuilt.push(0);
         fs::write(output.join(PRUNED_MESH), rebuilt).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
 
         let resumed = run_without_progress(config).await;
@@ -6056,13 +6510,13 @@ mod tests {
         fs::create_dir_all(&backup).unwrap();
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+        let error = AssetPipeline::run_async(cpu_lod_config(&data, &output), tx)
             .await
             .unwrap_err();
         assert!(format!("{error:?}").contains("stale backup"));
         let staging = error.staging.expect("staging directory was kept");
         fs::remove_dir_all(&backup).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
         let first_resume = run_without_progress(config).await;
         assert!(first_resume.complete);
@@ -6075,13 +6529,13 @@ mod tests {
         fs::create_dir_all(&backup).unwrap();
         let (tx, mut rx) = mpsc::channel(64);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
         let error = AssetPipeline::run_async(config, tx).await.unwrap_err();
         assert!(format!("{error:?}").contains("stale backup"));
         let stopped = error.staging.expect("staging directory was kept");
         fs::remove_dir_all(&backup).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(stopped);
         let second_resume = run_without_progress(config).await;
 
@@ -6104,7 +6558,7 @@ mod tests {
         let data = temp.path().join("Data");
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
-        run_without_progress(PipelineConfig::new(&data, &output)).await;
+        run_without_progress(cpu_lod_config(&data, &output)).await;
 
         let staging = temp.path().join("modern.staging-resume");
         copy_tree(&output, &staging);
@@ -6134,7 +6588,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
 
         let resumed = run_without_progress(config).await;
@@ -6162,11 +6616,11 @@ mod tests {
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
 
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(first.complete);
         assert_eq!(first.pruned_texture_references, 1);
 
-        let second = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let second = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(second.complete);
         assert_eq!(
             second.converted, 0,
@@ -6195,7 +6649,7 @@ mod tests {
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
 
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(first.complete);
         assert_eq!(first.pruned_texture_references, 1);
 
@@ -6210,7 +6664,7 @@ mod tests {
         )
         .unwrap();
 
-        let second = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let second = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(second.complete);
         assert_eq!(
             second.pruned_texture_references, 0,
@@ -6235,14 +6689,14 @@ mod tests {
         let output = temp.path().join("modern");
         write_mesh_with_absent_normal(&data);
 
-        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let first = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(first.complete);
         assert_eq!(first.pruned_texture_references, 1);
 
         // The base-color source disappears: its reference becomes dangling on the next run while
         // the mesh's own source is unchanged, so the mesh is reused.
         fs::remove_file(data.join("textures/present.dds")).unwrap();
-        let second = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let second = run_without_progress(cpu_lod_config(&data, &output)).await;
         assert!(second.complete);
         assert_eq!(second.pruned_texture_references, 2);
         assert_eq!(
@@ -6300,7 +6754,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let report = run_without_progress(cpu_lod_config(&data, &output)).await;
 
         assert!(!report.complete, "the failed texture still skips");
         assert_eq!(report.skipped, 1);
@@ -6338,7 +6792,7 @@ mod tests {
                 }
             }
         });
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.cpu_jobs = 1;
         let failure = AssetPipeline::run_async_with_cancel(config, tx, cancellation)
             .await
@@ -6376,7 +6830,7 @@ mod tests {
         }
 
         // The kept folder resumes the run to completion.
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
         let report = run_without_progress(config).await;
         assert!(report.complete);
@@ -6429,13 +6883,10 @@ mod tests {
         let cancellation = Cancellation::new();
         let (tx, mut rx) = mpsc::channel::<ProgressEvent>(64);
         let watcher = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let failure = AssetPipeline::run_async_with_cancel(
-            PipelineConfig::new(&data, &output),
-            tx,
-            cancellation,
-        )
-        .await
-        .unwrap_err();
+        let failure =
+            AssetPipeline::run_async_with_cancel(cpu_lod_config(&data, &output), tx, cancellation)
+                .await
+                .unwrap_err();
         watcher.await.unwrap();
 
         assert!(failure.cancelled, "a stop is reported as an interrupt");
@@ -6467,7 +6918,7 @@ mod tests {
         assert!(!staging.join(".ingestion-cache/sha256").exists());
         assert!(!staging.join("conversion-manifest.json").exists());
 
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging);
         let report = run_without_progress(config.clone()).await;
         assert!(report.complete);
@@ -6555,13 +7006,13 @@ mod tests {
             while rx.recv().await.is_some() {}
         };
         let (report, ()) = tokio::join!(
-            AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx),
+            AssetPipeline::run_async(cpu_lod_config(&data, &output), tx),
             front_end
         );
 
         let report = report.unwrap();
         assert!(report.complete);
-        let cache_root = PipelineConfig::new(&data, &output).ingestion_cache_dir();
+        let cache_root = cpu_lod_config(&data, &output).ingestion_cache_dir();
         let blobs = WalkDir::new(cache_root.join(".ingestion-cache"))
             .into_iter()
             .filter_map(Result::ok)
@@ -6660,7 +7111,7 @@ mod tests {
             dummy_content::pex::minimal("One").unwrap(),
         )
         .unwrap();
-        let config = PipelineConfig::new(&data, &output);
+        let config = cpu_lod_config(&data, &output);
         let report = run_without_progress(config.clone()).await;
 
         assert!(report.complete);
@@ -6737,14 +7188,14 @@ mod tests {
             dummy_content::pex::minimal("One").unwrap(),
         )
         .unwrap();
-        run_without_progress(PipelineConfig::new(&data, &output)).await;
+        run_without_progress(cpu_lod_config(&data, &output)).await;
         let expected = fs::read(output.join("scripts/one.luau")).unwrap();
 
         // The published pack shares files with staging through hard links, so removing the
         // resumed staging folder must leave every published file in place.
         let staging = temp.path().join("modern.staging-resume-links");
         fs::create_dir_all(&staging).unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = cpu_lod_config(&data, &output);
         config.resume_staging = Some(staging.clone());
         let resumed = run_without_progress(config).await;
 

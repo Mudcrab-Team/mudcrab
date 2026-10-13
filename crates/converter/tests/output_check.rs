@@ -1,6 +1,8 @@
 //! `check_output` against a real converted output: the `dummy-content gen`
 //! `Data/` tree through the real pipeline, then damaged one way at a time.
 
+mod common;
+
 use converter::{
     CheckCancelled, CheckMode, CheckProblem, cache::CONVERTER_SCHEMA_VERSION, cache::hash_file,
     check_output, check_output_with_cancel,
@@ -58,7 +60,7 @@ fn convert_fixture() -> Converted {
     layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
 
     let output = directory.path().join("modern");
-    let mut config = converter::PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.cpu_jobs = 2;
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let report = runtime.block_on(async {

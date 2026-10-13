@@ -1,4 +1,7 @@
 //! Repair preview and apply against generated assets, with no installed game data.
+
+mod common;
+
 use converter::mesh::MeshConverter;
 use converter::{AssetPipeline, PipelineConfig, cache::ConversionManifest, repair::repair_failed};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -60,7 +63,7 @@ async fn dds_only_actual_failure_repairs_retained_mesh_aliases() {
     let good_dds = fs::read(&dds).unwrap();
     fs::write(&dds, b"invalid DDS for repair regression").unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     assert!(!run_fixture(&config).await.complete);
     let manifest_path = output.join("conversion-manifest.json");
     let manifest: ConversionManifest =
@@ -129,7 +132,7 @@ async fn dds_repair_refreshes_existing_aliases_and_isolates_retained_mesh_prunin
     )
     .unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     assert!(run_fixture(&config).await.complete);
     let alias = "textures/generated_color.opensky-srgb.opensky-wrap0.ktx2";
     let old_texture = fs::read(output.join(alias)).unwrap();
@@ -234,7 +237,7 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
     )
     .unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
@@ -393,7 +396,7 @@ fn repair_refuses_readers_before_journal_recovery() {
     fs::write(&journal, "invalid journal must not be read").unwrap();
     let reader = shared::asset_lock::AssetLock::acquire_shared(&output).unwrap();
     for apply in [false, true] {
-        let error = repair_failed(&PipelineConfig::new(&data, &output), apply).unwrap_err();
+        let error = repair_failed(&common::cpu_lod_config(&data, &output), apply).unwrap_err();
         assert!(
             error.to_string().contains("asset directory in use"),
             "{error}"
@@ -414,7 +417,7 @@ async fn conversion_and_repair_share_ownership_before_manifest_reads() {
     let data = root.path().join("Data");
     fs::create_dir(&data).unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let owner = converter::repair::OutputOwnership::acquire(&output).unwrap();
     fs::create_dir(&output).unwrap();
     let manifest = output.join("conversion-manifest.json");
@@ -446,7 +449,7 @@ async fn conversion_keeps_ownership_until_publication_finishes() {
     let data = root.path().join("Data");
     fs::create_dir(&data).unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let run = tokio::spawn(AssetPipeline::run_async(config, tx));
     let mut saw_publication = false;

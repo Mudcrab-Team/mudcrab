@@ -1,4 +1,6 @@
 //! Exercise automatic plugin discovery through the production conversion path.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     esm::{EsmParser, load_order::LoadOrder, read_plugins_txt},
@@ -90,7 +92,7 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
     fs::write(data.join("Optional/ZMod.esp"), b"invalid duplicate backup").unwrap();
     fs::write(data.join("Optional/Unused.esp"), b"invalid optional plugin").unwrap();
     let output = dir.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     assert!(config.plugins_file.is_none());
     assert!(run(config.clone()).await.unwrap().complete);
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -145,7 +147,7 @@ async fn nested_only_plugins_warn_but_asset_conversion_completes_without_databas
     fs::rename(data.join("Skyrim.esm"), nested.join("Skyrim.esm")).unwrap();
     fs::write(nested.join("Backup.esp"), b"invalid ignored plugin").unwrap();
     let output = dir.path().join("modern");
-    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    let report = run(common::cpu_lod_config(&data, &output)).await.unwrap();
     assert!(report.complete, "{report:?}");
     assert!(report.converted > 0);
     assert_eq!(report.skipped, 0);
@@ -186,7 +188,7 @@ async fn nested_only_plugin_notice_reaches_the_progress_channel() {
         }
         notices
     });
-    let report = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+    let report = AssetPipeline::run_async(common::cpu_lod_config(&data, &output), tx)
         .await
         .map_err(|error| format!("{error:?}"))
         .unwrap();
@@ -224,7 +226,7 @@ async fn no_plugins_converts_assets_without_warning_or_database() {
     )
     .unwrap();
     let output = dir.path().join("modern");
-    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    let report = run(common::cpu_lod_config(&data, &output)).await.unwrap();
     assert!(report.complete, "{report:?}");
     assert!(report.converted > 0);
     assert_eq!(report.skipped, 0);
@@ -247,7 +249,7 @@ async fn fallback_keeps_espfe_in_regular_order_without_changing_light_slots() {
     plugin(&data, "ZLight.esp", &["Skyrim.esm"], 0x200, Some(222.0));
     let output = dir.path().join("modern");
     assert!(
-        run(PipelineConfig::new(&data, &output))
+        run(common::cpu_lod_config(&data, &output))
             .await
             .unwrap()
             .complete
@@ -283,7 +285,7 @@ async fn fallback_reports_missing_masters_and_cycles_with_plugin_names() {
         if cycle {
             plugin(&data, "B.esp", &["A.esp"], 0, None);
         }
-        let error = run(PipelineConfig::new(&data, dir.path().join("modern")))
+        let error = run(common::cpu_lod_config(&data, dir.path().join("modern")))
             .await
             .unwrap_err();
         assert!(
@@ -314,7 +316,7 @@ async fn explicit_plugin_order_is_preserved_and_not_silently_repaired() {
     let list = dir.path().join("plugins.txt");
     fs::write(&list, "Skyrim.esm\n*Z.esp\n*A.esp\n").unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list.clone());
     assert!(run(config.clone()).await.unwrap().complete);
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -349,7 +351,7 @@ async fn explicit_regular_override_beats_a_master_listed_after_it() {
     let list = dir.path().join("plugins.txt");
     fs::write(&list, "Skyrim.esm\n*A.esp\n*B.esm\n").unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
     let report = run(config).await.unwrap();
     assert!(report.complete, "{report:?}");
@@ -517,7 +519,7 @@ async fn explicit_plugin_list_loads_master_files_before_regular_plugins() {
 
     // The regular plugins now follow all masters; ESL-flagged Small.esp is last.
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list.clone());
     let first = run(config.clone()).await.unwrap();
     assert!(first.complete, "{first:?}");
@@ -666,7 +668,7 @@ async fn explicit_master_keeps_its_transitive_regular_prerequisites() {
     )
     .unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
     let report = run(config).await.unwrap();
     assert!(report.complete, "{report:?}");

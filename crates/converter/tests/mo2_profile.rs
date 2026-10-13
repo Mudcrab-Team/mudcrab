@@ -1,4 +1,7 @@
 //! MO2 selection through the real converter, including cache and resume boundaries.
+
+mod common;
+
 use converter::{AssetPipeline, PipelineConfig, cache::configuration_hash, pipeline::Cancellation};
 use dummy_content::layout;
 use rusqlite::Connection;
@@ -103,7 +106,7 @@ fn fixture() -> (tempfile::TempDir, PipelineConfig, PathBuf) {
         "mods/Low/Inactive.bsa",
         "invalid inactive archive",
     );
-    let mut config = PipelineConfig::new(&data, dir.path().join("modern"));
+    let mut config = common::cpu_lod_config(&data, dir.path().join("modern"));
     config.mo2 = Some(mo2::Selection {
         instance_path: instance.clone(),
         profile: "Default".into(),
