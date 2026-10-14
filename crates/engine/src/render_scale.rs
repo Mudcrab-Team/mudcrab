@@ -63,6 +63,18 @@ fn apply_render_scale(
     let (Ok(window), Ok(mut target)) = (windows.single(), cameras.single_mut()) else {
         return;
     };
+    // Only a camera drawing to the window, or into this module's own image, is scaled. A camera
+    // something else pointed at an image - a shots run renders into its capture image - keeps it.
+    let owned = match &*target {
+        RenderTarget::Window(WindowRef::Primary) => true,
+        RenderTarget::Image(image) => scaled
+            .as_ref()
+            .is_some_and(|scaled| scaled.image == image.handle),
+        _ => false,
+    };
+    if !owned {
+        return;
+    }
     let physical = window.physical_size();
     // A minimised window has no pixels to scale to; keep whatever was set up until it returns.
     if physical.x == 0 || physical.y == 0 {
@@ -220,6 +232,25 @@ mod tests {
         assert!(matches!(
             target(&app, camera),
             RenderTarget::Window(WindowRef::Primary)
+        ));
+        assert!(app.world().get_resource::<ScaledView>().is_none());
+    }
+
+    #[test]
+    fn a_camera_drawing_into_another_image_keeps_it() {
+        let tuning = GpuTuning::resolve(GpuProfile::Tiled, None, RenderScale::Auto, true);
+        let (mut app, _, camera) = harness(tuning, 2.0);
+        let capture = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::default());
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(RenderTarget::Image(capture.clone().into()));
+        app.update();
+        assert!(matches!(
+            target(&app, camera),
+            RenderTarget::Image(image) if image.handle == capture
         ));
         assert!(app.world().get_resource::<ScaledView>().is_none());
     }

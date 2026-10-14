@@ -6,6 +6,7 @@ pub mod console;
 pub mod gpu_tuning;
 pub mod indirect_metrics;
 pub mod lights;
+mod live_console;
 mod matched_route;
 pub mod mesh_preparation_retry;
 pub mod metrics;

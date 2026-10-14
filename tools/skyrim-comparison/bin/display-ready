@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+display_env=/home/taylor/Games/MudcrabComparison/artifacts/display.env
+: "${INVOCATION_ID:?systemd invocation ID is missing}"
+temporary=$(mktemp "${display_env}.XXXXXX")
+trap 'rm -f "$temporary"' EXIT
+printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nINVOCATION_ID=%s\n' \
+  "$DISPLAY" "${WAYLAND_DISPLAY:-}" "$INVOCATION_ID" > "$temporary"
+mv -f -- "$temporary" "$display_env"
+trap - EXIT
+exec sleep infinity

@@ -1,4 +1,8 @@
-use crate::{skyrim_ini::SkyrimIni, world::components::CELL_SIZE};
+use crate::{
+    color_pipeline::{SCENE_GRADE_VALUES, SceneGradeMode, SceneVisualPreset},
+    skyrim_ini::SkyrimIni,
+    world::components::CELL_SIZE,
+};
 use bevy::prelude::Resource;
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
@@ -119,6 +123,10 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    pub sun_shadow_distance_limit: Option<f32>,
+    /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
+    pub sun_position: Option<(f32, f32)>,
     pub terrain_lod: TerrainLodDistances,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
@@ -136,6 +144,18 @@ pub struct EngineConfig {
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
     pub headless: bool,
+    /// Keep a renderable window hidden for automated screenshot capture.
+    pub hidden_window: bool,
+    /// Select the cinematic A/B experiment without changing scene lighting.
+    pub color_grade: SceneGradeMode,
+    /// Named sky and grading look; Vivid preserves the approved configuration.
+    pub visual_preset: SceneVisualPreset,
+    /// Seed a live world camera from a validated one-pose shots file.
+    pub start_shot: Option<PathBuf>,
+    /// Accept developer console commands on this process's stdin.
+    pub stdin_console: bool,
+    /// Disable Bevy's GPU timing and pipeline-statistics query collection.
+    pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -176,6 +196,8 @@ pub struct EngineConfig {
     /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
     /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
     pub shots_out: Option<PathBuf>,
+    /// Maximum settling time per shot, in seconds.
+    pub shots_settle_timeout: f32,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -201,6 +223,8 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            sun_shadow_distance_limit: None,
+            sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
@@ -221,6 +245,12 @@ impl Default for EngineConfig {
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
             headless: false,
+            hidden_window: false,
+            color_grade: SceneGradeMode::Full,
+            visual_preset: SceneVisualPreset::Vivid,
+            start_shot: None,
+            stdin_console: false,
+            no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -246,6 +276,7 @@ impl Default for EngineConfig {
             shots: None,
             matched_route: None,
             shots_out: None,
+            shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -278,8 +309,12 @@ Assets and start position:
   --worldspace <id>                     worldspace form id, decimal or 0x-hex (default: 0x3c)
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
+  --start-shot <file>                  start the live camera at one exterior shot pose
+  --stdin-console                     accept developer console commands on stdin
+  --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
+  --hidden-window                       render screenshots without showing a window
   --lights                              place a point light for each streamed LIGH reference
 
 Streaming:
@@ -312,7 +347,11 @@ Benchmark and profiling:
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
+  --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear (default: full)
+  --visual-preset <vivid|cool-gray>      select sky and grading look (default: vivid)
+  --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
@@ -465,6 +504,7 @@ impl EngineConfig {
     pub fn interactive_world_physics(&self) -> bool {
         !self.headless
             && self.benchmark_jump.is_none()
+            && !self.hidden_window
             && !self.benchmark_only
             && self.benchmark_frames.is_none()
             && self.benchmark_duration_secs.is_none()
@@ -612,6 +652,7 @@ impl EngineConfig {
                     config.unload_radius = value + 1;
                 }
                 "--headless" => config.headless = true,
+                "--hidden-window" => config.hidden_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -808,8 +849,58 @@ impl EngineConfig {
                         args.next(),
                     )?);
                 }
+                "--color-grade" => {
+                    let raw = take_raw("--color-grade", SCENE_GRADE_VALUES, args.next())?;
+                    config.color_grade = SceneGradeMode::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--color-grade", Some(raw), SCENE_GRADE_VALUES)
+                    })?;
+                }
+                "--visual-preset" => {
+                    let raw = take_raw("--visual-preset", "vivid or cool-gray", args.next())?;
+                    config.visual_preset = SceneVisualPreset::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--visual-preset",
+                            Some(raw),
+                            "vivid or cool-gray",
+                        )
+                    })?;
+                }
+                "--sun-position" => {
+                    let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
+                    config.sun_position = Some(parse_sun_position(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--sun-position",
+                            Some(raw),
+                            SUN_POSITION_EXPECTED,
+                        )
+                    })?);
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
+                }
+                "--start-shot" => {
+                    config.start_shot = Some(take_value(
+                        "--start-shot",
+                        "a one-pose shots file",
+                        args.next(),
+                    )?);
+                }
+                "--stdin-console" => config.stdin_console = true,
+                "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--shots-settle-timeout" => {
+                    const EXPECTED: &str = "a positive number of seconds up to 600";
+                    let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
+                    config.shots_settle_timeout = raw
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|value| value.is_finite() && *value > 0.0 && *value <= 600.0)
+                        .ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--shots-settle-timeout",
+                                Some(raw),
+                                EXPECTED,
+                            )
+                        })?;
                 }
                 "--shots-out" => {
                     config.shots_out = Some(take_value(
@@ -922,6 +1013,10 @@ pub const MAX_STREAM_RADIUS: i32 = (i32::MAX - 3) / 2;
 /// equal.
 const STREAM_RADIUS_EXPECTED: &str = "a cell count from 0 to 1073741822";
 
+/// What `--sun-position` takes: azimuth clockwise from north, then elevation above the horizon.
+const SUN_POSITION_EXPECTED: &str =
+    "two finite angles in degrees: azimuth,elevation (elevation 0 to 90)";
+
 /// Test shorthand for a command line that must ask for a run.
 #[cfg(test)]
 impl EngineConfig {
@@ -959,6 +1054,20 @@ fn parse_grid(value: &str) -> Option<(i32, i32)> {
     let x: i32 = parts.next()?.trim().parse().ok()?;
     let y: i32 = parts.next()?.trim().parse().ok()?;
     parts.next().is_none().then_some((x, y))
+}
+
+fn parse_sun_position(value: &str) -> Option<(f32, f32)> {
+    let mut parts = value.split(',');
+    let azimuth: f32 = parts.next()?.trim().parse().ok()?;
+    let elevation: f32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some()
+        || !azimuth.is_finite()
+        || !elevation.is_finite()
+        || !(0.0..=90.0).contains(&elevation)
+    {
+        return None;
+    }
+    Some((azimuth.rem_euclid(360.0), elevation))
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -1136,6 +1245,16 @@ mod tests {
         "--short",               // git rev-parse
         "--output",              // world-inspect, repeat-terrain-startup.py, profiling
         "--pairs-output",        // correlate_drawables.py
+        "--native-preset",       // prepare_skyrim_comparison.py
+        "--calibration",         // prepare_skyrim_comparison.py
+        "--timeout",             // run_skyrim_comparison.py
+        "--user",                // systemctl
+        "--property",            // systemctl
+        "--value",               // systemctl
+        "--onlyvisible",         // xdotool
+        "--name",                // xdotool
+        "--sync",                // xdotool
+        "--psm",                 // tesseract
         "--radius",              // world-inspect
         "--library-path",        // ld-linux
         "--meshes",              // audit-collision.py
@@ -1227,6 +1346,87 @@ mod tests {
             .expect("--help has a --max-model-spawns-per-frame line");
         let default = EngineConfig::default().max_model_spawns_per_frame;
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
+    }
+
+    #[test]
+    fn parses_live_start_camera_and_opt_in_stdin_console() {
+        let config = run_config(&[
+            "--start-shot",
+            "camera.json",
+            "--stdin-console",
+            "--no-render-diagnostics",
+        ]);
+        assert_eq!(config.start_shot, Some(PathBuf::from("camera.json")));
+        assert!(config.stdin_console);
+        assert!(config.no_render_diagnostics);
+        assert!(config.interactive_world_physics());
+        assert!(!EngineConfig::default().stdin_console);
+        assert!(!EngineConfig::default().no_render_diagnostics);
+        assert!(
+            parse_error(&["--start-shot"])
+                .to_string()
+                .contains("--start-shot")
+        );
+    }
+
+    #[test]
+    fn parses_visual_preset_without_changing_diagnostic_grade() {
+        assert_eq!(
+            EngineConfig::default().visual_preset,
+            SceneVisualPreset::Vivid
+        );
+        for (value, expected) in [
+            ("vivid", SceneVisualPreset::Vivid),
+            ("COOL-GRAY", SceneVisualPreset::CoolGray),
+        ] {
+            let config = run_config(&["--visual-preset", value, "--color-grade", "saturation"]);
+            assert_eq!(config.visual_preset, expected);
+            assert_eq!(config.color_grade, SceneGradeMode::Saturation);
+        }
+        for args in [
+            &["--visual-preset"][..],
+            &["--visual-preset", "invalid"][..],
+        ] {
+            assert!(parse_error(args).to_string().contains("--visual-preset"));
+        }
+    }
+
+    #[test]
+    fn parses_color_grade_and_rejects_unknown_modes() {
+        for (value, wanted) in [
+            ("off", SceneGradeMode::Off),
+            ("saturation", SceneGradeMode::Saturation),
+            ("FULL", SceneGradeMode::Full),
+            ("SNAPSHOT-SRGB", SceneGradeMode::SnapshotSrgb),
+            ("snapshot-linear", SceneGradeMode::SnapshotLinear),
+        ] {
+            assert_eq!(run_config(&["--color-grade", value]).color_grade, wanted);
+        }
+        assert_eq!(EngineConfig::default().color_grade, SceneGradeMode::Full);
+        assert!(
+            parse_error(&["--color-grade", "bad"])
+                .to_string()
+                .contains(SCENE_GRADE_VALUES)
+        );
+        assert!(
+            parse_error(&["--color-grade"])
+                .to_string()
+                .contains("--color-grade")
+        );
+    }
+
+    /// Hidden capture selects rendering without enabling interactive mouse ownership.
+    #[test]
+    fn parses_hidden_window_capture_mode() {
+        assert!(!EngineConfig::default().hidden_window);
+        let config = run_config(&["--hidden-window", "--acceptance-screenshot", "capture.png"]);
+        assert!(config.hidden_window);
+        assert!(!config.headless);
+        assert!(!config.interactive_world_physics());
+        assert_eq!(
+            config.acceptance_screenshot,
+            Some(PathBuf::from("capture.png"))
+        );
     }
 
     #[test]
@@ -1558,6 +1758,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_optional_sun_bearing_and_elevation() {
+        let config = run_config(&["--sun-position", "450,35"]);
+        assert_eq!(config.sun_position, Some((90.0, 35.0)));
+
+        for value in ["0", "north,35", "0,91", "0,-1", "0,35,2", "NaN,35"] {
+            assert!(
+                matches!(
+                    parse_error(&["--sun-position", value]),
+                    ConfigError::InvalidValue {
+                        option: "--sun-position",
+                        ..
+                    }
+                ),
+                "{value} was accepted"
+            );
+        }
+    }
+
+    #[test]
     fn a_malformed_screenshot_camera_offset_is_refused() {
         assert_eq!(
             parse_error(&["--screenshot-camera-offset", "0,6000"]).to_string(),
@@ -1642,6 +1861,22 @@ mod tests {
                 .window_title()
                 .contains("matched-route")
         );
+    }
+
+    #[test]
+    fn shots_settle_timeout_is_finite_positive_and_bounded() {
+        assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
+        assert_eq!(
+            run_config(&["--shots-settle-timeout", "120"]).shots_settle_timeout,
+            120.0
+        );
+        for value in ["0", "-1", "NaN", "inf", "601"] {
+            assert!(
+                parse_error(&["--shots-settle-timeout", value])
+                    .to_string()
+                    .contains("--shots-settle-timeout")
+            );
+        }
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a

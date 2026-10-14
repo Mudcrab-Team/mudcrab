@@ -2,5 +2,10 @@
 # [build]
 # rustc-wrapper = "kache"
 
+[env]
+# Isolate bundled SQLite from the decoded-record heap on desktop Windows.
+# cc reads this target-qualified variable only for x64 MSVC C compilation.
+CFLAGS_x86_64_pc_windows_msvc = { value = "-DSQLITE_WIN32_MALLOC=1 -DSQLITE_WIN32_HEAP_CREATE=1", force = false }
+
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"

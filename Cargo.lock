@@ -4437,6 +4437,7 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "serde",
+ "shared",
  "tempfile",
  "walkdir",
 ]

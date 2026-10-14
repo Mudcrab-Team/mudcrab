@@ -1,0 +1,6783 @@
+{
+  "version": 1,
+  "sources": {
+    "xedit-tes5": {
+      "title": "xEdit Skyrim/SSE format facts",
+      "revision": "xedit-4.1.5f f5c00f3",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas",
+      "use": "Facts only: independently authored field order, widths, flags and link targets. No Pascal translation or mechanical source conversion."
+    },
+    "xedit-common": {
+      "title": "xEdit shared plugin format facts",
+      "revision": "xedit-4.1.5f f5c00f3",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsCommon.pas"
+    },
+    "mudcrab-legacy": {
+      "title": "MudCrab existing consumer contract",
+      "revision": "f40ca1d",
+      "url": "https://github.com/Mudcrab-Team/mudcrab/blob/f40ca1d/crates/converter/src/esm/exporter.rs"
+    },
+    "uesp": {
+      "title": "UESP Skyrim plugin format",
+      "url": "https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format"
+    }
+  },
+  "definitions": {
+    "reflected_water": {
+      "name": "reflected_refracted",
+      "kind": "union",
+      "repeat": true,
+      "decider": "size",
+      "source": "xedit-tes5:12316-12325 REFR XPWR;6358-6366 shared placed XPWR; minimum one struct member permits 4-byte reference-only prefix",
+      "fields": [
+        {
+          "name": "legacy",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "extended",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 4,
+              "flags": {
+                "1": "reflection",
+                "2": "refraction"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "vmad": {
+      "name": "scripts",
+      "kind": "bytes",
+      "decider": "vmad",
+      "source": "xedit-4.1.5f:TES5 VMAD4682-4956 and UTF8 wbInterface23752; independently authored records/vmad.rs primary scripts, owner fragments and quest aliases; only typed object FormIDs remapped"
+    },
+    "bounds": {
+      "name": "bounds",
+      "kind": "struct",
+      "size": 12,
+      "source": "xedit-common:1407-1418",
+      "members": [
+        {
+          "name": "min_x",
+          "kind": "i16",
+          "offset": 0
+        },
+        {
+          "name": "min_y",
+          "kind": "i16",
+          "offset": 2
+        },
+        {
+          "name": "min_z",
+          "kind": "i16",
+          "offset": 4
+        },
+        {
+          "name": "max_x",
+          "kind": "i16",
+          "offset": 6
+        },
+        {
+          "name": "max_y",
+          "kind": "i16",
+          "offset": 8
+        },
+        {
+          "name": "max_z",
+          "kind": "i16",
+          "offset": 10
+        }
+      ]
+    },
+    "transform": {
+      "name": "transform",
+      "kind": "struct",
+      "size": 24,
+      "source": "xedit-common:position/rotation format",
+      "members": [
+        {
+          "name": "position_x",
+          "kind": "f32",
+          "offset": 0
+        },
+        {
+          "name": "position_y",
+          "kind": "f32",
+          "offset": 4
+        },
+        {
+          "name": "position_z",
+          "kind": "f32",
+          "offset": 8
+        },
+        {
+          "name": "rotation_x",
+          "kind": "f32",
+          "offset": 12
+        },
+        {
+          "name": "rotation_y",
+          "kind": "f32",
+          "offset": 16
+        },
+        {
+          "name": "rotation_z",
+          "kind": "f32",
+          "offset": 20
+        }
+      ]
+    },
+    "enable_parent": {
+      "name": "enable_parent",
+      "kind": "struct",
+      "size": 8,
+      "source": "xedit-tes5:5156-5163",
+      "members": [
+        {
+          "name": "reference",
+          "kind": "form_id",
+          "offset": 0,
+          "targets": [
+            "PLYR",
+            "ACHR",
+            "REFR",
+            "PGRE",
+            "PHZD",
+            "PMIS",
+            "PARW",
+            "PBAR",
+            "PBEA",
+            "PCON",
+            "PFLA"
+          ]
+        },
+        {
+          "name": "flags",
+          "kind": "u8",
+          "offset": 4,
+          "flags": {
+            "1": "opposite_parent",
+            "2": "pop_in"
+          }
+        },
+        {
+          "name": "unused",
+          "kind": "bytes",
+          "offset": 5,
+          "size": 3
+        }
+      ]
+    },
+    "linked_reference": {
+      "name": "linked_reference",
+      "kind": "union",
+      "repeat": true,
+      "decider": "legacy_linked_reference",
+      "source": "xedit-tes5:12445-12449",
+      "fields": [
+        {
+          "name": "legacy",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "keyword_and_reference",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD",
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "activate_parent": {
+      "name": "activate_parent",
+      "kind": "struct",
+      "size": 8,
+      "repeat": true,
+      "source": "xedit-tes5:12380-12386",
+      "members": [
+        {
+          "name": "reference",
+          "kind": "form_id",
+          "offset": 0,
+          "targets": [
+            "PLYR",
+            "ACHR",
+            "REFR",
+            "PGRE",
+            "PHZD",
+            "PMIS",
+            "PARW",
+            "PBAR",
+            "PBEA",
+            "PCON",
+            "PFLA"
+          ]
+        },
+        {
+          "name": "delay",
+          "kind": "f32",
+          "offset": 4
+        }
+      ]
+    },
+    "ownership": {
+      "name": "ownership",
+      "kind": "group",
+      "fields": [
+        {
+          "signature": "XOWN",
+          "name": "owner",
+          "kind": "form_id",
+          "targets": [
+            "FACT",
+            "ACHR",
+            "NPC_"
+          ]
+        },
+        {
+          "signature": "XRNK",
+          "name": "rank",
+          "kind": "i32"
+        }
+      ],
+      "source": "xedit-common:1431-1435 ownership (XGLB is TES4-game only) and xedit-tes5:5222 owner"
+    },
+    "layer_header": {
+      "name": "layer_header",
+      "kind": "struct",
+      "size": 8,
+      "source": "xedit-common:1389-1400",
+      "members": [
+        {
+          "name": "texture",
+          "kind": "form_id",
+          "offset": 0,
+          "targets": [
+            "LTEX"
+          ]
+        },
+        {
+          "name": "quadrant",
+          "kind": "u8",
+          "offset": 4,
+          "enum": {
+            "0": "southwest",
+            "1": "southeast",
+            "2": "northwest",
+            "3": "northeast"
+          }
+        },
+        {
+          "name": "unused",
+          "kind": "bytes",
+          "offset": 5,
+          "size": 1
+        },
+        {
+          "name": "layer",
+          "kind": "i16",
+          "offset": 6
+        }
+      ]
+    },
+    "model_path": {
+      "name": "model",
+      "kind": "zstring",
+      "offset": 0,
+      "source": "xedit-tes5:188-215 shared model path"
+    },
+    "model_information": {
+      "name": "model_information",
+      "kind": "bytes",
+      "offset": 0,
+      "source": "xedit-common:2304-2390 default opaque model information; optional texture hash interpretation remains undocumented reader support"
+    },
+    "alternate_textures": {
+      "name": "alternate_textures",
+      "kind": "array",
+      "offset": 0,
+      "decider": "alternate_textures",
+      "source": "xedit-tes5:MODS counted names plus texture set and shape index"
+    },
+    "model": {
+      "kind": "group",
+      "name": "model",
+      "fields": [
+        {
+          "signature": "MODL",
+          "definition": "model_path"
+        },
+        {
+          "signature": "MODT",
+          "definition": "model_information"
+        },
+        {
+          "signature": "MODS",
+          "definition": "alternate_textures"
+        }
+      ]
+    },
+    "inventory_extra": {
+      "kind": "struct",
+      "name": "inventory_extra",
+      "size": 12,
+      "source": "xedit-tes5:4104-4113 COED owner NPC/global, faction/rank, unresolved unused",
+      "members": [
+        {
+          "name": "owner",
+          "kind": "form_id",
+          "offset": 0,
+          "targets": [
+            "NPC_",
+            "FACT"
+          ]
+        },
+        {
+          "name": "global_or_rank",
+          "kind": "union",
+          "offset": 4,
+          "decider": "inventory_owner_condition",
+          "size": 4,
+          "fields": [
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "global",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "GLOB"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "i32",
+              "offset": 0
+            }
+          ]
+        },
+        {
+          "name": "condition",
+          "kind": "f32",
+          "offset": 8
+        }
+      ]
+    },
+    "inventory_items": {
+      "kind": "group",
+      "name": "inventory_items",
+      "repeat": true,
+      "source": "xedit-tes5:4115-4137 CNTO/COED inventory item groups",
+      "fields": [
+        {
+          "signature": "CNTO",
+          "name": "inventory_item",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "item",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ARMO",
+                "AMMO",
+                "APPA",
+                "MISC",
+                "WEAP",
+                "BOOK",
+                "LVLI",
+                "KEYM",
+                "ALCH",
+                "INGR",
+                "LIGH",
+                "SLGM",
+                "SCRL"
+              ]
+            },
+            {
+              "name": "count",
+              "kind": "i32",
+              "offset": 4
+            }
+          ]
+        },
+        {
+          "signature": "COED",
+          "definition": "inventory_extra"
+        }
+      ]
+    },
+    "destructible": {
+      "kind": "group",
+      "name": "destructible",
+      "source": "xedit-tes5:5089-5154 destructible header/stage/model/end facts",
+      "fields": [
+        {
+          "signature": "DEST",
+          "name": "destruction_header",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "health",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "stage_count",
+              "kind": "u8",
+              "offset": 4
+            },
+            {
+              "name": "vats_targetable",
+              "kind": "u8",
+              "offset": 5
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 6,
+              "size": 2
+            }
+          ]
+        },
+        {
+          "kind": "group",
+          "name": "destruction_stages",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "DSTD",
+              "name": "destruction_stage",
+              "kind": "struct",
+              "size": 20,
+              "members": [
+                {
+                  "name": "health_percent",
+                  "kind": "u8",
+                  "offset": 0
+                },
+                {
+                  "name": "index",
+                  "kind": "u8",
+                  "offset": 1
+                },
+                {
+                  "name": "model_damage_stage",
+                  "kind": "u8",
+                  "offset": 2
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 3
+                },
+                {
+                  "name": "self_damage_per_second",
+                  "kind": "i32",
+                  "offset": 4
+                },
+                {
+                  "name": "explosion",
+                  "kind": "form_id",
+                  "offset": 8,
+                  "targets": [
+                    "EXPL"
+                  ]
+                },
+                {
+                  "name": "debris",
+                  "kind": "form_id",
+                  "offset": 12,
+                  "targets": [
+                    "DEBR"
+                  ]
+                },
+                {
+                  "name": "debris_count",
+                  "kind": "i32",
+                  "offset": 16
+                }
+              ]
+            },
+            {
+              "signature": "DMDL",
+              "name": "destruction_model",
+              "definition": "model_path"
+            },
+            {
+              "signature": "DMDT",
+              "name": "destruction_model_information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "DMDS",
+              "name": "destruction_alternate_textures",
+              "definition": "alternate_textures"
+            },
+            {
+              "signature": "DSTF",
+              "name": "destruction_end",
+              "kind": "bytes",
+              "size": 0
+            }
+          ]
+        }
+      ]
+    },
+    "pending_conditions": {
+      "kind": "group",
+      "name": "pending_conditions",
+      "repeat": true,
+      "source": "phase-2 pending Agent D: condition bytes retained without parameter-type interpretation",
+      "fields": [
+        {
+          "signature": "CTDA",
+          "name": "pending_condition",
+          "kind": "bytes",
+          "repeat": true
+        },
+        {
+          "signature": "CIS1",
+          "name": "pending_condition_string1",
+          "kind": "bytes",
+          "repeat": true
+        },
+        {
+          "signature": "CIS2",
+          "name": "pending_condition_string2",
+          "kind": "bytes",
+          "repeat": true
+        }
+      ]
+    }
+  },
+  "records": [
+    {
+      "signature": "TES4",
+      "source": "xedit-tes5:12764-12796",
+      "fields": [
+        {
+          "signature": "HEDR",
+          "name": "header",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "version",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "record_count",
+              "kind": "u32",
+              "offset": 4
+            },
+            {
+              "name": "next_object_id",
+              "kind": "u32",
+              "offset": 8
+            }
+          ],
+          "source": "xedit-common:420-425"
+        },
+        {
+          "signature": "OFST",
+          "name": "ofst",
+          "kind": "bytes"
+        },
+        {
+          "signature": "DELE",
+          "name": "dele",
+          "kind": "bytes"
+        },
+        {
+          "signature": "CNAM",
+          "name": "author",
+          "kind": "zstring"
+        },
+        {
+          "signature": "SNAM",
+          "name": "description",
+          "kind": "zstring"
+        },
+        {
+          "name": "masters",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MAST",
+              "name": "filename",
+              "kind": "zstring"
+            },
+            {
+              "signature": "DATA",
+              "name": "unused",
+              "kind": "bytes",
+              "size": 8
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "ONAM",
+          "name": "overridden_forms",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ACHR",
+                "LAND",
+                "NAVM",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "SCRN",
+          "name": "screenshot",
+          "kind": "bytes"
+        },
+        {
+          "signature": "INTV",
+          "name": "intv",
+          "kind": "bytes"
+        },
+        {
+          "signature": "INCC",
+          "name": "interior_cell_count",
+          "kind": "u32"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "TXST",
+      "source": "xedit-tes5:7532-7552",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "textures",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "TX00",
+              "name": "diffuse",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX01",
+              "name": "normal_gloss",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX02",
+              "name": "environment_mask_subsurface_tint",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX03",
+              "name": "glow_detail",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX04",
+              "name": "height",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX05",
+              "name": "environment",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX06",
+              "name": "multilayer",
+              "kind": "zstring"
+            },
+            {
+              "signature": "TX07",
+              "name": "backlight_mask_specular",
+              "kind": "zstring"
+            }
+          ]
+        },
+        {
+          "signature": "DODT",
+          "name": "decal",
+          "kind": "bytes"
+        },
+        {
+          "signature": "DNAM",
+          "name": "flags",
+          "kind": "u16",
+          "flags": {
+            "1": "no_specular_map",
+            "2": "facegen_textures",
+            "4": "model_space_normal_map"
+          }
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "STAT",
+      "source": "xedit-tes5:12695-12761",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "DNAM",
+          "name": "direction_material",
+          "kind": "union",
+          "decider": "size",
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "struct",
+              "size": 8,
+              "members": [
+                {
+                  "name": "max_angle",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "material",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "MATO"
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "sse",
+              "kind": "struct",
+              "size": 12,
+              "members": [
+                {
+                  "name": "max_angle",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "material",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "MATO"
+                  ]
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 8,
+                  "flags": {
+                    "1": "considered_snow"
+                  }
+                },
+                {
+                  "name": "unused",
+                  "kind": "bytes",
+                  "offset": 9,
+                  "size": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "MNAM",
+          "name": "distant_lod",
+          "kind": "array",
+          "count": {
+            "kind": "fixed",
+            "value": 4,
+            "stride": 260
+          },
+          "members": [
+            {
+              "name": "mesh",
+              "kind": "zstring",
+              "offset": 0,
+              "size": 260
+            }
+          ]
+        },
+        {
+          "signature": "ENAM",
+          "name": "enam",
+          "kind": "bytes"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "MSTT",
+      "source": "xedit-tes5:7600-7625 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "DATA",
+          "name": "moveable_flags",
+          "kind": "u8",
+          "flags": {
+            "1": "on_local_map"
+          }
+        },
+        {
+          "signature": "SNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "FURN",
+      "source": "xedit-tes5:7399-7486 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "marker_data_opaque",
+          "kind": "bytes",
+          "source": "xedit-tes5:7420 FURN and12845 FLOR explicitly undocumented; native DATA observed4bytes; opaque preservation with no guessed FormID interpretation or size restriction"
+        },
+        {
+          "signature": "FNAM",
+          "name": "furniture_flags",
+          "kind": "u16",
+          "flags": {
+            "2": "ignored_by_sandbox"
+          }
+        },
+        {
+          "signature": "KNAM",
+          "name": "interaction_keyword",
+          "kind": "form_id",
+          "targets": [
+            "KYWD"
+          ]
+        },
+        {
+          "signature": "MNAM",
+          "name": "active_markers_flags",
+          "kind": "u32",
+          "flags": {
+            "33554432": "disables_activation",
+            "67108864": "is_perch",
+            "134217728": "must_exit_to_talk"
+          }
+        },
+        {
+          "signature": "WBDT",
+          "name": "workbench_data",
+          "kind": "struct",
+          "size": 2,
+          "members": [
+            {
+              "name": "bench_type",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "uses_skill",
+              "kind": "i8",
+              "offset": 1
+            }
+          ]
+        },
+        {
+          "signature": "NAM1",
+          "name": "associated_spell",
+          "kind": "form_id",
+          "targets": [
+            "SPEL"
+          ]
+        },
+        {
+          "name": "markers",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "ENAM",
+              "name": "marker_index",
+              "kind": "u32"
+            },
+            {
+              "signature": "NAM0",
+              "name": "disabled_entry_points",
+              "kind": "struct",
+              "size": 4,
+              "members": [
+                {
+                  "name": "unused",
+                  "kind": "bytes",
+                  "size": 2,
+                  "offset": 0
+                },
+                {
+                  "name": "disabled_points",
+                  "kind": "u16",
+                  "offset": 2
+                }
+              ]
+            },
+            {
+              "signature": "FNMK",
+              "name": "marker_keyword",
+              "kind": "form_id",
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "FNPR",
+          "name": "marker_entry_points",
+          "kind": "struct",
+          "size": 4,
+          "repeat": true,
+          "members": [
+            {
+              "name": "animation_type",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "entry_points",
+              "kind": "u16",
+              "offset": 2
+            }
+          ]
+        },
+        {
+          "signature": "XMRK",
+          "name": "marker_model",
+          "kind": "zstring"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "TREE",
+      "source": "xedit-tes5:12802-12834 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "PFIG",
+          "name": "ingredient",
+          "kind": "form_id",
+          "targets": [
+            "INGR",
+            "ALCH",
+            "MISC",
+            "LVLI"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "harvest_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "PFPC",
+          "name": "ingredient_production",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "spring",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "summer",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "fall",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "winter",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "tree_data",
+          "kind": "struct",
+          "size": 48,
+          "members": [
+            {
+              "name": "trunk_flexibility",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "branch_flexibility",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "trunk_amplitude",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "front_amplitude",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "back_amplitude",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "side_amplitude",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "front_frequency",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "back_frequency",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "side_frequency",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "leaf_flexibility",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "leaf_amplitude",
+              "kind": "f32",
+              "offset": 40
+            },
+            {
+              "name": "leaf_frequency",
+              "kind": "f32",
+              "offset": 44
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "FLOR",
+      "source": "xedit-tes5:12836-12851 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "marker_data_opaque",
+          "kind": "bytes",
+          "source": "xedit-tes5:7420 FURN and12845 FLOR explicitly undocumented; native DATA observed4bytes; opaque preservation with no guessed FormID interpretation or size restriction"
+        },
+        {
+          "signature": "RNAM",
+          "name": "activate_text_override",
+          "kind": "lstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "activation_data_opaque",
+          "kind": "bytes",
+          "source": "xedit-tes5:12847 explicitly undocumented; native DATA observed2bytes; preserve opaque bytes without guessed flags or FormIDs"
+        },
+        {
+          "signature": "PFIG",
+          "name": "ingredient",
+          "kind": "form_id",
+          "targets": [
+            "INGR",
+            "ALCH",
+            "MISC",
+            "LVLI"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "harvest_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "PFPC",
+          "name": "ingredient_production",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "spring",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "summer",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "fall",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "winter",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "CONT",
+      "source": "xedit-tes5:6622 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "DOOR",
+      "source": "xedit-tes5:7068-7095 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "SNAM",
+          "name": "open_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ANAM",
+          "name": "close_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "BNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "door_flags",
+          "kind": "u8",
+          "flags": {
+            "2": "automatic",
+            "4": "hidden",
+            "8": "minimal_use",
+            "16": "sliding",
+            "32": "no_combat_search_open"
+          }
+        },
+        {
+          "signature": "TNAM",
+          "name": "teleport_destination",
+          "kind": "form_id",
+          "targets": [
+            "CELL",
+            "WRLD"
+          ],
+          "repeat": true
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ACTI",
+      "source": "xedit-tes5:5325-5366 manually inspected primary width/order/link facts; independently authored complete base-object roles; original native DATA cross-check; existing shared model/destruction/VMAD definitions retained",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "marker_color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "unused",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "VNAM",
+          "name": "activation_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "WNAM",
+          "name": "water_type",
+          "kind": "form_id",
+          "targets": [
+            "WATR"
+          ]
+        },
+        {
+          "signature": "RNAM",
+          "name": "activate_text_override",
+          "kind": "lstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "activation_flags",
+          "kind": "u16",
+          "flags": {
+            "1": "no_displacement",
+            "2": "ignored_by_sandbox"
+          }
+        },
+        {
+          "signature": "KNAM",
+          "name": "interaction_keyword",
+          "kind": "form_id",
+          "targets": [
+            "KYWD"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "WEAP",
+      "source": "xedit-tes5:13017 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "MISC",
+      "source": "xedit-tes5:10802 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "BOOK",
+      "source": "xedit-tes5:6294 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "AMMO",
+      "source": "xedit-tes5:6172 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ALCH",
+      "source": "xedit-tes5:6126 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "INGR",
+      "source": "xedit-tes5:10334 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "SLGM",
+      "source": "xedit-tes5:7742 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "KEYM",
+      "source": "xedit-tes5:10368 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "SCRL",
+      "source": "xedit-tes5:12674 record definition;191-222 model facts",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ARMO",
+      "source": "xedit-tes5:6222-6265",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "EITM",
+          "name": "enchantment",
+          "kind": "form_id",
+          "targets": [
+            "ENCH"
+          ]
+        },
+        {
+          "signature": "EAMT",
+          "name": "enchantment_amount",
+          "kind": "u16"
+        },
+        {
+          "name": "male_world_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD2",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MO2T",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MO2S",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "ICON",
+          "name": "male_icon",
+          "kind": "bytes"
+        },
+        {
+          "name": "female_world_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD4",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MO4T",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MO4S",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "ICO2",
+          "name": "female_icon",
+          "kind": "bytes"
+        },
+        {
+          "signature": "BODT",
+          "name": "body_template_legacy",
+          "kind": "bytes"
+        },
+        {
+          "signature": "BOD2",
+          "name": "body_template",
+          "kind": "bytes"
+        },
+        {
+          "signature": "DEST",
+          "name": "destruction",
+          "kind": "bytes"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "drop_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "BMCT",
+          "name": "constraint_template",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ETYP",
+          "name": "equip_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "BIDS",
+          "name": "bash_impact",
+          "kind": "form_id",
+          "targets": [
+            "IPDS"
+          ]
+        },
+        {
+          "signature": "BAMT",
+          "name": "block_material",
+          "kind": "form_id",
+          "targets": [
+            "MATT"
+          ]
+        },
+        {
+          "signature": "RNAM",
+          "name": "race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "MODL",
+          "name": "armature",
+          "kind": "form_id",
+          "targets": [
+            "ARMA"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "kind": "bytes",
+          "size": 8
+        },
+        {
+          "signature": "DNAM",
+          "name": "armor_rating",
+          "kind": "i32"
+        },
+        {
+          "signature": "TNAM",
+          "name": "template",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "LIGH",
+      "source": "xedit-tes5:10443-10508",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "DEST",
+          "name": "destruction",
+          "kind": "bytes"
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "ICON",
+          "name": "icon",
+          "kind": "bytes"
+        },
+        {
+          "signature": "DATA",
+          "name": "light",
+          "kind": "struct",
+          "size": 48,
+          "members": [
+            {
+              "name": "time",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "radius",
+              "kind": "u32",
+              "offset": 4
+            },
+            {
+              "name": "color_red",
+              "kind": "u8",
+              "offset": 8
+            },
+            {
+              "name": "color_green",
+              "kind": "u8",
+              "offset": 9
+            },
+            {
+              "name": "color_blue",
+              "kind": "u8",
+              "offset": 10
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 11,
+              "size": 1
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 12,
+              "flags": {
+                "1": "dynamic",
+                "2": "can_carry",
+                "4": "negative",
+                "8": "flicker",
+                "16": "unknown",
+                "32": "off_by_default",
+                "64": "flicker_slow",
+                "128": "pulse",
+                "256": "pulse_slow",
+                "512": "spot_light",
+                "1024": "shadow_spotlight",
+                "2048": "shadow_hemisphere",
+                "4096": "shadow_omnidirectional",
+                "8192": "portal_strict"
+              }
+            },
+            {
+              "name": "falloff",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "field_of_view",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "near_clip",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "flicker_period",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "flicker_intensity",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "flicker_movement",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "value",
+              "kind": "u32",
+              "offset": 40
+            },
+            {
+              "name": "weight",
+              "kind": "f32",
+              "offset": 44
+            }
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "fade",
+          "kind": "f32"
+        },
+        {
+          "signature": "SNAM",
+          "name": "sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "LNAM",
+          "name": "lens",
+          "kind": "form_id",
+          "targets": [
+            "LENS"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "LTEX",
+      "source": "xedit-tes5:10528-10544",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "TNAM",
+          "name": "texture_set",
+          "kind": "form_id",
+          "targets": [
+            "TXST"
+          ]
+        },
+        {
+          "signature": "MNAM",
+          "name": "material_type",
+          "kind": "form_id",
+          "targets": [
+            "MATT"
+          ]
+        },
+        {
+          "signature": "HNAM",
+          "name": "havok",
+          "kind": "struct",
+          "size": 2,
+          "members": [
+            {
+              "name": "friction",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "restitution",
+              "kind": "u8",
+              "offset": 1
+            }
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "specular_exponent",
+          "kind": "u8"
+        },
+        {
+          "signature": "GNAM",
+          "name": "grass",
+          "kind": "form_id",
+          "targets": [
+            "GRAS"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "INAM",
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "snow"
+          }
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "GRAS",
+      "source": "xedit-tes5:10199-10233",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "DATA",
+          "name": "grass",
+          "kind": "struct",
+          "size": 32,
+          "members": [
+            {
+              "name": "density",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "min_slope",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "max_slope",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "unused_a",
+              "kind": "bytes",
+              "offset": 3,
+              "size": 1
+            },
+            {
+              "name": "units_from_water",
+              "kind": "u16",
+              "offset": 4
+            },
+            {
+              "name": "unused_b",
+              "kind": "bytes",
+              "offset": 6,
+              "size": 2
+            },
+            {
+              "name": "water_comparison",
+              "kind": "u32",
+              "offset": 8,
+              "enum": {
+                "0": "above_at_least",
+                "1": "above_at_most",
+                "2": "below_at_least",
+                "3": "below_at_most",
+                "4": "either_at_least",
+                "5": "either_at_most",
+                "6": "either_at_most_above",
+                "7": "either_at_most_below"
+              }
+            },
+            {
+              "name": "position_range",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "height_range",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "color_range",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "wave_period",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 28,
+              "flags": {
+                "1": "vertex_lighting",
+                "2": "uniform_scaling",
+                "4": "fit_to_slope"
+              }
+            },
+            {
+              "name": "unused_c",
+              "kind": "bytes",
+              "offset": 29,
+              "size": 3
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "WRLD",
+      "source": "xedit-tes5:13139-13243",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "RNAM",
+          "name": "large_references",
+          "kind": "bytes",
+          "repeat": true
+        },
+        {
+          "signature": "MHDT",
+          "name": "max_heights",
+          "kind": "bytes"
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "WCTR",
+          "name": "center_cell",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "x",
+              "kind": "i16",
+              "offset": 0
+            },
+            {
+              "name": "y",
+              "kind": "i16",
+              "offset": 2
+            }
+          ]
+        },
+        {
+          "signature": "LTMP",
+          "name": "lighting_template",
+          "kind": "form_id",
+          "targets": [
+            "LGTM"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "signature": "XLCN",
+          "name": "location",
+          "kind": "form_id",
+          "targets": [
+            "LCTN"
+          ]
+        },
+        {
+          "name": "parent",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "WNAM",
+              "name": "worldspace",
+              "kind": "form_id",
+              "targets": [
+                "WRLD"
+              ]
+            },
+            {
+              "signature": "PNAM",
+              "name": "flags",
+              "kind": "bytes",
+              "size": 2
+            }
+          ]
+        },
+        {
+          "signature": "CNAM",
+          "name": "climate",
+          "kind": "form_id",
+          "targets": [
+            "CLMT"
+          ]
+        },
+        {
+          "signature": "NAM2",
+          "name": "water",
+          "kind": "form_id",
+          "targets": [
+            "WATR"
+          ]
+        },
+        {
+          "signature": "NAM3",
+          "name": "lod_water",
+          "kind": "form_id",
+          "targets": [
+            "WATR"
+          ]
+        },
+        {
+          "signature": "NAM4",
+          "name": "lod_water_height",
+          "kind": "f32"
+        },
+        {
+          "signature": "DNAM",
+          "name": "land",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "default_land_height",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "default_water_height",
+              "kind": "f32",
+              "offset": 4
+            }
+          ]
+        },
+        {
+          "signature": "ICON",
+          "name": "map_image",
+          "kind": "zstring"
+        },
+        {
+          "name": "model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MODL",
+              "name": "path",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MODT",
+              "name": "texture_hashes",
+              "kind": "bytes"
+            },
+            {
+              "signature": "MODS",
+              "name": "alternate_textures",
+              "kind": "bytes",
+              "decider": "alternate_textures"
+            }
+          ],
+          "source": "xedit-tes5:191-222 model field facts; MudCrab esm/extractors.rs get_alternate_textures"
+        },
+        {
+          "signature": "MNAM",
+          "name": "map",
+          "kind": "bytes"
+        },
+        {
+          "signature": "ONAM",
+          "name": "map_offset",
+          "kind": "bytes"
+        },
+        {
+          "signature": "NAMA",
+          "name": "lod_multiplier",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "name": "flags",
+          "kind": "u8",
+          "flags": {
+            "1": "small_world",
+            "2": "no_fast_travel",
+            "8": "no_lod_water",
+            "16": "no_landscape",
+            "32": "no_sky",
+            "64": "fixed_dimensions",
+            "128": "no_grass"
+          }
+        },
+        {
+          "signature": "NAM0",
+          "name": "bounds_min",
+          "kind": "bytes",
+          "size": 8
+        },
+        {
+          "signature": "NAM9",
+          "name": "bounds_max",
+          "kind": "bytes",
+          "size": 8
+        },
+        {
+          "signature": "ZNAM",
+          "name": "music",
+          "kind": "form_id",
+          "targets": [
+            "MUSC"
+          ]
+        },
+        {
+          "signature": "NNAM",
+          "name": "canopy_shadow",
+          "kind": "zstring"
+        },
+        {
+          "signature": "XNAM",
+          "name": "water_noise",
+          "kind": "zstring"
+        },
+        {
+          "signature": "TNAM",
+          "name": "lod_diffuse",
+          "kind": "zstring"
+        },
+        {
+          "signature": "UNAM",
+          "name": "lod_normal",
+          "kind": "zstring"
+        },
+        {
+          "signature": "XWEM",
+          "name": "water_environment",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OFST",
+          "name": "ofst",
+          "kind": "bytes"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "CELL",
+      "source": "xedit-tes5:6411-6514",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "flags",
+          "kind": "union",
+          "decider": "size",
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "u8",
+              "size": 1,
+              "flags": {
+                "1": "interior",
+                "2": "water",
+                "4": "travel",
+                "8": "no_lod_water",
+                "32": "public",
+                "64": "hand_changed",
+                "128": "show_sky",
+                "256": "sky_lighting"
+              }
+            },
+            {
+              "name": "sse",
+              "kind": "u16",
+              "size": 2,
+              "flags": {
+                "1": "interior",
+                "2": "water",
+                "4": "travel",
+                "8": "no_lod_water",
+                "32": "public",
+                "64": "hand_changed",
+                "128": "show_sky",
+                "256": "sky_lighting"
+              }
+            }
+          ]
+        },
+        {
+          "signature": "XCLC",
+          "name": "grid",
+          "kind": "union",
+          "decider": "cell_grid",
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "struct",
+              "size": 8,
+              "members": [
+                {
+                  "name": "x",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "y",
+                  "kind": "i32",
+                  "offset": 4
+                }
+              ]
+            },
+            {
+              "name": "sse",
+              "kind": "struct",
+              "size": 12,
+              "members": [
+                {
+                  "name": "x",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "y",
+                  "kind": "i32",
+                  "offset": 4
+                },
+                {
+                  "name": "land_flags",
+                  "kind": "u8",
+                  "offset": 8
+                },
+                {
+                  "name": "unused",
+                  "kind": "bytes",
+                  "offset": 9,
+                  "size": 3
+                }
+              ]
+            }
+          ],
+          "source": "xedit-common:494-519"
+        },
+        {
+          "signature": "XCLL",
+          "name": "lighting",
+          "kind": "bytes"
+        },
+        {
+          "signature": "TVDT",
+          "name": "tvdt",
+          "kind": "bytes"
+        },
+        {
+          "signature": "MHDT",
+          "name": "mhdt",
+          "kind": "bytes"
+        },
+        {
+          "signature": "LTMP",
+          "name": "lighting_template",
+          "kind": "form_id",
+          "targets": [
+            "LGTM"
+          ]
+        },
+        {
+          "signature": "LNAM",
+          "name": "lnam",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XCLW",
+          "name": "water_height",
+          "kind": "f32"
+        },
+        {
+          "signature": "XNAM",
+          "name": "water_noise",
+          "kind": "zstring"
+        },
+        {
+          "signature": "XCLR",
+          "name": "regions",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REGN"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLCN",
+          "name": "location",
+          "kind": "form_id",
+          "targets": [
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XWCN",
+          "name": "water_current_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "XWCS",
+          "name": "old_water_current_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "XWCU",
+          "name": "water_currents",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XCWT",
+          "name": "water",
+          "kind": "form_id",
+          "targets": [
+            "WATR"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XILL",
+          "name": "lock_list",
+          "kind": "form_id",
+          "targets": [
+            "FLST",
+            "NPC_"
+          ]
+        },
+        {
+          "signature": "XWEM",
+          "name": "water_environment",
+          "kind": "zstring"
+        },
+        {
+          "signature": "XCCM",
+          "name": "sky_weather_region",
+          "kind": "form_id",
+          "targets": [
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XCAS",
+          "name": "acoustic_space",
+          "kind": "form_id",
+          "targets": [
+            "ASPC"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "signature": "XCMO",
+          "name": "music",
+          "kind": "form_id",
+          "targets": [
+            "MUSC"
+          ]
+        },
+        {
+          "signature": "XCIM",
+          "name": "image_space",
+          "kind": "form_id",
+          "targets": [
+            "IMGS"
+          ]
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "LAND",
+      "source": "xedit-tes5:10417-10440; xedit-common:735-741;1371-1404",
+      "fields": [
+        {
+          "signature": "DATA",
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "normals_height",
+            "2": "colors",
+            "4": "layers",
+            "16": "auto_normals",
+            "1024": "mpcd"
+          }
+        },
+        {
+          "signature": "VNML",
+          "name": "normals",
+          "kind": "bytes",
+          "size": 3267
+        },
+        {
+          "signature": "VHGT",
+          "name": "heightmap",
+          "kind": "struct",
+          "size": 1096,
+          "members": [
+            {
+              "name": "offset",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "deltas",
+              "kind": "array",
+              "offset": 4,
+              "count": {
+                "kind": "fixed",
+                "value": 1089,
+                "stride": 1
+              },
+              "members": [
+                {
+                  "name": "height_delta",
+                  "kind": "i8",
+                  "offset": 0
+                }
+              ],
+              "size": 1089
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 1093,
+              "size": 3
+            }
+          ],
+          "source": "xedit-common:735-741"
+        },
+        {
+          "signature": "VCLR",
+          "name": "vertex_colors",
+          "kind": "bytes",
+          "size": 3267
+        },
+        {
+          "name": "layers",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "BTXT",
+              "definition": "layer_header",
+              "name": "base_layer"
+            },
+            {
+              "signature": "ATXT",
+              "definition": "layer_header",
+              "name": "alpha_layer"
+            },
+            {
+              "signature": "VTXT",
+              "name": "alpha_vertices",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 8
+              },
+              "members": [
+                {
+                  "name": "vertex",
+                  "kind": "u16",
+                  "offset": 0
+                },
+                {
+                  "name": "unused",
+                  "kind": "bytes",
+                  "offset": 2,
+                  "size": 2
+                },
+                {
+                  "name": "opacity",
+                  "kind": "f32",
+                  "offset": 4
+                }
+              ]
+            }
+          ],
+          "repeat": true,
+          "source": "xedit-common:1371-1404"
+        },
+        {
+          "signature": "VTEX",
+          "name": "textures",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LTEX"
+              ]
+            }
+          ],
+          "source": "mudcrab-legacy:esm/mod.rs LAND VTEX remap and esm/extractors.rs extract_land_data (legacy preserved contract, not asserted SSE field)"
+        },
+        {
+          "signature": "MPCD",
+          "name": "mpcd",
+          "kind": "bytes",
+          "repeat": true
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "REFR",
+      "source": "xedit-tes5:12139-12517",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "TREE",
+            "SNDR",
+            "ACTI",
+            "DOOR",
+            "STAT",
+            "FURN",
+            "CONT",
+            "ARMO",
+            "AMMO",
+            "LVLN",
+            "LVLC",
+            "MISC",
+            "WEAP",
+            "BOOK",
+            "KEYM",
+            "ALCH",
+            "LIGH",
+            "GRAS",
+            "ASPC",
+            "IDLM",
+            "ARMA",
+            "INGR",
+            "MSTT",
+            "TACT",
+            "TXST",
+            "FLOR",
+            "SLGM",
+            "SCRL",
+            "SOUN",
+            "APPA",
+            "SPEL",
+            "ARTO",
+            "ADDN"
+          ]
+        },
+        {
+          "signature": "XMBO",
+          "name": "bound_extents",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XPRM",
+          "name": "primitive",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XORD",
+          "name": "occlusion_links",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XOCP",
+          "name": "occlusion_plane",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XPOD",
+          "name": "portal_links",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 8
+          },
+          "members": [
+            {
+              "name": "origin",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            },
+            {
+              "name": "destination",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "REFR"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XPTL",
+          "name": "xptl",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XRMR",
+          "name": "room_header",
+          "kind": "bytes"
+        },
+        {
+          "signature": "LNAM",
+          "name": "lighting_template",
+          "kind": "form_id",
+          "targets": [
+            "LGTM"
+          ]
+        },
+        {
+          "signature": "INAM",
+          "name": "image_space",
+          "kind": "form_id",
+          "targets": [
+            "IMGS"
+          ]
+        },
+        {
+          "signature": "XLRM",
+          "name": "linked_room",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "XMBP",
+          "name": "xmbp",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XRGD",
+          "name": "ragdoll",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XRGB",
+          "name": "xrgb",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XRDS",
+          "name": "radius",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLTW",
+          "name": "lit_water",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XLIG",
+          "name": "light_data",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XALP",
+          "name": "alpha",
+          "kind": "bytes",
+          "size": 2
+        },
+        {
+          "signature": "XTEL",
+          "name": "teleport",
+          "kind": "struct",
+          "size": 32,
+          "members": [
+            {
+              "name": "door",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "REFR"
+              ]
+            },
+            {
+              "name": "position_x",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "position_y",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "position_z",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "rotation_x",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "rotation_y",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "rotation_z",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 28,
+              "flags": {
+                "1": "no_alarm"
+              }
+            }
+          ]
+        },
+        {
+          "signature": "XTNM",
+          "name": "teleport_message",
+          "kind": "form_id",
+          "targets": [
+            "MESG"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XWCN",
+          "name": "water_current_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "XWCS",
+          "name": "old_water_current_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "XWCU",
+          "name": "water_currents",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XCVL",
+          "name": "xcvl",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XCVR",
+          "name": "xcvr",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XCZC",
+          "name": "water_zone_cell",
+          "kind": "form_id",
+          "targets": [
+            "CELL"
+          ]
+        },
+        {
+          "signature": "XCZR",
+          "name": "water_zone_reference",
+          "kind": "form_id",
+          "targets": [
+            "PLYR",
+            "ACHR",
+            "REFR",
+            "PGRE",
+            "PHZD",
+            "PMIS",
+            "PARW",
+            "PBAR",
+            "PBEA",
+            "PCON",
+            "PFLA"
+          ]
+        },
+        {
+          "signature": "XCZA",
+          "name": "xcza",
+          "kind": "bytes",
+          "size": 4
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "XSPC",
+          "name": "spawn_container",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XLIB",
+          "name": "leveled_item_base",
+          "kind": "form_id",
+          "targets": [
+            "LVLI"
+          ]
+        },
+        {
+          "signature": "XLCM",
+          "name": "level_modifier",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XLCN",
+          "name": "persistent_location",
+          "kind": "form_id",
+          "targets": [
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XTRI",
+          "name": "collision_layer",
+          "kind": "u32"
+        },
+        {
+          "signature": "XLOC",
+          "name": "lock_data",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "signature": "XNDP",
+          "name": "navmesh_door",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "navmesh",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "NAVM"
+              ]
+            },
+            {
+              "name": "triangle",
+              "kind": "i16",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 6,
+              "size": 2
+            }
+          ]
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XCNT",
+          "name": "item_count",
+          "kind": "i32"
+        },
+        {
+          "signature": "XCHG",
+          "name": "charge",
+          "kind": "f32"
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "patrol",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XPRD",
+              "name": "idle_time",
+              "kind": "f32"
+            },
+            {
+              "signature": "XPPA",
+              "name": "xppa",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "INAM",
+              "name": "idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "signature": "SCHR",
+              "name": "schr",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCTX",
+              "name": "sctx",
+              "kind": "bytes"
+            },
+            {
+              "signature": "PDTO",
+              "name": "pdto",
+              "kind": "bytes",
+              "repeat": true
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "XACT",
+          "name": "action_flags",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "ONAM",
+          "name": "open_by_default",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "name": "map_marker",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XMRK",
+              "name": "xmrk",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "FNAM",
+              "name": "flags",
+              "kind": "u8"
+            },
+            {
+              "signature": "FULL",
+              "name": "full_name",
+              "kind": "lstring"
+            },
+            {
+              "signature": "TNAM",
+              "name": "marker_type",
+              "kind": "bytes",
+              "size": 2
+            }
+          ]
+        },
+        {
+          "signature": "XATR",
+          "name": "attached_reference",
+          "kind": "form_id",
+          "targets": [
+            "REFR",
+            "PGRE",
+            "PHZD",
+            "PMIS",
+            "PARW",
+            "PBAR",
+            "PBEA",
+            "PCON",
+            "PFLA"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "ACHR",
+      "source": "xedit-tes5:5227-5322",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "NPC_"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "signature": "XRGD",
+          "name": "ragdoll",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XRGB",
+          "name": "xrgb",
+          "kind": "bytes"
+        },
+        {
+          "name": "patrol",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XPRD",
+              "name": "idle_time",
+              "kind": "f32"
+            },
+            {
+              "signature": "XPPA",
+              "name": "xppa",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "INAM",
+              "name": "idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "signature": "SCHR",
+              "name": "schr",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCDA",
+              "name": "scda",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCTX",
+              "name": "sctx",
+              "kind": "bytes"
+            },
+            {
+              "signature": "QNAM",
+              "name": "qnam",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCRO",
+              "name": "scro",
+              "kind": "bytes"
+            },
+            {
+              "signature": "PDTO",
+              "name": "pdto",
+              "kind": "bytes",
+              "repeat": true
+            },
+            {
+              "signature": "TNAM",
+              "name": "topic",
+              "kind": "form_id",
+              "targets": [
+                "DIAL"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLCM",
+          "name": "level_modifier",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XMRC",
+          "name": "merchant_container",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XCNT",
+          "name": "item_count",
+          "kind": "i32"
+        },
+        {
+          "signature": "XRDS",
+          "name": "radius",
+          "kind": "f32"
+        },
+        {
+          "signature": "XHLP",
+          "name": "health",
+          "kind": "f32"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XCLP",
+          "name": "linked_reference_color",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XLCN",
+          "name": "persistent_location",
+          "kind": "form_id",
+          "targets": [
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XHOR",
+          "name": "horse",
+          "kind": "form_id",
+          "targets": [
+            "ACHR"
+          ]
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR",
+            "PGRE",
+            "PHZD",
+            "PMIS",
+            "PARW",
+            "PBAR",
+            "PBEA",
+            "PCON",
+            "PFLA"
+          ]
+        },
+        {
+          "signature": "XIBS",
+          "name": "xibs",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PGRE",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PHZD",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PMIS",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PARW",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PBAR",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PBEA",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PCON",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "PFLA",
+      "source": "xedit-tes5:6336-6409",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "PROJ",
+            "HAZD"
+          ]
+        },
+        {
+          "signature": "XEZN",
+          "name": "encounter_zone",
+          "kind": "form_id",
+          "targets": [
+            "ECZN"
+          ]
+        },
+        {
+          "definition": "ownership"
+        },
+        {
+          "signature": "XHTW",
+          "name": "head_tracking_weight",
+          "kind": "f32"
+        },
+        {
+          "signature": "XFVC",
+          "name": "favor_cost",
+          "kind": "f32"
+        },
+        {
+          "signature": "XPWR",
+          "definition": "reflected_water"
+        },
+        {
+          "signature": "XLKR",
+          "definition": "linked_reference"
+        },
+        {
+          "name": "activate_parents",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "XAPD",
+              "name": "flags",
+              "kind": "u8",
+              "flags": {
+                "1": "parent_activate_only"
+              }
+            },
+            {
+              "signature": "XAPR",
+              "definition": "activate_parent"
+            }
+          ]
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XEMI",
+          "name": "emittance",
+          "kind": "form_id",
+          "targets": [
+            "LIGH",
+            "REGN"
+          ]
+        },
+        {
+          "signature": "XMBR",
+          "name": "multibound",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "XIS2",
+          "name": "xis2",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "signature": "XLRT",
+          "name": "location_reference_types",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "XLRL",
+          "name": "location_reference",
+          "kind": "form_id",
+          "targets": [
+            "LCRT",
+            "LCTN"
+          ]
+        },
+        {
+          "signature": "XLOD",
+          "name": "lod",
+          "kind": "bytes"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "ACRE",
+      "source": "mudcrab-legacy:esm/binary.rs parse_refr_record; esm/exporter.rs placed type list",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "NAME",
+          "name": "base",
+          "kind": "form_id",
+          "targets": [
+            "ANY_"
+          ]
+        },
+        {
+          "signature": "XRDS",
+          "name": "radius",
+          "kind": "f32",
+          "source": "mudcrab-legacy:esm/exporter.rs insert_reference radius_override (legacy ACRE consumer contract only)"
+        },
+        {
+          "signature": "XESP",
+          "definition": "enable_parent"
+        },
+        {
+          "signature": "XSCL",
+          "name": "scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "DATA",
+          "definition": "transform"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "NPC_",
+      "source": "xedit-tes5:10863-10970",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "signature": "ACBS",
+          "name": "configuration",
+          "kind": "bytes",
+          "size": 24
+        },
+        {
+          "signature": "SNAM",
+          "name": "faction",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "faction",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "FACT"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "i8",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 5,
+              "size": 3
+            }
+          ],
+          "repeat": true,
+          "source": "xedit-common:542-548"
+        },
+        {
+          "signature": "INAM",
+          "name": "death_item",
+          "kind": "form_id",
+          "targets": [
+            "LVLI"
+          ]
+        },
+        {
+          "signature": "VTCK",
+          "name": "voice",
+          "kind": "form_id",
+          "targets": [
+            "VTYP"
+          ]
+        },
+        {
+          "signature": "TPLT",
+          "name": "template",
+          "kind": "form_id",
+          "targets": [
+            "LVLN",
+            "NPC_"
+          ]
+        },
+        {
+          "signature": "RNAM",
+          "name": "race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ]
+        },
+        {
+          "signature": "SPCT",
+          "name": "spell_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "SPLO",
+          "name": "spell",
+          "kind": "form_id",
+          "targets": [
+            "SPEL",
+            "SHOU",
+            "LVSP"
+          ],
+          "repeat": true,
+          "source": "xedit-tes5:4092-4093 shared actor-effect targets;10942 NPC uses actor effects"
+        },
+        {
+          "signature": "DEST",
+          "name": "destruction",
+          "kind": "bytes"
+        },
+        {
+          "signature": "WNAM",
+          "name": "worn_armor",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ]
+        },
+        {
+          "signature": "ANAM",
+          "name": "far_model",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ]
+        },
+        {
+          "signature": "ATKR",
+          "name": "attack_race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ]
+        },
+        {
+          "name": "attacks",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "ATKD",
+              "name": "atkd",
+              "kind": "bytes"
+            },
+            {
+              "signature": "ATKE",
+              "name": "atke",
+              "kind": "bytes"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "SPOR",
+          "name": "spectator_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ]
+        },
+        {
+          "signature": "OCOR",
+          "name": "observe_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ]
+        },
+        {
+          "signature": "GWOR",
+          "name": "guard_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ]
+        },
+        {
+          "signature": "ECOR",
+          "name": "combat_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ]
+        },
+        {
+          "signature": "PRKZ",
+          "name": "perk_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "PRKR",
+          "name": "perk",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "perk",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PERK"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "u8",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 5,
+              "size": 3
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "COCT",
+          "name": "inventory_count",
+          "kind": "u32"
+        },
+        {
+          "name": "inventory",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "CNTO",
+              "name": "inventory_item",
+              "kind": "struct",
+              "size": 8,
+              "members": [
+                {
+                  "name": "item",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "ARMO",
+                    "AMMO",
+                    "APPA",
+                    "MISC",
+                    "WEAP",
+                    "BOOK",
+                    "ALCH",
+                    "INGR",
+                    "LIGH",
+                    "KEYM",
+                    "SLGM",
+                    "SCRL",
+                    "LVLI"
+                  ]
+                },
+                {
+                  "name": "count",
+                  "kind": "i32",
+                  "offset": 4
+                }
+              ]
+            },
+            {
+              "signature": "COED",
+              "name": "inventory_extra",
+              "kind": "bytes"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "AIDT",
+          "name": "ai",
+          "kind": "bytes"
+        },
+        {
+          "signature": "PKID",
+          "name": "package",
+          "kind": "form_id",
+          "targets": [
+            "PACK"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "CNAM",
+          "name": "class",
+          "kind": "form_id",
+          "targets": [
+            "CLAS"
+          ]
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "RACE",
+      "source": "xedit-tes5:11953-12138 (movement subset)",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "WKMV",
+          "name": "walk_movement",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ]
+        },
+        {
+          "signature": "RNMV",
+          "name": "run_movement",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "MOVT",
+      "source": "xedit-tes5:10023-10042",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "MNAM",
+          "name": "name",
+          "kind": "zstring"
+        },
+        {
+          "signature": "SPED",
+          "name": "speeds",
+          "kind": "union",
+          "decider": "movement_speeds",
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "struct",
+              "size": 40,
+              "members": [
+                {
+                  "name": "left_walk",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "left_run",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "right_walk",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "right_run",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "forward_walk",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "forward_run",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "back_walk",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "back_run",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "rotate_walk",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "rotate_run",
+                  "kind": "f32",
+                  "offset": 36
+                }
+              ]
+            },
+            {
+              "name": "extended",
+              "kind": "struct",
+              "size": 44,
+              "members": [
+                {
+                  "name": "left_walk",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "left_run",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "right_walk",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "right_run",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "forward_walk",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "forward_run",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "back_walk",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "back_run",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "rotate_walk",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "rotate_run",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "rotate_moving_run",
+                  "kind": "f32",
+                  "offset": 40
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "INAM",
+          "name": "animation_thresholds",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "directional",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "movement_speed",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "rotation_speed",
+              "kind": "f32",
+              "offset": 8
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "GMST",
+      "source": "xedit-tes5:7503-7513",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "value",
+          "kind": "union",
+          "decider": "gmst_value",
+          "fields": [
+            {
+              "name": "string",
+              "kind": "lstring"
+            },
+            {
+              "name": "integer",
+              "kind": "i32"
+            },
+            {
+              "name": "float",
+              "kind": "f32"
+            },
+            {
+              "name": "boolean",
+              "kind": "u32",
+              "enum": {
+                "0": "false",
+                "1": "true"
+              }
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "WATR",
+      "source": "xedit-tes5:12853-13015",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "full_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "NNAM",
+          "name": "unused_noise",
+          "kind": "zstring",
+          "repeat": true
+        },
+        {
+          "signature": "ANAM",
+          "name": "opacity",
+          "kind": "u8"
+        },
+        {
+          "signature": "FNAM",
+          "name": "flags",
+          "kind": "u8",
+          "flags": {
+            "1": "causes_damage",
+            "8": "flowmap",
+            "16": "blend_normals"
+          }
+        },
+        {
+          "signature": "MNAM",
+          "name": "mnam",
+          "kind": "bytes"
+        },
+        {
+          "signature": "TNAM",
+          "name": "material",
+          "kind": "form_id",
+          "targets": [
+            "MATT"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "XNAM",
+          "name": "spell",
+          "kind": "form_id",
+          "targets": [
+            "SPEL"
+          ]
+        },
+        {
+          "signature": "INAM",
+          "name": "image_space",
+          "kind": "form_id",
+          "targets": [
+            "IMGS"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "unused_damage",
+          "kind": "u16"
+        },
+        {
+          "signature": "DNAM",
+          "name": "visual",
+          "kind": "union",
+          "decider": "water_visual",
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "struct",
+              "size": 228,
+              "members": [
+                {
+                  "name": "unknown_00",
+                  "kind": "bytes",
+                  "offset": 0,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_04",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_08",
+                  "kind": "bytes",
+                  "offset": 8,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_12",
+                  "kind": "bytes",
+                  "offset": 12,
+                  "size": 4
+                },
+                {
+                  "name": "sun_specular_power",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "reflectivity",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "fresnel",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "unknown_28",
+                  "kind": "bytes",
+                  "offset": 28,
+                  "size": 4
+                },
+                {
+                  "name": "fog_near",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "fog_far",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "shallow_color",
+                  "kind": "u32",
+                  "offset": 40
+                },
+                {
+                  "name": "deep_color",
+                  "kind": "u32",
+                  "offset": 44
+                },
+                {
+                  "name": "reflection_color",
+                  "kind": "u32",
+                  "offset": 48
+                },
+                {
+                  "name": "unknown_52",
+                  "kind": "bytes",
+                  "offset": 52,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_56",
+                  "kind": "bytes",
+                  "offset": 56,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_60",
+                  "kind": "bytes",
+                  "offset": 60,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_64",
+                  "kind": "bytes",
+                  "offset": 64,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_68",
+                  "kind": "bytes",
+                  "offset": 68,
+                  "size": 4
+                },
+                {
+                  "name": "displacement_size",
+                  "kind": "f32",
+                  "offset": 72
+                },
+                {
+                  "name": "displacement_force",
+                  "kind": "f32",
+                  "offset": 76
+                },
+                {
+                  "name": "displacement_velocity",
+                  "kind": "f32",
+                  "offset": 80
+                },
+                {
+                  "name": "displacement_falloff",
+                  "kind": "f32",
+                  "offset": 84
+                },
+                {
+                  "name": "displacement_dampener",
+                  "kind": "f32",
+                  "offset": 88
+                },
+                {
+                  "name": "unknown_92",
+                  "kind": "bytes",
+                  "offset": 92,
+                  "size": 4
+                },
+                {
+                  "name": "noise_falloff",
+                  "kind": "f32",
+                  "offset": 96
+                },
+                {
+                  "name": "wind_direction_1",
+                  "kind": "f32",
+                  "offset": 100
+                },
+                {
+                  "name": "wind_direction_2",
+                  "kind": "f32",
+                  "offset": 104
+                },
+                {
+                  "name": "wind_direction_3",
+                  "kind": "f32",
+                  "offset": 108
+                },
+                {
+                  "name": "wind_speed_1",
+                  "kind": "f32",
+                  "offset": 112
+                },
+                {
+                  "name": "wind_speed_2",
+                  "kind": "f32",
+                  "offset": 116
+                },
+                {
+                  "name": "wind_speed_3",
+                  "kind": "f32",
+                  "offset": 120
+                },
+                {
+                  "name": "unknown_124",
+                  "kind": "bytes",
+                  "offset": 124,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_128",
+                  "kind": "bytes",
+                  "offset": 128,
+                  "size": 4
+                },
+                {
+                  "name": "fog_amount_above",
+                  "kind": "f32",
+                  "offset": 132
+                },
+                {
+                  "name": "unknown_136",
+                  "kind": "bytes",
+                  "offset": 136,
+                  "size": 4
+                },
+                {
+                  "name": "fog_amount_under",
+                  "kind": "f32",
+                  "offset": 140
+                },
+                {
+                  "name": "fog_near_under",
+                  "kind": "f32",
+                  "offset": 144
+                },
+                {
+                  "name": "fog_far_under",
+                  "kind": "f32",
+                  "offset": 148
+                },
+                {
+                  "name": "refraction_magnitude",
+                  "kind": "f32",
+                  "offset": 152
+                },
+                {
+                  "name": "specular_power",
+                  "kind": "f32",
+                  "offset": 156
+                },
+                {
+                  "name": "unknown_160",
+                  "kind": "bytes",
+                  "offset": 160,
+                  "size": 4
+                },
+                {
+                  "name": "specular_radius",
+                  "kind": "f32",
+                  "offset": 164
+                },
+                {
+                  "name": "specular_brightness",
+                  "kind": "f32",
+                  "offset": 168
+                },
+                {
+                  "name": "uv_scale_1",
+                  "kind": "f32",
+                  "offset": 172
+                },
+                {
+                  "name": "uv_scale_2",
+                  "kind": "f32",
+                  "offset": 176
+                },
+                {
+                  "name": "uv_scale_3",
+                  "kind": "f32",
+                  "offset": 180
+                },
+                {
+                  "name": "amplitude_1",
+                  "kind": "f32",
+                  "offset": 184
+                },
+                {
+                  "name": "amplitude_2",
+                  "kind": "f32",
+                  "offset": 188
+                },
+                {
+                  "name": "amplitude_3",
+                  "kind": "f32",
+                  "offset": 192
+                },
+                {
+                  "name": "reflection_magnitude",
+                  "kind": "f32",
+                  "offset": 196
+                },
+                {
+                  "name": "sun_sparkle_magnitude",
+                  "kind": "f32",
+                  "offset": 200
+                },
+                {
+                  "name": "sun_specular_magnitude",
+                  "kind": "f32",
+                  "offset": 204
+                },
+                {
+                  "name": "reflection_depth",
+                  "kind": "f32",
+                  "offset": 208
+                },
+                {
+                  "name": "refraction_depth",
+                  "kind": "f32",
+                  "offset": 212
+                },
+                {
+                  "name": "normal_depth",
+                  "kind": "f32",
+                  "offset": 216
+                },
+                {
+                  "name": "specular_depth",
+                  "kind": "f32",
+                  "offset": 220
+                },
+                {
+                  "name": "sun_sparkle_power",
+                  "kind": "f32",
+                  "offset": 224
+                }
+              ]
+            },
+            {
+              "name": "sse",
+              "kind": "struct",
+              "size": 232,
+              "members": [
+                {
+                  "name": "unknown_00",
+                  "kind": "bytes",
+                  "offset": 0,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_04",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_08",
+                  "kind": "bytes",
+                  "offset": 8,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_12",
+                  "kind": "bytes",
+                  "offset": 12,
+                  "size": 4
+                },
+                {
+                  "name": "sun_specular_power",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "reflectivity",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "fresnel",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "unknown_28",
+                  "kind": "bytes",
+                  "offset": 28,
+                  "size": 4
+                },
+                {
+                  "name": "fog_near",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "fog_far",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "shallow_color",
+                  "kind": "u32",
+                  "offset": 40
+                },
+                {
+                  "name": "deep_color",
+                  "kind": "u32",
+                  "offset": 44
+                },
+                {
+                  "name": "reflection_color",
+                  "kind": "u32",
+                  "offset": 48
+                },
+                {
+                  "name": "unknown_52",
+                  "kind": "bytes",
+                  "offset": 52,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_56",
+                  "kind": "bytes",
+                  "offset": 56,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_60",
+                  "kind": "bytes",
+                  "offset": 60,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_64",
+                  "kind": "bytes",
+                  "offset": 64,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_68",
+                  "kind": "bytes",
+                  "offset": 68,
+                  "size": 4
+                },
+                {
+                  "name": "displacement_size",
+                  "kind": "f32",
+                  "offset": 72
+                },
+                {
+                  "name": "displacement_force",
+                  "kind": "f32",
+                  "offset": 76
+                },
+                {
+                  "name": "displacement_velocity",
+                  "kind": "f32",
+                  "offset": 80
+                },
+                {
+                  "name": "displacement_falloff",
+                  "kind": "f32",
+                  "offset": 84
+                },
+                {
+                  "name": "displacement_dampener",
+                  "kind": "f32",
+                  "offset": 88
+                },
+                {
+                  "name": "unknown_92",
+                  "kind": "bytes",
+                  "offset": 92,
+                  "size": 4
+                },
+                {
+                  "name": "noise_falloff",
+                  "kind": "f32",
+                  "offset": 96
+                },
+                {
+                  "name": "wind_direction_1",
+                  "kind": "f32",
+                  "offset": 100
+                },
+                {
+                  "name": "wind_direction_2",
+                  "kind": "f32",
+                  "offset": 104
+                },
+                {
+                  "name": "wind_direction_3",
+                  "kind": "f32",
+                  "offset": 108
+                },
+                {
+                  "name": "wind_speed_1",
+                  "kind": "f32",
+                  "offset": 112
+                },
+                {
+                  "name": "wind_speed_2",
+                  "kind": "f32",
+                  "offset": 116
+                },
+                {
+                  "name": "wind_speed_3",
+                  "kind": "f32",
+                  "offset": 120
+                },
+                {
+                  "name": "unknown_124",
+                  "kind": "bytes",
+                  "offset": 124,
+                  "size": 4
+                },
+                {
+                  "name": "unknown_128",
+                  "kind": "bytes",
+                  "offset": 128,
+                  "size": 4
+                },
+                {
+                  "name": "fog_amount_above",
+                  "kind": "f32",
+                  "offset": 132
+                },
+                {
+                  "name": "unknown_136",
+                  "kind": "bytes",
+                  "offset": 136,
+                  "size": 4
+                },
+                {
+                  "name": "fog_amount_under",
+                  "kind": "f32",
+                  "offset": 140
+                },
+                {
+                  "name": "fog_near_under",
+                  "kind": "f32",
+                  "offset": 144
+                },
+                {
+                  "name": "fog_far_under",
+                  "kind": "f32",
+                  "offset": 148
+                },
+                {
+                  "name": "refraction_magnitude",
+                  "kind": "f32",
+                  "offset": 152
+                },
+                {
+                  "name": "specular_power",
+                  "kind": "f32",
+                  "offset": 156
+                },
+                {
+                  "name": "unknown_160",
+                  "kind": "bytes",
+                  "offset": 160,
+                  "size": 4
+                },
+                {
+                  "name": "specular_radius",
+                  "kind": "f32",
+                  "offset": 164
+                },
+                {
+                  "name": "specular_brightness",
+                  "kind": "f32",
+                  "offset": 168
+                },
+                {
+                  "name": "uv_scale_1",
+                  "kind": "f32",
+                  "offset": 172
+                },
+                {
+                  "name": "uv_scale_2",
+                  "kind": "f32",
+                  "offset": 176
+                },
+                {
+                  "name": "uv_scale_3",
+                  "kind": "f32",
+                  "offset": 180
+                },
+                {
+                  "name": "amplitude_1",
+                  "kind": "f32",
+                  "offset": 184
+                },
+                {
+                  "name": "amplitude_2",
+                  "kind": "f32",
+                  "offset": 188
+                },
+                {
+                  "name": "amplitude_3",
+                  "kind": "f32",
+                  "offset": 192
+                },
+                {
+                  "name": "reflection_magnitude",
+                  "kind": "f32",
+                  "offset": 196
+                },
+                {
+                  "name": "sun_sparkle_magnitude",
+                  "kind": "f32",
+                  "offset": 200
+                },
+                {
+                  "name": "sun_specular_magnitude",
+                  "kind": "f32",
+                  "offset": 204
+                },
+                {
+                  "name": "reflection_depth",
+                  "kind": "f32",
+                  "offset": 208
+                },
+                {
+                  "name": "refraction_depth",
+                  "kind": "f32",
+                  "offset": 212
+                },
+                {
+                  "name": "normal_depth",
+                  "kind": "f32",
+                  "offset": 216
+                },
+                {
+                  "name": "specular_depth",
+                  "kind": "f32",
+                  "offset": 220
+                },
+                {
+                  "name": "sun_sparkle_power",
+                  "kind": "f32",
+                  "offset": 224
+                },
+                {
+                  "name": "flowmap_scale",
+                  "kind": "f32",
+                  "offset": 228
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "GNAM",
+          "name": "gnam",
+          "kind": "bytes"
+        },
+        {
+          "signature": "NAM0",
+          "name": "linear_velocity",
+          "kind": "bytes",
+          "size": 12
+        },
+        {
+          "signature": "NAM1",
+          "name": "angular_velocity",
+          "kind": "bytes",
+          "size": 12
+        },
+        {
+          "signature": "NAM2",
+          "name": "noise_texture_1",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM3",
+          "name": "noise_texture_2",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM4",
+          "name": "noise_texture_3",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM5",
+          "name": "flow_normals",
+          "kind": "zstring"
+        }
+      ],
+      "allow_unordered": false
+    }
+  ],
+  "common_fields": [
+    {
+      "signature": "VMAD",
+      "definition": "vmad"
+    }
+  ]
+}

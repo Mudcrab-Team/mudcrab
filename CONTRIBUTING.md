@@ -56,6 +56,15 @@ cd mudcrab
 cargo check --workspace
 ```
 
+When Cargo runs inside this workspace, desktop Windows x64 MSVC builds select SQLite's private
+heap through `CFLAGS_x86_64_pc_windows_msvc`. This keeps database allocation
+separate from decoded records without changing SQL or transaction safety. Other
+targets keep their existing allocator. These SQLite-prefixed defines also reach
+other C dependencies built for that Windows target. If you supply your own
+target-specific CFLAGS, retain `-DSQLITE_WIN32_MALLOC=1 -DSQLITE_WIN32_HEAP_CREATE=1`;
+Cargo preserves environment overrides, including
+the higher-priority hyphenated target spelling understood by `cc`.
+
 ### 4. No Game Installed? Generate Synthetic Assets
 ```bash
 cargo run -p dummy-content -- gen Data

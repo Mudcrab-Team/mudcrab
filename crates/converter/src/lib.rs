@@ -15,10 +15,12 @@ pub mod mesh;
 mod metadata;
 pub mod pipeline;
 pub mod progress;
+pub mod records;
 pub mod repair;
 pub mod script;
 pub mod texture;
 pub mod texture_gpu;
+mod texture_ktx2;
 
 #[cfg(test)]
 mod test_strategies;

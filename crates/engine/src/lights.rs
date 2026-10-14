@@ -109,7 +109,22 @@ pub const LIGHT_FLAG_NEGATIVE: u32 = 0x0000_0004;
 /// [`LIGHT_EXPOSURE`] names is the ratio a rendered surface really sees. A run that lights the
 /// world differently - the fixture paths of `crate::app` each insert their own ambient - is not the
 /// world this scale is written for, and the value has to be re-derived if per-space ambient lands.
-pub const AMBIENT_ILLUMINANCE: f32 = 160.0;
+///
+/// It is derived, not chosen: Skyrim lights a surface with `albedo * (ambient + sunlight * 2.8 *
+/// NdotL)`, and Bevy's sun adds `albedo * illuminance / PI * NdotL` against an ambient of
+/// `albedo * brightness`, so matching the two ratios gives `brightness = illuminance / (PI * 2.8)`.
+/// The sun and ambient colours carry the weather's own hues (`crate::sky::WeatherLighting`), so
+/// this number sets only their relative level.
+pub const AMBIENT_ILLUMINANCE: f32 = SUN_ILLUMINANCE / (core::f32::consts::PI * SUNLIGHT_SCALE);
+
+/// The sun's illuminance in the world path, in lux. With the scene's EV100 of 9.7 this puts a
+/// white surface facing the sun at about 3.8 in linear radiance before tone mapping.
+pub const SUN_ILLUMINANCE: f32 = 12_000.0;
+
+/// How much brighter than the ambient cube Skyrim's `SunlightScale` makes the sun's colour
+/// (the engine's lighting constant, 2.8; see `docs/research/skyrim-lighting-regression-recovery-
+/// 20261010.md`, "SunlightScale remains 2.8").
+pub const SUNLIGHT_SCALE: f32 = 2.8;
 
 /// How many times the ambient a converted light puts on a surface at half its own radius. This one
 /// constant is the brightness knob for every converted light.
@@ -382,6 +397,18 @@ mod tests {
         let window = (1.0 - factor * factor).max(0.0);
         light.intensity * window * window
             / (4.0 * core::f32::consts::PI * core::f32::consts::PI * distance * distance)
+    }
+
+    /// The world's ambient is not a tuned number: Bevy's sun puts `illuminance / PI` on a surface
+    /// facing it and the ambient puts `AMBIENT_ILLUMINANCE`, and Skyrim's puts `SUNLIGHT_SCALE`
+    /// times as much sunlight as ambient, so the two ratios have to agree.
+    #[test]
+    fn the_ambient_keeps_skyrims_sun_to_ambient_ratio() {
+        let bevy_ratio = SUN_ILLUMINANCE / core::f32::consts::PI / AMBIENT_ILLUMINANCE;
+        assert!(
+            (bevy_ratio - SUNLIGHT_SCALE).abs() < 1.0e-3,
+            "sun to ambient is {bevy_ratio}, Skyrim's sunlight scale is {SUNLIGHT_SCALE}"
+        );
     }
 
     /// Relative luminance of a colour, the same Rec. 709 weights the pixels of a render are

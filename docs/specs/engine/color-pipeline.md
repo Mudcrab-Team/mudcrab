@@ -18,16 +18,135 @@ Code baseline: `a9f2310ccfc691eebb97fde18df1e8d334b7d744`; Bevy 0.19. The source
 | `shaders/terrain.wgsl` | Linear layer samples and normal data → weighted material response → PBR lighting | Authored normal conventions, layer semantics and specular response remain separate material probes. |
 | Bevy `pbr_functions.wgsl` | Lights + material → exposure-scaled linear RGB | `Exposure.ev100` uses Bevy's `2^-EV100 / 1.2`. Current 9.7 is pinned from the prior default, not a Skyrim value. Emission's exposure weight is material-owned; default emission is exposure-independent. |
 | `sky.rs`, `shaders/sky.wgsl` | Encoded weather-row mixing → one sRGB decode → linear palette brightness | Existing palette is a fixed clear-day approximation. Sky/fog palette values already occupy the composition domain; do not multiply them by camera exposure a second time. L2 owns authored state and its units. |
-| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Existing exponential/Fog Far approximation stays explicit. Interior fog removal is current behavior, not complete Skyrim interior semantics. L2 owns the correction. |
+| `DistanceFog` | Exposed surface RGB + linear fog palette → fogged linear RGB | Existing Bevy visibility-based atmospheric fog toward Fog Far stays explicit. Interior fog removal is current behavior, not complete Skyrim interior semantics. L2 owns the correction. |
 | `render.rs` reflection camera | Scene at main-view exposure → `Rgba16Float`, tone mapping disabled | Floating linear target preserves values above 1. Reflection gate copies exposure even while inactive. Existing reflected layers and geometry selection remain unchanged. |
 | `shaders/water.wgsl` | Exposed water lighting + exposed linear reflection → blend → surface fog | Reflection receives neither a second lighting evaluation nor a display transform. Existing Fresnel/waves and reflection coverage are approximations. |
-| `color_pipeline.rs` / scene cameras | HDR composition → one full-view `TonyMcMapface` transform → display encoding | Includes sky, background, fog, opaque and transparent surfaces. Tone curve remains a pinned diagnostic baseline pending IMGS evidence; L4 owns adaptation/record-driven image-space behavior. |
+| `color_pipeline.rs` / scene cameras | HDR composition → `TonyMcMapface` → Bevy linear `post_saturation` → sRGB-domain cinematic post pass → display encoding | Experimental clear-day grade uses reported `ISSkyrimClearDAY` (0x00012F88, `Update.esm` winner) CNAM 1.5/1.135/1.4 and TNAM 0.42 toward 0.894/0.839/0.773. Brightness/contrast use an artistic sRGB pivot of 0.18. Tone curve and EV100 remain pinned Bevy baselines; `HNAM` remains unapplied. L4 owns adaptation and record-driven behavior. |
 
-The previous non-HDR mesh path tone-mapped in each material shader. The custom sky shader bypassed that operation, and reflection RGB passed through tone mapping in both the reflection and water passes. HDR composition moves the transform after composition without adding a new shader implementation. It changes images and consumes more render-target memory; target-hardware performance remains an acceptance requirement.
+The previous non-HDR mesh path tone-mapped in each material shader. The custom sky shader bypassed that operation, and reflection RGB passed through tone mapping in both the reflection and water passes. HDR composition moves the tone transform after composition. The experimental cinematic grade adds a fullscreen shader pass. It changes images and consumes more render-target memory; target-hardware performance remains an acceptance requirement.
+
+## Experimental cinematic grade limits
+
+The sRGB-domain brightness/contrast/tint pass preserves the Riverwood appearance
+approved during local testing. It is an artistic interpretation, not verified
+Skyrim shader parity. Record-to-shader slot writers, adapted pivot, native tone
+curve, final transfer and retail pass order remain unresolved. Bevy saturation
+runs in linear RGB with slightly different luminance weights from the custom tint
+pass. Negative input and out-of-gamut output are clipped; alpha is preserved and
+retail alpha/bloom-feed grading is omitted. `HNAM` is recorded but unapplied.
+
+The shared default applies the clear-day grade to interiors and diagnostic
+fixtures too; no weather/interior image-space selection exists yet. All apps using
+these camera settings must register `SkyrimCinematicPostPlugin`. Cameras must keep
+`CompositingSpace::Linear`; overriding it with sRGB or Oklab is unsupported. Ordering
+relative to AA and CAS remains unvalidated. Reflection currently incurs a disabled
+pass-through copy. The color composition probe's `--legacy-output` path disables
+both grades to preserve its original ungraded baseline. Probe reports identify the
+grade and domains; material probes now register the full post pass.
+
+## A/B controls and matched captures
+
+### Sleeping Giant Inn snapshot experiment
+
+`SceneGrade snapshot-srgb` and `SceneGrade snapshot-linear` reproduce the rounded
+Photo Mode UI values supplied on 2026-10-13: saturation 1.66, brightness 1.15,
+contrast 1.50, tint amount 0.56, and tint RGB `(0.88, 0.81, 0.72)`. Photo Mode
+lists the tint sliders as Red, Blue, Green; the experiment stores RGB in normal order.
+These are one scene's current base-grade values, not universal Skyrim defaults.
+
+Both modes disable Bevy post-saturation and evaluate saturation followed by tint
+in the cinematic post pass. The original luminance feeds both operations; negative
+channels produced by saturation are retained until tint, brightness, and contrast
+have run, then the output is clipped. `snapshot-srgb` operates on sRGB-encoded
+post-tonemap values; `snapshot-linear` operates directly on linear post-tonemap
+values. Alpha passes through and reflections remain ungraded.
+
+The modes keep the selected sky preset, exposure, TonyMcMapface, and the fixed 0.18
+contrast pivot. They do not reproduce Skyrim's native tone curve, adaptation,
+bloom, final gamma, or modifier composition. The UI values are rounded, and the
+correct native sampled domain remains a capture gate. These are controlled domain
+experiments rather than a full retail renderer port.
+
+Use `--color-grade snapshot-srgb|snapshot-linear` at startup. Return to
+`SceneGrade full` to restore Vivid or Cool Gray's existing grading. `ScenePreset`
+remains an independent sky/preset selector. Both presets and the startup defaults
+retain their existing values. Shot receipts include the resolved grading values,
+which saturation stage is active, and the post-pass domain flag. For a small GPU
+composition check, run `color_pipeline_probe --gray --color-grade snapshot-srgb`
+or `snapshot-linear` with a fresh `--output` directory.
+
+### Presets and diagnostic stages
+
+For a visible tuning session, `--start-shot <file>` seeds the world camera from a
+validated file containing one exterior pose. It sets the streaming cell, worldspace,
+rotation and horizontal FOV without selecting the automated shots runner. Add
+`--stdin-console` to control that process through its stdin using the same console
+commands as the backtick UI. This bridge is opt-in and has no network listener.
+`SceneState` reports grading and streaming/upload readiness. `SceneShot <png-path>`
+captures the visible window only after readiness checks pass and writes a JSON
+state receipt alongside the image. It refuses existing output paths. The receipt
+records grading state at request and binds camera/readiness evidence to the captured
+render frame; use `--shots` for strict automated pose and grading evidence. Existing interactive mouse and movement controls
+remain available unless an automated option such as `--acceptance-screenshot`
+selects a stationary camera session.
+
+`--no-render-diagnostics` disables Bevy's GPU timing and pipeline-statistics queries
+for troubleshooting Metal counter-buffer allocation failures. It preserves the
+scene settings, CPU frame timing, streaming gauges, and capture-readiness checks.
+GPU timing evidence is unavailable in runs using this option.
+
+Two named visual presets preserve the approved look while allowing experiments:
+
+| Preset | Bevy post-saturation | Sky upper / lower / horizon (sRGB bytes) |
+|---|---|---|
+| Vivid (default) | 1.5 | `(21,77,117)` / `(60,135,183)` / `(125,163,183)` |
+| Cool Gray | 1.25 | `(178,187,198)` / `(194,202,209)` / `(207,214,220)` |
+
+Vivid retains the existing clear-day configuration exactly. Cool Gray uses a light,
+slightly blue gray gradient and lower saturation. Both retain brightness 1.135,
+contrast 1.4, tint amount 0.42 and its existing RGB, EV100 9.7, and TonyMcMapface.
+Lights, shadows, fog colors, fog density and camera pose remain unchanged. Sky
+colors are authored inputs before tone mapping and grading, not final display RGB.
+
+Run `ScenePreset vivid`, `ScenePreset cool-gray`, or `ScenePreset toggle` in the
+backtick console. With no argument, `ScenePreset` reports the active preset and
+diagnostic grade mode. Switching is immediate and reversible. Use
+`--visual-preset vivid|cool-gray` at startup; Vivid remains the default. Preset
+selection does not change the independent `SceneGrade` mode below. Use full
+grading to see each complete look. Presets are built into the engine; console
+selection lasts for the current process. Shot receipts record `visual_preset`
+and `preset_saturation` alongside the diagnostic grade mode.
+
+Open the backtick console and run `SceneGrade off`, `SceneGrade saturation` or
+`SceneGrade full`. With no argument, `SceneGrade` reports the current mode. `off`
+disables both grading stages; `saturation` enables only Bevy post-saturation;
+`full` enables the experimental sRGB brightness/contrast/tint pass too. Exposure,
+tone mapping, camera pose, lighting and fog remain fixed. Reflections stay ungraded,
+and newly spawned scene cameras inherit the current mode. Full remains the default.
+
+Use `--color-grade off|saturation|full` for startup selection. For a repeatable
+three-mode capture, run:
+
+```bash
+python3 scripts/capture_color_grade.py \
+  --engine target/debug/engine \
+  --assets /absolute/path/to/converted/assets \
+  --output /absolute/path/to/new/capture-directory
+```
+
+The script uses `crates/engine/tests/fixtures/color-grade-riverwood-shots.json`:
+three exact 1920×1080 Riverwood poses covering facades, roofs, shaded surfaces and
+distant geometry. It runs each mode sequentially with the same assets, lighting,
+fog, stream radius and poses. `--shots` pins water animation to 1.0 seconds; normal
+interactive runs and matched movement routes keep animated water. Capture receipts
+record grade selection and fixed water time. The script rejects failed runs,
+timeout captures, missing receipts and inconsistent poses before accepting a set.
+PNG files and logs stay outside the repository; this is Mudcrab A/B evidence,
+not matched retail Skyrim or a performance benchmark.
 
 ## Invariants
 
-- V1: Every production scene camera and existing visual fixture uses explicit `SceneColorPipeline`: HDR, EV100 9.7, TonyMcMapface. These values remain provisional; defaults are not evidence of vanilla parity.
+- V1: Production scene cameras and visual fixtures use explicit `SceneColorPipeline`: HDR, EV100 9.7, TonyMcMapface, linear compositing, Bevy post-saturation and the registered cinematic post plugin. Reflection disables both grades. These settings are experimental; defaults are not evidence of vanilla parity.
 - V2: Reflection storage preserves linear values above 1; no tone map or sRGB target view before water sampling. Reflection exposure matches the main camera before rendering, including after exposure changes while water is invisible. Missing reflection exposure ! restore before rendering; pose/visibility updates continue.
 - V3: Sky, unlit mesh, fully fogged mesh, terrain emission and unit-reflecting water given equal composition-domain RGB produce matching output within 2/255 per channel. Exterior includes sky; interior has a black background. Test neutral gray and saturated HDR inputs.
 - V4: Diagnostic inputs, camera and output settings, samples and verdict are recorded. Probe failure returns a nonzero status; stale reports are removed at startup. Synthetic consistency is not retail parity.
@@ -39,7 +158,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 - V9: NIF glossiness exponent → bounded monotonic `(2 / (n + 2))^0.25` perceptual roughness; GGX lobe approximation, not exact Skyrim BRDF.
 - V10: Specular flag off or strength zero → explicit zero glTF factor. Enabled tangent normals → shared linear normal-alpha mask; model-space normals excluded. glTF specular factor ∈ [0,1]; only tagged loaded masks receive Bevy 0.19 compensation; generic glTF unchanged. F0 still squares scalar/mask inputs; native Skyrim intensity/BRDF parity remains gap.
-- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Current producer 24 combines native BC textures, emission/specular and source-surface fixes. Rebuild all legacy GLB/KTX2/world outputs from schemas 12–23; retain only source/configuration/output-verified scripts/archive ingestion. Exact producer 24 required for staged meshes/textures; encoder mode and GPU quality participate in configuration identity. Runtime/launcher accept complete converter schemas 15–24 and world schemas 3–7. Schema 5 grass worlds need no LOD tables.
+- V11: Pruning/remapping ! both specular extension textures; removed mask → unchanged bounded factor and no native compensation. Current producer 26 combines native BC textures, emission/specular, source-surface fixes and corrected TXST slots. Rebuild all legacy GLB/KTX2/world outputs from schemas 12–23; producer 24 rebuilds KTX2/world outputs while explicitly compatible GLBs remain reusable with source/dependency/configuration/output proof. Verified unchanged scripts/archive ingestion remain reusable. Exact producer 26 required for staged meshes/textures; encoder mode and GPU quality participate in configuration identity. Runtime/launcher accept complete converter schemas 15–26 and world schemas 3–9. Schema 5 grass worlds need no LOD tables. Metadata-only retained textures preserve original producer/configuration and require normal conversion to repair old encoding.
 - V12: Scene-only glTF loads ! reach and retain recursively loaded state after unused subassets release. Native material override retains stock hook's recorded source dependency; scene cloning preserves source and native handles. Probe ! no root-glTF or explicit material loads that mask dependency lifetime failures.
 
 - V13: Converted tangent-space NIF normals ! DirectX Y convention exactly once at native material construction; generic glTF/model-space maps unchanged. Preserve linear RGB & source alpha. ±X/±Y/asymmetric GPU swatches ! match independent geometric normals ≤2/255; legacy no-flip control ! fail.
@@ -70,7 +189,7 @@ The previous non-HDR mesh path tone-mapped in each material shader. The custom s
 
 ## Static emission publication (historical schema-17 slice)
 
-Historical packages and probes retain their original producer identities. Current producer 24 regeneration and compatibility are recorded in V11.
+Historical packages and probes retain their original producer identities. Current producer 26 regeneration and compatibility are recorded in V11.
 
 [Emission issue #82](https://github.com/Mudcrab-Team/mudcrab/issues/82): `Own_Emit` declares own emittance; `Glow_Map` declares third-slot glow (`vendor/project-wormhole-nif/src/nif_flags.rs`). Glow shader type also permits slot 2. Own_Emit alone retains slot 2 as unclassified source data; no emissive texture sampling.
 
@@ -80,7 +199,7 @@ Signed NIF tints remain valid. Negative channels retain previous glTF lower-clam
 
 `material_emission_probe --output <dir> [--interior] [--legacy-emission]`: converter-published synthetic NIF contracts → glTF/KTX2 → Bevy loader → GPU swatches. Nine cases: zero, dim, unit, HDR, dim HDR, black glow, untextured HDR, Own_Emit atlas, signed tint. Loaded factors checked against authored energy; glow view ! `Rgba8UnormSrgb`. Converted swatches compared with independently computed material RGB at tolerance 2/255; zero cases ! black, other references ! visible. 800×900, orthographic camera `(0,0,10)`, no lights/ambient/fog/dither/MSAA, pinned scene tone map/exposure. Interior/exterior here change diagnostic background only; no authored scene parity claim. Synthetic contract publication ≠ full NIF-file parse coverage. `--legacy-emission` restores old energy/eligibility defects inside probe and ! fail with exit 1. Every run records PNG, JSON, generated glTF/KTX2; removes stale verdicts before startup.
 
-Historical emission migration (schema 17): schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Current runtime/launcher accept complete converter schemas 15–24 and world database schemas 3–7; cell-cache version unchanged.
+Historical emission migration (schema 17): schemas 12–16 retain verified non-GLB entries/archive ingestion only when source and original configuration hash match; GLBs/world data rebuilt. Configuration changes still invalidate cache. Stage journal schema check rejects old staged GLBs. Current runtime/launcher accept complete converter schemas 15–26 and world database schemas 3–9; cell-cache version unchanged.
 
 For testing, reconvert to separate output directory with converter built from this branch, then run matching engine against that directory. Existing packs remain valid in engine but retain old emission until reconverted. Preserve old pack for rollback; older #137 engine rejects schema 17, so use new engine for new pack. Retail reconversion ! isolated matching package; delivery evidence recorded after successful conversion/startup.
 
@@ -137,15 +256,17 @@ RX 6700 XT / RADV NAVI22 / Mesa 26.2.2: final exterior/interior probes pass, pai
 
 Evidence: `/home/dev/Projects/mudcrab-lighting-specular-evidence/riverwood-comparison/{before-matched.png,after-candidate.png,roof-comparison.png,metrics.json}`, `roof-material-audit.json`, final scene-only probe JSON. Before/after compare #139 versus #141 Mudcrab; blue wash, remaining lighting work, native BRDF/model-space gaps remain. Test-profile 20-second smoke benchmarks pass their configured gates; no release performance or vanilla Skyrim parity acceptance.
 
-## Source material completion (historical schema 19; current producer 24)
+## Source material completion (historical schema 19; current producer 26)
 
 `NifMaterialPlugin` extends existing native glTF hook: retain source dependency,
 apply tagged normal Y once, preserve mask compensation, apply common native UV
 transform even without diffuse. Generic glTF remains unchanged. Alias identity
 includes transfer space and S/T clamp mode so shared image loads cannot overwrite
 another material's sampler. UV transform remains per material. Historical schema 19 rebuilt GLBs and reused
-then-compatible nonmesh outputs. Current producer 24 rebuilds legacy meshes and
-textures, including schema 23, and retains only verified scripts/archive ingestion.
+then-compatible nonmesh outputs. Current producer 26 rebuilds legacy meshes and
+textures through schema 23. Producer 24 rebuilds all textures but retains explicitly
+compatible GLBs with source/dependency/configuration/output proof. Verified unchanged
+scripts/archive ingestion remain reusable.
 
 Riverwood gate source basis: packed NIF tangent follows texture V; split tangent
 components follow U. Bevy-generated tangents negate Mikk handedness. Native shader
@@ -334,3 +455,5 @@ B29|2026-10-03|Lighting multiplier max(0) hid NaN and negative infinity before m
 B30|2026-10-03|Static lighting multiplier clamped before metadata; mistaken attribution to controller endpoints|V8; preserve raw signed multiplier; clamp only glTF projection; metadata also for nonnegative tint
 B31|2026-10-03|Reference-shot prose omits existing failure counters from settle predicate|Describe zero new failures and failed timeout capture; existing shot-settling tests, no new invariant
 B32|2026-10-03|Emission migration prose retained latest-only launcher requirement after shared compatibility range landed|Align prose with existing 15–19 readiness gate and schema-range tests; documentation-only, no new invariant
+
+Camera-mod research and remaining native calibration gates are recorded in [Skyrim camera comparison](skyrim-camera-comparison.md).

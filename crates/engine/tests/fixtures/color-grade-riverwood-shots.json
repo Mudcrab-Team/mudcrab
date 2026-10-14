@@ -1,0 +1,45 @@
+{
+  "width": 1920,
+  "height": 1080,
+  "shots": [
+    {
+      "name": "riverwood-terrace",
+      "worldspace_id": 60,
+      "position": [
+        23400.0,
+        -47100.0,
+        400.0
+      ],
+      "yaw": 315.0,
+      "pitch": 7.0,
+      "hfov": 75.0,
+      "note": "Village facade, shaded wood, terrain and distant geometry."
+    },
+    {
+      "name": "riverwood-street",
+      "worldspace_id": 60,
+      "position": [
+        21900.0,
+        -46400.0,
+        20.0
+      ],
+      "yaw": 325.0,
+      "pitch": 0.0,
+      "hfov": 80.0,
+      "note": "Ground-level lane with stone, ivy and cutout foliage."
+    },
+    {
+      "name": "riverwood-material-closeup",
+      "worldspace_id": 60,
+      "position": [
+        22200.0,
+        -46600.0,
+        160.0
+      ],
+      "yaw": 350.0,
+      "pitch": 0.0,
+      "hfov": 80.0,
+      "note": "Grazing farmhouse side wall for wood and stone normal-map review."
+    }
+  ]
+}
