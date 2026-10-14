@@ -2381,8 +2381,10 @@ pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -
                     .and_then(|suffix| suffix.chars().next())
                     .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
         })
+        // The exact stem is the longest possible match, so one rule covers both: the
+        // plugin owning the archive is the longest match, the earliest on a tie.
+        .max_by_key(|(index, plugin)| (plugin.len(), std::cmp::Reverse(*index)))
         .map(|(index, _)| index)
-        .next()
 }
 
 fn extension(path: &Path, expected: &[&str]) -> bool {
@@ -4658,6 +4660,48 @@ mod tests {
                 PathBuf::from("Update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
             ]
+        );
+    }
+
+    #[test]
+    fn archive_belongs_to_its_exact_plugin_not_the_first_prefix() {
+        let plugins = vec![
+            PathBuf::from("Foo.esp"),
+            PathBuf::from("Another.esp"),
+            PathBuf::from("Foo - Bar.esp"),
+        ];
+        // The exact stem wins over the earlier plugin whose name is only a prefix.
+        assert_eq!(
+            archive_load_order_priority(Path::new("Foo - Bar.bsa"), &plugins),
+            Some(2)
+        );
+        // With no exact plugin, the longest prefix wins.
+        assert_eq!(
+            archive_load_order_priority(Path::new("Foo - Bar - Textures.bsa"), &plugins),
+            Some(2)
+        );
+        // The existing separator rules still give a plain suffix to its plugin.
+        assert_eq!(
+            archive_load_order_priority(Path::new("Foo - Textures.bsa"), &plugins),
+            Some(0)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Foobar.bsa"), &plugins),
+            None
+        );
+        // Two plugins with the same stem tie; the earlier one in load order wins.
+        let same_stem = vec![PathBuf::from("Foo.esp"), PathBuf::from("Foo.esm")];
+        assert_eq!(
+            archive_load_order_priority(Path::new("Foo.bsa"), &same_stem),
+            Some(0)
+        );
+
+        let mut archives = vec![PathBuf::from("Another.bsa"), PathBuf::from("Foo - Bar.bsa")];
+        sort_archives_by_load_order(&mut archives, &plugins);
+        // Another.bsa loads before Foo - Bar.bsa, so Foo - Bar.bsa wins an overlap.
+        assert_eq!(
+            archives,
+            vec![PathBuf::from("Another.bsa"), PathBuf::from("Foo - Bar.bsa")]
         );
     }
 
