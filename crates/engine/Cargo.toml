@@ -18,6 +18,12 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
+# The LOD chunk checks hash every chunk on load. Without `asm`, sha2 0.10 runs its portable
+# SHA-256 on aarch64 even where the CPU has the SHA-2 instructions; with it, it detects them at run
+# time. `asm` also pulls in `sha2-asm`, which does not build with MSVC, so only Apple Silicon asks.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
