@@ -1,10 +1,16 @@
 use crate::{
     config::EngineConfig,
     pacing::{PacingReport, PacingTracker},
-    profiling::{MetricSummary, ProfilingState, SystemMetadata, summarize},
+    profiling::{MetricSummary, ProfilingState, SystemMetadata, reconcile_scene, summarize},
     render::RendererMetrics,
     render_timing::{PipelineActivity, RenderTimingPlugin, RenderTimings},
-    streaming::StreamingMetrics,
+    streaming::{RenderOrigin, StreamingMetrics},
+    streaming_gpu_metrics::StreamingGpuMetricsBridge,
+    streaming_trace::{
+        BenchmarkWindow, CameraMotion, CameraObservation, StreamingBenchmarkRouteSnapshot,
+        StreamingFrameSample,
+    },
+    world::components::{CELL_SIZE, StreamingCamera},
 };
 use bevy::{
     diagnostic::{
@@ -12,6 +18,7 @@ use bevy::{
         SystemInformationDiagnosticsPlugin,
     },
     prelude::*,
+    world_serialization::WorldAsset,
 };
 use serde::Serialize;
 use std::{
@@ -34,6 +41,13 @@ impl Plugin for AcceptanceMetricsPlugin {
                 Last,
                 collect_and_finish.after(crate::render_timing::end_main_world),
             );
+        if app
+            .world()
+            .get_resource::<EngineConfig>()
+            .is_some_and(|config| config.profile_output_dir.is_some())
+        {
+            app.add_systems(Last, sample_streaming_trace.before(collect_and_finish));
+        }
         let measures_pacing = app
             .world()
             .get_resource::<EngineConfig>()
@@ -64,6 +78,199 @@ struct BenchmarkSamples {
     finished: bool,
 }
 
+fn benchmark_window(config: &EngineConfig, samples: &BenchmarkSamples) -> BenchmarkWindow {
+    if config.benchmark_frames.is_none() && config.benchmark_duration_secs.is_none() {
+        BenchmarkWindow::OutsideBenchmark
+    } else if samples.measurement_complete {
+        BenchmarkWindow::Settlement
+    } else if samples.frames_seen < config.benchmark_warmup_frames {
+        BenchmarkWindow::Warmup
+    } else {
+        BenchmarkWindow::Measured
+    }
+}
+
+fn route_snapshot(
+    route: &crate::app::StreamingBenchmarkRoute,
+    elapsed_ms: f64,
+) -> StreamingBenchmarkRouteSnapshot {
+    use crate::app::StreamingBenchmarkPhase;
+    let offset_ms = elapsed_ms - route.latest_real_seconds * 1000.0;
+    let timestamp = |seconds: f64| offset_ms + seconds * 1000.0;
+    StreamingBenchmarkRouteSnapshot {
+        phase: match route.phase {
+            StreamingBenchmarkPhase::Waiting => "waiting",
+            StreamingBenchmarkPhase::Moving => "moving",
+            StreamingBenchmarkPhase::Tail => "tail",
+            StreamingBenchmarkPhase::Finished => "finished",
+        },
+        elapsed_ms,
+        real_elapsed_ms: route.latest_real_seconds * 1000.0,
+        cpu_settled_elapsed_ms: route.cpu_settled_real_seconds.map(timestamp),
+        movement_started_elapsed_ms: route.movement_started_real_seconds.map(timestamp),
+        movement_finished_elapsed_ms: route.movement_finished_real_seconds.map(timestamp),
+        tail_finished_elapsed_ms: route.tail_finished_real_seconds.map(timestamp),
+        route_distance_units: route.route_distance_units,
+    }
+}
+
+fn route_window(route: &crate::app::StreamingBenchmarkRoute) -> BenchmarkWindow {
+    use crate::app::StreamingBenchmarkPhase;
+    match route.phase {
+        StreamingBenchmarkPhase::Waiting => BenchmarkWindow::Warmup,
+        StreamingBenchmarkPhase::Moving => BenchmarkWindow::Measured,
+        StreamingBenchmarkPhase::Tail
+            if route.movement_started_real_seconds == route.movement_finished_real_seconds =>
+        {
+            BenchmarkWindow::Measured
+        }
+        StreamingBenchmarkPhase::Tail | StreamingBenchmarkPhase::Finished => {
+            BenchmarkWindow::Settlement
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PreviousCamera {
+    entity: Entity,
+    worldspace_id: u32,
+    position: [f64; 3],
+    rotation: Quat,
+}
+
+fn observe_camera(
+    entity: Entity,
+    transform: &GlobalTransform,
+    worldspace_id: u32,
+    origin: IVec2,
+    previous: &mut Option<PreviousCamera>,
+) -> CameraObservation {
+    let local = transform.translation();
+    let position = [
+        f64::from(local.x) + f64::from(origin.x) * f64::from(CELL_SIZE),
+        f64::from(local.y),
+        f64::from(local.z) - f64::from(origin.y) * f64::from(CELL_SIZE),
+    ];
+    let rotation = transform.rotation();
+    let motion = match previous {
+        Some(last) if last.entity == entity && last.worldspace_id == worldspace_id => {
+            let translated = position
+                .iter()
+                .zip(last.position)
+                .any(|(current, prior)| (current - prior).abs() > 0.001);
+            let rotated = rotation.dot(last.rotation).abs() < 1.0 - 1.0e-6;
+            match (translated, rotated) {
+                (false, false) => CameraMotion::Stationary,
+                (true, false) => CameraMotion::Translated,
+                (false, true) => CameraMotion::Rotated,
+                (true, true) => CameraMotion::TranslatedAndRotated,
+            }
+        }
+        _ => CameraMotion::Unavailable,
+    };
+    *previous = Some(PreviousCamera {
+        entity,
+        worldspace_id,
+        position,
+        rotation,
+    });
+    CameraObservation {
+        worldspace_id,
+        render_origin_grid: [origin.x, origin.y],
+        world_position: position,
+        motion,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sample_streaming_trace(
+    config: Res<EngineConfig>,
+    samples: Res<BenchmarkSamples>,
+    diagnostics: Res<DiagnosticsStore>,
+    streaming: Option<Res<StreamingMetrics>>,
+    admission: Option<Res<crate::streaming::admission::SceneAdmission>>,
+    bridge: Option<Res<StreamingGpuMetricsBridge>>,
+    server: Option<Res<AssetServer>>,
+    mut events: MessageReader<AssetEvent<WorldAsset>>,
+    cameras: Query<(Entity, &GlobalTransform), With<StreamingCamera>>,
+    origin: Option<Res<RenderOrigin>>,
+    mut previous_camera: Local<Option<PreviousCamera>>,
+    mut pending_ids: Local<Vec<bevy::asset::AssetId<WorldAsset>>>,
+    mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<crate::streaming::runtime::StreamingRuntime>>,
+    route: Option<Res<crate::app::StreamingBenchmarkRoute>>,
+) {
+    let camera = match cameras.single() {
+        Ok((entity, transform)) => Some(observe_camera(
+            entity,
+            transform,
+            config.worldspace_id,
+            origin.as_ref().map_or(IVec2::ZERO, |origin| origin.0),
+            &mut previous_camera,
+        )),
+        Err(_) => {
+            *previous_camera = None;
+            None
+        }
+    };
+    let sample = StreamingFrameSample {
+        main_frame: profiler.main_frame(),
+        elapsed_ms: profiler.elapsed_ms(),
+        delta_ms: profiler.trace_delta_ms,
+        benchmark_window: route
+            .as_deref()
+            .map_or_else(|| benchmark_window(&config, &samples), route_window),
+        streaming_benchmark_route: route
+            .as_deref()
+            .map(|route| route_snapshot(route, profiler.elapsed_ms())),
+        camera,
+        streaming: streaming.as_deref().map(Into::into),
+        scene_admission: (config.prioritize_streaming || config.max_scene_loads != 0)
+            .then(|| {
+                admission
+                    .as_ref()
+                    .map(|admission| crate::streaming_trace::SceneAdmissionSnapshot {
+                        configured_job_limit: config.max_scene_loads,
+                        prioritization_enabled: config.prioritize_streaming,
+                        jobs: admission.stats(),
+                    })
+            })
+            .flatten(),
+        scenes: Default::default(),
+        cpu_spans_ms: profiler.frame_cpu_spans_ms.clone(),
+        completion_latencies_ms: profiler.frame_completion_latencies_ms.clone(),
+        process_memory_gib: diagnostic_value(
+            &diagnostics,
+            &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
+        ),
+        gpu: bridge.as_ref().and_then(|bridge| bridge.latest()),
+        adaptive: runtime
+            .as_ref()
+            .and_then(|runtime| runtime.snapshot.clone()),
+    };
+    if let Some(trace) = profiler.trace.as_mut() {
+        if let Some(server) = server {
+            for event in events.read() {
+                match event {
+                    AssetEvent::Unused { id }
+                    | AssetEvent::Added { id }
+                    | AssetEvent::Modified { id }
+                    | AssetEvent::LoadedWithDependencies { id } => {
+                        reconcile_scene(trace, &server, *id);
+                    }
+                    AssetEvent::Removed { .. } => {}
+                }
+            }
+            pending_ids.clear();
+            pending_ids.extend(trace.pending_scene_ids());
+            for id in pending_ids.iter().copied() {
+                reconcile_scene(trace, &server, id);
+            }
+        }
+        trace.push_frame(sample);
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct BenchmarkReport {
     format_version: u32,
@@ -71,6 +278,10 @@ struct BenchmarkReport {
     scenario: String,
     frames: usize,
     warmup_frames: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    streaming_benchmark_route: Option<StreamingBenchmarkRouteSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measurement_scope: Option<&'static str>,
     synthetic_instances: usize,
     elapsed_seconds: f64,
     average_fps: f64,
@@ -124,6 +335,7 @@ struct Thresholds {
 #[allow(clippy::too_many_arguments)]
 fn collect_and_finish(
     time: Res<Time>,
+    real_time: Res<Time<Real>>,
     config: Res<EngineConfig>,
     diagnostics: Res<DiagnosticsStore>,
     system: Option<Res<SystemInfo>>,
@@ -134,9 +346,19 @@ fn collect_and_finish(
     mut samples: ResMut<BenchmarkSamples>,
     mut profiler: ResMut<ProfilingState>,
     mut exit: MessageWriter<AppExit>,
+    route: Option<Res<crate::app::StreamingBenchmarkRoute>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
-    if samples.finished || !config.is_benchmark_run() {
+    if samples.finished || (route.is_none() && !config.is_benchmark_run()) {
         return;
+    }
+    if route.is_some()
+        && let Ok(window) = windows.single()
+    {
+        profiler.capture_window_resolution = Some([
+            window.resolution.physical_width(),
+            window.resolution.physical_height(),
+        ]);
     }
     if !samples.measurement_complete {
         samples.frames_seen = samples.frames_seen.saturating_add(1);
@@ -145,9 +367,20 @@ fn collect_and_finish(
             &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
         );
         profiler.sample_frame(&diagnostics, process_memory);
-        if samples.frames_seen > config.benchmark_warmup_frames {
+        let measuring = route.as_deref().map_or(
+            samples.frames_seen > config.benchmark_warmup_frames,
+            |route| route_window(route) == BenchmarkWindow::Measured,
+        );
+        if route.is_some() && !measuring {
+            render_timings.set_recording(false);
+        }
+        if measuring {
             render_timings.set_recording(true);
-            let milliseconds = time.delta_secs_f64() * 1000.0;
+            let milliseconds = if route.is_some() {
+                real_time.delta_secs_f64() * 1000.0
+            } else {
+                time.delta_secs_f64() * 1000.0
+            };
             if milliseconds.is_finite() && milliseconds > 0.0 {
                 samples.frame_ms.push(milliseconds);
                 samples.measured_seconds += milliseconds / 1000.0;
@@ -168,7 +401,12 @@ fn collect_and_finish(
         let duration_reached = config
             .benchmark_duration_secs
             .is_some_and(|limit| samples.frame_ms.iter().sum::<f64>() / 1000.0 >= limit);
-        if !frame_limit_reached && !duration_reached {
+        let complete = route
+            .as_ref()
+            .map_or(frame_limit_reached || duration_reached, |route| {
+                route.phase == crate::app::StreamingBenchmarkPhase::Finished
+            });
+        if !complete {
             return;
         }
         samples.measurement_complete = true;
@@ -282,6 +520,16 @@ fn collect_and_finish(
         },
         frames: ordered.len(),
         warmup_frames: config.benchmark_warmup_frames,
+        streaming_benchmark_route: route
+            .as_deref()
+            .map(|route| route_snapshot(route, profiler.elapsed_ms())),
+        measurement_scope: route.as_ref().map(|_| {
+            if config.streaming_benchmark_route_speed == Some(0.0) {
+                "stationary_tail"
+            } else {
+                "route_motion"
+            }
+        }),
         synthetic_instances: if config.benchmark_only {
             config.synthetic_instances
         } else {
@@ -542,6 +790,193 @@ mod tests {
         })));
         assert!(!installed(Some(EngineConfig::default())));
         assert!(!installed(None), "no config means no measured run");
+    }
+
+    #[test]
+    fn route_report_clock_keeps_uncapped_real_frame_intervals() {
+        use crate::{app::StreamingBenchmarkPhase, profiling::ProfilingPlugin};
+        use bevy::time::TimeUpdateStrategy;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig {
+                streaming_benchmark_route_speed: Some(370.0),
+                ..default()
+            })
+            .insert_resource(crate::app::StreamingBenchmarkRoute {
+                phase: StreamingBenchmarkPhase::Moving,
+                movement_started_real_seconds: Some(0.0),
+                ..default()
+            })
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(600),
+            ))
+            .init_resource::<DiagnosticsStore>()
+            .init_resource::<RendererMetrics>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .add_plugins((AcceptanceMetricsPlugin, ProfilingPlugin));
+        app.update();
+        app.update();
+        let samples = app.world().resource::<BenchmarkSamples>();
+        assert_eq!(samples.frame_ms, vec![600.0]);
+        assert_eq!(samples.measured_seconds, 0.6);
+        assert!(app.world().resource::<Time>().delta_secs_f64() < 0.6);
+    }
+
+    #[test]
+    fn route_windows_exclude_wait_and_moving_tail_but_measure_stationary_tail() {
+        use crate::app::{StreamingBenchmarkPhase, StreamingBenchmarkRoute};
+
+        let mut route = StreamingBenchmarkRoute::default();
+        assert_eq!(route_window(&route), BenchmarkWindow::Warmup);
+        route.phase = StreamingBenchmarkPhase::Moving;
+        route.movement_started_real_seconds = Some(5.0);
+        assert_eq!(route_window(&route), BenchmarkWindow::Measured);
+        route.phase = StreamingBenchmarkPhase::Tail;
+        route.movement_finished_real_seconds = Some(50.0);
+        assert_eq!(route_window(&route), BenchmarkWindow::Settlement);
+        route.movement_finished_real_seconds = Some(5.0);
+        assert_eq!(route_window(&route), BenchmarkWindow::Measured);
+        route.phase = StreamingBenchmarkPhase::Finished;
+        assert_eq!(route_window(&route), BenchmarkWindow::Settlement);
+        route.latest_real_seconds = 8.0;
+        route.cpu_settled_real_seconds = Some(2.0);
+        let snapshot = route_snapshot(&route, 10_000.0);
+        assert_eq!(snapshot.cpu_settled_elapsed_ms, Some(4000.0));
+        assert_eq!(snapshot.movement_started_elapsed_ms, Some(7000.0));
+    }
+
+    #[test]
+    fn trace_keeps_warmup_and_capture_settlement_on_one_frame_clock() {
+        for gpu_inventory_enabled in [false, true] {
+            check_trace_windows(gpu_inventory_enabled);
+        }
+    }
+
+    fn check_trace_windows(gpu_inventory_enabled: bool) {
+        use crate::profiling::ProfilingPlugin;
+        use bevy::time::TimeUpdateStrategy;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            profile_output_dir: Some(directory.path().join("profile")),
+            profile_gpu_inventory: gpu_inventory_enabled,
+            benchmark_output: directory.path().join("report.json"),
+            benchmark_frames: Some(1),
+            benchmark_warmup_frames: 2,
+            acceptance_screenshot: Some(directory.path().join("pending.png")),
+            ..default()
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(config)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(300),
+            ))
+            .init_resource::<DiagnosticsStore>()
+            .init_resource::<RendererMetrics>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .add_plugins((AcceptanceMetricsPlugin, ProfilingPlugin))
+            .add_systems(Update, |mut profiler: ResMut<ProfilingState>| {
+                profiler.record_ms("test/work", 1.0);
+                profiler.record_ms("test/work", 2.0);
+                profiler.record_completed_latency_micros("test/ready", 10_000);
+                profiler.event("test", "work", None);
+            });
+        for _ in 0..5 {
+            app.update();
+        }
+        let profiler = app.world().resource::<ProfilingState>();
+        let report = profiler.trace.as_ref().unwrap().report();
+        assert_eq!(report.gpu_inventory_enabled, gpu_inventory_enabled);
+        assert_eq!(report.samples.len(), 5);
+        let windows: Vec<_> = report
+            .samples
+            .iter()
+            .map(|sample| sample.benchmark_window)
+            .collect();
+        assert_eq!(
+            windows,
+            vec![
+                BenchmarkWindow::Warmup,
+                BenchmarkWindow::Warmup,
+                BenchmarkWindow::Measured,
+                BenchmarkWindow::Settlement,
+                BenchmarkWindow::Settlement
+            ]
+        );
+        for (index, sample) in report.samples.iter().enumerate() {
+            assert_eq!(sample.main_frame, index as u64 + 1);
+            assert_eq!(sample.cpu_spans_ms["test/work"], 3.0);
+            assert!(!sample.cpu_spans_ms.contains_key("test/ready"));
+            assert_eq!(sample.completion_latencies_ms["test/ready"], 10.0);
+            if gpu_inventory_enabled {
+                assert!(!sample.gpu.as_ref().unwrap().render_available);
+            } else {
+                assert!(sample.gpu.is_none());
+            }
+        }
+        // The real interval is preserved even when virtual time caps a long frame.
+        assert!((report.samples[4].delta_ms - 300.0).abs() < 0.001);
+        let benchmark = app.world().resource::<BenchmarkSamples>();
+        assert_eq!(benchmark.frames_seen, 3);
+        assert_eq!(benchmark.frame_ms.len(), 1);
+        assert!(benchmark.measurement_complete);
+        assert!(!benchmark.finished);
+
+        std::fs::write(directory.path().join("pending.png"), []).unwrap();
+        app.update();
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("profile/streaming-frames.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["samples"].as_array().unwrap().len(), 6);
+        let timeline: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("profile/streaming.json")).unwrap(),
+        )
+        .unwrap();
+        for (index, event) in timeline["timeline"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(event["frame"], index as u64 + 1);
+        }
+    }
+
+    #[test]
+    fn camera_motion_ignores_rebases_and_quaternion_sign() {
+        let entity = Entity::from_raw_u32(1).unwrap();
+        let mut previous = None;
+        let first = observe_camera(
+            entity,
+            &GlobalTransform::from_xyz(10.0, 20.0, 30.0),
+            1,
+            IVec2::ZERO,
+            &mut previous,
+        );
+        assert_eq!(first.motion, CameraMotion::Unavailable);
+        let rebased = GlobalTransform::from(
+            Transform::from_xyz(10.0 - CELL_SIZE, 20.0, 30.0 + CELL_SIZE)
+                .with_rotation(-Quat::IDENTITY),
+        );
+        let next = observe_camera(entity, &rebased, 1, IVec2::ONE, &mut previous);
+        assert_eq!(next.world_position, first.world_position);
+        assert_eq!(next.motion, CameraMotion::Stationary);
+        let moved = observe_camera(
+            entity,
+            &GlobalTransform::from_xyz(11.0, 20.0, 30.0),
+            1,
+            IVec2::ZERO,
+            &mut previous,
+        );
+        assert_eq!(moved.motion, CameraMotion::Translated);
+        let changed_space = observe_camera(
+            entity,
+            &GlobalTransform::IDENTITY,
+            2,
+            IVec2::ZERO,
+            &mut previous,
+        );
+        assert_eq!(changed_space.motion, CameraMotion::Unavailable);
     }
 
     #[test]

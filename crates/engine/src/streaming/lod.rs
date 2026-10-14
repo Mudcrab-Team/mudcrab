@@ -1,5 +1,6 @@
 use super::{
-    RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage, TerrainSurfaceReady,
+    RenderOrigin, StreamingCommitBudget, StreamingMetrics, StreamingWorld, TerrainCoverage,
+    TerrainSurfaceReady, requests,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
@@ -186,7 +187,7 @@ pub(super) struct LodChunkGridOrigin {
 #[derive(Component)]
 pub(super) struct PendingLodChunk {
     metadata: LodChunkMetadata,
-    asset: Handle<WorldAsset>,
+    asset: Option<Handle<WorldAsset>>,
     scene_spawned: bool,
     hash_task: Option<Task<Result<(), LodChunkFailure>>>,
     hash_verified: bool,
@@ -231,6 +232,23 @@ pub(super) fn mark_lod_world_instance_ready(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn scene_pending(world: &World, entity: Entity) -> bool {
+    world.get::<PendingLodChunk>(entity).is_some()
+}
+
+#[cfg(test)]
+pub(super) fn pending_fixture(metadata: LodChunkMetadata) -> PendingLodChunk {
+    PendingLodChunk {
+        metadata,
+        asset: None,
+        scene_spawned: false,
+        hash_task: None,
+        hash_verified: false,
+        started: Instant::now(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_lod_chunks(
     mut commands: Commands,
     config: Res<EngineConfig>,
@@ -241,6 +259,7 @@ pub(super) fn plan_lod_chunks(
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
 ) {
     let started = Instant::now();
     let Ok(camera) = camera.single() else {
@@ -277,6 +296,12 @@ pub(super) fn plan_lod_chunks(
     }
     let generation = streaming.generation;
     for tier in LodTier::ALL {
+        if runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.cell_requests_allowed())
+        {
+            break;
+        }
         if !streaming.query_ready(tier, Instant::now()) {
             continue;
         }
@@ -332,7 +357,12 @@ pub(super) fn plan_lod_chunks(
     enqueue_due_lod_retries(&mut streaming, Instant::now());
     budget.reserve_for_lod(
         streaming.has_queued_chunks(),
-        config.max_cell_commits_per_frame,
+        runtime
+            .as_ref()
+            .and_then(|runtime| runtime.decision)
+            .map_or(config.max_cell_commits_per_frame, |decision| {
+                decision.budgets.max_cell_commits
+            }),
     );
     update_counts(&streaming, &mut metrics, &mut profiler);
     profiler.record_elapsed("lod/plan", started);
@@ -346,10 +376,12 @@ pub(super) fn collect_lod_chunks(
     asset_server: Res<AssetServer>,
     origin: Res<RenderOrigin>,
     mut camera_projection: Query<&mut Projection, With<StreamingCamera>>,
+    mut full_streaming: ResMut<StreamingWorld>,
     mut streaming: ResMut<LodStreaming>,
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
 ) {
     let started = Instant::now();
     for _ in 0..LOD_RESPONSE_SCAN_LIMIT {
@@ -364,9 +396,10 @@ pub(super) fn collect_lod_chunks(
             .total_lod_query_micros
             .saturating_add(response.query_micros);
         metrics.max_lod_query_micros = metrics.max_lod_query_micros.max(response.query_micros);
-        profiler.record_micros("lod/db_queue_wait", response.queue_wait_micros);
-        profiler.record_micros("lod/db_query", response.query_micros);
-        profiler.record_micros("lod/db_request_total", response.total_request_micros);
+        profiler.record_completed_latency_micros("lod/db_queue_wait", response.queue_wait_micros);
+        profiler.record_completed_latency_micros("lod/db_query", response.query_micros);
+        profiler
+            .record_completed_latency_micros("lod/db_request_total", response.total_request_micros);
 
         if !is_current_query(&streaming, response.generation) {
             metrics.stale_lod_query_responses = metrics.stale_lod_query_responses.saturating_add(1);
@@ -403,7 +436,29 @@ pub(super) fn collect_lod_chunks(
         }
     }
 
+    if config.prioritize_streaming
+        && let Some(center) = streaming.center
+    {
+        streaming
+            .pending_chunks
+            .make_contiguous()
+            .sort_by_key(|(_, metadata, _)| {
+                let min = chunk_min_grid(metadata.key, metadata.origin);
+                let side = i64::from(metadata.key.tier.side_cells());
+                let dx = min.0 + side / 2 - i64::from(center.x);
+                let dy = min.1 + side / 2 - i64::from(center.y);
+                (
+                    i128::from(dx) * i128::from(dx) + i128::from(dy) * i128::from(dy),
+                    metadata.key.tier,
+                    metadata.key.anchor.y,
+                    metadata.key.anchor.x,
+                )
+            });
+    }
     while budget.remaining > 0 {
+        if budget.elapsed_limit_reached(runtime.as_deref()) {
+            break;
+        }
         let Some((generation, metadata, retry_attempt)) = streaming.pending_chunks.pop_front()
         else {
             break;
@@ -473,13 +528,49 @@ pub(super) fn collect_lod_chunks(
         let key = metadata.key;
         let chunk_origin = metadata.origin;
         let min_grid = chunk_min_grid(key, metadata.origin);
-        let scene_path = GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone());
-        // Bevy's load request restarts an asset whose cached load state is Failed.
-        let asset = asset_server.load(scene_path);
-        let expected_hash = metadata.content_hash.clone();
-        let hash_path = config.assets_dir.join(&metadata.payload_path);
-        let hash_task =
-            IoTaskPool::get().spawn(async move { verify_payload_hash(hash_path, expected_hash) });
+        let schedule_scenes = requests::enabled(&config);
+        let asset = if schedule_scenes {
+            None
+        } else {
+            let handle = asset_server
+                .load(GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone()));
+            profiler.observe_scene(handle.id(), &asset_server);
+            Some(handle)
+        };
+        let hash_task = if schedule_scenes {
+            None
+        } else {
+            let expected_hash = metadata.content_hash.clone();
+            let hash_path = config.assets_dir.join(&metadata.payload_path);
+            Some(
+                IoTaskPool::get()
+                    .spawn(async move { verify_payload_hash(hash_path, expected_hash) }),
+            )
+        };
+        let request = schedule_scenes.then(|| {
+            use bevy::math::DVec3;
+            let sequence = full_streaming.next_model_sequence;
+            full_streaming.next_model_sequence = sequence.saturating_add(1);
+            let side = f64::from(metadata.key.tier.side_cells()) * f64::from(CELL_SIZE);
+            requests::SceneRequest {
+                path: metadata.payload_path.clone(),
+                cell: None,
+                coarse_terrain: true,
+                retry_cleanup: None,
+                content_identity: Some(metadata.content_hash.clone()),
+                sequence,
+                center: DVec3::new(
+                    min_grid.0 as f64 * f64::from(CELL_SIZE) + side * 0.5,
+                    0.0,
+                    -(min_grid.1 as f64 * f64::from(CELL_SIZE) + side * 0.5),
+                ),
+                radius: Some(side * std::f64::consts::SQRT_2 * 0.5),
+                collision_candidate: false,
+                handle: None,
+                started: Instant::now(),
+                allow_retry: retry_count > 0,
+            }
+        });
         let local_grid_x = min_grid.0 - i64::from(origin.0.x);
         let local_grid_y = min_grid.1 - i64::from(origin.0.y);
         let root = commands
@@ -498,7 +589,6 @@ pub(super) fn collect_lod_chunks(
                     grid_x: min_grid.0,
                     grid_y: min_grid.1,
                 },
-                WorldAssetRoot(asset.clone()),
                 Transform::from_xyz(
                     local_grid_x as f32 * CELL_SIZE,
                     0.0,
@@ -507,14 +597,20 @@ pub(super) fn collect_lod_chunks(
                 Visibility::Hidden,
                 PendingLodChunk {
                     metadata,
-                    asset,
+                    asset: asset.clone(),
                     scene_spawned: false,
-                    hash_task: Some(hash_task),
+                    hash_task,
                     hash_verified: false,
                     started: Instant::now(),
                 },
             ))
             .id();
+        if let Some(handle) = asset {
+            commands.entity(root).insert(WorldAssetRoot(handle));
+        }
+        if let Some(request) = request {
+            commands.entity(root).insert(request);
+        }
         streaming.chunks.insert(
             key,
             LodChunkStatus::Loading {
@@ -533,6 +629,22 @@ pub(super) fn collect_lod_chunks(
     profiler.record_elapsed("lod/collect", started);
 }
 
+/// Start the existing integrity check only after this chunk's shared scene job is admitted.
+pub(super) fn start_admitted_chunk(world: &mut World, entity: Entity, handle: Handle<WorldAsset>) {
+    let assets = world.resource::<EngineConfig>().assets_dir.clone();
+    let Some(mut pending) = world.get_mut::<PendingLodChunk>(entity) else {
+        return;
+    };
+    if pending.asset.is_some() {
+        return;
+    }
+    let path = assets.join(&pending.metadata.payload_path);
+    let expected_hash = pending.metadata.content_hash.clone();
+    pending.asset = Some(handle);
+    pending.hash_task =
+        Some(IoTaskPool::get().spawn(async move { verify_payload_hash(path, expected_hash) }));
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn track_lod_readiness(
     mut commands: Commands,
@@ -549,15 +661,19 @@ pub(super) fn track_lod_readiness(
 ) {
     let started = Instant::now();
     for (entity, root, mut pending) in &mut pending_chunks {
-        let load_failure = asset_server.get_load_states(pending.asset.id()).and_then(
-            |(load, _, recursive)| match (load, recursive) {
-                (LoadState::Failed(error), _) => Some(classify_asset_load_failure(&error)),
-                (_, RecursiveDependencyLoadState::Failed(error)) => {
-                    Some(classify_asset_load_failure(&error))
-                }
-                _ => None,
-            },
-        );
+        let Some(asset) = pending.asset.clone() else {
+            continue;
+        };
+        let load_failure =
+            asset_server
+                .get_load_states(asset.id())
+                .and_then(|(load, _, recursive)| match (load, recursive) {
+                    (LoadState::Failed(error), _) => Some(classify_asset_load_failure(&error)),
+                    (_, RecursiveDependencyLoadState::Failed(error)) => {
+                        Some(classify_asset_load_failure(&error))
+                    }
+                    _ => None,
+                });
         if let Some(failure) = load_failure {
             fail_chunk(
                 (entity, root),
@@ -597,8 +713,8 @@ pub(super) fn track_lod_readiness(
         }
 
         if !pending.scene_spawned
-            || !asset_server.is_loaded_with_dependencies(pending.asset.id())
-            || world_assets.get(&pending.asset).is_none()
+            || !asset_server.is_loaded_with_dependencies(asset.id())
+            || world_assets.get(&asset).is_none()
         {
             continue;
         }
@@ -657,12 +773,12 @@ pub(super) fn track_lod_readiness(
             .saturating_add(patches.len() as u64);
         profiler.increment("lod/chunks_ready", 1);
         profiler.increment("lod/terrain_patches_ready", patches.len() as u64);
-        profiler.record_elapsed("lod/chunk_ready", pending.started);
+        profiler.record_completed_latency_elapsed("lod/chunk_ready", pending.started);
         profiler.event(format!("{:?}", root.key), "ready", None);
         commands
             .entity(entity)
             .insert(terrain_batching::PendingLodTerrainBatching {
-                source: pending.asset.clone(),
+                source: asset.clone(),
                 patches,
             });
     }
@@ -1880,6 +1996,146 @@ mod tests {
             build_identity: "test-build".to_owned(),
             origin: LodOrigin::new(0, 0),
         }
+    }
+
+    #[test]
+    fn elapsed_shared_commit_budget_stops_lod_commits_but_drains_query_responses() {
+        use crate::{
+            streaming::{
+                admission::SceneAdmission,
+                runtime::{StreamingRuntime, update_streaming_control},
+            },
+            streaming_preparation::StreamingPreparationBridge,
+        };
+        use bevy::asset::{AssetApp, AssetPlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lod-collector.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER NOT NULL);
+                 INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+            ))
+            .unwrap();
+        drop(connection);
+        let first = retry_test_metadata();
+        let mut second = first.clone();
+        second.key.anchor.x = 1;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                file_path: directory.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+        ))
+        .init_asset::<WorldAsset>()
+        .insert_resource(EngineConfig {
+            assets_dir: directory.path().into(),
+            headless: true,
+            max_streaming_backlog: 256,
+            streaming_memory_mib: 64,
+            max_commit_micros_per_frame: 1_000,
+            ..default()
+        })
+        .insert_resource(WorldDatabase::open(&path).unwrap())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(LodStreaming {
+            generation: 7,
+            center: Some(IVec2::ZERO),
+            pending_queries: HashSet::from([LodTier::Tier4]),
+            pending_chunks: VecDeque::from([(7, first, None), (7, second, None)]),
+            ..default()
+        })
+        .insert_resource(StreamingCommitBudget {
+            frame_started: Instant::now() - Duration::from_secs(1),
+            remaining: 3,
+            commits: 1,
+            ..default()
+        })
+        .init_resource::<StreamingWorld>()
+        .init_resource::<StreamingMetrics>()
+        .init_resource::<SceneAdmission>()
+        .init_resource::<StreamingPreparationBridge>()
+        .init_resource::<ProfilingState>()
+        .init_resource::<StreamingRuntime>();
+        update_streaming_control(app.world_mut());
+        assert_eq!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .decision
+                .unwrap()
+                .budgets
+                .max_commit_micros,
+            1_000
+        );
+        app.world()
+            .resource::<WorldDatabase>()
+            .request_lod_chunks(
+                7,
+                LodChunkQuery {
+                    worldspace_id: 0x3c,
+                    tier: LodTier::Tier4,
+                    bounds_min: [0.0, 0.0],
+                    bounds_max: [10.0, 10.0],
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.world_mut().run_system_once(collect_lod_chunks).unwrap();
+            if app
+                .world()
+                .resource::<StreamingMetrics>()
+                .lod_query_responses
+                == 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "LOD query response was not reconciled"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let streaming = app.world().resource::<LodStreaming>();
+        assert!(!streaming.pending_queries.contains(&LodTier::Tier4));
+        assert_eq!(streaming.pending_chunks.len(), 2);
+        assert!(streaming.chunks.is_empty());
+        assert_eq!(app.world().resource::<StreamingCommitBudget>().remaining, 3);
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_chunks_requested,
+            0
+        );
+
+        // An expired clock still allows the first total commit of a frame.
+        app.world_mut()
+            .resource_mut::<StreamingCommitBudget>()
+            .commits = 0;
+        app.world_mut().run_system_once(collect_lod_chunks).unwrap();
+        assert_eq!(
+            app.world().resource::<LodStreaming>().pending_chunks.len(),
+            1
+        );
+        let budget = app.world().resource::<StreamingCommitBudget>();
+        assert_eq!((budget.remaining, budget.commits), (2, 1));
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_chunks_requested,
+            1
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&requests::SceneRequest>()
+                .iter(app.world())
+                .count(),
+            1
+        );
     }
 
     #[test]

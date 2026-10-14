@@ -1,0 +1,103 @@
+{
+  "format_version": 1,
+  "generated_utc": "2026-10-09T19:06:36.893338+00:00",
+  "runtime_implementation_commit": "b7e31e66e1d6694405cb57d73de3f7f69cceb030",
+  "system": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "profile": "quick (optimized, no LTO); development diagnostic only",
+  "command": "CARGO_BUILD_JOBS=2 cargo test --locked --offline --profile quick -p engine --lib measures_bounded_ledger_collection_cost -- --ignored --nocapture",
+  "test_result": "1 passed, 0 failed",
+  "results": [
+    {
+      "baseline_ns_per_frame": [
+        0.7085,
+        1.0,
+        0.646,
+        1.021,
+        0.6665,
+        1.0,
+        0.646
+      ],
+      "collection_ns_per_frame": [
+        130.479,
+        50.333,
+        38.479,
+        38.271,
+        40.1875,
+        38.167,
+        38.167
+      ],
+      "frames_per_repeat": 2000,
+      "performance_acceptance": false,
+      "scene_count": 0,
+      "scope": "CPU-only loaded-scene ledger scan and frame append; excludes asset-server queries, ECS, GPU, serialization and retail rendering",
+      "median_collection_ns_per_frame": 38.479,
+      "median_baseline_ns_per_frame": 0.7085
+    },
+    {
+      "baseline_ns_per_frame": [
+        0.625,
+        0.354,
+        0.3335,
+        0.375,
+        0.375,
+        0.4165,
+        0.375
+      ],
+      "collection_ns_per_frame": [
+        3514.2915,
+        3186.7085,
+        1156.2295,
+        1126.8335,
+        1176.7295,
+        1193.104,
+        1419.021
+      ],
+      "frames_per_repeat": 2000,
+      "performance_acceptance": false,
+      "scene_count": 442,
+      "scope": "CPU-only loaded-scene ledger scan and frame append; excludes asset-server queries, ECS, GPU, serialization and retail rendering",
+      "median_collection_ns_per_frame": 1193.104,
+      "median_baseline_ns_per_frame": 0.375
+    },
+    {
+      "baseline_ns_per_frame": [
+        0.354,
+        0.354,
+        0.3545,
+        0.354,
+        0.3335,
+        0.354,
+        0.375
+      ],
+      "collection_ns_per_frame": [
+        90136.604,
+        106636.0835,
+        186462.875,
+        143341.25,
+        115471.229,
+        124928.0625,
+        94619.021
+      ],
+      "frames_per_repeat": 2000,
+      "performance_acceptance": false,
+      "scene_count": 20000,
+      "scope": "CPU-only loaded-scene ledger scan and frame append; excludes asset-server queries, ECS, GPU, serialization and retail rendering",
+      "median_collection_ns_per_frame": 115471.229,
+      "median_baseline_ns_per_frame": 0.354
+    }
+  ],
+  "gates": {
+    "retail_runtime_overhead_measured": false,
+    "release_profile_measurement_completed": false,
+    "performance_acceptance": false
+  },
+  "limits": [
+    "Loaded-scene lifetime-ledger scans and frame appends only.",
+    "Asset-server queries, ECS scheduling, CPU-span gathering, completion latencies, GPU inventory, serialization and rendering were excluded.",
+    "Repeated fresh ledgers in one process; OS caches preserved.",
+    "Nanoseconds are per-frame batch averages, not latency percentiles.",
+    "Matched release-mode full-collector runs remain required before performance acceptance."
+  ]
+}

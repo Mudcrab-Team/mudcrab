@@ -5,6 +5,7 @@ pub mod collision;
 pub mod coordinates;
 pub mod lod;
 pub mod plugin_selection;
+pub mod streaming_costs;
 pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};

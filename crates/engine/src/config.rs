@@ -136,6 +136,24 @@ pub struct EngineConfig {
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
     pub max_model_spawns_per_frame: usize,
+    /// Camera and bounds based queue ordering. Off preserves fixed FIFO activation.
+    pub prioritize_streaming: bool,
+    /// Outstanding unique Scene(0) jobs, including recursive CPU dependencies.
+    /// Zero retains unlimited admission; this count does not bound memory bytes.
+    pub max_scene_loads: usize,
+    /// Opt-in startup, walking and recovery budgets. Also enables spatial priority.
+    pub adaptive_streaming: bool,
+    /// Downstream queue high watermark; zero disables it outside adaptive mode.
+    pub max_streaming_backlog: usize,
+    /// Estimated streaming allocation allowance. Zero disables memory admission
+    /// outside adaptive mode, which otherwise uses a finite automatic allowance.
+    pub streaming_memory_mib: usize,
+    /// Override for converter-generated streaming cost metadata.
+    pub streaming_costs: Option<PathBuf>,
+    /// Free system memory reserved for the rest of the process and other apps.
+    pub streaming_headroom_mib: usize,
+    /// Controller frame target. Benchmark acceptance keeps its separate thresholds.
+    pub streaming_frame_ms: f64,
     /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
     /// threads, at least one and at most four. A nonzero count must be at most
     /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
@@ -166,6 +184,17 @@ pub struct EngineConfig {
     /// Coordinates must be within [`JUMP_GRID_LIMIT`]; anything further out is ignored with a
     /// warning, since the position maths would not survive it.
     pub benchmark_jump: Option<(i32, i32)>,
+    /// Keep the interactive app's presentation mode for an opt-in benchmark.
+    pub benchmark_vsync: bool,
+    /// Dedicated post-settlement camera route; Some(0) measures its stationary tail.
+    pub streaming_benchmark_route_speed: Option<f64>,
+    pub streaming_benchmark_route_secs: f64,
+    pub streaming_benchmark_tail_secs: f64,
+    pub streaming_benchmark_settle_secs: f64,
+    pub streaming_benchmark_expected_models: Option<u64>,
+    pub streaming_benchmark_expected_lod_chunks: Option<usize>,
+    pub streaming_benchmark_expected_terrain: Option<u64>,
+    pub streaming_benchmark_expected_water: Option<u64>,
     pub benchmark_output: PathBuf,
     /// Where to write every measured frame time, in order, as CSV (`--benchmark-frame-times`).
     /// Off by default: the report's summary is what acceptance reads; the series is for choosing
@@ -181,6 +210,7 @@ pub struct EngineConfig {
     pub allow_incomplete_assets: bool,
     pub synthetic_instances: usize,
     pub profile_output_dir: Option<PathBuf>,
+    pub profile_gpu_inventory: bool,
     pub profile_scenario: String,
     pub profile_run_id: String,
     pub profile_commit: String,
@@ -237,6 +267,14 @@ impl Default for EngineConfig {
             // still spreads a burst over frames; `0` arms the whole batch at once, the behaviour
             // before this budget existed (docs/roadmap/02-profiling.md, "Load speed defaults").
             max_model_spawns_per_frame: 32,
+            prioritize_streaming: false,
+            max_scene_loads: 0,
+            adaptive_streaming: false,
+            max_streaming_backlog: 0,
+            streaming_memory_mib: 0,
+            streaming_costs: None,
+            streaming_headroom_mib: 2_048,
+            streaming_frame_ms: 16.67,
             // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
             io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
@@ -256,6 +294,15 @@ impl Default for EngineConfig {
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
             benchmark_jump: None,
+            benchmark_vsync: false,
+            streaming_benchmark_route_speed: None,
+            streaming_benchmark_route_secs: 45.0,
+            streaming_benchmark_tail_secs: 10.0,
+            streaming_benchmark_settle_secs: 5.0,
+            streaming_benchmark_expected_models: None,
+            streaming_benchmark_expected_lod_chunks: None,
+            streaming_benchmark_expected_terrain: None,
+            streaming_benchmark_expected_water: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
             run_label: None,
@@ -266,6 +313,7 @@ impl Default for EngineConfig {
             allow_incomplete_assets: false,
             synthetic_instances: 250_000,
             profile_output_dir: None,
+            profile_gpu_inventory: false,
             profile_scenario: "adhoc".into(),
             profile_run_id: "run-1".into(),
             profile_commit: "unknown".into(),
@@ -323,6 +371,15 @@ Streaming:
   --max-commit-ms <ms>                  cell commit time allowed per frame (default: 16.67)
   --max-unloads-per-frame <count>       cells despawned per frame; 0 despawns all at once (default: 2)
   --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
+  --prioritize-streaming               prioritize nearby collision and view-facing bounds
+  --max-scene-loads <count>             outstanding unique scene jobs; 0 is unlimited (default: 0)
+  --adaptive-streaming                 adapt startup/walking budgets; enables spatial priority
+  --max-streaming-backlog <count>      downstream queue limit; 0 disables it, adaptive uses 256
+  --streaming-memory-mib <mib>         estimated allowance; 0 disables it unless adaptive
+                                     adaptive: half detected RAM, at most 16 GiB (fallback: 8 GiB)
+  --streaming-costs <file>             override streaming cost metadata (default: asset pack metadata)
+  --streaming-headroom-mib <mib>       system memory kept free (default: 2048)
+  --streaming-frame-ms <ms>            controller frame target (default: 16.67)
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
@@ -337,6 +394,15 @@ Benchmark and profiling:
   --benchmark-duration <seconds>        stop after this many measured seconds
   --benchmark-warmup-frames <count>     frames discarded before measuring (default: 60)
   --benchmark-jump <x,y>                after the world first loads, jump to this grid cell and time the reload
+  --benchmark-vsync                     use the interactive app's vsync during benchmarks
+  --streaming-benchmark-route-speed <units/s>  start a real-time route after CPU settlement; 0 is stationary
+  --streaming-benchmark-route-secs <seconds>   moving route duration (default: 45)
+  --streaming-benchmark-tail-secs <seconds>    stationary tail duration (default: 10)
+  --streaming-benchmark-settle-secs <seconds>  continuous CPU-settled wait before starting (default: 5)
+  --streaming-benchmark-expected-models <count>       optional initial validated model count
+  --streaming-benchmark-expected-lod-chunks <count>   optional initial resident LOD chunk count
+  --streaming-benchmark-expected-terrain <count>      optional initial validated terrain patch count
+  --streaming-benchmark-expected-water <count>        optional initial validated water surface count
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
   --run-label [<text>]                  name the run in the window title
@@ -354,6 +420,7 @@ Benchmark and profiling:
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
+  --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
   --profile-run-id <id>                 run id recorded in the profile (default: run-1)
   --profile-commit <hash>               commit recorded in the profile (default: unknown)
@@ -490,6 +557,42 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    pub fn streaming_controls_enabled(&self) -> bool {
+        self.adaptive_streaming || self.max_streaming_backlog != 0 || self.streaming_memory_mib != 0
+    }
+
+    pub fn streaming_backlog_limit(&self) -> usize {
+        if self.max_streaming_backlog == 0 && self.adaptive_streaming {
+            256
+        } else {
+            self.max_streaming_backlog
+        }
+    }
+
+    /// A limit on estimated streaming allocations, not process RSS. Without an
+    /// explicit adaptive limit this returns the 8 GiB fallback; the runtime
+    /// selects half detected RAM within the 16 GiB and system-headroom limits.
+    /// Available system memory is checked separately before reservations.
+    pub fn memory_budget_bytes(&self) -> Option<u64> {
+        let mib = if self.streaming_memory_mib != 0 {
+            self.streaming_memory_mib
+        } else if self.adaptive_streaming {
+            8_192
+        } else {
+            return None;
+        };
+        Some(
+            mib.checked_mul(1024 * 1024)
+                .expect("streaming memory size must fit bytes") as u64,
+        )
+    }
+
+    pub fn streaming_headroom_bytes(&self) -> u64 {
+        self.streaming_headroom_mib
+            .checked_mul(1024 * 1024)
+            .expect("streaming headroom size must fit bytes") as u64
+    }
+
     /// The per-frame render-asset upload budget in bytes, or `None` when
     /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
     pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
@@ -512,6 +615,7 @@ impl EngineConfig {
             && self.shots.is_none()
             && self.matched_route.is_none()
             && self.auto_fly_speed <= 0.0
+            && self.streaming_benchmark_route_speed.is_none()
             && !self.material_fixture
             && !self.terrain_water_fixture
             && !self.transform_bounds_fixture
@@ -667,6 +771,54 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--prioritize-streaming" => config.prioritize_streaming = true,
+                "--max-scene-loads" => {
+                    config.max_scene_loads = take_value(
+                        "--max-scene-loads",
+                        "a scene job count, 0 for unlimited",
+                        args.next(),
+                    )?;
+                }
+                "--adaptive-streaming" => {
+                    config.adaptive_streaming = true;
+                    config.prioritize_streaming = true;
+                }
+                "--max-streaming-backlog" => {
+                    config.max_streaming_backlog = take_value(
+                        "--max-streaming-backlog",
+                        "a downstream queue count, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-memory-mib" => {
+                    config.streaming_memory_mib = take_mib(
+                        "--streaming-memory-mib",
+                        "a MiB size that fits bytes, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-costs" => {
+                    config.streaming_costs = Some(take_value(
+                        "--streaming-costs",
+                        "a file path for streaming cost metadata",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-headroom-mib" => {
+                    config.streaming_headroom_mib = take_mib(
+                        "--streaming-headroom-mib",
+                        "a MiB size that fits bytes, 0 to reserve no headroom",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-frame-ms" => {
+                    config.streaming_frame_ms = take_number(
+                        "--streaming-frame-ms",
+                        "a positive number of milliseconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
                 // 0 keeps the automatic size; a count past the cap is refused like a value that
                 // fails to parse.
                 "--io-threads" => {
@@ -739,6 +891,67 @@ impl EngineConfig {
                         "warning: missing value for --benchmark-jump; expected \"<grid-x>,<grid-y>\" integers"
                     ),
                 },
+                "--benchmark-vsync" => config.benchmark_vsync = true,
+                "--streaming-benchmark-route-speed" => {
+                    config.streaming_benchmark_route_speed = Some(take_number(
+                        "--streaming-benchmark-route-speed",
+                        "a finite speed in units per second, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-route-secs" => {
+                    config.streaming_benchmark_route_secs = take_number(
+                        "--streaming-benchmark-route-secs",
+                        "a positive finite number of seconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-tail-secs" => {
+                    config.streaming_benchmark_tail_secs = take_number(
+                        "--streaming-benchmark-tail-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-settle-secs" => {
+                    config.streaming_benchmark_settle_secs = take_number(
+                        "--streaming-benchmark-settle-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-expected-models" => {
+                    config.streaming_benchmark_expected_models = Some(take_value(
+                        "--streaming-benchmark-expected-models",
+                        "a model count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-lod-chunks" => {
+                    config.streaming_benchmark_expected_lod_chunks = Some(take_value(
+                        "--streaming-benchmark-expected-lod-chunks",
+                        "a LOD chunk count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-terrain" => {
+                    config.streaming_benchmark_expected_terrain = Some(take_value(
+                        "--streaming-benchmark-expected-terrain",
+                        "a terrain patch count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-water" => {
+                    config.streaming_benchmark_expected_water = Some(take_value(
+                        "--streaming-benchmark-expected-water",
+                        "a water surface count",
+                        args.next(),
+                    )?);
+                }
                 "--benchmark-output" => {
                     config.benchmark_output = take_value(
                         "--benchmark-output",
@@ -813,6 +1026,7 @@ impl EngineConfig {
                         take_value("--profile-commit", "a commit hash", args.next())?;
                 }
                 "--profile-dirty-worktree" => config.profile_dirty_worktree = true,
+                "--profile-gpu-inventory" => config.profile_gpu_inventory = true,
                 "--profile-hardware" => {
                     config.profile_hardware = take_value(
                         "--profile-hardware",
@@ -945,6 +1159,36 @@ impl EngineConfig {
             }
         }
         config.drop_jump_the_run_would_overwrite();
+        if config.streaming_benchmark_route_speed.is_some()
+            && (config.benchmark_only
+                || config.acceptance_screenshot.is_some()
+                || config.shots.is_some()
+                || config.material_fixture
+                || config.terrain_water_fixture
+                || config.transform_bounds_fixture
+                || config.renderer_fixture
+                || config.streaming_fixture
+                || config.physics_fixture)
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-speed",
+                config
+                    .streaming_benchmark_route_speed
+                    .map(|speed| speed.to_string()),
+                "a world camera route without screenshots, shots, synthetic mode or fixtures",
+            ));
+        }
+        if let Some(speed) = config.streaming_benchmark_route_speed
+            && (!(speed * config.streaming_benchmark_route_secs).is_finite()
+                || !(config.streaming_benchmark_route_secs + config.streaming_benchmark_tail_secs)
+                    .is_finite())
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-secs",
+                Some(config.streaming_benchmark_route_secs.to_string()),
+                "a duration whose route distance and total duration remain finite",
+            ));
+        }
         Ok(ConfigAction::Run(Box::new(config)))
     }
 
@@ -1109,6 +1353,18 @@ fn take_value<T: std::str::FromStr>(
     value
         .parse::<T>()
         .map_err(|_| ConfigError::invalid_value(option, Some(value), expected))
+}
+
+fn take_mib(
+    option: &'static str,
+    expected: &'static str,
+    value: Option<String>,
+) -> Result<usize, ConfigError> {
+    let raw = take_raw(option, expected, value)?;
+    raw.parse::<usize>()
+        .ok()
+        .filter(|mib| mib.checked_mul(1024 * 1024).is_some())
+        .ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
 }
 
 /// The range a numeric option's value must fall in. Neither admits NaN or an infinity.
@@ -1294,6 +1550,16 @@ mod tests {
         "--timeout",             // repeat-terrain-startup.py
         "--launch-prefix",       // repeat-terrain-startup.py
         "--commit",              // repeat-terrain-startup.py
+        "--costs",               // compare-streaming-modes.py
+        "--thermal-probe",       // compare-streaming-modes.py
+        "--ablation-repeats",    // compare-streaming-modes.py
+        "--resume",              // compare-streaming-modes.py
+        "--seed",                // streaming comparison scripts
+        "--smoke",               // compare-streaming-modes.py
+        "--experiment",          // analyze-streaming-comparison.py
+        "--output-dir",          // analyze-streaming-comparison.py
+        "--bootstrap-samples",   // analyze-streaming-comparison.py
+        "--comparison",          // analyze-streaming-comparison.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -1333,6 +1599,291 @@ mod tests {
         assert_eq!(config.max_cell_unloads_per_frame, 2);
         assert_eq!(config.max_model_spawns_per_frame, 32);
         assert_eq!(config.io_threads, 0);
+    }
+
+    #[test]
+    fn gpu_inventory_is_separate_from_normal_profile_output() {
+        assert!(!EngineConfig::default().profile_gpu_inventory);
+        assert!(!run_config(&["--profile-output", "profiles/test"]).profile_gpu_inventory);
+        let diagnostic = run_config(&[
+            "--profile-gpu-inventory",
+            "--profile-output",
+            "profiles/test",
+        ]);
+        assert!(diagnostic.profile_gpu_inventory);
+        assert_eq!(
+            diagnostic.profile_output_dir,
+            Some(PathBuf::from("profiles/test"))
+        );
+        // Parsing the switch alone must not implicitly enable profile collection.
+        let without_output = run_config(&["--profile-gpu-inventory"]);
+        assert!(without_output.profile_gpu_inventory);
+        assert!(without_output.profile_output_dir.is_none());
+    }
+
+    #[test]
+    fn demand_scheduling_is_opt_in_and_keeps_zero_unlimited() {
+        let defaults = EngineConfig::default();
+        assert!(!defaults.prioritize_streaming);
+        assert_eq!(defaults.max_scene_loads, 0);
+        let candidate = run_config(&["--prioritize-streaming", "--max-scene-loads", "32"]);
+        assert!(candidate.prioritize_streaming);
+        assert_eq!(candidate.max_scene_loads, 32);
+        assert_eq!(run_config(&["--max-scene-loads", "0"]).max_scene_loads, 0);
+        assert!(matches!(
+            parse_error(&["--max-scene-loads", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_controls_default_off_and_preserve_fixed_limits() {
+        let config = run_config(&[]);
+        assert!(!config.adaptive_streaming);
+        assert!(!config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 0);
+        assert_eq!(config.memory_budget_bytes(), None);
+        assert_eq!(config.streaming_headroom_bytes(), 2_048 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 16.67);
+        assert!(config.streaming_costs.is_none());
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+        assert_eq!(config.max_upload_bytes_per_frame(), Some(16 * 1024 * 1024));
+    }
+
+    #[test]
+    fn dedicated_streaming_benchmark_route_is_opt_in_and_accepts_stationary_speed() {
+        let defaults = run_config(&[]);
+        assert!(!defaults.benchmark_vsync);
+        assert!(defaults.streaming_benchmark_route_speed.is_none());
+        assert_eq!(defaults.streaming_benchmark_settle_secs, 5.0);
+        let config = run_config(&[
+            "--streaming-benchmark-route-speed",
+            "0",
+            "--streaming-benchmark-route-secs",
+            "45",
+            "--streaming-benchmark-tail-secs",
+            "10",
+            "--streaming-benchmark-settle-secs",
+            "5",
+            "--streaming-benchmark-expected-models",
+            "2029",
+            "--streaming-benchmark-expected-lod-chunks",
+            "176",
+            "--streaming-benchmark-expected-terrain",
+            "100",
+            "--streaming-benchmark-expected-water",
+            "25",
+            "--benchmark-vsync",
+        ]);
+        assert_eq!(config.streaming_benchmark_route_speed, Some(0.0));
+        assert_eq!(config.streaming_benchmark_route_secs, 45.0);
+        assert_eq!(config.streaming_benchmark_tail_secs, 10.0);
+        assert_eq!(config.streaming_benchmark_expected_models, Some(2029));
+        assert_eq!(config.streaming_benchmark_expected_lod_chunks, Some(176));
+        assert_eq!(config.streaming_benchmark_expected_terrain, Some(100));
+        assert_eq!(config.streaming_benchmark_expected_water, Some(25));
+        assert!(config.benchmark_vsync);
+        assert!(!config.interactive_world_physics());
+        assert!(!config.streaming_controls_enabled());
+    }
+
+    #[test]
+    fn benchmark_route_rejects_invalid_numbers_and_anchored_camera_modes() {
+        for option in [
+            "--streaming-benchmark-route-speed",
+            "--streaming-benchmark-tail-secs",
+            "--streaming-benchmark-settle-secs",
+        ] {
+            for value in ["-1", "NaN", "inf"] {
+                assert!(matches!(
+                    parse_error(&[option, value]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+        }
+        for value in ["0", "-1", "NaN", "inf"] {
+            assert!(matches!(
+                parse_error(&["--streaming-benchmark-route-secs", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        for args in [
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--acceptance-screenshot",
+                "out.png",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--shots",
+                "poses.json",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--benchmark-only",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--physics-fixture",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "1e308",
+                "--streaming-benchmark-route-secs",
+                "1e308",
+            ],
+        ] {
+            assert!(matches!(
+                parse_error(&args),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn adaptive_mode_enables_priority_and_finite_automatic_pipeline_limits() {
+        let config = run_config(&["--adaptive-streaming"]);
+        assert!(config.adaptive_streaming);
+        assert!(config.prioritize_streaming);
+        assert!(config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        // Legacy fields keep their meaning; the runtime translates unlimited
+        // values into finite controller ceilings only for adaptive mode.
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+    }
+
+    #[test]
+    fn explicit_pipeline_limits_override_adaptive_fallbacks() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--max-streaming-backlog",
+            "48",
+            "--streaming-memory-mib",
+            "4096",
+            "--streaming-headroom-mib",
+            "1024",
+            "--streaming-frame-ms",
+            "33.33",
+            "--streaming-costs",
+            "metadata/custom-costs.json",
+        ]);
+        assert_eq!(config.streaming_backlog_limit(), 48);
+        assert_eq!(config.memory_budget_bytes(), Some(4_096 * 1024 * 1024));
+        assert_eq!(config.streaming_headroom_bytes(), 1_024 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(
+            config.streaming_costs,
+            Some(PathBuf::from("metadata/custom-costs.json"))
+        );
+    }
+
+    #[test]
+    fn backlog_and_memory_admission_can_be_enabled_without_adaptation() {
+        for args in [
+            vec!["--max-streaming-backlog", "64"],
+            vec!["--streaming-memory-mib", "1024"],
+        ] {
+            let config = run_config(&args);
+            assert!(config.streaming_controls_enabled());
+            assert!(!config.adaptive_streaming);
+            assert!(!config.prioritize_streaming);
+        }
+        for args in [
+            vec!["--max-streaming-backlog", "0"],
+            vec!["--streaming-memory-mib", "0"],
+            vec!["--streaming-costs", "costs.json"],
+            vec!["--streaming-frame-ms", "8.33"],
+            vec!["--streaming-headroom-mib", "0"],
+        ] {
+            assert!(!run_config(&args).streaming_controls_enabled());
+        }
+    }
+
+    #[test]
+    fn zero_pipeline_limits_select_automatic_limits_only_in_adaptive_mode() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--streaming-memory-mib",
+            "0",
+            "--max-streaming-backlog",
+            "0",
+            "--streaming-headroom-mib",
+            "0",
+        ]);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.streaming_headroom_bytes(), 0);
+    }
+
+    #[test]
+    fn pipeline_mib_values_must_fit_bytes_and_negative_values_are_rejected() {
+        let overflow = (usize::MAX / (1024 * 1024) + 1).to_string();
+        let maximum = (usize::MAX / (1024 * 1024)).to_string();
+        for option in ["--streaming-memory-mib", "--streaming-headroom-mib"] {
+            for invalid in ["-1", "NaN", "inf", overflow.as_str()] {
+                assert!(matches!(
+                    parse_error(&[option, invalid]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+            let config = run_config(&[option, &maximum]);
+            if option == "--streaming-memory-mib" {
+                assert_eq!(
+                    config.memory_budget_bytes(),
+                    Some((usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64)
+                );
+            } else {
+                assert_eq!(
+                    config.streaming_headroom_bytes(),
+                    (usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64
+                );
+            }
+        }
+        assert!(matches!(
+            parse_error(&["--max-streaming-backlog", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_frame_target_is_positive_finite_and_independent_of_acceptance() {
+        for value in ["0", "-1", "NaN", "inf", "-inf", "1e999"] {
+            assert!(matches!(
+                parse_error(&["--streaming-frame-ms", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        let config = run_config(&["--streaming-frame-ms", "33.33"]);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(config.accept_p95_ms, 16.67);
+        assert_eq!(config.accept_min_fps, 60.0);
+    }
+
+    #[test]
+    fn pipeline_options_require_values_without_swallowing_following_flags() {
+        for option in [
+            "--max-streaming-backlog",
+            "--streaming-memory-mib",
+            "--streaming-costs",
+            "--streaming-headroom-mib",
+            "--streaming-frame-ms",
+        ] {
+            assert!(matches!(
+                parse_error(&[option]),
+                ConfigError::InvalidValue { value: None, .. }
+            ));
+            assert!(matches!(
+                parse_error(&[option, "--headless"]),
+                ConfigError::InvalidValue { value: Some(value), .. } if value == "--headless"
+            ));
+        }
     }
 
     #[test]
