@@ -11,8 +11,14 @@
 // basis-universal-rs 0.3 compiles these stable low-level encoder entry points,
 // but does not expose them from its Rust API. Keeping the bridge header-free
 // avoids vendoring the codec and leaves ownership with the upstream crate.
+namespace basist {
+struct uastc_block;
+}
+
 namespace basisu {
 struct image_stats;
+void encode_uastc(const std::uint8_t* rgba, basist::uastc_block& block,
+                  std::uint32_t flags);
 void* basis_compress(const std::uint8_t* rgba, std::uint32_t width,
                      std::uint32_t height, std::uint32_t pitch_in_pixels,
                      std::uint32_t flags_and_quality, float uastc_rdo_quality,
@@ -27,6 +33,14 @@ extern "C" void* opensky_basis_compress_ktx2(
     return basisu::basis_compress(rgba, width, height, width,
                                   flags_and_quality, uastc_rdo_quality,
                                   size, nullptr);
+}
+
+// UASTC is block-local when RDO is disabled. Call the same upstream routine
+// as basis_compress, retaining its full default quality and transcode hints.
+// basis-universal-sys 0.3.1 defines uastc_block as a 16-byte, 4-byte-aligned union.
+extern "C" void opensky_basis_encode_uastc_block(
+    const std::uint8_t* rgba, std::uint8_t* block, std::uint32_t flags) {
+    basisu::encode_uastc(rgba, *reinterpret_cast<basist::uastc_block*>(block), flags);
 }
 
 extern "C" void opensky_basis_free(void* data) {
