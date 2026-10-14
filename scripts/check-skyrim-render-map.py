@@ -569,29 +569,37 @@ def main():
               'Unknown historical project-source checkpoint schema')
         checkpoint_files = {entry['path']: entry for entry in receipt['files']}
         check(len(checkpoint_files) == len(receipt['files']), 'Duplicate historical checkpoint file')
-        project_source_receipt = dict(path=str(receipt_path), sha256=digest(receipt_path),
+        project_source_receipt = dict(path='<project-source-evidence>/../receipt.json', sha256=digest(receipt_path),
                                       scope='Receipt identity and selected source-file pins only; no complete checkpoint inventory validation here.')
     for evidence in inputs['evidence']:
         path = Path(evidence['path'])
         if not path.is_absolute():
             path = root / path
         live_path = path
-        if args.project_source_evidence and evidence['level'] == 'project_source':
+        if evidence['level'] == 'project_source':
             relative = Path(evidence['path'])
             check(not relative.is_absolute() and '..' not in relative.parts,
-                  'Historical project-source pin must be a repository-relative file')
-            entry = checkpoint_files.get(str(relative))
-            check(entry and entry['kind'] == 'file' and entry['sha256'] == evidence['sha256'],
-                  'Historical project-source receipt does not match input-map pin: ' + evidence['id'])
-            path = project_source_root / relative
+                  'Project-source pin must be a repository-relative file: ' + evidence['id'])
+            live_hash = digest(live_path) if live_path.is_file() else None
+            if args.project_source_evidence:
+                entry = checkpoint_files.get(str(relative))
+                check(entry and entry['kind'] == 'file' and entry['sha256'] == evidence['sha256'],
+                      'Historical project-source receipt does not match input-map pin: ' + evidence['id'])
+                path = project_source_root / relative
+                check(path.exists(), 'Missing input evidence: ' + str(path))
+                check(digest(path) == evidence['sha256'], 'Stale input evidence: ' + str(path))
+                checked_path = '<project-source-evidence>/' + relative.as_posix()
+            else:
+                # Pins describe the source the map was researched against. Later implementation
+                # changes are recorded as differences, not failures, unless a checkpoint is given.
+                checked_path = relative.as_posix() if live_hash == evidence['sha256'] else None
+            project_source_rows.append(dict(evidence_id=evidence['id'], path=evidence['path'],
+                                            checked_path=checked_path, pinned_sha256=evidence['sha256'],
+                                            current_path=relative.as_posix(), current_sha256=live_hash,
+                                            current_source_matches_pin=live_hash == evidence['sha256']))
+            continue
         check(path.exists(), 'Missing input evidence: ' + str(path))
         check(digest(path) == evidence['sha256'], 'Stale input evidence: ' + str(path))
-        if evidence['level'] == 'project_source':
-            live_hash = digest(live_path) if live_path.is_file() else None
-            project_source_rows.append(dict(evidence_id=evidence['id'], path=evidence['path'],
-                                            checked_path=str(path), pinned_sha256=evidence['sha256'],
-                                            current_path=str(live_path), current_sha256=live_hash,
-                                            current_source_matches_pin=live_hash == evidence['sha256']))
     project_source_scope = dict(historical_snapshot_used=args.project_source_evidence is not None,
                                 receipt=project_source_receipt, rows=project_source_rows,
                                 all_current_source_files_match_pins=all(row['current_source_matches_pin'] for row in project_source_rows),

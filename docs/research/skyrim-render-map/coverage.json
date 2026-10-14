@@ -74,7 +74,7 @@
   "project_source_evidence": {
     "historical_snapshot_used": true,
     "receipt": {
-      "path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/receipt.json",
+      "path": "<project-source-evidence>/../receipt.json",
       "sha256": "0b2154066bc593c5d477bd8c490d1dcf124c79d56ee720a208ef1bbdf81e7aa9",
       "scope": "Receipt identity and selected source-file pins only; no complete checkpoint inventory validation here."
     },
@@ -82,36 +82,36 @@
       {
         "evidence_id": "I-E13",
         "path": "crates/shared/src/lighting.rs",
-        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/shared/src/lighting.rs",
+        "checked_path": "<project-source-evidence>/crates/shared/src/lighting.rs",
         "pinned_sha256": "df55ce6db61af17a4ef18cc56853ae8275a9992f30f55343d88968dbb5e85ddc",
-        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/shared/src/lighting.rs",
+        "current_path": "crates/shared/src/lighting.rs",
         "current_sha256": "df55ce6db61af17a4ef18cc56853ae8275a9992f30f55343d88968dbb5e85ddc",
         "current_source_matches_pin": true
       },
       {
         "evidence_id": "I-E14",
         "path": "crates/shared/src/environment.rs",
-        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/shared/src/environment.rs",
+        "checked_path": "<project-source-evidence>/crates/shared/src/environment.rs",
         "pinned_sha256": "0c31d9b638d3b5b7fd2616c23a629043aae22775d5ba906d5229aef6b7dd3d43",
-        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/shared/src/environment.rs",
+        "current_path": "crates/shared/src/environment.rs",
         "current_sha256": "0c31d9b638d3b5b7fd2616c23a629043aae22775d5ba906d5229aef6b7dd3d43",
         "current_source_matches_pin": true
       },
       {
         "evidence_id": "I-E15",
         "path": "crates/converter/src/material.rs",
-        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/converter/src/material.rs",
+        "checked_path": "<project-source-evidence>/crates/converter/src/material.rs",
         "pinned_sha256": "013a93f071648512572e065c4f7d4c9d9be70eed1301b023c247cd1d3fb885ae",
-        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/converter/src/material.rs",
+        "current_path": "crates/converter/src/material.rs",
         "current_sha256": "c2c805ae82ce8fac3af121aa3ca1f00d34e09f8ce4237b78262105b3e3176ffb",
         "current_source_matches_pin": false
       },
       {
         "evidence_id": "I-E16",
         "path": "crates/converter/src/mesh.rs",
-        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/converter/src/mesh.rs",
+        "checked_path": "<project-source-evidence>/crates/converter/src/mesh.rs",
         "pinned_sha256": "756052ec52dd1f028e65a62a0adcfe5e55194418d90dde657ec2e558fe66c0a0",
-        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/converter/src/mesh.rs",
+        "current_path": "crates/converter/src/mesh.rs",
         "current_sha256": "820a2f075936901787f60ce16c85180045bd4973d2f1769e3bec35cc40ba1996",
         "current_source_matches_pin": false
       }

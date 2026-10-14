@@ -66,8 +66,10 @@ implementation change, pass `--project-source-evidence /path/to/checkpoint/works
 to check those historical files against the checkpoint receipt and map pins.
 Coverage records the receipt hash, selected file hashes and differences from the
 current source. It does not refresh the earlier interpretations or validate the
-whole checkpoint inventory. Without this option, changed source pins fail the
-check.
+whole checkpoint inventory. Without this option, the checker records each pin's
+current repository hash and whether it still matches. Changed or missing source
+files do not fail the check. Coverage paths are repository-relative, and the
+`<project-source-evidence>` placeholder stands for the checkpoint workspace.
 
 The main package payload is 67,768,128 bytes, SHA-256
 `72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc`.
