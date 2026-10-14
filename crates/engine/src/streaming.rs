@@ -1,4 +1,4 @@
-use crate::physics::{DebugTankard, PlayerBody};
+use crate::physics::{DebugTankard, PlayerBody, PlayerControlsSystems};
 use crate::{
     config::EngineConfig,
     nif_depth::NifDepthMaterialSource,
@@ -115,7 +115,8 @@ impl Plugin for StreamingPlugin {
                     validate_streaming_lifecycle,
                     runtime::observe_streaming_ownership,
                 )
-                    .chain(),
+                    .chain()
+                    .after(PlayerControlsSystems),
             )
             // Bevy instantiates every ready converted model in one unbudgeted pass inside
             // `SceneSpawnerSystems::WorldInstanceSpawn`; these two systems bracket that pass so the
@@ -152,6 +153,14 @@ pub struct StreamingWorld {
     /// Keep each dispatched payload accounted for after its cell leaves the wanted window.
     /// An entry survives channel delivery and deferral until the response is consumed.
     outstanding_cells: HashMap<CellKey, u64>,
+    /// The exterior grid square [`plan_cells`] last measured the window against, or `None` when
+    /// it had no camera to plan from. The lifecycle check measures against this square rather than
+    /// re-reading the camera: the camera writers are not ordered against the streaming chain, so
+    /// the camera can cross into another cell after the planner ran and before the check runs, and
+    /// a check that re-read it would judge the window by a centre the planner has not seen yet
+    /// (Mudcrab #217). It is a global grid square, so an origin rebase between the two leaves it
+    /// valid.
+    planned_center: Option<IVec2>,
 }
 
 impl StreamingWorld {
@@ -594,6 +603,7 @@ fn plan_cells(
     commit_budget.lod_priority = !commit_budget.lod_priority;
     commit_budget.reserved_for_lod = false;
     let Ok(camera) = camera.single() else {
+        streaming.planned_center = None;
         return;
     };
     // Screenshot runs frame the configured start cell from an artistic
@@ -602,6 +612,7 @@ fn plan_cells(
     // the framed cells empty; anchor on the start cell instead. Interactive
     // runs keep following the camera.
     let center = window_center(&config, camera.translation, origin.0);
+    streaming.planned_center = Some(center);
     let mut wanted = HashSet::new();
     for y in -config.stream_radius..=config.stream_radius {
         for x in -config.stream_radius..=config.stream_radius {
@@ -3673,9 +3684,7 @@ fn update_render_origin(
 #[allow(clippy::too_many_arguments)]
 fn validate_streaming_lifecycle(
     config: Res<EngineConfig>,
-    origin: Res<RenderOrigin>,
     streaming: Res<StreamingWorld>,
-    camera: Query<&Transform, With<StreamingCamera>>,
     roots: Query<(Entity, &CellRef, Option<&ExteriorCellGrid>), With<StreamedCellRoot>>,
     static_colliders: Query<(), With<StaticColliderSource>>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -3713,10 +3722,11 @@ fn validate_streaming_lifecycle(
     let duplicate_roots = roots_by_cell.values().filter(|count| **count > 1).count() as u64;
     let orphaned_roots = root_entities.difference(&resident_entities).count() as u64;
     let missing_roots = resident_entities.difference(&root_entities).count() as u64;
-    let out_of_range_roots = camera.single().map_or(0, |camera| {
-        // Must match plan_cells: screenshot runs anchor streaming on the
-        // start cell, not the camera.
-        let center = window_center(&config, camera.translation, origin.0);
+    // Measured against the centre the planner retired cells by this frame, not the camera's square
+    // now: a camera that crossed a cell after `plan_cells` ran is the next frame's plan, and its
+    // trailing cells are retired then. A resident root outside the planned window is still a
+    // violation, whatever the camera did. With no plan this frame there is no window to check.
+    let out_of_range_roots = streaming.planned_center.map_or(0, |center| {
         root_entries
             .iter()
             // A retiring root is outside the radius by construction: it is waiting for its turn in
@@ -4753,6 +4763,116 @@ mod tests {
         );
         assert_eq!(resident_root_count(&mut app), roots_after_crossing);
         assert_eq!(after_reversal.streaming_invariant_failures, 0);
+    }
+
+    /// A camera move the next system run applies, standing in for a camera writer (noclip flight,
+    /// the walk follow, the fly camera) that Bevy schedules after the planner in the same frame.
+    #[derive(Resource, Default)]
+    struct MidFrameCameraShift(Option<IVec2>);
+
+    fn shift_camera_mid_frame(
+        mut shift: ResMut<MidFrameCameraShift>,
+        mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    ) {
+        let Some(shift) = shift.0.take() else {
+            return;
+        };
+        for mut transform in &mut camera {
+            transform.translation.x += shift.x as f32 * CELL_SIZE;
+            transform.translation.z -= shift.y as f32 * CELL_SIZE;
+        }
+    }
+
+    /// Mudcrab #217: the camera writers are not ordered against the streaming chain, so a cell
+    /// crossing can land after `plan_cells` and before `validate_streaming_lifecycle`. The planner
+    /// kept the trailing row inside the unload radius of the centre it saw; the check must judge
+    /// the window by that same centre, not by one the planner has not run against yet.
+    #[test]
+    fn a_crossing_between_the_planner_and_the_check_is_not_an_invariant_failure() {
+        // The reported run: `--stream-radius 2`, so the unload radius is one ring wider.
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 2,
+            unload_radius: 3,
+            max_cell_unloads_per_frame: 2,
+            ..default()
+        });
+        app.init_resource::<MidFrameCameraShift>().add_systems(
+            Update,
+            shift_camera_mid_frame
+                .after(plan_cells)
+                .before(validate_streaming_lifecycle),
+        );
+        let start = IVec2::new(5, -12);
+        spawn_camera(&mut app, start);
+        for grid_y in (start.y - 2)..=(start.y + 2) {
+            for grid_x in (start.x - 2)..=(start.x + 2) {
+                spawn_mock_cell(&mut app, grid_x, grid_y, true);
+            }
+        }
+        app.update();
+        // One cell east: the start window's west column is now exactly at the unload radius.
+        move_camera(&mut app, IVec2::X);
+        app.update();
+        assert_eq!(streaming_metrics(&app).streaming_invariant_failures, 0);
+
+        // The next crossing lands between the planner and the check.
+        app.world_mut().resource_mut::<MidFrameCameraShift>().0 = Some(IVec2::X);
+        app.update();
+        let crossed = streaming_metrics(&app);
+        assert_eq!(
+            crossed.out_of_range_cell_roots, 0,
+            "the planner had not seen the crossing, so it could not have retired the column yet"
+        );
+        assert_eq!(crossed.streaming_invariant_failures, 0);
+
+        // The following frame plans against the new centre and retires the column as usual.
+        app.update();
+        let replanned = streaming_metrics(&app);
+        assert_eq!(
+            replanned.retiring_cells + replanned.unloaded_cells as usize,
+            5
+        );
+        assert_eq!(replanned.out_of_range_cell_roots, 0);
+        assert_eq!(replanned.streaming_invariant_failures, 0);
+    }
+
+    /// The check still catches what it exists for: a resident root the planner left outside the
+    /// unload radius of the centre it planned against.
+    #[test]
+    fn a_resident_root_outside_the_planned_window_still_fails_the_check() {
+        let (mut app, _directory) = streaming_test_app(EngineConfig {
+            stream_radius: 2,
+            unload_radius: 3,
+            ..default()
+        });
+        app.add_systems(
+            Update,
+            (|mut streaming: ResMut<StreamingWorld>,
+              mut commands: Commands,
+              mut spawned: Local<bool>| {
+                if std::mem::replace(&mut *spawned, true) {
+                    return;
+                }
+                // Committed behind the planner's back, as a broken commit path would.
+                let root = commands
+                    .spawn((
+                        CellRef(cell_id_of(10, 0)),
+                        StreamedCellRoot,
+                        ExteriorCellGrid(IVec2::new(10, 0)),
+                    ))
+                    .id();
+                streaming
+                    .cells
+                    .insert(exterior_key(10, 0), CellStatus::Resident { root });
+            })
+            .after(plan_cells)
+            .before(validate_streaming_lifecycle),
+        );
+        spawn_camera(&mut app, IVec2::ZERO);
+        app.update();
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 1);
+        assert_eq!(metrics.streaming_invariant_failures, 1);
     }
 
     #[test]

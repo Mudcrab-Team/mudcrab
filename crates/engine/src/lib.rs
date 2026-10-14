@@ -1,5 +1,6 @@
 pub mod app;
 mod capture_frame;
+pub mod cell_commands;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;
