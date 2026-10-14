@@ -144,6 +144,8 @@ pub(crate) struct StreamingTrace {
     samples: Vec<StreamingFrameSample>,
     dropped_samples: u64,
     scenes: HashMap<AssetId<WorldAsset>, SceneRecord>,
+    /// Running per-state totals over `scenes`, so a frame sample never rescans the ledger.
+    scene_totals: SceneCounts,
     untracked_observation_calls: u64,
     gpu_inventory_enabled: bool,
 }
@@ -169,6 +171,7 @@ impl StreamingTrace {
             samples: Vec::new(),
             dropped_samples: 0,
             scenes: HashMap::new(),
+            scene_totals: SceneCounts::default(),
             untracked_observation_calls: 0,
             gpu_inventory_enabled: false,
         }
@@ -183,8 +186,10 @@ impl StreamingTrace {
     pub(crate) fn observe_scene(&mut self, id: AssetId<WorldAsset>) -> bool {
         if let Some(record) = self.scenes.get_mut(&id) {
             if !record.active {
+                tally(&mut self.scene_totals, record, -1);
                 record.active = true;
                 record.status = SceneLoadStatus::Loading;
+                tally(&mut self.scene_totals, record, 1);
             }
             return true;
         }
@@ -192,32 +197,35 @@ impl StreamingTrace {
             self.untracked_observation_calls = self.untracked_observation_calls.saturating_add(1);
             return false;
         }
-        self.scenes.insert(
-            id,
-            SceneRecord {
-                active: true,
-                status: SceneLoadStatus::Loading,
-                ever_cpu_loaded: false,
-                ever_failed: false,
-            },
-        );
+        let record = SceneRecord {
+            active: true,
+            status: SceneLoadStatus::Loading,
+            ever_cpu_loaded: false,
+            ever_failed: false,
+        };
+        tally(&mut self.scene_totals, &record, 1);
+        self.scenes.insert(id, record);
         true
     }
 
     /// Update only an already-observed ID. CPU-loaded means recursive dependencies loaded.
     pub(crate) fn update_scene(&mut self, id: AssetId<WorldAsset>, status: SceneLoadStatus) {
         if let Some(record) = self.scenes.get_mut(&id) {
+            tally(&mut self.scene_totals, record, -1);
             record.active = true;
             record.status = status;
             record.ever_cpu_loaded |= status == SceneLoadStatus::CpuLoaded;
             record.ever_failed |= status == SceneLoadStatus::Failed;
+            tally(&mut self.scene_totals, record, 1);
         }
     }
 
     /// Mark an absent load state inactive; this does not assert that memory was freed.
     pub(crate) fn remove_scene(&mut self, id: AssetId<WorldAsset>) {
         if let Some(record) = self.scenes.get_mut(&id) {
+            tally(&mut self.scene_totals, record, -1);
             record.active = false;
+            tally(&mut self.scene_totals, record, 1);
         }
     }
 
@@ -234,27 +242,29 @@ impl StreamingTrace {
         })
     }
 
+    /// Constant time: per-state totals are maintained as records change.
     pub(crate) fn scene_counts(&self) -> SceneCounts {
-        let mut counts = SceneCounts {
+        SceneCounts {
             lifetime_unique_observed: self.scenes.len(),
             identity_tracking_complete: self.untracked_observation_calls == 0,
             untracked_observation_calls: self.untracked_observation_calls,
-            ..Default::default()
-        };
-        for record in self.scenes.values() {
-            counts.lifetime_unique_cpu_loaded += usize::from(record.ever_cpu_loaded);
-            counts.lifetime_unique_failed += usize::from(record.ever_failed);
-            if !record.active {
-                counts.inactive_observed += 1;
-            } else {
-                match record.status {
-                    SceneLoadStatus::Loading => counts.active_loading += 1,
-                    SceneLoadStatus::CpuLoaded => counts.active_cpu_loaded += 1,
-                    SceneLoadStatus::Failed => counts.active_failed += 1,
-                }
-            }
+            ..self.scene_totals.clone()
         }
-        counts
+    }
+
+    /// Full-ledger recount that the running totals must always equal.
+    #[cfg(test)]
+    fn recounted_scene_counts(&self) -> SceneCounts {
+        let mut counts = SceneCounts::default();
+        for record in self.scenes.values() {
+            tally(&mut counts, record, 1);
+        }
+        SceneCounts {
+            lifetime_unique_observed: self.scenes.len(),
+            identity_tracking_complete: self.untracked_observation_calls == 0,
+            untracked_observation_calls: self.untracked_observation_calls,
+            ..counts
+        }
     }
 
     pub(crate) fn push_frame(&mut self, mut sample: StreamingFrameSample) {
@@ -279,6 +289,23 @@ impl StreamingTrace {
             samples: &self.samples,
         }
     }
+}
+
+/// Add (`sign` 1) or remove (`sign` -1) one record's contribution to the per-state totals.
+fn tally(counts: &mut SceneCounts, record: &SceneRecord, sign: isize) {
+    let apply = |count: &mut usize| *count = count.wrapping_add_signed(sign);
+    if record.ever_cpu_loaded {
+        apply(&mut counts.lifetime_unique_cpu_loaded);
+    }
+    if record.ever_failed {
+        apply(&mut counts.lifetime_unique_failed);
+    }
+    apply(match (record.active, record.status) {
+        (false, _) => &mut counts.inactive_observed,
+        (true, SceneLoadStatus::Loading) => &mut counts.active_loading,
+        (true, SceneLoadStatus::CpuLoaded) => &mut counts.active_cpu_loaded,
+        (true, SceneLoadStatus::Failed) => &mut counts.active_failed,
+    });
 }
 
 #[cfg(test)]
@@ -406,6 +433,34 @@ mod tests {
         assert_eq!(counts.lifetime_unique_failed, 1);
         assert_eq!(counts.active_cpu_loaded, 1);
         assert_eq!(counts.active_failed, 0);
+    }
+
+    #[test]
+    fn running_scene_counts_match_a_full_recount() {
+        let assets = Assets::<WorldAsset>::default();
+        let ids: Vec<_> = (0..4).map(|_| assets.reserve_handle().id()).collect();
+        let mut trace = StreamingTrace::new(4, 3);
+        let statuses = [
+            SceneLoadStatus::Loading,
+            SceneLoadStatus::CpuLoaded,
+            SceneLoadStatus::Failed,
+        ];
+        for step in 0..60usize {
+            let id = ids[step * 7 % ids.len()];
+            match step % 5 {
+                0 | 3 => {
+                    trace.observe_scene(id);
+                }
+                1 | 4 => trace.update_scene(id, statuses[step % statuses.len()]),
+                _ => trace.remove_scene(id),
+            }
+            assert_eq!(
+                format!("{:?}", trace.scene_counts()),
+                format!("{:?}", trace.recounted_scene_counts()),
+                "after step {step}"
+            );
+        }
+        assert!(!trace.scene_counts().identity_tracking_complete);
     }
 
     #[test]

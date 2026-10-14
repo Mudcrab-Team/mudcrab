@@ -1,8 +1,8 @@
 # Streaming trace semantics
 
-Phase 1 of #202 adds opt-in observations of the existing streaming pipeline. It does not change asset admission, instance quotas, upload budgets, terrain handoff or movement policy. Enable CPU, queue, camera and completion-latency collection with `--profile-output <dir>`. GPU inventory is disabled by default; enable the separate expensive diagnostic with `--profile-gpu-inventory --profile-output <dir>`. The GPU flag alone does not enable collection.
+Phase 1 of #202 adds opt-in observations of the existing streaming pipeline. It does not change asset admission, instance quotas, upload budgets, terrain handoff or movement policy. Enable CPU, queue, camera and completion-latency collection with `--profile-output <dir>`. GPU inventory is disabled by default; enable the separate expensive diagnostic with `--profile-gpu-inventory --profile-output <dir>`. The GPU flag alone is rejected; it does not enable collection.
 
-The new artifact is `streaming-frames.json`, with `format_version: 1`. It is separate from the existing benchmark report (version 7), metadata (version 1) and two-column measured-only frame CSV. The bundle is written when a benchmark finishes; use `--benchmark-frames` or `--benchmark-duration` to export the trace. Collection outside a benchmark currently remains in memory. Preserve the profile bundle's run provenance when comparing captures: candidate revision, asset-pack identity, engine/backend, settings, hardware and cache conditions. A fresh process does not establish a cold filesystem cache.
+The new artifact is `streaming-frames.json`, with `format_version: 1`. It is separate from the existing benchmark report (version 8), metadata (version 1) and two-column measured-only frame CSV. The bundle is written when a benchmark finishes; use `--benchmark-frames` or `--benchmark-duration` to export the trace. Collection outside a benchmark currently remains in memory. Preserve the profile bundle's run provenance when comparing captures: candidate revision, asset-pack identity, engine/backend, settings, hardware and cache conditions. A fresh process does not establish a cold filesystem cache.
 
 ## Frame correlation
 
@@ -48,4 +48,4 @@ The GPU bridge retains one request and one latest observation. It holds no asset
 
 Retain existing settled visual and complete-load checks alongside startup traces. Evaluate frame pacing together with useful coverage and collision evidence: lower frame times accompanied by longer missing buildings do not establish an improvement. This phase provides measurements for later controller work and claims no performance gain.
 
-[PR #122](https://github.com/Mudcrab-Team/mudcrab/pull/122) covers ready-window aggregate pacing. This trace is a separately versioned addition and retains benchmark format 7 until that work merges; reconcile the overlapping measurements when integrating it.
+[PR #122](https://github.com/Mudcrab-Team/mudcrab/pull/122) covers ready-window aggregate pacing. This trace is a separately versioned addition and retains benchmark format 8 until that work merges; reconcile the overlapping measurements when integrating it.

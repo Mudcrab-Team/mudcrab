@@ -307,6 +307,11 @@ pub enum ConfigError {
         /// What the option needs, phrased for the message.
         expected: &'static str,
     },
+    /// An option that only works together with another option that was not given.
+    MissingRequirement {
+        option: &'static str,
+        requires: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -355,6 +360,10 @@ impl fmt::Display for ConfigError {
             Self::UnexpectedArgument { argument } => write!(
                 formatter,
                 "unexpected argument '{argument}'. Run with --help to list every option."
+            ),
+            Self::MissingRequirement { option, requires } => write!(
+                formatter,
+                "option '{option}' requires '{requires}'. Run with --help to list every option."
             ),
             Self::InvalidValue {
                 option,
@@ -761,6 +770,13 @@ impl EngineConfig {
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
         }
+        // The inventory is written into the profile bundle; without one it would do nothing.
+        if config.profile_gpu_inventory && config.profile_output_dir.is_none() {
+            return Err(ConfigError::MissingRequirement {
+                option: "--profile-gpu-inventory",
+                requires: "--profile-output",
+            });
+        }
         config.drop_jump_the_run_would_overwrite();
         Ok(ConfigAction::Run(Box::new(config)))
     }
@@ -1127,10 +1143,20 @@ mod tests {
             diagnostic.profile_output_dir,
             Some(PathBuf::from("profiles/test"))
         );
-        // Parsing the switch alone must not implicitly enable profile collection.
-        let without_output = run_config(&["--profile-gpu-inventory"]);
-        assert!(without_output.profile_gpu_inventory);
-        assert!(without_output.profile_output_dir.is_none());
+        // The switch alone must not silently do nothing or implicitly enable profile collection.
+        let error = parse_error(&["--profile-gpu-inventory"]);
+        assert!(matches!(
+            error,
+            ConfigError::MissingRequirement {
+                option: "--profile-gpu-inventory",
+                requires: "--profile-output",
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "option '--profile-gpu-inventory' requires '--profile-output'. \
+             Run with --help to list every option."
+        );
     }
 
     #[test]

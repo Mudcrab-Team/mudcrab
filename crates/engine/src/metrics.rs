@@ -139,6 +139,10 @@ fn observe_camera(
     }
 }
 
+/// Runs in `Last` before `collect_and_finish`, and `profiling::begin_trace_frame` clears the
+/// per-frame span maps in `First`. Spans recorded after this system in `Last`, or by render-world
+/// callbacks that land after it, therefore never reach the per-frame trace. They still reach the
+/// aggregate profile, so the trace's span totals can be slightly lower than the aggregate.
 #[allow(clippy::too_many_arguments)]
 fn sample_streaming_trace(
     config: Res<EngineConfig>,
