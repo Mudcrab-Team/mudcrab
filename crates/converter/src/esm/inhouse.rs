@@ -4,6 +4,7 @@
 use crate::{
     config::RecordReader,
     esm::{
+        RecordConversion,
         cell_cache::validate_inhouse_land,
         exporter::{
             create_tables, export_inhouse_record_archive_to_db, export_inhouse_to_db,
@@ -412,13 +413,17 @@ impl Warnings {
         }
     }
 
-    /// Emit deterministic plugin summaries after usable neighbors are exported.
-    fn report(&self) {
+    /// Print and return deterministic plugin summaries after usable neighbors are exported.
+    fn report(&self) -> Vec<String> {
+        let mut lines = Vec::with_capacity(self.summary.len());
         for (plugin, (count, first)) in &self.summary {
-            eprintln!(
+            let line = format!(
                 "warning: {plugin}: inhouse adapter reported {count} local decode/lookup issues (first: {first})"
             );
+            eprintln!("{line}");
+            lines.push(line);
         }
+        lines
     }
 }
 
@@ -530,6 +535,7 @@ pub(crate) fn write_terrain_caches(
 }
 
 /// Decode and export with one shared load-order mapping; plugin data failures stay local.
+#[cfg(test)]
 pub(crate) fn convert_plugins(
     plugin_paths: &[PathBuf],
     db_path: &Path,
@@ -544,31 +550,15 @@ pub(crate) fn convert_plugins(
     )
 }
 
-/// Decode and publish with a schema batch already checked before staging.
-pub(crate) fn convert_plugins_with_schemas(
-    plugin_paths: &[PathBuf],
-    db_path: &Path,
-    strings_root: &Path,
-    schemas: &records::addons::RuntimeSchemas,
-) -> Result<HashMap<u32, RawRecord>> {
-    convert_plugins_with_dump_and_schemas(
-        plugin_paths,
-        db_path,
-        strings_root,
-        None,
-        RecordBundleMode::Full,
-        Some(schemas),
-    )
-}
-
-/// Share authoritative loose sources between localized candidate admission and publication.
-pub(crate) fn convert_plugins_with_string_sources(
+/// Publish usable records and return every bounded decoder/adapter warning to the caller.
+/// One authoritative text-source policy applies to candidate admission and publication.
+pub(crate) fn convert_plugins_with_string_sources_report(
     plugin_paths: &[PathBuf],
     db_path: &Path,
     string_sources: StringSources<'_>,
     schemas: Option<&records::addons::RuntimeSchemas>,
-) -> Result<HashMap<u32, RawRecord>> {
-    convert_plugins_with_text_sources_impl(
+) -> Result<RecordConversion> {
+    convert_plugins_with_text_sources_report_impl(
         plugin_paths,
         db_path,
         string_sources,
@@ -634,7 +624,7 @@ fn convert_plugins_with_dump_impl(
     )
 }
 
-/// One explicit text-source policy applies to both winner validation and final projection.
+/// Preserve map-returning diagnostic/test entry points while sharing warning collection.
 fn convert_plugins_with_text_sources_impl(
     plugin_paths: &[PathBuf],
     db_path: &Path,
@@ -644,6 +634,29 @@ fn convert_plugins_with_text_sources_impl(
     schemas: Option<&records::addons::RuntimeSchemas>,
     #[cfg(test)] test_schema: Option<&records::schema_format::Schema>,
 ) -> Result<HashMap<u32, RawRecord>> {
+    convert_plugins_with_text_sources_report_impl(
+        plugin_paths,
+        db_path,
+        string_sources,
+        dump,
+        mode,
+        schemas,
+        #[cfg(test)]
+        test_schema,
+    )
+    .map(|conversion| conversion.records)
+}
+
+/// Return the published records and bounded summaries without changing recovery semantics.
+fn convert_plugins_with_text_sources_report_impl(
+    plugin_paths: &[PathBuf],
+    db_path: &Path,
+    string_sources: StringSources<'_>,
+    dump: Option<(&Path, &[[u8; 4]])>,
+    mode: RecordBundleMode,
+    schemas: Option<&records::addons::RuntimeSchemas>,
+    #[cfg(test)] test_schema: Option<&records::schema_format::Schema>,
+) -> Result<RecordConversion> {
     let builtin;
     let schemas = match schemas {
         Some(schemas) => schemas,
@@ -1004,11 +1017,19 @@ fn convert_plugins_with_text_sources_impl(
             }))?,
         )?;
     }
+    let mut report_warnings = decoded
+        .diagnostics
+        .iter()
+        .flat_map(|(name, diagnostics)| diagnostics.summary_lines(name))
+        .collect::<Vec<_>>();
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     drop(decoded);
     release_stage.finish(master.len());
-    warnings.report();
-    Ok(master)
+    report_warnings.extend(warnings.report());
+    Ok(RecordConversion {
+        records: master,
+        warnings: report_warnings,
+    })
 }
 
 /// Free reader-only header/override lookups after winners and observation are finalized.

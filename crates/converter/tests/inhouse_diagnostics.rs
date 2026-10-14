@@ -42,7 +42,19 @@ async fn publish(data: &Path, output: &Path) {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    // Every caller uses the damaged history fixture, whose usable records still publish.
+    assert!(
+        !report.complete,
+        "recovery diagnostics must make the run incomplete"
+    );
+    assert_eq!(report.skipped, 0);
+    assert!(
+        report.warnings.iter().any(|warning| {
+            warning.contains("patch.esp") && warning.contains("in-house reader skipped")
+        }),
+        "{:?}",
+        report.warnings
+    );
 }
 
 /// Multiple same-category events retain physical identity and neighboring usable records.

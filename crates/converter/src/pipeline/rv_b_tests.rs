@@ -88,13 +88,19 @@ fn write_archive(data: &Path, name: &str, payload: &[u8]) {
 
 /// Runs the complete conversion, validation and pack-publication path.
 async fn publish(config: PipelineConfig) -> PipelineReport {
+    let report = publish_report(config).await;
+    assert!(report.complete, "{:#?}", report.warnings);
+    report
+}
+
+/// Publish usable records while allowing a fixture's deliberate recovery warnings.
+async fn publish_report(config: PipelineConfig) -> PipelineReport {
     assert!(config.no_lod);
     let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
     let result = AssetPipeline::run_async(config, sender).await;
     drain.await.unwrap();
     let report = result.unwrap();
-    assert!(report.complete, "{:#?}", report.warnings);
     assert_eq!(report.skipped, 0);
     report
 }
@@ -210,7 +216,12 @@ async fn reader_switch_reuses_archives_and_assets_but_rebuilds_database_and_cell
     .unwrap();
 
     let inhouse = fixture.config(RecordReader::Inhouse);
-    let switched = publish(inhouse).await;
+    let switched = publish_report(inhouse).await;
+    assert!(!switched.complete);
+    assert_eq!(switched.warnings.len(), 1, "{:?}", switched.warnings);
+    assert!(switched.warnings[0].contains("skyrim.esm"));
+    assert!(switched.warnings[0].contains("OBND"));
+    assert!(!manifest(&fixture.output).complete);
     assert_eq!(
         switched.converted, 0,
         "reader identity must not re-encode unchanged assets or re-extract archives"

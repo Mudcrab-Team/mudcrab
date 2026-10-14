@@ -17,8 +17,9 @@ use crate::{
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
     pipeline::{
-        archive_load_order_priority, compile_lod_chunks, discover, overlay_loose_assets,
-        publish_new_directory, sort_archives_by_load_order, staging_path, validate_artifacts,
+        archive_load_order_priority, compile_lod_chunks, conversion_is_complete, discover,
+        overlay_loose_assets, publish_new_directory, sort_archives_by_load_order, staging_path,
+        validate_artifacts,
     },
     records::addons::RuntimeSchemas,
 };
@@ -67,6 +68,7 @@ impl AssetPipeline {
     /// Publishes only to a new, disjoint directory. The source package and its
     /// retained GLB/KTX2/Luau bytes are never modified or relabeled in place.
     /// MO2 source selection is unsupported by this package-matched Data route.
+    /// Reader warning summaries keep both the rebuilt report and manifest incomplete.
     pub async fn rebuild_metadata_async(
         mut config: PipelineConfig,
         source_assets: &Path,
@@ -490,13 +492,15 @@ async fn rebuild_into(
             }
         }
     }
-    let merged = EsmParser::convert_plugins_with_reader_and_schemas(
+    let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
         plugins,
         &database,
         config.record_reader,
         &vfs,
         Some(config.schemas()?.as_ref()),
     )?;
+    report.warnings.extend(conversion.warnings);
+    let merged = conversion.records;
     validate_database(&Connection::open(&database)?)?;
     if config.record_reader == crate::config::RecordReader::Inhouse {
         crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
@@ -610,6 +614,8 @@ async fn rebuild_into(
     manifest.schema_addons = config.schemas()?.identities().to_vec();
     // No archive extraction cache is copied by this route.
     manifest.archives.clear();
+    report.complete = conversion_is_complete(&report);
+    manifest.complete = report.complete;
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(
         staging.join("metadata-source-conversion-manifest.json"),
@@ -624,7 +630,6 @@ async fn rebuild_into(
         PathBuf::from("metadata-rebuild.json"),
         PathBuf::from("metadata-source-conversion-manifest.json"),
     ]);
-    report.complete = true;
     progress_event(
         progress,
         ProgressStage::Publishing,

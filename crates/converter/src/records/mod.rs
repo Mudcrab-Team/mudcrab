@@ -300,6 +300,32 @@ pub struct PluginDiagnostics {
 }
 
 impl PluginDiagnostics {
+    /// Build the same bounded per-plugin lines for terminal output and conversion reports.
+    pub(crate) fn summary_lines(&self, plugin: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(example) = ["record", "field", "link", "unexpected"]
+            .iter()
+            .find_map(|category| self.first_by_category.get(*category))
+        {
+            lines.push(format!(
+                "warning: {plugin}: in-house reader skipped {} records, {} fields, {} unexpected subrecords; cleared {} invalid links (first: {example})",
+                self.skipped_records,
+                self.skipped_fields,
+                self.unexpected_subrecords,
+                self.invalid_links
+            ));
+        }
+        if self.compatibility_headers != 0
+            && let Some(example) = self.first_by_category.get("compatibility")
+        {
+            lines.push(format!(
+                "warning: {plugin}: used supplier-self runtime compatibility for {} headers (original owners unresolved; first: {example})",
+                self.compatibility_headers
+            ));
+        }
+        lines
+    }
+
     /// Journal every observation while retaining the least source example per category.
     pub(crate) fn note(&mut self, category: &str, example: impl FnOnce() -> String) {
         match category {
@@ -841,25 +867,8 @@ fn read_plugins_with_prepared(
     decoder::validate_targets_with_prepared(&mut result, schema, prepared, order);
     targets_stage.finish(result.records.len());
     for (name, diagnostics) in &result.diagnostics {
-        if let Some(example) = ["record", "field", "link", "unexpected"]
-            .iter()
-            .find_map(|category| diagnostics.first_by_category.get(*category))
-        {
-            eprintln!(
-                "warning: {name}: in-house reader skipped {} records, {} fields, {} unexpected subrecords; cleared {} invalid links (first: {example})",
-                diagnostics.skipped_records,
-                diagnostics.skipped_fields,
-                diagnostics.unexpected_subrecords,
-                diagnostics.invalid_links
-            );
-        }
-        if diagnostics.compatibility_headers != 0
-            && let Some(example) = diagnostics.first_by_category.get("compatibility")
-        {
-            eprintln!(
-                "warning: {name}: used supplier-self runtime compatibility for {} headers (original owners unresolved; first: {example})",
-                diagnostics.compatibility_headers
-            );
+        for line in diagnostics.summary_lines(name) {
+            eprintln!("{line}");
         }
     }
     Ok(result)

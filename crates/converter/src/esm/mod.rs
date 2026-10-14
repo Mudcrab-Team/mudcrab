@@ -1,5 +1,5 @@
 use crate::esm::{
-    binary::parse_plugin_file,
+    binary::parse_plugin_file_with_warnings,
     exporter::{create_tables, validate_inhouse_record},
     records::RawRecord,
 };
@@ -31,8 +31,17 @@ pub use plugins_txt::{
 };
 #[cfg(test)]
 mod plugin_table_tests;
+#[cfg(test)]
+mod report_warnings_official_tests;
 
 pub struct EsmParser;
+
+/// Winning projection records and the bounded reader summaries printed during conversion.
+#[derive(Debug)]
+pub(crate) struct RecordConversion {
+    pub(crate) records: HashMap<u32, RawRecord>,
+    pub(crate) warnings: Vec<String>,
+}
 
 /// Populate the common plugin metadata contract without allocating each complete input.
 fn insert_plugins(conn: &Connection, plugin_paths: &[PathBuf]) -> Result<()> {
@@ -88,16 +97,17 @@ impl EsmParser {
             strings_root,
             None,
         )
+        .map(|conversion| conversion.records)
     }
 
-    /// Use a prevalidated, immutable schema batch throughout publication.
+    /// Publish with one immutable schema batch and retain summaries for the pipeline report.
     pub(crate) fn convert_plugins_with_reader_and_schemas(
         plugin_paths: &[PathBuf],
         db_path: &Path,
         reader: crate::config::RecordReader,
         strings_root: &Path,
         schemas: Option<&crate::records::addons::RuntimeSchemas>,
-    ) -> Result<HashMap<u32, RawRecord>> {
+    ) -> Result<RecordConversion> {
         Self::convert_plugins_with_reader_and_schemas_with_string_sources(
             plugin_paths,
             db_path,
@@ -107,38 +117,26 @@ impl EsmParser {
         )
     }
 
-    /// Select authoritative loose string inputs independently of the plugin's physical parent.
+    /// Select loose string inputs independently of the physical parent and collect reader summaries.
     pub(crate) fn convert_plugins_with_reader_and_schemas_with_string_sources(
         plugin_paths: &[PathBuf],
         db_path: &Path,
         reader: crate::config::RecordReader,
         string_sources: inhouse::StringSources<'_>,
         schemas: Option<&crate::records::addons::RuntimeSchemas>,
-    ) -> Result<HashMap<u32, RawRecord>> {
+    ) -> Result<RecordConversion> {
         match reader {
             crate::config::RecordReader::Legacy => {
-                Self::convert_plugins_with_records(plugin_paths, db_path)
+                Self::convert_plugins_with_records_report(plugin_paths, db_path)
             }
-            crate::config::RecordReader::Inhouse => match string_sources {
-                inhouse::StringSources::PluginLooseFirst(strings_root) => {
-                    if let Some(schemas) = schemas {
-                        inhouse::convert_plugins_with_schemas(
-                            plugin_paths,
-                            db_path,
-                            strings_root,
-                            schemas,
-                        )
-                    } else {
-                        inhouse::convert_plugins(plugin_paths, db_path, strings_root)
-                    }
-                }
-                source => inhouse::convert_plugins_with_string_sources(
+            crate::config::RecordReader::Inhouse => {
+                inhouse::convert_plugins_with_string_sources_report(
                     plugin_paths,
                     db_path,
-                    source,
+                    string_sources,
                     schemas,
-                ),
-            },
+                )
+            }
         }
     }
     /// Parses .esm files and exports world data to skyrim_world.db
@@ -152,11 +150,20 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         db_path: &Path,
     ) -> Result<HashMap<u32, RawRecord>> {
+        Self::convert_plugins_with_records_report(plugin_paths, db_path)
+            .map(|conversion| conversion.records)
+    }
+
+    /// Export the merged legacy records and collect each printed parser/remap summary once.
+    pub(crate) fn convert_plugins_with_records_report(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+    ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &master, &order, plugin_paths)?;
+        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths)?;
 
         Ok(master)
     }
@@ -165,14 +172,16 @@ impl EsmParser {
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         Self::merge_plugins_with_load_order(plugin_paths, &order)
+            .map(|conversion| conversion.records)
     }
 
-    /// Use one load-order mapping for both merging and ownership export.
+    /// Use one load-order mapping for merge/export and retain all printed reader summaries.
     fn merge_plugins_with_load_order(
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
-    ) -> Result<HashMap<u32, RawRecord>> {
+    ) -> Result<RecordConversion> {
         let mut merged = HashMap::new();
+        let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
@@ -183,7 +192,9 @@ impl EsmParser {
             // Final ID -> (source ID, whether its master index was out of range). Two different
             // source IDs that resolve to one final ID would silently replace each other.
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
-            for mut record in parse_plugin_file(path)? {
+            let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
+            summaries.extend(parser_summaries);
+            for mut record in records {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
@@ -271,8 +282,11 @@ impl EsmParser {
                 }
             }
         }
-        warnings.report();
-        Ok(merged)
+        summaries.extend(warnings.report());
+        Ok(RecordConversion {
+            records: merged,
+            warnings: summaries,
+        })
     }
 }
 
@@ -333,29 +347,34 @@ impl RemapWarnings {
         entry.0 += 1;
     }
 
-    /// Emit one deterministic summary per affected plugin after a successful merge.
-    fn report(&self) {
+    /// Print and collect the same per-kind/plugin summaries after a successful merge.
+    fn report(&self) -> Vec<String> {
+        let mut summaries = Vec::new();
         for (owner, (count, example)) in self.truncations.borrow().iter() {
-            eprintln!(
+            summaries.push(format!(
                 "warning: {owner}: {count} light-plugin ID occurrences exceeded 12 bits and were truncated (first: {example:08X}); compact the plugin's FormIDs before ESL-flagging it"
-            );
+            ));
         }
         for (plugin, (count, example, record_type)) in self.out_of_range.borrow().iter() {
-            eprintln!(
+            summaries.push(format!(
                 "warning: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
                 String::from_utf8_lossy(record_type)
-            );
+            ));
         }
         for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
-            eprintln!(
+            summaries.push(format!(
                 "warning: {plugin}: skipped {count} invalid optional FormID links (cleared or removed; first: {example})"
-            );
+            ));
         }
         for (plugin, (count, example)) in self.skipped_records.borrow().iter() {
-            eprintln!(
+            summaries.push(format!(
                 "warning: {plugin}: skipped {count} unusable record candidate(s); first: {example}; earlier complete candidates and neighboring records retained"
-            );
+            ));
         }
+        for summary in &summaries {
+            eprintln!("{summary}");
+        }
+        summaries
     }
 }
 

@@ -19,6 +19,19 @@ Real deletions still apply. LAND with rejected authored heights
 or incomplete framing is skipped; genuinely heightless texture/color records
 retain the existing default-height cache behavior.
 
+Both readers retain their terminal diagnostics and return each bounded
+per-plugin summary to `PipelineReport.warnings`. This includes malformed
+records/frames, unusable candidates, cleared optional links, truncated light
+IDs, out-of-range header compatibility remaps, and in-house decoder/adapter
+issues. The existing completeness rule requires zero skipped asset inputs and
+no warnings: usable neighboring records still publish, but these summaries mark
+both the report and conversion manifest incomplete and make the CLI exit with
+code 1. `--report-json` and the launcher display the same warning lines. Reader
+recovery does not increment the separate skipped-asset counter. Metadata rebuild
+and `--reuse-assets` use this same rule when they re-export records. Successful
+compatibility remaps remain warnings, so even official inputs can produce an
+incomplete report without a malformed record.
+
 `record-reader.json` stamps the selected frontend. Legacy `projection_version=3`
 preserves WRLD RNAM payloads and TNAM strings and restores record-aware VMAD
 ownership compatibility. Version 2 added corrected faction links, strict native

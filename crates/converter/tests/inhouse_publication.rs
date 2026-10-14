@@ -255,7 +255,6 @@ async fn convert(data: &Path, output: &Path, reader: RecordReader) -> converter:
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
     report
 }
 
@@ -266,7 +265,23 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
     let data = temp.path().join("Data");
     let output = temp.path().join("inhouse");
     generate(&data);
-    convert(&data, &output, RecordReader::Inhouse).await;
+    let report = convert(&data, &output, RecordReader::Inhouse).await;
+    assert!(!report.complete);
+    assert_eq!(report.skipped, 0);
+    assert!(
+        report.warnings.iter().any(|warning| {
+            warning.contains("skyrim.esm") && warning.contains("in-house reader skipped")
+        }),
+        "{:?}",
+        report.warnings
+    );
+    assert!(
+        report.warnings.iter().any(|warning| {
+            warning.contains("names.esp") && warning.contains("inhouse adapter reported")
+        }),
+        "{:?}",
+        report.warnings
+    );
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x900, 0x902] {
         assert_eq!(
@@ -740,7 +755,18 @@ async fn inhouse_bad_overrides_preserve_prior_movement_and_authored_heights() {
         }
         fs::write(data.join(name), patch).unwrap();
     }
-    convert(&data, &output, RecordReader::Inhouse).await;
+    let report = convert(&data, &output, RecordReader::Inhouse).await;
+    assert!(!report.complete);
+    assert_eq!(report.skipped, 0);
+    for plugin in ["badnegative.esp", "badnonfinite.esp"] {
+        assert!(
+            report.warnings.iter().any(|warning| {
+                warning.contains(plugin) && warning.contains("in-house reader skipped")
+            }),
+            "{:?}",
+            report.warnings
+        );
+    }
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     let movement = db
         .query_row(
@@ -885,7 +911,9 @@ async fn metadata_reader_switch_preserves_retained_producer_identity() {
     )
     .unwrap();
     let original = temp.path().join("legacy");
-    convert(&data, &original, RecordReader::Legacy).await;
+    let report = convert(&data, &original, RecordReader::Legacy).await;
+    assert!(report.complete, "{:?}", report.warnings);
+    assert!(report.warnings.is_empty());
     let original_manifest: converter::cache::ConversionManifest =
         serde_json::from_slice(&fs::read(original.join("conversion-manifest.json")).unwrap())
             .unwrap();

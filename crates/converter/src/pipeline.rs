@@ -99,8 +99,9 @@ pub struct PipelineReport {
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
-/// still skip or warn, so they still land here.
-fn conversion_is_complete(report: &PipelineReport) -> bool {
+/// still skip or warn, so they still land here. Bounded reader recovery and
+/// compatibility summaries also warn, while usable records still publish.
+pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
@@ -716,13 +717,16 @@ impl AssetPipeline {
             } else {
                 crate::esm::inhouse::StringSources::PluginLooseFirst(&strings_root)
             };
-            let merged = EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
-                &plugins,
-                &db_path,
-                config.record_reader,
-                string_sources,
-                Some(config.schemas()?.as_ref()),
-            )?;
+            let conversion =
+                EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
+                    &plugins,
+                    &db_path,
+                    config.record_reader,
+                    string_sources,
+                    Some(config.schemas()?.as_ref()),
+                )?;
+            report.warnings.extend(conversion.warnings);
+            let merged = conversion.records;
             validate_database(&Connection::open(&db_path)?)?;
             if config.record_reader == crate::config::RecordReader::Inhouse {
                 crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;

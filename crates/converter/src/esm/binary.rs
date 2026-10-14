@@ -194,13 +194,17 @@ impl ParseWarnings {
         }
     }
 
-    fn report(&self, source: &str) {
-        if let Some(first) = &self.first {
-            eprintln!(
-                "warning: {source}: skipped {} malformed record/frame occurrence(s); first: {first}; complete neighboring records retained",
-                self.count
-            );
-        }
+    /// Print and collect the same bounded summary for terminal and report consumers.
+    fn report(&self, source: &str) -> Vec<String> {
+        let Some(first) = &self.first else {
+            return Vec::new();
+        };
+        let summary = format!(
+            "warning: {source}: skipped {} malformed record/frame occurrence(s); first: {first}; complete neighboring records retained",
+            self.count
+        );
+        eprintln!("{summary}");
+        vec![summary]
     }
 }
 
@@ -220,7 +224,7 @@ pub fn parse_group(
         records,
         &mut warnings,
     );
-    warnings.report("plugin record stream");
+    let _ = warnings.report("plugin record stream");
     Ok(())
 }
 
@@ -361,12 +365,21 @@ fn decode_record_subrecords_inner(
     extract_subrecords(&decoded)
 }
 
+/// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
+    parse_plugin_file_with_warnings(path).map(|(records, _)| records)
+}
+
+/// Return the same per-plugin skip line printed while retaining usable neighboring records.
+pub(crate) fn parse_plugin_file_with_warnings(
+    path: &Path,
+) -> Result<(Vec<RawRecord>, Vec<String>)> {
     parse_plugin_file_inner(path)
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
 }
 
-fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
+/// Keep header checks and local recovery unchanged while returning their bounded summary.
+fn parse_plugin_file_inner(path: &Path) -> Result<(Vec<RawRecord>, Vec<String>)> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
 
@@ -403,9 +416,9 @@ fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
         &mut records,
         &mut warnings,
     );
-    warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
+    let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
 
-    Ok(records)
+    Ok((records, summaries))
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers
