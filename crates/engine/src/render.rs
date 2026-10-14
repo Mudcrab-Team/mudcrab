@@ -72,6 +72,11 @@ pub const PLACED_OBJECT_LAYER: Layer = 2;
 /// The scaled-up 3D view and the camera that draws it to the window (`crate::render_scale`), on a
 /// layer no world view renders.
 pub const SCALED_VIEW_LAYER: Layer = 3;
+/// What the water reflection draws under the tiled GPU profile: every mesh on [`WORLD_LAYER`] also
+/// carries this layer (`crate::gpu_tuning`), and the reflection camera draws it alone, so the sun -
+/// on [`LIGHT_LAYERS`], which does not include it - neither lights nor shadows the reflection view.
+/// A shadowless copy of the sun on this layer lights it instead.
+pub const REFLECTED_LAYER: Layer = 4;
 
 /// Everything the player's own cameras draw: terrain, water and the placed objects.
 pub const MAIN_VIEW_LAYERS: &[Layer] = &[WORLD_LAYER, WATER_LAYER, PLACED_OBJECT_LAYER];
@@ -860,7 +865,7 @@ fn setup_water_reflection(
         Transform::default(),
         DepthPrepass,
         OcclusionCulling,
-        RenderLayers::from_layers(REFLECTION_VIEW_LAYERS),
+        gpu.reflection_view_layers(),
         WaterReflectionCamera,
     ));
 }

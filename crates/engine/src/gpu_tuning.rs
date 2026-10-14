@@ -27,6 +27,11 @@
 //! - **Shadow distance.** Without an INI `[Display] fShadowDistance`, the sun's cascades stop at
 //!   Skyrim's Ultra value rather than at the far corner of the streamed grid, so each cascade
 //!   collects the casters of a few cells rather than all of them.
+//! - **No shadow passes for the water reflection.** Bevy builds a full set of sun cascades for
+//!   every camera a light reaches, so the reflection camera cost three more shadow passes - a
+//!   millisecond of render thread on an M1 Pro. The reflection draws [`REFLECTED_LAYER`], which
+//!   every world-layer mesh also carries, and is lit by a shadowless copy of the sun on that layer,
+//!   so the terrain reflected in water is lit but not shadowed.
 //! - **Small objects by distance.** A placed object's mesh stops drawing beyond a distance
 //!   proportional to its size ([`small_object_draw_distance`]): a cup is not drawn three cells away,
 //!   in any view or shadow cascade, while a house still draws to the edge of the grid.
@@ -35,7 +40,7 @@
 
 use crate::{
     config::{EngineConfig, GpuProfile, RenderScale},
-    render::PLACED_OBJECT_LAYER,
+    render::{PLACED_OBJECT_LAYER, REFLECTED_LAYER, REFLECTION_VIEW_LAYERS, WORLD_LAYER},
     world::components::InstanceBounds,
 };
 use bevy::{
@@ -140,6 +145,16 @@ impl GpuTuning {
         configured.or(self.tiled.then_some(TILED_SUN_SHADOW_DISTANCE))
     }
 
+    /// The layers the water reflection camera draws: [`REFLECTED_LAYER`] on a tiled GPU, so the
+    /// sun's shadow cascades are not built for it, and [`REFLECTION_VIEW_LAYERS`] otherwise.
+    pub fn reflection_view_layers(&self) -> RenderLayers {
+        if self.tiled {
+            RenderLayers::layer(REFLECTED_LAYER)
+        } else {
+            RenderLayers::from_layers(REFLECTION_VIEW_LAYERS)
+        }
+    }
+
     /// How a view filters the shadow maps it samples. Desktop keeps Bevy's default.
     pub fn shadow_filtering(&self) -> ShadowFilteringMethod {
         if self.tiled {
@@ -195,6 +210,15 @@ impl Plugin for GpuTuningPlugin {
                 limit_small_object_draw_distance
                     .after(VisibilitySystems::CalculateBounds)
                     .after(TransformSystems::Propagate)
+                    .after(PropagateSet::<RenderLayers>::default())
+                    .before(VisibilitySystems::CheckVisibility),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    mirror_world_layer_into_reflection,
+                    (spawn_reflection_suns, sync_reflection_suns).chain(),
+                )
                     .after(PropagateSet::<RenderLayers>::default())
                     .before(VisibilitySystems::CheckVisibility),
             )
@@ -313,6 +337,109 @@ fn limit_small_object_draw_distance(
                 end_margin: distance..distance,
                 use_aabb: true,
             });
+        }
+    }
+}
+
+/// On a tiled GPU, adds [`REFLECTED_LAYER`] to every mesh on [`WORLD_LAYER`] - a mesh without
+/// [`RenderLayers`] is on it by default - so the reflection camera, which draws that layer alone,
+/// still sees the terrain, LOD land and sky it reflected before. A placed object's meshes carry
+/// [`PLACED_OBJECT_LAYER`] alone and stay out, as before.
+#[allow(clippy::type_complexity)]
+fn mirror_world_layer_into_reflection(
+    mut commands: Commands,
+    tuning: Res<GpuTuning>,
+    meshes: Query<
+        (Entity, Option<&RenderLayers>),
+        (With<Mesh3d>, Or<(Added<Mesh3d>, Changed<RenderLayers>)>),
+    >,
+) {
+    if !tuning.tiled {
+        return;
+    }
+    let world = RenderLayers::layer(WORLD_LAYER);
+    let reflected = RenderLayers::layer(REFLECTED_LAYER);
+    for (entity, layers) in &meshes {
+        let layers = layers.cloned().unwrap_or_default();
+        if layers.intersects(&world) && !layers.intersects(&reflected) {
+            commands.entity(entity).insert(layers.with(REFLECTED_LAYER));
+        }
+    }
+}
+
+/// The shadowless copy of a world-lighting directional light that lights the water reflection on
+/// a tiled GPU, and the light it copies.
+#[derive(Component, Debug)]
+struct ReflectionSun {
+    source: Entity,
+}
+
+/// Spawns a [`ReflectionSun`] for each new shadow-casting directional light that lights the world
+/// layer, on a tiled GPU.
+#[allow(clippy::type_complexity)]
+fn spawn_reflection_suns(
+    mut commands: Commands,
+    tuning: Res<GpuTuning>,
+    lights: Query<
+        (
+            Entity,
+            &DirectionalLight,
+            &GlobalTransform,
+            Option<&RenderLayers>,
+        ),
+        (Added<DirectionalLight>, Without<ReflectionSun>),
+    >,
+) {
+    if !tuning.tiled {
+        return;
+    }
+    for (source, light, transform, layers) in &lights {
+        if !light.shadow_maps_enabled
+            || !layers
+                .cloned()
+                .unwrap_or_default()
+                .intersects(&RenderLayers::layer(WORLD_LAYER))
+        {
+            continue;
+        }
+        commands.spawn((
+            Name::new("Reflection sun"),
+            DirectionalLight {
+                shadow_maps_enabled: false,
+                ..*light
+            },
+            transform.compute_transform(),
+            RenderLayers::layer(REFLECTED_LAYER),
+            ReflectionSun { source },
+        ));
+    }
+}
+
+/// Keeps each [`ReflectionSun`] on its source's colour, brightness and direction, and removes it
+/// with its source.
+fn sync_reflection_suns(
+    mut commands: Commands,
+    sources: Query<(Ref<DirectionalLight>, Ref<GlobalTransform>), Without<ReflectionSun>>,
+    mut copies: Query<(
+        Entity,
+        &ReflectionSun,
+        &mut DirectionalLight,
+        &mut Transform,
+    )>,
+) {
+    for (entity, copy, mut light, mut transform) in &mut copies {
+        let Ok((source, source_transform)) = sources.get(copy.source) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        if source.is_changed() {
+            *light = DirectionalLight {
+                shadow_maps_enabled: false,
+                ..*source
+            };
+        }
+        if source_transform.is_changed() {
+            *transform = source_transform.compute_transform();
         }
     }
 }
@@ -442,6 +569,112 @@ mod tests {
             assert!(range(terrain).is_none());
             assert!(range(trim).is_none(), "trim of reference {reference}");
         }
+    }
+
+    #[test]
+    fn the_reflection_draws_its_own_layer_only_on_a_tiled_gpu() {
+        let tiled = GpuTuning::resolve(GpuProfile::Tiled, None, RenderScale::Auto, true);
+        assert_eq!(
+            tiled.reflection_view_layers(),
+            RenderLayers::layer(REFLECTED_LAYER)
+        );
+        // The sun's layers never reach the tiled reflection view, so no cascades are built for it.
+        assert!(
+            !RenderLayers::from_layers(crate::render::LIGHT_LAYERS)
+                .intersects(&tiled.reflection_view_layers())
+        );
+        assert_eq!(
+            GpuTuning::default().reflection_view_layers(),
+            RenderLayers::from_layers(REFLECTION_VIEW_LAYERS)
+        );
+    }
+
+    #[test]
+    fn world_meshes_are_mirrored_into_the_reflection_and_placed_objects_are_not() {
+        let mut app = App::new();
+        app.insert_resource(GpuTuning {
+            tiled: true,
+            ..default()
+        })
+        .add_systems(PostUpdate, mirror_world_layer_into_reflection);
+        let terrain = app.world_mut().spawn(Mesh3d::default()).id();
+        let placed = app
+            .world_mut()
+            .spawn((Mesh3d::default(), RenderLayers::layer(PLACED_OBJECT_LAYER)))
+            .id();
+        let water = app
+            .world_mut()
+            .spawn((
+                Mesh3d::default(),
+                RenderLayers::layer(crate::render::WATER_LAYER),
+            ))
+            .id();
+        app.update();
+        let layers = |entity| app.world().get::<RenderLayers>(entity).cloned();
+        assert_eq!(
+            layers(terrain),
+            Some(RenderLayers::from_layers(&[WORLD_LAYER, REFLECTED_LAYER]))
+        );
+        assert_eq!(
+            layers(placed),
+            Some(RenderLayers::layer(PLACED_OBJECT_LAYER))
+        );
+        assert_eq!(
+            layers(water),
+            Some(RenderLayers::layer(crate::render::WATER_LAYER))
+        );
+    }
+
+    #[test]
+    fn the_reflection_sun_follows_the_sun_without_shadows() {
+        let mut app = App::new();
+        app.insert_resource(GpuTuning {
+            tiled: true,
+            ..default()
+        })
+        .add_systems(
+            PostUpdate,
+            (spawn_reflection_suns, sync_reflection_suns).chain(),
+        );
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    illuminance: 1000.0,
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                GlobalTransform::from(Transform::from_rotation(Quat::from_rotation_x(-0.5))),
+                RenderLayers::from_layers(crate::render::LIGHT_LAYERS),
+            ))
+            .id();
+        app.update();
+        app.update();
+        let mut copies =
+            app.world_mut()
+                .query::<(&DirectionalLight, &Transform, &RenderLayers, &ReflectionSun)>();
+        let (light, transform, layers, copy) = copies.single(app.world()).unwrap();
+        assert!(!light.shadow_maps_enabled);
+        assert_eq!(light.illuminance, 1000.0);
+        assert!(
+            transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_x(-0.5), 1e-6)
+        );
+        assert_eq!(layers, &RenderLayers::layer(REFLECTED_LAYER));
+        assert_eq!(copy.source, sun);
+
+        app.world_mut()
+            .get_mut::<DirectionalLight>(sun)
+            .unwrap()
+            .illuminance = 500.0;
+        app.update();
+        let (light, ..) = copies.single(app.world()).unwrap();
+        assert_eq!(light.illuminance, 500.0);
+
+        app.world_mut().despawn(sun);
+        app.update();
+        assert_eq!(copies.iter(app.world()).count(), 0);
     }
 
     #[test]
