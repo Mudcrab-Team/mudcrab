@@ -38,6 +38,18 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
+/// The wave phase a water material carries in `wave_scale_speed_strength.w` when its waves run on
+/// the shader's own clock (`globals.time`). Any value of zero or more pins the phase to that time
+/// instead, which is how captures keep their frames comparable ([`pin_water_phase`]).
+///
+/// The clock is read on the GPU so no water material changes from frame to frame: writing the time
+/// into every material each frame made Bevy re-extract and re-prepare all of them, bind groups
+/// included, on every frame.
+const ANIMATED_WAVE_PHASE: f32 = -1.0;
+
+/// The wave time a capture pins every water surface to.
+const PINNED_WAVE_TIME: f32 = 1.0;
+
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
 const WAVE_STRENGTH: f32 = 0.05;
@@ -133,7 +145,7 @@ impl Plugin for VercidiumRendererPlugin {
         .add_systems(
             Update,
             (
-                animate_water_materials,
+                pin_water_phase,
                 update_water_reflection_camera,
                 sync_renderer_metrics,
             ),
@@ -678,7 +690,12 @@ impl Default for WaterExtension {
     fn default() -> Self {
         Self {
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
+                wave_scale_speed_strength: Vec4::new(
+                    0.006,
+                    0.15,
+                    WAVE_STRENGTH,
+                    ANIMATED_WAVE_PHASE,
+                ),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, 0.0),
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
@@ -717,7 +734,12 @@ impl WaterExtension {
             reflection: Some(reflection),
             flow_normal,
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
+                wave_scale_speed_strength: Vec4::new(
+                    0.006,
+                    0.15,
+                    WAVE_STRENGTH,
+                    ANIMATED_WAVE_PHASE,
+                ),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
                 fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 0.0, 0.0),
             },
@@ -731,21 +753,29 @@ impl MaterialExtension for WaterExtension {
     }
 }
 
-fn animate_water_materials(
-    time: Res<Time>,
+/// Pins every water surface's wave phase for the runs that compare frames - the terrain-water
+/// fixture and shots - and leaves the waves on the shader's clock otherwise. A material is written
+/// only when its phase is not already pinned, so after the first frame nothing changes.
+fn pin_water_phase(
     config: Option<Res<crate::config::EngineConfig>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    if !config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
+        return;
+    }
     let started = std::time::Instant::now();
-    let elapsed =
-        if config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
-            1.0
-        } else {
-            time.elapsed_secs()
-        };
-    for (_, material) in materials.iter_mut() {
-        material.extension.settings.wave_scale_speed_strength.w = elapsed;
+    let unpinned: Vec<_> = materials
+        .iter()
+        .filter(|(_, material)| {
+            material.extension.settings.wave_scale_speed_strength.w != PINNED_WAVE_TIME
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in unpinned {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.settings.wave_scale_speed_strength.w = PINNED_WAVE_TIME;
+        }
     }
     profiler.record_elapsed("render/water_animation", started);
 }
@@ -1746,13 +1776,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn animated_water_advances_the_shader_phase() {
+    /// The app [`pin_water_phase`] runs in, with one water material, after one frame.
+    fn water_phase_after_a_frame(config: crate::config::EngineConfig) -> f32 {
         let mut app = App::new();
-        app.init_resource::<Time>()
+        app.insert_resource(config)
             .init_resource::<Assets<WaterMaterial>>()
             .init_resource::<ProfilingState>()
-            .add_systems(Update, animate_water_materials);
+            .add_systems(Update, pin_water_phase);
         let handle = app
             .world_mut()
             .resource_mut::<Assets<WaterMaterial>>()
@@ -1760,16 +1790,32 @@ mod tests {
                 base: StandardMaterial::default(),
                 extension: WaterExtension::default(),
             });
-        app.world_mut()
-            .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_secs(2));
         app.update();
-        let material = app
-            .world()
+        app.world()
             .resource::<Assets<WaterMaterial>>()
             .get(&handle)
-            .unwrap();
-        assert_eq!(material.extension.settings.wave_scale_speed_strength.w, 2.0);
+            .unwrap()
+            .extension
+            .settings
+            .wave_scale_speed_strength
+            .w
+    }
+
+    #[test]
+    fn water_waves_run_on_the_shader_clock_outside_captures() {
+        assert_eq!(
+            water_phase_after_a_frame(crate::config::EngineConfig::default()),
+            ANIMATED_WAVE_PHASE
+        );
+    }
+
+    #[test]
+    fn captures_pin_the_water_phase() {
+        let config = crate::config::EngineConfig {
+            terrain_water_fixture: true,
+            ..default()
+        };
+        assert_eq!(water_phase_after_a_frame(config), PINNED_WAVE_TIME);
     }
 
     #[test]

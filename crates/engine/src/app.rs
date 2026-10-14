@@ -2139,7 +2139,14 @@ fn setup_world(
             shadow_maps_enabled: true,
             ..default()
         },
-        sun_shadow_cascades(&config, gpu.sun_shadow_cascades()),
+        sun_shadow_cascades(
+            &EngineConfig {
+                sun_shadow_distance_limit: gpu
+                    .sun_shadow_distance_limit(config.sun_shadow_distance_limit),
+                ..config.clone()
+            },
+            gpu.sun_shadow_cascades(),
+        ),
         RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(sun_rotation(&config)),
     ));

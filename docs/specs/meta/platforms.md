@@ -53,6 +53,10 @@ This document outlines the multi-platform target strategy for Mudcrab, ensuring 
   filtering, a smaller water reflection in `Rg11b10Ufloat`, and the 3D view drawn at one pixel per
   point on a Retina window and scaled up (`--render-scale`, `crates/engine/src/render_scale.rs`).
   Apple builds also sample world textures at 8x anisotropy instead of 16x.
+  With the GPU off the critical path, Metal frames are bound by draw encoding on the render
+  thread (wgpu has no multi-draw on Metal), so the profile also cuts draws: sun shadows stop at
+  Skyrim's Ultra `fShadowDistance` (8000 units) unless an INI sets it, and small placed objects
+  stop drawing beyond a distance proportional to their size.
 - iOS builds compile with touch UI overlays and MFi gamepad support.
 
 ### 🐧 Linux (`x86_64-unknown-linux-gnu`)

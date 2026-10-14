@@ -20,10 +20,30 @@
 //! - **Resolution.** `crate::render_scale` draws the 3D view at one pixel per point on a Retina
 //!   window instead of four.
 //!
+//! The profile also cuts how many draws each frame encodes, which matters on Metal because wgpu
+//! has no multi-draw there and encodes every indirect draw on its own. Once the rest of the profile
+//! takes the GPU off the critical path, encoding on the render thread is what sets the frame time:
+//!
+//! - **Shadow distance.** Without an INI `[Display] fShadowDistance`, the sun's cascades stop at
+//!   Skyrim's Ultra value rather than at the far corner of the streamed grid, so each cascade
+//!   collects the casters of a few cells rather than all of them.
+//! - **Small objects by distance.** A placed object's mesh stops drawing beyond a distance
+//!   proportional to its size ([`small_object_draw_distance`]): a cup is not drawn three cells away,
+//!   in any view or shadow cascade, while a house still draws to the edge of the grid.
+//!
 //! `--gpu-profile` picks the tuning; `auto` resolves it from the backend the renderer selected.
 
-use crate::config::{EngineConfig, GpuProfile, RenderScale};
+use crate::{
+    config::{EngineConfig, GpuProfile, RenderScale},
+    render::PLACED_OBJECT_LAYER,
+    world::components::InstanceBounds,
+};
 use bevy::{
+    app::PropagateSet,
+    camera::{
+        primitives::Aabb,
+        visibility::{RenderLayers, VisibilityRange, VisibilitySystems},
+    },
     core_pipeline::prepass::DepthPrepass,
     light::ShadowFilteringMethod,
     prelude::*,
@@ -32,11 +52,27 @@ use bevy::{
         render_resource::TextureFormat,
         renderer::{RenderAdapterInfo, RenderDevice},
     },
+    transform::TransformSystems,
 };
 
 /// The sun's shadow cascades on a tiled GPU: one pass fewer over the shadow casters, with the
 /// remaining three stretched over the same distance.
 const TILED_SUN_SHADOW_CASCADES: usize = 3;
+
+/// How far the sun's shadows reach on a tiled GPU when no INI sets `[Display] fShadowDistance`, in
+/// Creation units: Skyrim's Ultra preset (`SkyrimPrefs.ini`). The streamed grid's corner, which
+/// the cascades reach otherwise, is about 23,200 units away at the default radius.
+const TILED_SUN_SHADOW_DISTANCE: f32 = 8_000.0;
+
+/// How far a placed object's mesh draws per unit of its bounding radius on a tiled GPU. At 150 an
+/// object with a 16-unit radius - a plate or a cup - draws to 2,400 units, about 34 metres, past
+/// which it covers a pixel or two of the screen; one with a 155-unit radius draws to the far corner
+/// of the default grid, and anything larger is never cut.
+const SMALL_OBJECT_DRAW_DISTANCE_PER_RADIUS: f32 = 150.0;
+
+/// The nearest a placed object's mesh stops drawing, however small it is: half a cell, so nothing
+/// vanishes within a few steps of the player.
+const MIN_SMALL_OBJECT_DRAW_DISTANCE: f32 = 2_048.0;
 
 /// The water reflection's size on a desktop GPU.
 const DESKTOP_WATER_REFLECTION_SIZE: UVec2 = UVec2::new(1024, 576);
@@ -97,6 +133,13 @@ impl GpuTuning {
         }
     }
 
+    /// How far the sun's shadow cascades reach at most: the INI's `fShadowDistance` when one was
+    /// read, Skyrim's Ultra value on a tiled GPU otherwise, and no limit beyond the streamed grid
+    /// on a desktop GPU.
+    pub fn sun_shadow_distance_limit(&self, configured: Option<f32>) -> Option<f32> {
+        configured.or(self.tiled.then_some(TILED_SUN_SHADOW_DISTANCE))
+    }
+
     /// How a view filters the shadow maps it samples. Desktop keeps Bevy's default.
     pub fn shadow_filtering(&self) -> ShadowFilteringMethod {
         if self.tiled {
@@ -147,6 +190,14 @@ impl Plugin for GpuTuningPlugin {
         app.init_resource::<GpuTuning>()
             .add_systems(PreStartup, resolve_gpu_tuning)
             .add_systems(PostUpdate, tune_new_cameras)
+            .add_systems(
+                PostUpdate,
+                limit_small_object_draw_distance
+                    .after(VisibilitySystems::CalculateBounds)
+                    .after(TransformSystems::Propagate)
+                    .after(PropagateSet::<RenderLayers>::default())
+                    .before(VisibilitySystems::CheckVisibility),
+            )
             .add_plugins(crate::render_scale::RenderScalePlugin);
     }
 }
@@ -199,6 +250,70 @@ fn tune_new_cameras(
             .entity(camera)
             .remove::<(DepthPrepass, OcclusionCulling)>()
             .insert(tuning.shadow_filtering());
+    }
+}
+
+/// How far a placed object's mesh with a world-space bounding `radius` draws, or `None` when it
+/// is large enough to draw as far as anything is streamed.
+fn small_object_draw_distance(radius: f32) -> Option<f32> {
+    let distance =
+        (radius * SMALL_OBJECT_DRAW_DISTANCE_PER_RADIUS).max(MIN_SMALL_OBJECT_DRAW_DISTANCE);
+    // Past the far corner of the default grid, a range would never cut anything.
+    (distance < crate::world::components::CELL_SIZE * 4.0 * std::f32::consts::SQRT_2)
+        .then_some(distance)
+}
+
+/// On a tiled GPU, gives each newly bounded placed-object mesh a [`VisibilityRange`] that ends at
+/// [`small_object_draw_distance`] for the whole object it belongs to: the size is the placed
+/// reference's [`InstanceBounds`], so the parts of a house share the house's distance rather than
+/// its trim vanishing before its walls. A mesh with no bounded reference above it is sized by its
+/// own bounds.
+///
+/// The range ends without a cross-fade margin: Bevy only dithers a range with margins, and
+/// dithering would add a `discard` pipeline variant per material that defeats the hidden-surface
+/// removal the tiled profile relies on.
+///
+/// Runs after bounds, transforms and the placed-object layer have reached the mesh, and before
+/// visibility is checked, so a mesh's first visible frame already honours its range.
+#[allow(clippy::type_complexity)]
+fn limit_small_object_draw_distance(
+    mut commands: Commands,
+    tuning: Res<GpuTuning>,
+    meshes: Query<
+        (Entity, &Aabb, &GlobalTransform, &RenderLayers),
+        (
+            With<Mesh3d>,
+            Without<VisibilityRange>,
+            Or<(Added<Aabb>, Changed<RenderLayers>)>,
+        ),
+    >,
+    parents: Query<&ChildOf>,
+    references: Query<&InstanceBounds>,
+) {
+    if !tuning.tiled {
+        return;
+    }
+    for (entity, bounds, transform, layers) in &meshes {
+        if !layers.intersects(&RenderLayers::layer(PLACED_OBJECT_LAYER)) {
+            continue;
+        }
+        let reference = parents
+            .iter_ancestors(entity)
+            .find_map(|ancestor| references.get(ancestor).ok());
+        let radius = match reference {
+            Some(reference) => (reference.max - reference.min).length() * 0.5,
+            None => {
+                let scale = transform.compute_transform().scale.abs().max_element();
+                Vec3::from(bounds.half_extents).length() * scale
+            }
+        };
+        if let Some(distance) = small_object_draw_distance(radius) {
+            commands.entity(entity).insert(VisibilityRange {
+                start_margin: 0.0..0.0,
+                end_margin: distance..distance,
+                use_aabb: true,
+            });
+        }
     }
 }
 
@@ -263,6 +378,70 @@ mod tests {
         let tuning = GpuTuning::resolve(GpuProfile::Desktop, None, RenderScale::Factor(0.75), true);
         assert_eq!(tuning.render_scale(1.0), 0.75);
         assert_eq!(tuning.render_scale(2.0), 0.75);
+    }
+
+    #[test]
+    fn tiled_shadows_stop_at_skyrims_ultra_distance_unless_an_ini_says_otherwise() {
+        let tiled = GpuTuning::resolve(GpuProfile::Tiled, None, RenderScale::Auto, true);
+        assert_eq!(tiled.sun_shadow_distance_limit(None), Some(8_000.0));
+        assert_eq!(
+            tiled.sun_shadow_distance_limit(Some(4_000.0)),
+            Some(4_000.0)
+        );
+        let desktop = GpuTuning::default();
+        assert_eq!(desktop.sun_shadow_distance_limit(None), None);
+        assert_eq!(
+            desktop.sun_shadow_distance_limit(Some(4_000.0)),
+            Some(4_000.0)
+        );
+    }
+
+    #[test]
+    fn small_objects_draw_in_proportion_to_their_size() {
+        assert_eq!(
+            small_object_draw_distance(1.0),
+            Some(MIN_SMALL_OBJECT_DRAW_DISTANCE)
+        );
+        assert_eq!(small_object_draw_distance(16.0), Some(2_400.0));
+        assert_eq!(small_object_draw_distance(100.0), Some(15_000.0));
+        // A building draws as far as anything is streamed.
+        assert_eq!(small_object_draw_distance(400.0), None);
+    }
+
+    #[test]
+    fn only_small_placed_objects_get_a_draw_distance_on_a_tiled_gpu() {
+        for tiled in [false, true] {
+            let mut app = App::new();
+            app.insert_resource(GpuTuning { tiled, ..default() })
+                .add_systems(PostUpdate, limit_small_object_draw_distance);
+            let placed = RenderLayers::layer(PLACED_OBJECT_LAYER);
+            let small = Aabb::from_min_max(Vec3::splat(-8.0), Vec3::splat(8.0));
+            let large = Aabb::from_min_max(Vec3::splat(-400.0), Vec3::splat(400.0));
+            let mut spawn = |bounds: Aabb, layers: RenderLayers| {
+                app.world_mut()
+                    .spawn((Mesh3d::default(), bounds, GlobalTransform::IDENTITY, layers))
+                    .id()
+            };
+            let cup = spawn(small, placed.clone());
+            let house = spawn(large, placed.clone());
+            let terrain = spawn(small, RenderLayers::layer(crate::render::WORLD_LAYER));
+            // A small part of a large reference takes the reference's size.
+            let trim = spawn(small, placed.clone());
+            let reference = app
+                .world_mut()
+                .spawn(InstanceBounds {
+                    min: Vec3::splat(-400.0),
+                    max: Vec3::splat(400.0),
+                })
+                .add_child(trim)
+                .id();
+            app.update();
+            let range = |entity| app.world().get::<VisibilityRange>(entity).cloned();
+            assert_eq!(range(cup).is_some(), tiled);
+            assert!(range(house).is_none());
+            assert!(range(terrain).is_none());
+            assert!(range(trim).is_none(), "trim of reference {reference}");
+        }
     }
 
     #[test]
