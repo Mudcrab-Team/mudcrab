@@ -205,6 +205,8 @@ pub struct SkyPalette {
     /// `NAM0`'s Fog Near colour: the colour vanilla's fog starts from at the camera.
     pub fog_near: Color,
     pub fog_far: Color,
+    /// Atmospheric density relative to the baseline visibility distance.
+    pub fog_density_scale: f32,
     /// Linear scale on the dome and clear colour, for calibrating the sky against lit surfaces.
     pub brightness: f32,
 }
@@ -219,6 +221,7 @@ impl SkyPalette {
         horizon: Color::srgb_u8(125, 163, 183),
         fog_near: Color::srgb_u8(35, 98, 124),
         fog_far: Color::srgb_u8(116, 168, 203),
+        fog_density_scale: 1.0,
         brightness: 1.0,
     };
 
@@ -316,7 +319,7 @@ pub fn fog_for(palette: &SkyPalette) -> DistanceFog {
         directional_light_color: FOG_DIRECTIONAL_LIGHT_COLOR,
         directional_light_exponent: FOG_DIRECTIONAL_LIGHT_EXPONENT,
         falloff: FogFalloff::from_visibility_colors(
-            FOG_VISIBILITY,
+            FOG_VISIBILITY / palette.fog_density_scale,
             FOG_EXTINCTION_COLOR,
             FOG_INSCATTERING_COLOR,
         ),
@@ -1037,6 +1040,38 @@ mod tests {
             other => panic!("expected an atmospheric falloff, got {other:?}"),
         }
         assert!(app.world().get::<DistanceFog>(unfogged).is_none());
+
+        *app.world_mut().resource_mut::<SkyPalette>() =
+            crate::color_pipeline::SceneVisualPreset::CoolGray.sky_palette();
+        app.update();
+        let lighter = app.world().get::<DistanceFog>(camera).unwrap();
+        assert_eq!(
+            lighter.color,
+            Color::srgb_u8(210, 222, 235).to_linear().into()
+        );
+        match (&fog.falloff, &lighter.falloff) {
+            (
+                FogFalloff::Atmospheric {
+                    extinction,
+                    inscattering,
+                },
+                FogFalloff::Atmospheric {
+                    extinction: lighter_extinction,
+                    inscattering: lighter_inscattering,
+                },
+            ) => {
+                assert_eq!(*lighter_extinction, *extinction * 0.25);
+                assert_eq!(*lighter_inscattering, *inscattering * 0.25);
+            }
+            _ => panic!("preset fog must remain atmospheric"),
+        }
+        assert!(app.world().get::<DistanceFog>(unfogged).is_none());
+        *app.world_mut().resource_mut::<SkyPalette>() = palette;
+        app.update();
+        assert!(same_fog(
+            app.world().get::<DistanceFog>(camera).unwrap(),
+            &fog
+        ));
 
         *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
         app.update();
