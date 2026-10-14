@@ -218,17 +218,21 @@ pub struct RendererMetrics {
     /// The views were set up without occlusion culling - the tiled GPU profile drops it with the
     /// depth prepass it is built on (`crate::gpu_tuning`) - so no occlusion or HZB view is owed.
     pub occlusion_culling_off: bool,
+    /// The views draw directly rather than from indirect buffers - the tiled GPU profile's
+    /// `NoIndirectDrawing` (`crate::gpu_tuning`) - so no indirect batch set is owed.
+    pub indirect_drawing_off: bool,
 }
 
 impl RendererMetrics {
     pub fn final_path_active(&self) -> bool {
         self.gpu_preprocessing_active
             && self.gpu_culling_active
-            && self.indirect_drawing_active
+            && (self.indirect_drawing_off
+                || (self.indirect_drawing_active
+                    && self.indirect_phase_buffers > 0
+                    && self.indirect_batch_sets > 0))
             && (self.occlusion_culling_off
                 || (self.occlusion_culling_views > 0 && self.hzb_views > 0))
-            && self.indirect_phase_buffers > 0
-            && self.indirect_batch_sets > 0
             && self.proof_frames > 0
             && self.renderer_validation_failures == 0
     }
@@ -304,7 +308,9 @@ fn sync_renderer_metrics(
     tuning: Option<Res<crate::gpu_tuning::GpuTuning>>,
     mut metrics: ResMut<RendererMetrics>,
 ) {
-    metrics.occlusion_culling_off = tuning.is_some_and(|tuning| tuning.tiled);
+    let tiled = tuning.is_some_and(|tuning| tuning.tiled);
+    metrics.occlusion_culling_off = tiled;
+    metrics.indirect_drawing_off = tiled;
     metrics.gpu_preprocessing_active = bridge.0.gpu_preprocessing.load(Ordering::Relaxed);
     metrics.gpu_culling_active = bridge.0.gpu_culling.load(Ordering::Relaxed);
     metrics.indirect_drawing_active = bridge.0.indirect_drawing.load(Ordering::Relaxed);
@@ -1909,6 +1915,24 @@ mod tests {
                 occlusion_culling_views: 0,
                 hzb_views: 0,
                 occlusion_culling_off: true,
+                ..complete.clone()
+            }
+            .final_path_active()
+        );
+        // Views that draw directly owe no indirect batch.
+        assert!(
+            RendererMetrics {
+                indirect_drawing_active: false,
+                indirect_batch_sets: 0,
+                indirect_drawing_off: true,
+                ..complete.clone()
+            }
+            .final_path_active()
+        );
+        assert!(
+            !RendererMetrics {
+                indirect_drawing_active: false,
+                indirect_batch_sets: 0,
                 ..complete
             }
             .final_path_active()

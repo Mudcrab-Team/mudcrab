@@ -24,6 +24,11 @@
 //! has no multi-draw there and encodes every indirect draw on its own. Once the rest of the profile
 //! takes the GPU off the critical path, encoding on the render thread is what sets the frame time:
 //!
+//! - **CPU-culled direct draws.** Bevy's GPU-driven path culls each view in a compute pass and
+//!   draws from indirect buffers, which on Metal still costs one encoded draw per batch plus the
+//!   per-view preprocessing passes and buffers. The tiled profile gives every 3D camera
+//!   [`NoIndirectDrawing`], so its views - and their shadow views - are culled on the CPU and drawn
+//!   directly: 1.2 ms less render thread a frame on an M1 Pro, mostly in `prepare`.
 //! - **Shadow distance.** Without an INI `[Display] fShadowDistance`, the sun's cascades stop at
 //!   Skyrim's Ultra value rather than at the far corner of the streamed grid, so each cascade
 //!   collects the casters of a few cells rather than all of them.
@@ -56,6 +61,7 @@ use bevy::{
         occlusion_culling::OcclusionCulling,
         render_resource::TextureFormat,
         renderer::{RenderAdapterInfo, RenderDevice},
+        view::NoIndirectDrawing,
     },
     transform::TransformSystems,
 };
@@ -256,8 +262,8 @@ fn resolve_gpu_tuning(
 }
 
 /// On a tiled GPU, takes the depth prepass and the occlusion culling built on it off every new 3D
-/// camera, and gives it the cheaper shadow filter. The spawning code states the desktop setup, so
-/// this is the one place the tiled setup departs from it.
+/// camera, switches it to CPU-culled direct draws, and gives it the cheaper shadow filter. The
+/// spawning code states the desktop setup, so this is the one place the tiled setup departs from it.
 ///
 /// Runs in `PostUpdate`, so a camera spawned in any earlier schedule of the frame is adjusted
 /// before the render world first extracts it.
@@ -273,7 +279,7 @@ fn tune_new_cameras(
         commands
             .entity(camera)
             .remove::<(DepthPrepass, OcclusionCulling)>()
-            .insert(tuning.shadow_filtering());
+            .insert((tuning.shadow_filtering(), NoIndirectDrawing));
     }
 }
 
@@ -678,7 +684,8 @@ mod tests {
     }
 
     #[test]
-    fn tiled_cameras_lose_the_depth_prepass_and_gain_the_hardware_shadow_filter() {
+    fn tiled_cameras_lose_the_depth_prepass_and_indirect_draws_and_gain_the_hardware_shadow_filter()
+    {
         for tiled in [false, true] {
             let mut app = App::new();
             app.insert_resource(GpuTuning { tiled, ..default() })
@@ -691,6 +698,7 @@ mod tests {
             let entity = app.world().entity(camera);
             assert_eq!(entity.contains::<DepthPrepass>(), !tiled);
             assert_eq!(entity.contains::<OcclusionCulling>(), !tiled);
+            assert_eq!(entity.contains::<NoIndirectDrawing>(), tiled);
             assert_eq!(
                 entity.get::<ShadowFilteringMethod>().copied(),
                 tiled.then_some(ShadowFilteringMethod::Hardware2x2)
