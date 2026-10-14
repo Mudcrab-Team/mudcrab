@@ -223,6 +223,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
             app.add_plugins(WorldPlayerPlugin);
+            // `coc`/`coe` move the player, so they come with it, as `tcl` does: a run without a
+            // player (a benchmark, `--shots`, headless) lists neither in Help.
+            crate::cell_commands::register_cell_commands(&mut app);
         }
         if app.world().resource::<EngineConfig>().streaming_fixture {
             app.init_resource::<StreamingFixtureState>()
@@ -2034,15 +2037,7 @@ fn cell_centre_ground_height(
             |row| row.get::<_, u32>(0),
         )
         .optional()?;
-    let Some(terrain) = cell_id.and_then(|cell_id| cache.terrain(cell_id)) else {
-        return Ok(None);
-    };
-    let width = usize::from(terrain.width);
-    let height = usize::from(terrain.height);
-    let center = (height / 2)
-        .checked_mul(width)
-        .and_then(|row| row.checked_add(width / 2));
-    Ok(center.and_then(|index| terrain.heights.get(index)).copied())
+    Ok(cell_id.and_then(|cell_id| cache.centre_height(cell_id)))
 }
 
 /// Where `--benchmark-jump` puts the camera: the middle of exterior cell `grid`, at that cell's
