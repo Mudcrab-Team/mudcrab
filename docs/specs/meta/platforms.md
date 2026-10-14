@@ -57,6 +57,11 @@ This document outlines the multi-platform target strategy for Mudcrab, ensuring 
   thread (wgpu has no multi-draw on Metal), so the profile also cuts draws: sun shadows stop at
   Skyrim's Ultra `fShadowDistance` (8000 units) unless an INI sets it, and small placed objects
   stop drawing beyond a distance proportional to their size.
+  The reflection draws its own layer with a shadowless copy of the sun (no extra shadow cascades)
+  and is reused while the camera stands still; views draw directly rather than from indirect
+  buffers; and lights are clustered on the CPU. Pipelines compile asynchronously on macOS through a
+  vendored `bevy_render` (`vendor/bevy_render`, bevyengine/bevy#26151). Measurements are in
+  `docs/research/metal-performance-loop-20261014.md`.
 - iOS builds compile with touch UI overlays and MFi gamepad support.
 
 ### 🐧 Linux (`x86_64-unknown-linux-gnu`)
