@@ -195,6 +195,12 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         let resolved = mo2::Instance::open(&selection.instance_path)?
             .resolve(&config.data_dir, &selection.profile)?;
         selection_notices.extend(resolved.notices);
+        selection_notices.extend(
+            resolved
+                .selection_warnings
+                .into_iter()
+                .map(|warning| warning.to_string()),
+        );
         let plugins = resolved
             .plugins
             .iter()

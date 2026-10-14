@@ -6,8 +6,9 @@ use color_eyre::{
 };
 use serde::{Deserialize, Serialize};
 use shared::plugin_selection::{
-    Warnings, decode_windows_1252, normalize_plugin_name, parse_plugin_entries, parse_plugin_order,
-    read_skyrim_ccc, select_plugin_names,
+    CreationFallbackWarning, Warnings, decode_windows_1252, normalize_plugin_name,
+    parse_plugin_entries, parse_plugin_order, read_skyrim_ccc, select_creations,
+    select_plugin_names,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -35,14 +36,21 @@ pub struct Instance {
     classic_skyrim: bool,
 }
 
-/// Winning source paths indexed by lowercase Data-relative paths, and active plugin order.
+/// Winning asset paths, installed-plugin inventory and active plugin order, keyed by Data-relative paths.
 /// Direct plugin names use Unicode lowercase; other asset paths retain ASCII lowercase.
 #[derive(Debug)]
 pub struct Resolved {
+    /// Winning assets and deterministic installed representatives for ambiguous plugin groups.
     pub files: BTreeMap<String, PathBuf>,
+    /// Unique active plugin keys before converter header and dependency recovery.
     pub plugins: Vec<String>,
+    /// Selected original paths before ambiguity/header/dependency recovery, in profile order.
+    /// Both originals of an ambiguous identity remain available for exclusion reporting.
+    pub plugin_candidates: Vec<PathBuf>,
     /// Recoverable profile selection problems for converter progress and reports.
     pub notices: Vec<String>,
+    /// Typed input-policy warnings for converter progress and reports.
+    pub selection_warnings: Vec<CreationFallbackWarning>,
 }
 
 impl Instance {
@@ -188,9 +196,12 @@ impl Instance {
     /// Resolves winning files and plugin order for a profile without cancellation.
     ///
     /// Enabled mods overlay the base Data directory in priority order; overwrite files take precedence.
-    /// Official masters and game-folder CCC plugins stay implicitly active. Profile lists use
+    /// Official masters and game-folder CCC plugins stay implicitly active. An unreadable CCC
+    /// activates installed built-in Creations and returns a typed `Resolved::selection_warnings` entry.
+    /// Profile lists use
     /// Windows-1252 and loadorder.txt; omitted active entries append in plugins.txt order.
-    /// Recoverable list problems are returned in `Resolved::notices`.
+    /// Recoverable list and same-layer plugin-name ambiguities are returned in `Resolved::notices`.
+    /// Ambiguous winning plugins stay installed for archive ownership but are not active.
     pub fn resolve(&self, data: &Path, profile: &str) -> Result<Resolved> {
         self.resolve_with_cancel(data, profile, &|| false)
     }
@@ -229,12 +240,18 @@ impl Instance {
             mods.push(path);
         }
         let mut files = BTreeMap::new();
-        overlay(data, &mut files, cancelled)?;
+        let mut plugin_groups = BTreeMap::new();
+        overlay(data, &mut files, &mut plugin_groups, cancelled)?;
         // MO2 stores highest priority first; apply low priority first so the winner replaces it.
         for root in mods.iter().rev() {
-            overlay(root, &mut files, cancelled)?;
+            overlay(root, &mut files, &mut plugin_groups, cancelled)?;
         }
-        overlay(&self.overwrite_dir, &mut files, cancelled)?;
+        overlay(
+            &self.overwrite_dir,
+            &mut files,
+            &mut plugin_groups,
+            cancelled,
+        )?;
         let active_path = child(&profile_dir, "plugins.txt")
             .wrap_err_with(|| format!("MO2 profile {profile}: locating required plugins.txt"))?;
         let active_bytes = fs::read(active_path)
@@ -259,30 +276,44 @@ impl Instance {
             None => None,
         };
         let game_folder = data.parent().unwrap_or(data);
-        let creations = match optional_child(game_folder, "Skyrim.ccc") {
-            Ok(Some(path)) => read_skyrim_ccc(&path),
-            Ok(None) => Err(color_eyre::eyre::eyre!("file is missing")),
-            Err(error) => Err(error),
-        };
-        let creations = match creations {
-            Ok(names) => names,
-            Err(error) => {
-                warnings.add(format!(
-                    "could not read optional Skyrim.ccc {}: {error:?}",
-                    game_folder.join("Skyrim.ccc").display()
-                ));
-                Vec::new()
+        let default_ccc_path = game_folder.join("Skyrim.ccc");
+        let (ccc_path, creations) = match optional_child(game_folder, "Skyrim.ccc") {
+            Ok(Some(path)) => {
+                let result = read_skyrim_ccc(&path);
+                (path, result)
             }
+            Ok(None) => (
+                default_ccc_path,
+                Err(color_eyre::eyre::eyre!("file is missing")),
+            ),
+            Err(error) => (default_ccc_path, Err(error)),
         };
         let installed: HashSet<_> = files.keys().cloned().collect();
-        let plugins = select_plugin_names(
+        let creations = select_creations(creations, &installed, &ccc_path);
+        let selection_warnings = creations.fallback_warning.into_iter().collect();
+        let selected_plugins = select_plugin_names(
             &entries,
             &installed,
-            &creations,
+            &creations.names,
             &[],
             order.as_deref(),
             &mut warnings,
         );
+        for (key, paths) in &plugin_groups {
+            if paths.len() > 1 {
+                warnings.add(format!(
+                    "installed plugin name collision for {key}; skipping all matching files"
+                ));
+            }
+        }
+        let plugin_candidates = selected_plugins
+            .iter()
+            .flat_map(|key| plugin_groups.get(key).into_iter().flatten().cloned())
+            .collect();
+        let plugins: Vec<_> = selected_plugins
+            .into_iter()
+            .filter(|key| plugin_groups.get(key).is_some_and(|paths| paths.len() == 1))
+            .collect();
         let mut notices = Vec::new();
         warnings.finish(&mut notices);
         for notice in &mut notices {
@@ -295,7 +326,9 @@ impl Instance {
         Ok(Resolved {
             files,
             plugins,
+            plugin_candidates,
             notices,
+            selection_warnings,
         })
     }
 }
@@ -486,10 +519,9 @@ fn configured_dir(instance: &Path, base: &Path, value: &str) -> Result<PathBuf> 
     Ok(fs::canonicalize(resolved)?)
 }
 
-/// Normalize direct plugin filenames consistently with selection, preserving other asset rules.
-fn data_file_key(relative: &Path) -> String {
-    let name = relative.to_string_lossy().replace('\\', "/");
-    let direct_plugin = !name.contains('/')
+/// Recognize direct plugin files while retaining the existing rules for nested assets.
+fn direct_plugin(relative: &Path) -> bool {
+    relative.components().count() == 1
         && matches!(
             relative
                 .extension()
@@ -497,8 +529,13 @@ fn data_file_key(relative: &Path) -> String {
                 .map(str::to_ascii_lowercase)
                 .as_deref(),
             Some("esm" | "esp" | "esl")
-        );
-    if direct_plugin {
+        )
+}
+
+/// Normalize direct plugin filenames consistently with selection, preserving other asset rules.
+fn data_file_key(relative: &Path) -> String {
+    let name = relative.to_string_lossy().replace('\\', "/");
+    if direct_plugin(relative) {
         normalize_plugin_name(&name)
     } else {
         name.to_ascii_lowercase()
@@ -507,10 +544,12 @@ fn data_file_key(relative: &Path) -> String {
 
 /// Overlays a directory onto winning file paths, skipping `.mohidden` entries and checking cancellation.
 ///
-/// Rejects symlinks/reparse points, unsafe components, and case-insensitive collisions within the layer.
+/// Rejects links, unsafe components and non-plugin asset collisions. Direct plugin ambiguities
+/// stay as winning installed groups so selection can skip them without losing archive ownership.
 fn overlay(
     root: &Path,
     files: &mut BTreeMap<String, PathBuf>,
+    plugin_groups: &mut BTreeMap<String, Vec<PathBuf>>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<()> {
     ensure!(
@@ -520,6 +559,7 @@ fn overlay(
     );
     reject_source_link(root)?;
     let mut layer = BTreeMap::new();
+    let mut plugin_layer: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -546,13 +586,26 @@ fn overlay(
             )?;
         }
         let key = data_file_key(relative);
-        ensure!(
-            layer.insert(key.clone(), entry.into_path()).is_none(),
-            "case-insensitive asset collision in {}: {key}",
-            root.display()
-        );
+        if direct_plugin(relative) {
+            plugin_layer.entry(key).or_default().push(entry.into_path());
+        } else {
+            ensure!(
+                layer.insert(key.clone(), entry.into_path()).is_none(),
+                "case-insensitive asset collision in {}: {key}",
+                root.display()
+            );
+        }
+    }
+    for (key, paths) in &mut plugin_layer {
+        paths.sort();
+        // A deterministic representative preserves installed-owner inventory only; selected
+        // plugins use the separate group and cannot admit any ambiguous original.
+        if let Some(path) = paths.first() {
+            layer.insert(key.clone(), path.clone());
+        }
     }
     files.extend(layer);
+    plugin_groups.extend(plugin_layer);
     Ok(())
 }
 

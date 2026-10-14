@@ -363,6 +363,9 @@ fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
     for notice in &report.notices {
         println!("  note: {notice}");
     }
+    for warning in &report.selection_warnings {
+        println!("  warning: {warning}");
+    }
     let (bytes, files) = artifact_size(&cli.output, &report.artifacts);
     println!(
         "  output: {} in {} artifacts ({})",
@@ -1021,10 +1024,17 @@ or the first sorted profile if that selection is absent or stale.
 MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are not supported.
 
 --plugins-file reads Windows-1252 player selection. Installed official masters and
-Skyrim.ccc Creations are always active. --skyrim-ccc-file overrides the game-folder
-CCC path. --skyrim-ini-file explicitly supplies General sTestFile settings; no
+readable Skyrim.ccc Creations are always active. Missing or unreadable CCC activates
+installed Fish, Survival Mode, Rare Curios, Saints and Seducers and _ResourcePack,
+in that order, with a report warning. Readable CCC, including an empty file, wins.
+--skyrim-ccc-file overrides the game-folder CCC path. --skyrim-ini-file explicitly supplies General sTestFile settings; no
 ambient profile is read. Without --plugins-file, automatic discovery orders plugins
 by dependency and skips unusable or ambiguously named plugins with bounded notices.
+The JSON report lists every recovery exclusion in skipped_plugins and surviving filenames
+in load_order; selection_warnings contains Creation fallback warnings separately from
+failed asset conversions. Archive companions match an exact plugin stem or a following
+space, dash or underscore. The longest installed owner must survive selection; unowned
+archives are admitted outside MO2 and excluded in MO2.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.

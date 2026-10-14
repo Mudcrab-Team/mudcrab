@@ -1,8 +1,10 @@
 //! Skyrim SE plugin selection shared with converter and mod-manager readers.
 use color_eyre::{Result, eyre::WrapErr};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    path::Path,
+    fmt,
+    path::{Path, PathBuf},
 };
 
 /// Installed official masters are always active in this conventional order.
@@ -13,6 +15,70 @@ pub const OFFICIAL_MASTERS: [&str; 5] = [
     "HearthFires.esm",
     "Dragonborn.esm",
 ];
+
+/// Installed built-in Creations activate in this order when Skyrim.ccc cannot be read.
+pub const BUILTIN_CREATIONS: [&str; 5] = [
+    "ccBGSSSE001-Fish.esm",
+    "ccQDRSSE001-SurvivalMode.esl",
+    "ccBGSSSE037-Curios.esl",
+    "ccBGSSSE025-AdvDSGS.esm",
+    "_ResourcePack.esl",
+];
+
+/// A recoverable CCC read failure that activates the installed built-in Creation fallback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreationFallbackWarning {
+    pub ccc_path: PathBuf,
+    pub reason: String,
+}
+
+impl fmt::Display for CreationFallbackWarning {
+    /// Name the failed input and fallback without introducing extra diagnostic lines.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "could not read Skyrim.ccc {}: {}; using installed built-in Creation fallback",
+            self.ccc_path
+                .display()
+                .to_string()
+                .replace(['\r', '\n'], " "),
+            self.reason.replace(['\r', '\n'], " ")
+        )
+    }
+}
+
+/// Authored CCC names, or installed built-in names with their fallback diagnostic.
+#[derive(Debug)]
+pub struct CreationSelection {
+    pub names: Vec<String>,
+    pub fallback_warning: Option<CreationFallbackWarning>,
+}
+
+/// Preserve readable CCC contents, including an empty list, or recover with installed built-ins.
+/// `installed` contains Unicode-lowercase plugin keys; fallback names retain the fixed file order.
+pub fn select_creations(
+    read_result: Result<Vec<String>>,
+    installed: &HashSet<String>,
+    ccc_path: &Path,
+) -> CreationSelection {
+    match read_result {
+        Ok(names) => CreationSelection {
+            names,
+            fallback_warning: None,
+        },
+        Err(error) => CreationSelection {
+            names: BUILTIN_CREATIONS
+                .into_iter()
+                .filter(|name| installed.contains(&normalize_plugin_name(name)))
+                .map(str::to_owned)
+                .collect(),
+            fallback_warning: Some(CreationFallbackWarning {
+                ccc_path: ccc_path.to_owned(),
+                reason: format!("{error:#}").replace(['\r', '\n'], " "),
+            }),
+        },
+    }
+}
 
 /// Use one Unicode lowercase identity for installed, selected and master plugin names.
 pub fn normalize_plugin_name(name: &str) -> String {
@@ -251,7 +317,7 @@ pub fn select_plugin_names(
 }
 
 /// Read Creation filenames in file order for explicit lists and mod-manager reuse.
-/// Callers should warn and continue without Creations if this optional file fails.
+/// Pass failures to `select_creations` to activate installed built-ins with a warning.
 pub fn read_skyrim_ccc(path: &Path) -> Result<Vec<String>> {
     let bytes = std::fs::read(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     Ok(lines(&decode_windows_1252(&bytes))
@@ -263,10 +329,144 @@ pub fn read_skyrim_ccc(path: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Warnings, decode_windows_1252, parse_plugin_entries, parse_plugin_order,
-        select_plugin_names,
+        CreationFallbackWarning, Warnings, decode_windows_1252, normalize_plugin_name,
+        parse_plugin_entries, parse_plugin_order, select_creations, select_plugin_names,
     };
-    use std::collections::HashSet;
+    use std::{collections::HashSet, path::Path};
+
+    /// Fallback uses the brief's exact Creation order after the installed official masters.
+    #[test]
+    fn creation_fallback_keeps_fixed_order_after_official_masters() {
+        let installed = [
+            "Neighbor.esp",
+            "_ResourcePack.esl",
+            "ccBGSSSE025-AdvDSGS.esm",
+            "ccBGSSSE037-Curios.esl",
+            "ccQDRSSE001-SurvivalMode.esl",
+            "ccBGSSSE001-Fish.esm",
+            "Dragonborn.esm",
+            "HearthFires.esm",
+            "Dawnguard.esm",
+            "Update.esm",
+            "Skyrim.esm",
+        ]
+        .into_iter()
+        .map(normalize_plugin_name)
+        .collect();
+        let creations = select_creations(
+            Err(color_eyre::eyre::eyre!("CCC is unavailable")),
+            &installed,
+            Path::new("Game/Skyrim.ccc"),
+        );
+        assert_eq!(
+            creations.names,
+            [
+                "ccBGSSSE001-Fish.esm",
+                "ccQDRSSE001-SurvivalMode.esl",
+                "ccBGSSSE037-Curios.esl",
+                "ccBGSSSE025-AdvDSGS.esm",
+                "_ResourcePack.esl",
+            ]
+        );
+        assert!(creations.fallback_warning.is_some());
+        let mut warnings = Warnings::default();
+        let entries = parse_plugin_entries("*Neighbor.esp\n", false, &mut warnings);
+        assert_eq!(
+            select_plugin_names(
+                &entries,
+                &installed,
+                &creations.names,
+                &[],
+                None,
+                &mut warnings,
+            ),
+            [
+                "skyrim.esm",
+                "update.esm",
+                "dawnguard.esm",
+                "hearthfires.esm",
+                "dragonborn.esm",
+                "ccbgssse001-fish.esm",
+                "ccqdrsse001-survivalmode.esl",
+                "ccbgssse037-curios.esl",
+                "ccbgssse025-advdsgs.esm",
+                "_resourcepack.esl",
+                "neighbor.esp",
+            ]
+        );
+    }
+
+    /// Absent built-ins are omitted without changing the installed survivors' fixed order.
+    #[test]
+    fn creation_fallback_selects_only_installed_builtins() {
+        let installed = [
+            "_ResourcePack.esl",
+            "UnrelatedCreation.esl",
+            "ccBGSSSE037-Curios.esl",
+            "ccBGSSSE001-Fish.esm",
+        ]
+        .into_iter()
+        .map(normalize_plugin_name)
+        .collect();
+        let creations = select_creations(
+            Err(color_eyre::eyre::eyre!("CCC is unavailable")),
+            &installed,
+            Path::new("Game/Skyrim.ccc"),
+        );
+        assert_eq!(
+            creations.names,
+            [
+                "ccBGSSSE001-Fish.esm",
+                "ccBGSSSE037-Curios.esl",
+                "_ResourcePack.esl",
+            ]
+        );
+        assert!(creations.fallback_warning.is_some());
+    }
+
+    /// A readable CCC passes its authored names through without adding installed built-ins.
+    #[test]
+    fn readable_creation_list_is_authoritative() {
+        let installed = HashSet::from(["ccbgssse001-fish.esm".to_owned()]);
+        let names = vec![
+            "OtherCreation.esl".to_owned(),
+            "OTHERCreation.esl".to_owned(),
+        ];
+        let creations =
+            select_creations(Ok(names.clone()), &installed, Path::new("Game/Skyrim.ccc"));
+        assert_eq!(creations.names, names);
+        assert!(creations.fallback_warning.is_none());
+    }
+
+    /// A readable empty CCC keeps even installed built-in Creations inactive.
+    #[test]
+    fn readable_empty_creation_list_is_authoritative() {
+        let installed = HashSet::from(["ccbgssse001-fish.esm".to_owned()]);
+        let creations = select_creations(Ok(Vec::new()), &installed, Path::new("Game/Skyrim.ccc"));
+        assert!(creations.names.is_empty());
+        assert!(creations.fallback_warning.is_none());
+    }
+
+    /// Fallback still reports failure when no built-in is installed, with one-line diagnostics.
+    #[test]
+    fn creation_fallback_without_installed_builtins_retains_typed_warning() {
+        let ccc_path = Path::new("Game/\nSkyrim.ccc");
+        let creations = select_creations(
+            Err(color_eyre::eyre::eyre!("CCC\r\nread failed")),
+            &HashSet::new(),
+            ccc_path,
+        );
+        assert!(creations.names.is_empty());
+        let warning = creations.fallback_warning.unwrap();
+        assert_eq!(warning.ccc_path, ccc_path);
+        assert!(!warning.reason.contains(['\r', '\n']));
+        let message = warning.to_string();
+        assert!(!message.contains(['\r', '\n']));
+        assert!(message.contains("using installed built-in Creation fallback"));
+        let decoded: CreationFallbackWarning =
+            serde_json::from_str(&serde_json::to_string(&warning).unwrap()).unwrap();
+        assert_eq!(decoded, warning);
+    }
 
     /// Accented spellings share the last checkbox and last ordering position.
     #[test]

@@ -10,11 +10,11 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-pub use shared::plugin_selection::{OFFICIAL_MASTERS, read_skyrim_ccc};
 use shared::plugin_selection::{
-    PluginEntry, Warnings, decode_windows_1252, normalize_plugin_name, parse_plugin_entries,
-    select_plugin_names,
+    CreationFallbackWarning, PluginEntry, Warnings, decode_windows_1252, normalize_plugin_name,
+    parse_plugin_entries, select_creations, select_plugin_names,
 };
+pub use shared::plugin_selection::{OFFICIAL_MASTERS, read_skyrim_ccc};
 
 /// Recognize plugin filenames directly inside Data, excluding path components.
 fn plugin_name(name: &str) -> bool {
@@ -59,6 +59,59 @@ fn installed_plugin_paths(
         .into_iter()
         .filter_map(|(key, path)| path.map(|path| (key, path)))
         .collect()
+}
+
+/// Keep every original installed name, ordering ambiguous originals within their identity.
+fn installed_plugin_candidates(paths: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
+    let mut candidates: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for path in paths {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if plugin_name(&name) {
+            candidates
+                .entry(normalize_plugin_name(&name))
+                .or_default()
+                .push(path.clone());
+        }
+    }
+    for paths in candidates.values_mut() {
+        paths.sort();
+    }
+    candidates
+}
+
+/// Retain unique installed identities in candidate order before header/dependency recovery.
+fn unique_plugin_candidates(paths: Vec<PathBuf>, warnings: &mut Warnings) -> Vec<PathBuf> {
+    let installed = installed_plugin_paths(paths.iter().cloned(), warnings);
+    paths
+        .into_iter()
+        .filter(|path| {
+            let name =
+                normalize_plugin_name(&path.file_name().unwrap_or_default().to_string_lossy());
+            installed.contains_key(&name)
+        })
+        .collect()
+}
+
+/// Replace exclusions with present candidates removed by any recovery stage, once per original filename.
+/// Candidate order is retained, including distinct originals with one normalized identity.
+pub(crate) fn record_recovery_skips(
+    candidates: &[PathBuf],
+    survivors: &[PathBuf],
+    skipped_plugins: &mut Vec<String>,
+) {
+    let survivors: HashSet<_> = survivors.iter().collect();
+    let mut seen = HashSet::new();
+    *skipped_plugins = candidates
+        .iter()
+        .filter(|path| !survivors.contains(path))
+        .map(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| seen.insert(name.clone()))
+        .collect();
 }
 
 /// Ignore comments and blank lines without interpreting checkbox state.
@@ -196,31 +249,30 @@ pub(crate) fn recover_discovered(
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    let candidates = paths.clone();
     let mut warnings = Warnings::default();
-    let installed = installed_plugin_paths(paths.iter().cloned(), &mut warnings);
-    let paths = paths
-        .into_iter()
-        .filter(|path| {
-            let name =
-                normalize_plugin_name(&path.file_name().unwrap_or_default().to_string_lossy());
-            installed.contains_key(&name)
-        })
-        .collect();
+    let paths = unique_plugin_candidates(paths, &mut warnings);
     let paths = usable_plugins(paths, &mut warnings);
     warnings.finish(notices);
-    load_order::order_discovered_plugins_with_notices(paths, notices, skipped_plugins)
+    let paths = load_order::order_discovered_plugins_with_notices(paths, notices, &mut Vec::new())?;
+    record_recovery_skips(&candidates, &paths, skipped_plugins);
+    Ok(paths)
 }
 
-/// Apply header/master recovery and cycle/slot admission while retaining a mod-manager's order.
+/// Apply ambiguity/header/master and cycle/slot recovery while retaining a mod-manager's order.
 pub(crate) fn recover_with_diagnostics(
     paths: Vec<PathBuf>,
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    let candidates = paths.clone();
     let mut warnings = Warnings::default();
+    let paths = unique_plugin_candidates(paths, &mut warnings);
     let paths = usable_plugins(paths, &mut warnings);
     warnings.finish(notices);
-    load_order::recover_ordered_plugins_with_notices(paths, notices, skipped_plugins)
+    let paths = load_order::recover_ordered_plugins_with_notices(paths, notices, &mut Vec::new())?;
+    record_recovery_skips(&candidates, &paths, skipped_plugins);
+    Ok(paths)
 }
 
 /// Select plugins using explicit CCC/INI inputs, collecting bounded diagnostics.
@@ -234,7 +286,7 @@ pub(crate) fn read_with_notices(
     read_with_diagnostics(path, data_dir, ccc, ini, notices, &mut Vec::new())
 }
 
-/// Select usable player plugins, keeping full cycle/overflow exclusions separate from bounded notices.
+/// Select usable player plugins, forwarding fallback warnings through the legacy notice channel.
 pub(crate) fn read_with_diagnostics(
     path: &Path,
     data_dir: &Path,
@@ -242,6 +294,34 @@ pub(crate) fn read_with_diagnostics(
     ini: Option<&Path>,
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
+    let mut selection_warnings = Vec::new();
+    let selected = read_with_selection_diagnostics(
+        path,
+        data_dir,
+        ccc,
+        ini,
+        notices,
+        skipped_plugins,
+        &mut selection_warnings,
+    );
+    notices.extend(
+        selection_warnings
+            .into_iter()
+            .map(|warning| warning.to_string()),
+    );
+    selected
+}
+
+/// Select usable player plugins, reporting all recovery skips and typed Creation fallback warnings.
+pub(crate) fn read_with_selection_diagnostics(
+    path: &Path,
+    data_dir: &Path,
+    ccc: Option<&Path>,
+    ini: Option<&Path>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+    selection_warnings: &mut Vec<CreationFallbackWarning>,
 ) -> Result<Vec<PathBuf>> {
     let bytes =
         std::fs::read(path).wrap_err_with(|| format!("reading plugins.txt {}", path.display()))?;
@@ -260,19 +340,15 @@ pub(crate) fn read_with_diagnostics(
             installed_paths.push(entry.path());
         }
     }
+    let installed_candidates = installed_plugin_candidates(&installed_paths);
+    let installed_names = installed_candidates.keys().cloned().collect();
     let installed = installed_plugin_paths(installed_paths, &mut warnings);
     let default_ccc = data_dir.parent().unwrap_or(data_dir).join("Skyrim.ccc");
     let ccc_path = ccc.unwrap_or(&default_ccc);
-    let creations = match read_skyrim_ccc(ccc_path) {
-        Ok(names) => names,
-        Err(error) => {
-            warnings.add(format!(
-                "could not read optional Skyrim.ccc {}: {error:?}",
-                ccc_path.display()
-            ));
-            Vec::new()
-        }
-    };
+    let creations = select_creations(read_skyrim_ccc(ccc_path), &installed_names, ccc_path);
+    if let Some(warning) = creations.fallback_warning {
+        selection_warnings.push(warning);
+    }
     let test_files = ini
         .map(|path| ini_plugins(path, &mut warnings))
         .unwrap_or_default();
@@ -298,23 +374,27 @@ pub(crate) fn read_with_diagnostics(
             checked: true,
         });
     }
-    let installed_names = installed.keys().cloned().collect();
     let names = select_plugin_names(
         &listed,
         &installed_names,
-        &creations,
+        &creations.names,
         &test_files,
         None,
         &mut warnings,
     );
+    let candidates: Vec<_> = names
+        .iter()
+        .flat_map(|name| installed_candidates[name].iter().cloned())
+        .collect();
     let selected = names
         .into_iter()
-        .map(|name| installed[&name].clone())
+        .filter_map(|name| installed.get(&name).cloned())
         .collect();
     let selected = usable_plugins(selected, &mut warnings);
     warnings.finish(notices);
     let selected =
-        load_order::order_explicit_plugins_with_notices(selected, notices, skipped_plugins)?;
+        load_order::order_explicit_plugins_with_notices(selected, notices, &mut Vec::new())?;
+    record_recovery_skips(&candidates, &selected, skipped_plugins);
     ensure!(
         !selected.is_empty(),
         "no usable active plugins remain after plugins.txt selection"

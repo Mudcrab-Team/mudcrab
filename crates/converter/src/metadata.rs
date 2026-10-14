@@ -249,6 +249,15 @@ async fn rebuild_into(
         replay_verified_pruned_assets,
     };
     let mut report = PipelineReport {
+        load_order: plugins
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect(),
         cache_hits: retained.len() as u64,
         pruned_texture_references: manifest
             .pruned_texture_references
