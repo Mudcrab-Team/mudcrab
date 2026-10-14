@@ -29,6 +29,11 @@
 //!   per-view preprocessing passes and buffers. The tiled profile gives every 3D camera
 //!   [`NoIndirectDrawing`], so its views - and their shadow views - are culled on the CPU and drawn
 //!   directly: 1.2 ms less render thread a frame on an M1 Pro, mostly in `prepare`.
+//! - **CPU light clustering.** Bevy assigns point and spot lights to view clusters with compute
+//!   passes and per-view buffers on every 3D camera when the device allows it. The tiled profile
+//!   turns that off ([`GlobalClusterSettings::gpu_clustering`]), so Bevy clusters on the CPU, which
+//!   is close to free with the few lights a cell places: 1.1 ms less render thread a frame in the
+//!   wilderness and 0.5 ms in Riverwood with `--lights`, on an M1 Pro.
 //! - **Shadow distance.** Without an INI `[Display] fShadowDistance`, the sun's cascades stop at
 //!   Skyrim's Ultra value rather than at the far corner of the streamed grid, so each cascade
 //!   collects the casters of a few cells rather than all of them.
@@ -55,7 +60,7 @@ use bevy::{
         visibility::{RenderLayers, VisibilityRange, VisibilitySystems},
     },
     core_pipeline::prepass::DepthPrepass,
-    light::ShadowFilteringMethod,
+    light::{ShadowFilteringMethod, cluster::GlobalClusterSettings},
     prelude::*,
     render::{
         occlusion_culling::OcclusionCulling,
@@ -210,6 +215,7 @@ impl Plugin for GpuTuningPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GpuTuning>()
             .add_systems(PreStartup, resolve_gpu_tuning)
+            .add_systems(Startup, cluster_lights_on_the_cpu)
             .add_systems(PostUpdate, tune_new_cameras)
             .add_systems(
                 PostUpdate,
@@ -259,6 +265,20 @@ fn resolve_gpu_tuning(
         "GPU tuning resolved"
     );
     commands.insert_resource(tuning);
+}
+
+/// On a tiled GPU, has Bevy cluster lights on the CPU instead of in compute passes per view. Runs
+/// in `Startup`, after [`resolve_gpu_tuning`] and after the renderer plugins created the settings.
+fn cluster_lights_on_the_cpu(
+    tuning: Res<GpuTuning>,
+    settings: Option<ResMut<GlobalClusterSettings>>,
+) {
+    if let Some(mut settings) = settings
+        && tuning.tiled
+        && settings.gpu_clustering.is_some()
+    {
+        settings.gpu_clustering = None;
+    }
 }
 
 /// On a tiled GPU, takes the depth prepass and the occlusion culling built on it off every new 3D
@@ -511,6 +531,28 @@ mod tests {
         let tuning = GpuTuning::resolve(GpuProfile::Desktop, None, RenderScale::Factor(0.75), true);
         assert_eq!(tuning.render_scale(1.0), 0.75);
         assert_eq!(tuning.render_scale(2.0), 0.75);
+    }
+
+    #[test]
+    fn tiled_gpus_cluster_lights_on_the_cpu() {
+        for tiled in [false, true] {
+            let mut app = App::new();
+            app.insert_resource(GpuTuning { tiled, ..default() })
+                .insert_resource(GlobalClusterSettings {
+                    supports_storage_buffers: true,
+                    clustered_decals_are_usable: false,
+                    gpu_clustering: Some(bevy::light::cluster::GlobalClusterGpuSettings {
+                        initial_z_slice_list_capacity: 1,
+                        initial_index_list_capacity: 1,
+                    }),
+                    max_uniform_buffer_clusterable_objects: 1,
+                    view_cluster_bindings_max_indices: 1,
+                })
+                .add_systems(Startup, cluster_lights_on_the_cpu);
+            app.update();
+            let settings = app.world().resource::<GlobalClusterSettings>();
+            assert_eq!(settings.gpu_clustering.is_some(), !tiled);
+        }
     }
 
     #[test]
