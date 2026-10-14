@@ -891,8 +891,23 @@ type WaterReflectionObserverView = (
     Option<&'static Exposure>,
 );
 
+/// How many frames a tiled GPU keeps a still camera's water reflection before drawing it again, so
+/// terrain and LOD land that stream in while the camera stands still still reach the reflection.
+const STILL_REFLECTION_REFRESH_FRAMES: u32 = 16;
+
+/// What the water reflection was last drawn from, so a tiled GPU can skip redrawing it while the
+/// camera stands still: everything the reflection draws - terrain, LOD land and the sky - is static
+/// and lit by a fixed sun, so the same pose draws the same image.
+#[derive(Default)]
+struct ReflectionReuse {
+    pose: Option<Transform>,
+    frames_since_drawn: u32,
+}
+
 fn update_water_reflection_camera(
     mut commands: Commands,
+    gpu: Option<Res<crate::gpu_tuning::GpuTuning>>,
+    mut reuse: Local<ReflectionReuse>,
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
     mut reflection_camera: Query<
@@ -915,9 +930,11 @@ fn update_water_reflection_camera(
     if let Some(mut reflection_exposure) = reflection_exposure {
         if reflection_exposure.ev100 != ev100 {
             reflection_exposure.ev100 = ev100;
+            reuse.pose = None;
         }
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
+        reuse.pose = None;
     }
     // The surface nearest the main camera fixes the mirror plane; a further surface would put the
     // reflection at the wrong height when more than one water level is streamed in.
@@ -946,9 +963,26 @@ fn update_water_reflection_camera(
     };
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
-    reflection.set_if_neq(reflected_camera_transform(main, surface.translation().y));
-    if camera.is_active != surface_in_view {
-        camera.is_active = surface_in_view;
+    let pose = reflected_camera_transform(main, surface.translation().y);
+    reflection.set_if_neq(pose);
+    // On a tiled GPU a still camera reuses the reflection it last drew, redrawing it every
+    // `STILL_REFLECTION_REFRESH_FRAMES` for whatever streamed in meanwhile. A desktop GPU draws it
+    // every frame water is in view, as before.
+    let reusable = gpu.is_some_and(|gpu| gpu.tiled)
+        && reuse.pose == Some(pose)
+        && reuse.frames_since_drawn < STILL_REFLECTION_REFRESH_FRAMES;
+    let active = surface_in_view && !reusable;
+    if active {
+        reuse.pose = Some(pose);
+        reuse.frames_since_drawn = 0;
+    } else if surface_in_view {
+        reuse.frames_since_drawn += 1;
+    } else {
+        // Out of view the texture is not drawn at all, so it cannot be reused on the way back.
+        reuse.pose = None;
+    }
+    if camera.is_active != active {
+        camera.is_active = active;
     }
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
@@ -1106,6 +1140,40 @@ mod tests {
     struct ReflectionFrame {
         active: bool,
         transform: Transform,
+    }
+
+    #[test]
+    fn a_tiled_gpu_reuses_a_still_cameras_reflection_and_refreshes_it() {
+        use crate::config::{GpuProfile, RenderScale};
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness
+            .app
+            .insert_resource(crate::gpu_tuning::GpuTuning::resolve(
+                GpuProfile::Tiled,
+                None,
+                RenderScale::Auto,
+                true,
+            ));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert!(
+            harness.frame().active,
+            "the first frame draws the reflection"
+        );
+        for frame in 0..STILL_REFLECTION_REFRESH_FRAMES {
+            assert!(!harness.frame().active, "still frame {frame} reuses it");
+        }
+        assert!(
+            harness.frame().active,
+            "a long-still reflection is refreshed"
+        );
+        assert!(!harness.frame().active);
+        harness
+            .app
+            .world_mut()
+            .get_mut::<GlobalTransform>(harness.main_camera)
+            .unwrap()
+            .clone_from(&GlobalTransform::from(Transform::from_xyz(5.0, 120.0, 0.0)));
+        assert!(harness.frame().active, "a moved camera draws it again");
     }
 
     fn main_camera_projection() -> Projection {
