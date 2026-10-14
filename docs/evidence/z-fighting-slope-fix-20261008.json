@@ -1,0 +1,223 @@
+{
+  "schema": "mudcrab-z-fighting-slope-fix-v1",
+  "recorded_at_utc": "2026-10-09T04:36:12.712825+00:00",
+  "requested_hotspot": "Fort Sungard stone walls and dirt/moss patches",
+  "native_evidence": {
+    "executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "version": "1.7.104.0",
+    "functions_checked": 8,
+    "instructions_checked": 1251,
+    "raster_create_va": "0x14102b6c0",
+    "decal_pass_va": "0x14151fd60",
+    "native_decal_modes": [
+      6,
+      8
+    ],
+    "native_constant_bias": -1,
+    "native_slope_bias": -0.65,
+    "native_clamp": -100,
+    "native_viewport_offsets": [
+      2.6e-05,
+      2.8e-05
+    ],
+    "query_read_only": true,
+    "binary_executed": false,
+    "crosscheck_sha256": "f5c872063700b3505a2d99c2733884c16ec873befa1066bbb2df001643ff5ea9"
+  },
+  "runtime_policy": {
+    "scope": "Authored decals in color pass",
+    "depth_convention": "reversed Z",
+    "constant_bias": 4,
+    "slope_bias": 0.65,
+    "native_numeric_parity": false,
+    "geometry_moved": false
+  },
+  "real_wall": {
+    "model": "dungeons/imperial/exterior/impextwalldivider01.glb",
+    "glb_sha256": "e4f878ce77ad89016b11468bcce33756a0236047eb96bba686fa473926df25e4",
+    "reference_form_id": "0001B0EE",
+    "exact_decal_receiver_triangle_pairs": 238,
+    "resolution": [
+      960,
+      640
+    ],
+    "distance_units": [
+      130,
+      250,
+      500,
+      1000
+    ],
+    "angles_degrees": [
+      0,
+      30,
+      -30,
+      60,
+      -60,
+      80,
+      -80
+    ],
+    "camera_translations": [
+      -0.125,
+      0.125
+    ],
+    "views": 12,
+    "triangle_identity_guard": true,
+    "texture_and_vertex_alpha_retained": true,
+    "diagnostic_rgb_unlit": true,
+    "production_depth_prepass_and_occlusion_culling": true,
+    "msaa": "off"
+  },
+  "gpu_results": {
+    "wall-id-first-fix": {
+      "passed": true,
+      "exit_code": 0,
+      "views": 12,
+      "failing_views": 0,
+      "report_sha256": "d56fbfbdd9f439ada4c3d4b199d5986eeef7cb8fee32408aeaf0b7f180cbc2c9",
+      "probe_binary_sha256": "466341c4855bde65ccda4a6d9ea6c1dfdff4621184bbb4e55cb9da7a6272ddc9",
+      "occlusion_culling": false,
+      "matched_pixels": 561467,
+      "missing_decal_pixels": 0,
+      "other_surface_occlusion_pixels": 2605
+    },
+    "wall-id-legacy": {
+      "passed": true,
+      "exit_code": 0,
+      "views": 12,
+      "failing_views": 0,
+      "report_sha256": "6ebf10c00da9bb5bdf7621b6f19bdd3175c692b9ce4bb51adf60ac5b9ffa32c1",
+      "probe_binary_sha256": "c0fbd408991b2cd2fb23c2f3d44edec9819172eae99f36e0b2b020ed998e5ddd",
+      "occlusion_culling": false,
+      "matched_pixels": 561467,
+      "missing_decal_pixels": 0,
+      "other_surface_occlusion_pixels": 2605
+    },
+    "wall-id-slope-culling": {
+      "passed": true,
+      "exit_code": 0,
+      "views": 12,
+      "failing_views": 0,
+      "report_sha256": "8909961cad8c50d533661783074729c88e4353bb034dbdcc421c286f3a003488",
+      "probe_binary_sha256": "8824d6c6a55d4ffb8e9884ffecc2a6c3cef456a9ecdeaac5fcb6f3650f824dd1",
+      "occlusion_culling": true,
+      "matched_pixels": 561467,
+      "missing_decal_pixels": 0,
+      "other_surface_occlusion_pixels": 2605
+    },
+    "wall-id-omitted-culling": {
+      "passed": false,
+      "exit_code": 1,
+      "views": 12,
+      "failing_views": 12,
+      "report_sha256": "48e93d7036ce217c9b9180b4bff5ed2d596eca677e59d3ea63c37e8661bd23cf",
+      "probe_binary_sha256": "8824d6c6a55d4ffb8e9884ffecc2a6c3cef456a9ecdeaac5fcb6f3650f824dd1",
+      "occlusion_culling": true,
+      "matched_pixels": 561467,
+      "missing_decal_pixels": 561467,
+      "other_surface_occlusion_pixels": 2605
+    },
+    "synthetic-slope-culling": {
+      "passed": true,
+      "exit_code": 0,
+      "views": 9,
+      "failing_views": 0,
+      "report_sha256": "4de8f228a267c3f52fadcfac5d9edefa277efcd4ff1ee27b0d2e40edee73a881",
+      "probe_binary_sha256": "d74e7972669bcfb838a3d00a98f0566f842a61f47c7ea3341c810c872b612bd7",
+      "occlusion_culling": true,
+      "samples": 54
+    },
+    "world-scale-slope-culling": {
+      "passed": true,
+      "exit_code": 0,
+      "views": 9,
+      "failing_views": 0,
+      "report_sha256": "75ff6d18f424cd0308fed2d7134d56d3d330dfb3a8f53efa6823783014c709f7",
+      "probe_binary_sha256": "d74e7972669bcfb838a3d00a98f0566f842a61f47c7ea3341c810c872b612bd7",
+      "occlusion_culling": true,
+      "samples": 54
+    },
+    "synthetic-legacy-culling": {
+      "passed": false,
+      "exit_code": 1,
+      "views": 9,
+      "failing_views": 8,
+      "report_sha256": "a6468ab5a28d099f880621ae5d7e9d5a395e4fa4611a17ea63228b5273b414ca",
+      "probe_binary_sha256": "d74e7972669bcfb838a3d00a98f0566f842a61f47c7ea3341c810c872b612bd7",
+      "occlusion_culling": true,
+      "samples": 54
+    }
+  },
+  "engine_tests": {
+    "passed": 331,
+    "failed": 0,
+    "log_sha256": "3e94d49cef8c6aeb99d6c7f581c950a24e0fc97ae55a0ced85b32f0999c56ad4"
+  },
+  "build": {
+    "profile": "quick",
+    "platform": "aarch64-apple-darwin",
+    "binary_sha256": "8872c7314f1a5e915364dea70f09ece05964dd53d747189944058745b95bcf43",
+    "source_sha256": {
+      "crates/engine/src/nif_depth.rs": "ff098b72a4b8f920b23dddbb179838c7f79c2fb13e74be7df82a3165dda6d2bb",
+      "crates/engine/src/nif_material.rs": "61cd4a82d981a8fae3886742ab900a1419c4365041cc17d7b7deca68a31b375e",
+      "crates/engine/src/streaming.rs": "af9cf2b9ce9c531847b59532a874d6d61a0daf44732e4d0ff4497fcbe77d8b71",
+      "crates/engine/src/render.rs": "16cbc59237cbd9b1d2e7d60e92a6fa3066066f808b958e473785570e48719519",
+      "crates/engine/src/shaders/terrain.wgsl": "2c2681c310eed271afac36b8c080cd537137de72178da18fca4d55fc82689422",
+      "crates/engine/src/lib.rs": "59d3cce9b57899ddd91518f4223d11dd1ecff1f08890e6a11e5b25adc53e298e",
+      "crates/engine/examples/material_depth_probe.rs": "ecf4b986ca1629d156aba8fa4425bb218e7bc260c5a1c70fda9ebd11d3f01255",
+      "crates/engine/examples/wall_depth_probe.rs": "92c867051feaf55d613c5578041a6794b7e9765ca2a5526cec531202bce6275f",
+      "crates/engine/examples/wall_surface_id.wgsl": "a97ef245aeebb42aca8237a5f656936981d0d00d38faa97458d2266f4fff732c"
+    }
+  },
+  "limitations": [
+    "Isolated real-wall legacy and constant-only paths also pass the selected poses, so automated checks do not reproduce the original full-scene flicker. The user now reports no further flicker on the inspected Fort Sungard walls and dirt/moss patches.",
+    "The real-wall audit detects coverage loss, not temporal flicker classification or all world surfaces.",
+    "Native constant units, viewport adjustment and camera conventions are not mapped to Bevy.",
+    "Native retail comparison and whole-game acceptance remain unverified."
+  ],
+  "windowed_smoke": {
+    "passed": true,
+    "frames": 326,
+    "renderer_proof_frames": 325,
+    "asset_load_failures": 0,
+    "material_validation_failures": 0,
+    "renderer_validation_failures": 0,
+    "pending_asset_instances_at_exit": 290,
+    "performance_acceptance": false,
+    "visual_stability_verified": false,
+    "report_sha256": "7cf4e521509aab02f107e011f7d9fe6cc00b4224ecc0f92d9e63688529efba10"
+  },
+  "manual_validation": {
+    "recorded_at_utc": "2026-10-09T04:46:21.982751+00:00",
+    "method": "User in-game visual inspection",
+    "location": "Fort Sungard",
+    "surfaces": [
+      "Stone walls",
+      "Dirt/moss patches"
+    ],
+    "result": "No further flickering reported",
+    "passed": true,
+    "user_report": "Looks great!  I don't see any more flickering there.",
+    "build_context": "Reported after the slope-build launcher was delivered",
+    "packaged_binary_sha256": "8872c7314f1a5e915364dea70f09ece05964dd53d747189944058745b95bcf43",
+    "whole_game_acceptance": false
+  },
+  "followup_manual_validation": {
+    "recorded_at_utc": "2026-10-09T17:04:45.150011+00:00",
+    "method": "User in-game visual inspection",
+    "locations_recommended": [
+      "Rorikstead farmhouse",
+      "Whiterun southern approach road",
+      "Solitude docks"
+    ],
+    "result": "No further visual issues reported",
+    "user_report": "I don't see anything. For now let's call z fighting fixed until we find more",
+    "user_requested_provisional_closure": true
+  },
+  "issue_status": {
+    "state": "fixed_for_now",
+    "recorded_at_utc": "2026-10-09T17:04:45.150011+00:00",
+    "basis": "User accepted Fort Sungard and reported no issues after the three follow-up locations were suggested",
+    "reopen_when": "Another z-fighting case is found",
+    "whole_game_exhaustively_verified": false
+  }
+}

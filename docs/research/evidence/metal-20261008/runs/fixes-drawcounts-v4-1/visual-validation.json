@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "reviewer": "root agent manual PNG review",
+  "evidence_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1/frame.png",
+  "evidence_sha256": "c80105c375da350486b36a21f0a050f9ee64424d4f66d7ed2d46fa0f47278df5",
+  "finding": "Terrain ground intact; no blue ground holes or floating buildings seen.",
+  "scope": "Only the static draw-count screenshot at this captured view; no moving-route visual validation.",
+  "review_record_basis": "Parent message after the completed native draw-count capture, 2026-10-09."
+}

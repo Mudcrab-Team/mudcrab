@@ -1,0 +1,33 @@
+{
+  "status": "native rendering regression under investigation",
+  "runs": [
+    {
+      "run": "terrain-isolation-v2-batching-bitmask-1",
+      "binary_sha256": "9fdaf76015f07d719d1c11cd47a3ca98525ce3e3f0bdb09788ed3f52dfa1030a",
+      "purpose": "visual correctness isolation only, quick binary timing not comparable",
+      "visual_terrain": "missing surfaces",
+      "diagnostic_one_time_main_mesh_change": false
+    },
+    {
+      "run": "terrain-isolation-original-baseline-1",
+      "binary_sha256": "f958d582568d5c19a6e0515adf442a3ea18c6c89f9b332f7d5465850cdedac37",
+      "purpose": "visual correctness isolation only, quick binary timing not comparable",
+      "visual_terrain": "intact",
+      "diagnostic_one_time_main_mesh_change": false
+    },
+    {
+      "run": "terrain-isolation-allocator-ack-1",
+      "binary_sha256": "e2c7ee7e2f44ead0ad339dfd1e2f4009d1d10e06e1043b42a30afab8995511fa",
+      "purpose": "visual correctness isolation only, quick binary timing not comparable",
+      "visual_terrain": "missing surfaces",
+      "diagnostic_one_time_main_mesh_change": false
+    },
+    {
+      "run": "terrain-isolation-mesh-reextract-1",
+      "binary_sha256": "2c9261d90eac561fec0129a3f0444f0bbb42b1e2f243b131058fd19a12d02602",
+      "purpose": "visual correctness isolation only, quick binary timing not comparable",
+      "visual_terrain": "intact",
+      "diagnostic_one_time_main_mesh_change": true
+    }
+  ]
+}
