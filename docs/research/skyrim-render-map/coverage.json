@@ -1,0 +1,632 @@
+{
+  "schema": "mudcrab-render-coverage/v1",
+  "date": "2026-10-10",
+  "status": "partial native trace; complete selected package inventory; no retail draw capture",
+  "target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "package": {
+    "freshly_decoded_unique_bytecodes": 8057,
+    "groups": 135,
+    "previous_assembly_identity_checks": 16044,
+    "program_records": 16044,
+    "reflection_named_program_records": 0,
+    "stage_program_records": {
+      "cs": 19,
+      "ps": 12635,
+      "vs": 3390
+    },
+    "unique_bytecodes": 8057,
+    "unlabeled_groups": 0
+  },
+  "embedded": {
+    "candidate_occurrences": 57,
+    "distinct_bytecodes": 53,
+    "freshly_decoded_unique_programs": 53,
+    "native_creation_linked_occurrences": 2,
+    "reflected_unique_programs": 53,
+    "shader_model_occurrences": {
+      "4.0": 56,
+      "5.0": 1
+    },
+    "stage_occurrences": {
+      "ps": 45,
+      "vs": 12
+    }
+  },
+  "native_identity": {
+    "all_rtti_types": 8099,
+    "rendering_candidate_types": 560,
+    "complete_object_locators": 8632,
+    "rendering_candidate_vtables": 984,
+    "rendering_candidate_strings": 1650
+  },
+  "frame_verification": {
+    "artifact_sha256": "9975a7a7dd398a949c31b65dd9366ea37e0375562fcb45823f4e01dbbdd974ab",
+    "requested_spans": 159,
+    "file_backed_span_mismatches": 0,
+    "not_file_backed_spans": 4,
+    "unique_instruction_starts_matched_to_pe": 36082,
+    "instruction_mismatches": 0,
+    "llvm_functions": 130,
+    "llvm_compared_instructions": 18793,
+    "llvm_mismatches": 0,
+    "functions_with_truncated_instruction_exports": 0,
+    "all_file_backed_checks_pass": true,
+    "runtime_observed": false
+  },
+  "frame_nodes": 34,
+  "frame_edges": 27,
+  "frame_stage_domains": 21,
+  "input_coverage": {
+    "input_domains": 45,
+    "connections": 112,
+    "queries": 18,
+    "full_input_to_pixel_traces_closed": 0,
+    "connections_by_status": {
+      "serialized": 7,
+      "open": 43,
+      "native_static": 35,
+      "project": 14,
+      "native_identity": 1,
+      "shader_static": 9,
+      "source_assisted": 3
+    }
+  },
+  "project_source_evidence": {
+    "historical_snapshot_used": true,
+    "receipt": {
+      "path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/receipt.json",
+      "sha256": "0b2154066bc593c5d477bd8c490d1dcf124c79d56ee720a208ef1bbdf81e7aa9",
+      "scope": "Receipt identity and selected source-file pins only; no complete checkpoint inventory validation here."
+    },
+    "rows": [
+      {
+        "evidence_id": "I-E13",
+        "path": "crates/shared/src/lighting.rs",
+        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/shared/src/lighting.rs",
+        "pinned_sha256": "df55ce6db61af17a4ef18cc56853ae8275a9992f30f55343d88968dbb5e85ddc",
+        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/shared/src/lighting.rs",
+        "current_sha256": "df55ce6db61af17a4ef18cc56853ae8275a9992f30f55343d88968dbb5e85ddc",
+        "current_source_matches_pin": true
+      },
+      {
+        "evidence_id": "I-E14",
+        "path": "crates/shared/src/environment.rs",
+        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/shared/src/environment.rs",
+        "pinned_sha256": "0c31d9b638d3b5b7fd2616c23a629043aae22775d5ba906d5229aef6b7dd3d43",
+        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/shared/src/environment.rs",
+        "current_sha256": "0c31d9b638d3b5b7fd2616c23a629043aae22775d5ba906d5229aef6b7dd3d43",
+        "current_source_matches_pin": true
+      },
+      {
+        "evidence_id": "I-E15",
+        "path": "crates/converter/src/material.rs",
+        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/converter/src/material.rs",
+        "pinned_sha256": "013a93f071648512572e065c4f7d4c9d9be70eed1301b023c247cd1d3fb885ae",
+        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/converter/src/material.rs",
+        "current_sha256": "c2c805ae82ce8fac3af121aa3ca1f00d34e09f8ce4237b78262105b3e3176ffb",
+        "current_source_matches_pin": false
+      },
+      {
+        "evidence_id": "I-E16",
+        "path": "crates/converter/src/mesh.rs",
+        "checked_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/checkpoints/source-before-aq14hktq/workspace/crates/converter/src/mesh.rs",
+        "pinned_sha256": "756052ec52dd1f028e65a62a0adcfe5e55194418d90dde657ec2e558fe66c0a0",
+        "current_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09/crates/converter/src/mesh.rs",
+        "current_sha256": "820a2f075936901787f60ce16c85180045bd4973d2f1769e3bec35cc40ba1996",
+        "current_source_matches_pin": false
+      }
+    ],
+    "all_current_source_files_match_pins": false,
+    "scope": "Pinned project-source receipts describe their checked source bytes; historical validation does not reinterpret the current implementation or prove native behavior."
+  },
+  "native_shader_loader": {
+    "core_vertex_pixel_groups": 9,
+    "groups_with_native_static_ordinal_and_loader_links": 135,
+    "groups_with_retained_native_vtable_type_links": 135,
+    "image_shader_groups": 124,
+    "named_compute_groups": 19,
+    "program_records_checked_against_native_record_layout_and_stream_order": 16044,
+    "tail_compute_groups": 2
+  },
+  "image_space_connections": {
+    "group_count": 124,
+    "unique_effect_slots": 124,
+    "runtime_observed": false,
+    "helper_objects": 8,
+    "helper_shader_fields": 26,
+    "curated_transfers": 10
+  },
+  "native_output_transfer": {
+    "metadata_checked": true,
+    "curated_instruction_receipts": 33,
+    "unique_curated_instruction_starts": 1569,
+    "signed_rel32_transfers_checked": 24,
+    "sdk_call_offsets_checked": 5,
+    "original_curated_instruction_bytes_checked": true,
+    "private_exports_checked": true,
+    "saved_llvm_receipt_hashes_checked": true,
+    "runtime_observed": false,
+    "complete_tone_to_present_pixel_transfer_proven": false,
+    "numeric_domains_proven": false,
+    "added_to_central_native_union": false,
+    "scope": "Static receipt coherence, encoded calls/offsets and optional original bytes; receiver/control/argument interpretation is not independently reconstructed.",
+    "new_query_count": 5,
+    "new_export_unique_instruction_starts": 3633,
+    "new_export_functions": 23,
+    "requested_spans": 24,
+    "file_backed_requested_spans": 23,
+    "non_file_backed_data_spans": 1
+  },
+  "image_space_arithmetic": {
+    "groups": 54,
+    "records": 108,
+    "unique_programs": 54,
+    "executable_instructions": 1821,
+    "validation": {
+      "binary_operands_match_fresh_assembly": {
+        "instructions": 1821,
+        "literal_components": 1440,
+        "operands": 4784
+      },
+      "complete_control_tree": true,
+      "complete_operand_boundary_consumption": true,
+      "independent_binary_token_programs": 54,
+      "package_records_byte_identical": 108,
+      "semantic_checks": {
+        "all_component_masks_and_sample_swizzles_match_original": true,
+        "all_expressions_have_documented_semantics": true,
+        "component_equations": 3285,
+        "every_executable_instruction_covered_once": true,
+        "no_undefined_temporary_reads_under_structured_control": true,
+        "programs": 54,
+        "samples": 159,
+        "snow_initial_weights_match_immediate_table": true,
+        "snow_width_uses_cb2_1_x_twice_and_depth_scale_uses_cb2_1_y": true
+      }
+    },
+    "runtime_observed": false
+  },
+  "mod_evidence": {
+    "content": {
+      "mods_or_mod_variants": 9,
+      "primary_author_pages": 9,
+      "additional_file_listing_pages": 3,
+      "findings": 32,
+      "native_anchor_groups": 8,
+      "scope_cells": 108,
+      "research_questions": 10,
+      "native_proof_promotions": 0
+    },
+    "source_hooks": {
+      "git_pins": 6,
+      "manual_records": 22,
+      "bounded_source_anchor_count": 101,
+      "literal_reference_count": 561,
+      "native_queries_executed": 0,
+      "retail_captures": 0,
+      "game_or_mod_installation": false,
+      "compiler_builds": 0,
+      "regex_reference_inventory_is_exhaustive_semantic_audit": false,
+      "private_source_manifest": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/source-manifest.json",
+      "private_source_manifest_sha256": "e33bbc3654fff35c3c71c82d62ec53c3e86819f14693ad57e439ae01c812a7dd"
+    }
+  },
+  "equation_semantic_receipt": {
+    "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/shaders/image-space-arithmetic/semantic-validation.json",
+    "sha256": "ff8a1f402da7c86d20e6b2263948081aaccb88130c5bc094387b82166faf2876",
+    "all_pass": true,
+    "scope": "static expression/control validation; no GPU output parity"
+  },
+  "native_aggregate": {
+    "original_instruction_starts_verified": 85200,
+    "recovered_functions_with_verified_bytes": 370,
+    "independently_decoded_unique_functions": 370,
+    "curated_direct_frame_edges_checked": 27,
+    "original_rel32_calls_checked": 26,
+    "original_rel32_tail_jumps_checked": 1,
+    "query_count": 45,
+    "queries": [
+      {
+        "area": "frame",
+        "artifact": "frame-01-anchor.json",
+        "sha256": "104429322a93f56bf6b94d56e67456613598be11b53482cd79775e258d468872"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-02-scheduling.json",
+        "sha256": "c8bbd8526d887a95f1456cb2a4539467902fa5a6653afcf859a6187fd5aa065b"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-03-scene-stage.json",
+        "sha256": "643466b777897ae627637ea29f8374d4819f719c93f95a341056cd66bcc2f3f2"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-04-post-compute.json",
+        "sha256": "6936f0e803e83ac08332a86482ae7c5fc54feb37779c3f4ff7a66609961760c4"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-05-effects.json",
+        "sha256": "77e31d2e28db8cce1ff415c6f18b9581325c5409e76acac59f4d3aa6b527ae75"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-06-pass-identities.json",
+        "sha256": "f7d13fc158244ccb7ced17f588e10f0cc2cf0f58b7286137beb3741ece1b49b7"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-07-draw-dispatch.json",
+        "sha256": "f5b2dc500a9846334ddb0e1800fc6dee86c145bb5575b90e10d172cf25f1657d"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-08-layout-api.json",
+        "sha256": "232ce1cc449e5c979ee78a7ec1b450a21825db297dd7ef7782f52e9f54ce0c41"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-09-api-closure.json",
+        "sha256": "9e1c53ba86d77821163dee2838cbee05089bbddffe18012c39e66ed014ebc8f3"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-10-renderer-apply.json",
+        "sha256": "6c0b4bef6c6e2e96eb19f9fbc2473c9be96bb935e292f8db4bb4493880e8351c"
+      },
+      {
+        "area": "frame",
+        "artifact": "frame-11-input-layout.json",
+        "sha256": "92d6c167dd7b98dcabbd2a7d0570f1d38de16edfbd380bfedf181b3a152548bd"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-01b-material-pack.json",
+        "sha256": "3fb3c7486aac8419c836b1caf03b2d35c65e80db793099417e82afd3fb6470b9"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-02-imad-state.json",
+        "sha256": "884cb359d957864237775269fce9050607d95203640c8efd1a3c9d687cc56e1d"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-03-material-helpers.json",
+        "sha256": "7b283be7f8963b94167f2ae0a84e59c3be947d8cda26722197a31c2389ab4195"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-04-modifier-evaluation.json",
+        "sha256": "32baf3d0b6f098b4190ba49412c1b04ff7ef9de3086fe46a3f8cca4b120bb394"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-05-manager-channels.json",
+        "sha256": "ef9812aef09494a3c919298f4eaed6ec2e1feb13a1d399a7df6b2666d64636a1"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-06-manager-writes.json",
+        "sha256": "4c928f5950d21ebe30c7d94c5c0a62bc25b74a253643e8801f06713690f80684"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-07-manager-base.json",
+        "sha256": "5d2a0132c0aee195d220b39c64f42e457518300380684343aa8f32a7db0a2d08"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-08-channel-lifecycle.json",
+        "sha256": "35390843f1a01c494f63c681565c6a0215fbe2b7c93dd0004a418401092c13c8"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-09-effective-state.json",
+        "sha256": "7f2f7dbc8593398caa7325ec0eda516de06b0677af2b9d6b22a4e14d2a1d9c0c"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-10-modifier-frame.json",
+        "sha256": "1d34beb6165510d7da976a5eb2b22efc6557f8bf5d451ffba23444d9e0d203e3"
+      },
+      {
+        "area": "inputs",
+        "artifact": "inputs-11-base-composition.json",
+        "sha256": "2d55d3dcc696d3822f8f8c867e996a9ec13e635bd8c2ef9600c3d832b29fd4db"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-01-pre-hdr.json",
+        "sha256": "f9bcccebb91959b9cd738f21ac3fc3a31c67e780c3308e7737219c73f6a77144"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-02-object-contracts.json",
+        "sha256": "3df4493bda375fe57891930548a499e675c6e3d27bdddf477d40badbb28bd7f6"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-03-binding-contracts.json",
+        "sha256": "38dec8a98f2fe0f23e7032559d71c4be614118466bfd77d6bd76853bf4699a13"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-04-shader-bindings.json",
+        "sha256": "befb5fec48c5f731ca1361dea5364052e304a0186370a76eb6b31b92bd729900"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-05-hdr-dispatch.json",
+        "sha256": "70ba8c96fa0d5d811e0ffcf5fd032476fccbc9116dd47554694e1914c0af02b9"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-06-hdr-constants.json",
+        "sha256": "39676c6ec1e3ceaf34d5507e487f2380a286e2e0b91c1efbaaf8b7d2f77fe31a"
+      },
+      {
+        "area": "native-expansion",
+        "artifact": "expansion-07b-hdr-cinematic-parameters.json",
+        "sha256": "63773997eebfc6b91b87c9c7804d6c6420b56d8671f27748b088c323638f3df1"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-01-loader-seeds.json",
+        "sha256": "3e3fec73b3e47df07ce6bc2f1ac939dad2c396a552bde7ab944ede695f9f6684"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-02-reader-constructors.json",
+        "sha256": "f6739ce575c8a74af0b9d8a7312280fa76673ec35baa848bf20f0cf673d3a0c0"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-03-loaders-manager.json",
+        "sha256": "6b11b9712071fc91a1fb6caf2bd1803b7264adbcd7097846455203a3781eea01"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-04-core-and-image-construction.json",
+        "sha256": "b061d9dade22872d1274bdf18033f0b6ccd13e5d846e8dd75435e4084ad7d98c"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-05-image-loader-and-bindings.json",
+        "sha256": "f776362c037292aa882a464bad1e3a664660aecb0790aabb460f20a8b67abb4c"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-06-imagespace-family-sequence.json",
+        "sha256": "5cba2cff2cd119244db01747df155b29f13975b5ad1d610e4d70a7744be37a78"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-07-full-imagespace-sequence.json",
+        "sha256": "d2e9a1e66b73c427395de5135550a2120982528a10580fc2e0d9165de98a6b63"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-08-imagespace-stream-closure.json",
+        "sha256": "95a26e40675ced742d71316ff8f1d1fbcdefce282310ffddde69d21b56718823"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-09-tail-compute-and-tables.json",
+        "sha256": "23da66708f4a10903d3eac4c82f95a072d61dec3f415e28d693235e56783b355"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-00.json",
+        "sha256": "87c635906da6d87d8c0b207bf2525c8b9ac33eb45770690ba837dba58bdcb5e6"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-01.json",
+        "sha256": "018e04a0c5d04c904624d4e066de4988bd04dcd499130a0aa44e67c66407de69"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-02.json",
+        "sha256": "cc1b1dea16ebc7dc39d46b897bbb868ac82d880d09c905f230c438b44f1416b1"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-03.json",
+        "sha256": "b3236d06972ba46be1c1b4921e7583eb48d84134c0e7c14479de4b71afd1b9d8"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-04.json",
+        "sha256": "e09df68d2bd98c48f68446bca7372e1e91f337c08305200aefc6690bcb1d4a9a"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-05.json",
+        "sha256": "5fa553d3bd5b6000e2351576ee87c0524ab720e486586bc213839b551a70b067"
+      },
+      {
+        "area": "shaders",
+        "artifact": "shaders-constructors-06.json",
+        "sha256": "9fff1c9500a27beb633d83f9089c7fcfe42d787cab874828abb83f4390aa443b"
+      }
+    ],
+    "native_byte_mismatches": 0,
+    "curated_image_space_transfers_checked": 10,
+    "unique_curated_transfer_sites": 37,
+    "superseded_partial_function_exports": [
+      {
+        "area": "shaders",
+        "artifact": "shaders-06-imagespace-family-sequence.json",
+        "entry": "0x1414eee10"
+      }
+    ],
+    "note": "Union of current verified exports; no runtime execution or exhaustive call closure claim."
+  },
+  "original_pe_and_embedded_bytes_checked": true,
+  "artifacts": [
+    {
+      "path": "docs/research/skyrim-render-map/README.md",
+      "bytes": 14039,
+      "sha256": "49378fe2f9d0f330b514a1660e21321f9f3484886ffec9e35bc0fa2190c05cf3"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/d3d11-abi.json",
+      "bytes": 40232,
+      "sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/embedded-shaders.json",
+      "bytes": 390065,
+      "sha256": "36ccfd96ef318f5652fd1f8415e325a82614cbb6d965ea8e98aa7c8e1d157198"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/embedded-shaders.md",
+      "bytes": 9230,
+      "sha256": "9b337bc0f1e32800f9288f8bd386a302a177e904e2b050ba498da0bcaa85fba0"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/frame-topology.json",
+      "bytes": 48164,
+      "sha256": "229f3f6624e6edf1e60bffe079f049ce6bee4f437adada12ade68449dfd39513"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/frame-topology.md",
+      "bytes": 17316,
+      "sha256": "84aa80aa393e702758551e1bb67d0d28d6ef5835002e16f57b9c6af7233a63f4"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/image-space-arithmetic.json",
+      "bytes": 2334277,
+      "sha256": "2751bc93c62df5b152ebedc88ccb32c4f41afab24b25ba24ea02d1fe08bf3c74"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+      "bytes": 30599,
+      "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/input-contracts.json",
+      "bytes": 250166,
+      "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/input-contracts.md",
+      "bytes": 22411,
+      "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/mod-content-rendering.json",
+      "bytes": 67429,
+      "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/mod-content-rendering.md",
+      "bytes": 10769,
+      "sha256": "0e60ac9e9088121dbd2535151f17c36bfa746194368f9e0c3fd5be0f334160b7"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/mod-rendering-hooks.json",
+      "bytes": 383664,
+      "sha256": "864b01d97567b1a65fa8d29e6195f9312c7b9973d58c64c848a251d8b4217da9"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/mod-rendering-hooks.md",
+      "bytes": 60127,
+      "sha256": "fd151dba0df63e7d4f57a0f1f6955ddca73c2174a1e52d6e765ec5fed51e7346"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-identity.md",
+      "bytes": 3898,
+      "sha256": "9e9e611a982f115bf26ccb0ef576ff57cbfc024167e42d242ba3d5e55a38cc7d"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-image-space-connections.json",
+      "bytes": 111448,
+      "sha256": "ebad22e786d7deb5850fb4b86252998c82793563d98194573b33b0cedc52ca97"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-image-space-connections.md",
+      "bytes": 7866,
+      "sha256": "c616e8fd3e84cd42cc3c270223a64ac62811358c904f9a2de03dc1bab334dae8"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-output-transfer.json",
+      "bytes": 289638,
+      "sha256": "f8db463c3b05e199616fc3d3951b94008a38e804efafaf58fe7b354a1c2acf82"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-output-transfer.md",
+      "bytes": 9814,
+      "sha256": "2674fefb04531f5cf3d8d7297b845dd8a1f54279d44596e74dc5ed9b6be79bb7"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-render-imports.json",
+      "bytes": 35787,
+      "sha256": "2776a92be07409b2a0dc263a7712863399f97c09bcd2e3b64c8e94e2f6884d64"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-shader-loader.json",
+      "bytes": 168482,
+      "sha256": "702eed2ee843bf193eb0ba7e83ef302ea6b3b5e7fba1ef18fb2af151f2b697bc"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/native-types.json",
+      "bytes": 2230829,
+      "sha256": "d09a67e7768579120ceb58a318e1877f5b1a4f96be54f1090557ad843b5c993c"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/rendering-gaps.md",
+      "bytes": 5989,
+      "sha256": "bc34f54cff6504896457c0d100509f4056d0d6155b42cb95effeea15dae25000"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/runtime-observations.md",
+      "bytes": 6844,
+      "sha256": "ba42ca8eeec1066edd1aa2206ac87ffdb91caebd2051580dea74b7b2932e6494"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/shader-families.md",
+      "bytes": 20269,
+      "sha256": "5684145db1895e6b0b429fd988ab2e7e26102d4d7cebfb939c3b2ec765c45166"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/shader-inventory.json",
+      "bytes": 35461261,
+      "sha256": "3679f4cab2d74ff41f444445beff5ccd73be3bbd8193399572647ceebbbfbcd3"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/shader-selection-backlog.json",
+      "bytes": 991683,
+      "sha256": "c3e080be2eace4256b42090c9c933ecc2bfab7382eb3db2c629e24374bbc2e09"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/shader-selection.md",
+      "bytes": 9302,
+      "sha256": "7e91cc3b7deab6dfdbe2a1e7bd32af5b20d7c08c39fb560dbbd191d0c0a85474"
+    },
+    {
+      "path": "docs/research/skyrim-render-map/target-identity.json",
+      "bytes": 2656,
+      "sha256": "4cac417e737a85af867c843b9872631f6c097799676a695d8d6cec2758e9887a"
+    }
+  ],
+  "original_shader_package_records_checked": true,
+  "validation_tools": [
+    {
+      "path": "scripts/check-skyrim-render-map.py",
+      "sha256": "fa3e31516dfc7bd134c0f886bef382735de97da4e24861ef67bdbb2f10e6dcb5"
+    },
+    {
+      "path": "scripts/build-skyrim-render-map.py",
+      "sha256": "1909f3b6d35f4c0006a01b56777cfc8e8937305ee947c8f59dd898146502b165"
+    }
+  ],
+  "remaining_gates": [
+    "Complete symbolic shader equations and alternate permutations",
+    "Remaining technique selection, producers, callbacks and complete conditional call closure",
+    "Active session/record/override/settings identities and per-draw committed resource/state receipts",
+    "Matched retail intermediate outputs and visual acceptance"
+  ]
+}

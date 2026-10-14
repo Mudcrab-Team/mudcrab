@@ -1,0 +1,1065 @@
+{
+  "schema_version": 1,
+  "scope": "Selected interpreted authored inputs. No runtime constants or captured retail frames.",
+  "research_date": "2026-10-08",
+  "target_executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "package_manifest_sha256": "737c4478eecb434d0892e32d27f68b40f8c07e5d9fdbdddb768e9a94e470fb42",
+  "load_order_status": "documented package priority; no verified active game session load order",
+  "counts_package_winner_candidates": {
+    "WTHR": 110,
+    "CLMT": 10,
+    "REGN": 364,
+    "CELL": 74057,
+    "WRLD": 52,
+    "IMGS": 304,
+    "LGTM": 133,
+    "VOLI": 42
+  },
+  "input_scan_sha256": "695e89847aeba694795fb65933be37f88ec19b390e33ebad03ba36b7487cc080",
+  "records": [
+    {
+      "signature": "WTHR",
+      "identity": "Skyrim.esm:0C8220",
+      "partial_form": false,
+      "editor_id": "SkyrimStormRain",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x128f23",
+      "form_version": 43,
+      "deleted": false,
+      "ignored": false,
+      "fog": {
+        "day_near": 0.0,
+        "day_far": 25000.0,
+        "night_near": 0.0,
+        "night_far": 10000.0,
+        "day_power": 0.44999998807907104,
+        "night_power": 0.44999998807907104,
+        "day_max": 0.9200000166893005,
+        "night_max": 0.9200000166893005
+      },
+      "colors_rgba": {
+        "fog_near": {
+          "sunrise": [
+            41,
+            55,
+            65,
+            0
+          ],
+          "day": [
+            30,
+            61,
+            77,
+            0
+          ],
+          "sunset": [
+            61,
+            50,
+            46,
+            0
+          ],
+          "night": [
+            7,
+            20,
+            24,
+            0
+          ]
+        },
+        "fog_far": {
+          "sunrise": [
+            36,
+            41,
+            43,
+            0
+          ],
+          "day": [
+            46,
+            57,
+            58,
+            0
+          ],
+          "sunset": [
+            46,
+            50,
+            50,
+            0
+          ],
+          "night": [
+            16,
+            27,
+            31,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "signature": "WTHR",
+      "identity": "Skyrim.esm:0C821F",
+      "partial_form": false,
+      "editor_id": "SkyrimOvercastRain",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x129d27",
+      "form_version": 44,
+      "deleted": false,
+      "ignored": false,
+      "fog": {
+        "day_near": 0.0,
+        "day_far": 15000.0,
+        "night_near": 0.0,
+        "night_far": 15000.0,
+        "day_power": 0.5,
+        "night_power": 0.5,
+        "day_max": 0.8999999761581421,
+        "night_max": 0.925000011920929
+      },
+      "colors_rgba": {
+        "fog_near": {
+          "sunrise": [
+            28,
+            46,
+            51,
+            0
+          ],
+          "day": [
+            7,
+            38,
+            46,
+            0
+          ],
+          "sunset": [
+            30,
+            44,
+            45,
+            0
+          ],
+          "night": [
+            52,
+            55,
+            65,
+            0
+          ]
+        },
+        "fog_far": {
+          "sunrise": [
+            35,
+            42,
+            39,
+            0
+          ],
+          "day": [
+            75,
+            97,
+            103,
+            0
+          ],
+          "sunset": [
+            36,
+            49,
+            53,
+            0
+          ],
+          "night": [
+            37,
+            48,
+            48,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "signature": "WTHR",
+      "identity": "Skyrim.esm:0C821E",
+      "partial_form": false,
+      "editor_id": "SkyrimFog",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x12ab48",
+      "form_version": 43,
+      "deleted": false,
+      "ignored": false,
+      "fog": {
+        "day_near": 0.0,
+        "day_far": 25000.0,
+        "night_near": 0.0,
+        "night_far": 15000.0,
+        "day_power": 0.4000000059604645,
+        "night_power": 0.375,
+        "day_max": 0.949999988079071,
+        "night_max": 0.949999988079071
+      },
+      "colors_rgba": {
+        "fog_near": {
+          "sunrise": [
+            61,
+            78,
+            69,
+            0
+          ],
+          "day": [
+            85,
+            106,
+            125,
+            0
+          ],
+          "sunset": [
+            128,
+            166,
+            176,
+            0
+          ],
+          "night": [
+            71,
+            82,
+            88,
+            0
+          ]
+        },
+        "fog_far": {
+          "sunrise": [
+            157,
+            132,
+            113,
+            0
+          ],
+          "day": [
+            99,
+            115,
+            139,
+            0
+          ],
+          "sunset": [
+            123,
+            124,
+            120,
+            0
+          ],
+          "night": [
+            58,
+            75,
+            84,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "signature": "WTHR",
+      "identity": "Skyrim.esm:04D7FB",
+      "partial_form": false,
+      "editor_id": "SkyrimOvercastSnow",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x10ef28",
+      "form_version": 44,
+      "deleted": false,
+      "ignored": false,
+      "fog": {
+        "day_near": 0.0,
+        "day_far": 50000.0,
+        "night_near": 0.0,
+        "night_far": 35000.0,
+        "day_power": 0.30000001192092896,
+        "night_power": 0.30000001192092896,
+        "day_max": 0.8999999761581421,
+        "night_max": 0.949999988079071
+      },
+      "colors_rgba": {
+        "fog_near": {
+          "sunrise": [
+            63,
+            86,
+            103,
+            0
+          ],
+          "day": [
+            36,
+            60,
+            70,
+            0
+          ],
+          "sunset": [
+            84,
+            90,
+            101,
+            0
+          ],
+          "night": [
+            97,
+            111,
+            116,
+            0
+          ]
+        },
+        "fog_far": {
+          "sunrise": [
+            83,
+            95,
+            98,
+            0
+          ],
+          "day": [
+            77,
+            80,
+            81,
+            0
+          ],
+          "sunset": [
+            61,
+            65,
+            73,
+            0
+          ],
+          "night": [
+            60,
+            66,
+            66,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "signature": "WTHR",
+      "identity": "Skyrim.esm:012F89",
+      "partial_form": false,
+      "editor_id": "SkyrimCloudy",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x12b8a7",
+      "form_version": 44,
+      "deleted": false,
+      "ignored": false,
+      "fog": {
+        "day_near": 0.0,
+        "day_far": 100000.0,
+        "night_near": 0.0,
+        "night_far": 50000.0,
+        "day_power": 0.4000000059604645,
+        "night_power": 0.30000001192092896,
+        "day_max": 0.875,
+        "night_max": 0.875
+      },
+      "colors_rgba": {
+        "fog_near": {
+          "sunrise": [
+            53,
+            81,
+            83,
+            0
+          ],
+          "day": [
+            18,
+            108,
+            131,
+            0
+          ],
+          "sunset": [
+            89,
+            96,
+            92,
+            0
+          ],
+          "night": [
+            36,
+            56,
+            70,
+            0
+          ]
+        },
+        "fog_far": {
+          "sunrise": [
+            112,
+            124,
+            126,
+            0
+          ],
+          "day": [
+            168,
+            199,
+            227,
+            0
+          ],
+          "sunset": [
+            101,
+            102,
+            112,
+            0
+          ],
+          "night": [
+            6,
+            29,
+            36,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "signature": "WTHR",
+      "identity": "Skyrim.esm:00081A",
+      "partial_form": false,
+      "editor_id": "SkyrimClear",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x12c4aa",
+      "form_version": 44,
+      "deleted": false,
+      "ignored": false,
+      "fog": {
+        "day_near": 0.0,
+        "day_far": 80000.0,
+        "night_near": 0.0,
+        "night_far": 40000.0,
+        "day_power": 0.4000000059604645,
+        "night_power": 0.4000000059604645,
+        "day_max": 0.8500000238418579,
+        "night_max": 0.8500000238418579
+      },
+      "colors_rgba": {
+        "fog_near": {
+          "sunrise": [
+            47,
+            78,
+            91,
+            0
+          ],
+          "day": [
+            35,
+            98,
+            124,
+            0
+          ],
+          "sunset": [
+            31,
+            54,
+            53,
+            0
+          ],
+          "night": [
+            24,
+            45,
+            61,
+            0
+          ]
+        },
+        "fog_far": {
+          "sunrise": [
+            136,
+            138,
+            153,
+            0
+          ],
+          "day": [
+            116,
+            168,
+            203,
+            0
+          ],
+          "sunset": [
+            68,
+            75,
+            81,
+            0
+          ],
+          "night": [
+            8,
+            28,
+            33,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "signature": "CLMT",
+      "identity": "Skyrim.esm:000812",
+      "partial_form": false,
+      "editor_id": "SkyrimClimate",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xcb4d95",
+      "form_version": 39,
+      "deleted": false,
+      "ignored": false,
+      "timing_raw_bytes": [
+        33,
+        60,
+        96,
+        123,
+        50,
+        195
+      ],
+      "sunrise_begin_hours": 5.5,
+      "sunrise_end_hours": 10.0,
+      "sunset_begin_hours": 16.0,
+      "sunset_end_hours": 20.5
+    },
+    {
+      "signature": "CELL",
+      "identity": "Skyrim.esm:0133C6",
+      "partial_form": false,
+      "editor_id": "RiverwoodSleepingGiantInn",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0x11dc402",
+      "form_version": 44,
+      "deleted": false,
+      "ignored": false,
+      "lighting": {
+        "payload_bytes": 92,
+        "fog_near": 0.0,
+        "fog_far": 4000.0,
+        "fog_clip_distance": 0.0,
+        "fog_power": 1.0,
+        "fog_max": 1.0,
+        "light_fade_start": 0.0,
+        "light_fade_end": 0.0,
+        "fog_near_color_rgba": [
+          31,
+          52,
+          46,
+          0
+        ],
+        "fog_far_color_rgba": [
+          31,
+          52,
+          46,
+          0
+        ],
+        "inherits_mask": "0x0000009F",
+        "fog_inherits": {
+          "fog_color": true,
+          "fog_near": true,
+          "fog_far": true,
+          "fog_clip_distance": true,
+          "fog_power": false,
+          "fog_max": false
+        }
+      },
+      "cell_flags": 161,
+      "lighting_template": "Skyrim.esm:0A1196",
+      "sky_and_weather_region": "Skyrim.esm:02A72D",
+      "schema_resolved_fog": {
+        "fog_near_color_rgba": {
+          "value": [
+            31,
+            52,
+            46,
+            0
+          ],
+          "source_identity": "Skyrim.esm:0A1196",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_far_color_rgba": {
+          "value": [
+            31,
+            52,
+            46,
+            0
+          ],
+          "source_identity": "Skyrim.esm:0A1196",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_near": {
+          "value": 100.0,
+          "source_identity": "Skyrim.esm:0A1196",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_far": {
+          "value": 4000.0,
+          "source_identity": "Skyrim.esm:0A1196",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_clip_distance": {
+          "value": 0.0,
+          "source_identity": "Skyrim.esm:0A1196",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_power": {
+          "value": 1.0,
+          "source_identity": "Skyrim.esm:0133C6",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_max": {
+          "value": 1.0,
+          "source_identity": "Skyrim.esm:0133C6",
+          "source_plugin": "Skyrim.esm"
+        }
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:0A1196",
+      "partial_form": false,
+      "editor_id": "FarmLightingTemplate",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea6a90f",
+      "form_version": 37,
+      "deleted": false,
+      "ignored": false,
+      "lighting": {
+        "payload_bytes": 92,
+        "fog_near": 100.0,
+        "fog_far": 4000.0,
+        "fog_clip_distance": 0.0,
+        "fog_power": 1.0,
+        "fog_max": 1.0,
+        "light_fade_start": 4000.0,
+        "light_fade_end": 5000.0,
+        "fog_near_color_rgba": [
+          31,
+          52,
+          46,
+          0
+        ],
+        "fog_far_color_rgba": [
+          31,
+          52,
+          46,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:0300E2",
+      "partial_form": false,
+      "editor_id": "DefaultLightingTemplate",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea6baca",
+      "form_version": 34,
+      "deleted": false,
+      "ignored": false,
+      "lighting": {
+        "payload_bytes": 92,
+        "fog_near": 750.0,
+        "fog_far": 12000.0,
+        "fog_clip_distance": 12000.0,
+        "fog_power": 0.699999988079071,
+        "fog_max": 1.0,
+        "light_fade_start": 12000.0,
+        "light_fade_end": 13000.0,
+        "fog_near_color_rgba": [
+          75,
+          99,
+          97,
+          0
+        ],
+        "fog_far_color_rgba": [
+          75,
+          99,
+          97,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Dawnguard.esm:019C6C",
+      "partial_form": false,
+      "editor_id": "DLC1VolkhairCastleCloseDarkLT",
+      "source_plugin": "Dawnguard.esm",
+      "source_sha256": "fc8f92cb7ed55217046ee96b84caa54c058c12f7c408ac2a71da880a7bd3eab7",
+      "priority": 2,
+      "file_offset": "0x1848eca",
+      "form_version": 43,
+      "deleted": false,
+      "ignored": false,
+      "lighting": {
+        "payload_bytes": 92,
+        "fog_near": 350.0,
+        "fog_far": 2500.0,
+        "fog_clip_distance": 5000.0,
+        "fog_power": 0.8999999761581421,
+        "fog_max": 1000.0,
+        "light_fade_start": 8000.0,
+        "light_fade_end": 9000.0,
+        "fog_near_color_rgba": [
+          63,
+          56,
+          44,
+          0
+        ],
+        "fog_far_color_rgba": [
+          50,
+          49,
+          46,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "CELL",
+      "identity": "Skyrim.esm:05DE24",
+      "partial_form": false,
+      "editor_id": "HelgenKeep01",
+      "source_plugin": "Update.esm",
+      "source_sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280",
+      "priority": 1,
+      "file_offset": "0x151da7",
+      "form_version": 44,
+      "deleted": false,
+      "ignored": false,
+      "lighting": {
+        "payload_bytes": 92,
+        "fog_near": 750.0,
+        "fog_far": 6000.0,
+        "fog_clip_distance": 0.0,
+        "fog_power": 0.8999999761581421,
+        "fog_max": 1.0,
+        "light_fade_start": 0.0,
+        "light_fade_end": 0.0,
+        "fog_near_color_rgba": [
+          109,
+          167,
+          155,
+          0
+        ],
+        "fog_far_color_rgba": [
+          136,
+          166,
+          166,
+          0
+        ],
+        "inherits_mask": "0x000003FF",
+        "fog_inherits": {
+          "fog_color": true,
+          "fog_near": true,
+          "fog_far": true,
+          "fog_clip_distance": true,
+          "fog_power": true,
+          "fog_max": true
+        }
+      },
+      "cell_flags": 131,
+      "lighting_template": "Skyrim.esm:0B7DB8",
+      "sky_and_weather_region": "Skyrim.esm:02A72D",
+      "schema_resolved_fog": {
+        "fog_near_color_rgba": {
+          "value": [
+            63,
+            97,
+            95,
+            0
+          ],
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_far_color_rgba": {
+          "value": [
+            151,
+            213,
+            206,
+            0
+          ],
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_near": {
+          "value": 750.0,
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_far": {
+          "value": 6000.0,
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_clip_distance": {
+          "value": 0.0,
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_power": {
+          "value": 0.699999988079071,
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        },
+        "fog_max": {
+          "value": 0.5,
+          "source_identity": "Skyrim.esm:0B7DB8",
+          "source_plugin": "Skyrim.esm"
+        }
+      }
+    }
+  ],
+  "legacy_lighting_records": [
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:07545E",
+      "raw_form_id": "0007545E",
+      "record_flags": "0x0",
+      "partial_form": false,
+      "editor_id": "UstengravLargeTest",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea695c4",
+      "form_version": 31,
+      "deleted": false,
+      "ignored": false,
+      "compressed": false,
+      "lighting": {
+        "payload_bytes": 72,
+        "fog_near": 750.0,
+        "fog_far": 9000.0,
+        "fog_clip_distance": 0.0,
+        "fog_power": 0.699999988079071,
+        "fog_near_color_rgba": [
+          60,
+          91,
+          77,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:0660A3",
+      "raw_form_id": "000660A3",
+      "record_flags": "0x0",
+      "partial_form": false,
+      "editor_id": "WhiteRunIntMedLightingTemplate",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea6995c",
+      "form_version": 31,
+      "deleted": false,
+      "ignored": false,
+      "compressed": false,
+      "lighting": {
+        "payload_bytes": 72,
+        "fog_near": 128.0,
+        "fog_far": 6000.0,
+        "fog_clip_distance": 2000.0,
+        "fog_power": 1.0,
+        "fog_near_color_rgba": [
+          88,
+          83,
+          71,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:0B9F59",
+      "raw_form_id": "000B9F59",
+      "record_flags": "0x0",
+      "partial_form": false,
+      "editor_id": "FalmerTemplateDesat",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea6a361",
+      "form_version": 31,
+      "deleted": false,
+      "ignored": false,
+      "compressed": false,
+      "lighting": {
+        "payload_bytes": 72,
+        "fog_near": 250.0,
+        "fog_far": 5000.0,
+        "fog_clip_distance": 0.0,
+        "fog_power": 0.699999988079071,
+        "fog_near_color_rgba": [
+          55,
+          63,
+          66,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:0A0F40",
+      "raw_form_id": "000A0F40",
+      "record_flags": "0x0",
+      "partial_form": false,
+      "editor_id": "HHFar",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea6a9ca",
+      "form_version": 30,
+      "deleted": false,
+      "ignored": false,
+      "compressed": false,
+      "lighting": {
+        "payload_bytes": 72,
+        "fog_near": 500.0,
+        "fog_far": 5000.0,
+        "fog_clip_distance": 6000.0,
+        "fog_power": 0.699999988079071,
+        "fog_near_color_rgba": [
+          73,
+          97,
+          101,
+          0
+        ]
+      }
+    },
+    {
+      "signature": "LGTM",
+      "identity": "Skyrim.esm:07BA87",
+      "raw_form_id": "0007BA87",
+      "record_flags": "0x0",
+      "partial_form": false,
+      "editor_id": "WindhelmLightingTemplate",
+      "source_plugin": "Skyrim.esm",
+      "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+      "priority": 0,
+      "file_offset": "0xea6b5c6",
+      "form_version": 30,
+      "deleted": false,
+      "ignored": false,
+      "compressed": false,
+      "lighting": {
+        "payload_bytes": 64,
+        "fog_near": 340.0,
+        "fog_far": 6000.0,
+        "fog_clip_distance": 0.0,
+        "fog_power": 1.0,
+        "fog_near_color_rgba": [
+          135,
+          121,
+          90,
+          0
+        ]
+      }
+    }
+  ],
+  "fog_game_setting_evidence": {
+    "ownership": "All four executable objects match SettingT<GameSettingCollection> vtable; fWeatherTransAccel also has authored GMST record, otherthree have no authored override across80copiedplugins",
+    "scanned_gmst_versions": 1659,
+    "plugin_count": 80,
+    "settings": {
+      "fDaytimeColorExtension": [],
+      "fWeatherTransMin": [],
+      "fWeatherTransMax": [],
+      "fWeatherTransAccel": [
+        {
+          "signature": "GMST",
+          "identity": "Skyrim.esm:0B93D4",
+          "source_plugin": "Skyrim.esm",
+          "source_sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73",
+          "priority": 0,
+          "file_offset": "0xef67",
+          "data_payload_file_offset": "0xef9e",
+          "value": 16.0,
+          "value_f32_bits": "0x41800000",
+          "deleted": false,
+          "ignored": false
+        }
+      ]
+    },
+    "native_static_objects": [
+      {
+        "editor_id": "fDaytimeColorExtension",
+        "public_label": "gGameSetting_fDaytimeColorExtension_*",
+        "ae_stable_id": 370134,
+        "object_va": "0x14209e598",
+        "object_rva": "0x209e598",
+        "object_file_offset": "0x209c398",
+        "vtable_va": "0x1417e0360",
+        "stored_initial_f32": 0.5,
+        "name_va": "0x141868dc0",
+        "stored_name": "fDaytimeColorExtension"
+      },
+      {
+        "editor_id": "fWeatherTransMax",
+        "public_label": "gGameSetting_fWeatherTransMax_*",
+        "ae_stable_id": 370175,
+        "object_va": "0x14209e700",
+        "object_rva": "0x209e700",
+        "object_file_offset": "0x209c500",
+        "vtable_va": "0x1417e0360",
+        "stored_initial_f32": 0.25,
+        "name_va": "0x141868cf0",
+        "stored_name": "fWeatherTransMax"
+      },
+      {
+        "editor_id": "fWeatherTransMin",
+        "public_label": "gGameSetting_fWeatherTransMin_*",
+        "ae_stable_id": 370178,
+        "object_va": "0x14209e718",
+        "object_rva": "0x209e718",
+        "object_file_offset": "0x209c518",
+        "vtable_va": "0x1417e0360",
+        "stored_initial_f32": 0.009999999776482582,
+        "name_va": "0x141868d08",
+        "stored_name": "fWeatherTransMin"
+      },
+      {
+        "editor_id": "fWeatherTransAccel",
+        "public_label": "gGameSetting_fWeatherTransAccel_*",
+        "ae_stable_id": 370181,
+        "object_va": "0x14209e730",
+        "object_rva": "0x209e730",
+        "object_file_offset": "0x209c530",
+        "vtable_va": "0x1417e0360",
+        "stored_initial_f32": 4.0,
+        "name_va": "0x141868d20",
+        "stored_name": "fWeatherTransAccel"
+      }
+    ],
+    "vtable_mapping": [
+      {
+        "public_vtable_name": "VTABLE_SettingT_GameSettingCollection",
+        "ae_stable_id": 186284,
+        "va": "0x1417e0360"
+      },
+      {
+        "public_vtable_name": "VTABLE_SettingT_INISettingCollection",
+        "ae_stable_id": 187079,
+        "va": "0x1417ee3f8"
+      },
+      {
+        "public_vtable_name": "VTABLE_SettingT_INIPrefSettingCollection",
+        "ae_stable_id": 187302,
+        "va": "0x1417efb70"
+      }
+    ],
+    "target_executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "state_status": "Observed executable initializers plus expected post-plugin-load values; no live GameSettingCollection memory captured",
+    "expected_copied_game_values": {
+      "fDaytimeColorExtension": 0.5,
+      "fWeatherTransMin": 0.009999999776482582,
+      "fWeatherTransMax": 0.25,
+      "fWeatherTransAccel": 16.0
+    },
+    "source_pins": [
+      {
+        "url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/Offsets_VTABLE.h",
+        "revision": "b93280e832f263dbef44e44cbe2936622a02f91a",
+        "sha256": "f12a6a124f1abde94451e50e6a851ea61df7617248af8942ff50c88de28014d9"
+      },
+      {
+        "url": "https://github.com/alandtse/skyrim_vr_address_library/blob/3623ffd2e5a726ee5e4f3492ac36e2c77adbe6ca/offsets-1-7-104.0.csv",
+        "revision": "3623ffd2e5a726ee5e4f3492ac36e2c77adbe6ca",
+        "sha256": "cb31890ba1a58703fa226938e613513b00b1e8ccc53b37f7a2d474abda6316b9"
+      },
+      {
+        "url": "https://github.com/meh321/AddressLibraryDatabase/blob/0379cb6fdaa0d68e69ef9ad1a2d39caa6611ac91/skyrimae.rename",
+        "revision": "0379cb6fdaa0d68e69ef9ad1a2d39caa6611ac91",
+        "sha256": "8becdeae9fd2a7cc2ecb95fd0158718ca618a9cf10cff25d24e444f102abdf90"
+      }
+    ]
+  }
+}

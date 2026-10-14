@@ -1,0 +1,287 @@
+{
+  "schema": "mudcrab-research-source-publication/v1",
+  "note_id": "N003",
+  "policy": "Third-party source files are not included in this published research snapshot. Historical receipts and anchors retain their original provenance; use these pinned upstream URLs to inspect the source. Hashes describe the source bytes examined, not a network verification performed during removal.",
+  "sources": [
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/CommonLibSSE-NG-b93280e-ImageSpaceManager.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceManager.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "f06948347b094fe03a51497f8af17da885c22bc5767834c5037b1a30d67fd210",
+      "bytes": 17275,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/CommonLibSSE-NG-b93280e-TESImageSpaceModifier.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "4fab870f4a3fd9faccc2e0213577687444312be2da68e157ed5d8476d28fff43",
+      "bytes": 6962,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/Nukem9-32891630-BSLightingShader.cpp",
+      "upstream_url": "https://github.com/Nukem9/skyrimse-test/blob/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp",
+      "commit": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+      "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+      "bytes": 58427,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/TES5Edit-9fb01688-wbDefinitionsFO4.pas",
+      "upstream_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsFO4.pas",
+      "commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "sha256": "fd9802b434e9504321ad32d7583249ff2710771ec10f2a46af6409f8b53cca56",
+      "bytes": 465123,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/TES5Edit-9fb01688-wbDefinitionsTES5.pas",
+      "upstream_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas",
+      "commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+      "bytes": 377868,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/commonlibsse-ng-b93280e-ImageSpaceData.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceData.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "36403948765fc8a679a095cd50c4987b3b5d4d64525127039893f15197472a3a",
+      "bytes": 3227,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-7e717921-Color.hlsli",
+      "upstream_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/Common/Color.hlsli",
+      "commit": "7e717921ee069572c2ec8b5ce93d403d2b5e5c76",
+      "sha256": "e8975865a23bad633eceda1552f2db9f38aa8282887ca403fabdc7905921aa7e",
+      "bytes": 454,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-7e717921-FrameBuffer.hlsli",
+      "upstream_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/Common/FrameBuffer.hlsli",
+      "commit": "7e717921ee069572c2ec8b5ce93d403d2b5e5c76",
+      "sha256": "56cace1b511be5530e8aaaa1036776fe3fb8a69dd3b52322e20c82a6f077cf67",
+      "bytes": 3995,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-7e717921-ISHDR.hlsl",
+      "upstream_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/ISHDR.hlsl",
+      "commit": "7e717921ee069572c2ec8b5ce93d403d2b5e5c76",
+      "sha256": "7782e2a30686a1cd3d105e1e8b11244784592fbf946ff1cddf641233ac8cc973",
+      "bytes": 3757,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-d001d4de-Color.hlsli",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/package/Shaders/Common/Color.hlsli",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+      "bytes": 17942,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/Common.hlsli",
+      "upstream_url": "https://raw.githubusercontent.com/community-shaders/skyrim-community-shaders/b81bf11cf126f41aaa53d7318b61293677d9c0cc/features/Light%20Limit%20Fix/Shaders/LightLimitFix/Common.hlsli",
+      "commit": "b81bf11cf126f41aaa53d7318b61293677d9c0cc",
+      "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+      "bytes": 944,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/LightLimitFix.cpp",
+      "upstream_url": "https://raw.githubusercontent.com/community-shaders/skyrim-community-shaders/b81bf11cf126f41aaa53d7318b61293677d9c0cc/src/Features/LightLimitFix.cpp",
+      "commit": "b81bf11cf126f41aaa53d7318b61293677d9c0cc",
+      "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+      "bytes": 36557,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/LightLimitFix.hlsli",
+      "upstream_url": "https://raw.githubusercontent.com/community-shaders/skyrim-community-shaders/b81bf11cf126f41aaa53d7318b61293677d9c0cc/features/Light%20Limit%20Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "commit": "b81bf11cf126f41aaa53d7318b61293677d9c0cc",
+      "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+      "bytes": 1789,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/ClusterBuildingCS.hlsl",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/ClusterBuildingCS.hlsl",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "2d0e8cabb472998b5f0d7772519c43bf70cf0389a71c55bf60cd557ccb9f74ac",
+      "bytes": 2526,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/Common.hlsli",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/Common.hlsli",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+      "bytes": 944,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+      "bytes": 1789,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/package/Shaders/Common/Color.hlsli",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/package/Shaders/Common/Color.hlsli",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+      "bytes": 17942,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Deferred.cpp",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Deferred.cpp",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "2ed2514968700a0a5b291428152ae26735c9b3b263eb2aee773528f0e308cfe9",
+      "bytes": 26626,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/Effects11.cpp",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/Effects11.cpp",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "67c994dc6b5279bb847d63d767420183f32257bdc9625317fcde9e2903108eb3",
+      "bytes": 43812,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.cpp",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.cpp",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+      "bytes": 36557,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h",
+      "upstream_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.h",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+      "bytes": 14083,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/schema.json",
+      "upstream_url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/schema.json",
+      "commit": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+      "sha256": "3da140ce6fed78833d850486717687f5b5f22c05a105ad89875820f413ae6b9a",
+      "bytes": 14606,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp",
+      "upstream_url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp",
+      "commit": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+      "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+      "bytes": 15948,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-climate.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESClimate.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "593c5c229d2fd6375996e6512195b07178e12acdb4f2851002b35dc21d15ff92",
+      "bytes": 2347,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-dalc.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BGSDirectionalAmbientLightingColors.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "0de8b1c6af36df24bbc3ab97bc6d45a1cff90019e6a8305f096c5849714997c9",
+      "bytes": 643,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-interior.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/InteriorData.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "37cc1d081197cd51443ddaecae7253a0e2ce744e14376f935cad11e76df8fe64",
+      "bytes": 1977,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-nipointlight.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/N/NiPointLight.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "a158e9479c336dfb304cf3c3463b016cc84c63cb72375b57089fbc89ff8d185b",
+      "bytes": 1602,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+      "upstream_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESWeather.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+      "bytes": 6379,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+      "upstream_url": "https://github.com/doodlum/skyrim-community-shaders/blob/5a530ba2bd10d6dc22b476244b9e162ec93c3ca3/package/Shaders/Lighting.hlsl",
+      "commit": "5a530ba2bd10d6dc22b476244b9e162ec93c3ca3",
+      "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+      "bytes": 55833,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-weather-current.cpp",
+      "upstream_url": "https://github.com/doodlum/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/SkySync.cpp",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "sha256": "b2d17b78f6dff6d1f46c40677ee8050b8c8e2377663511c4dd74c9825ecd8c7f",
+      "bytes": 27142,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nifxml.xml",
+      "upstream_url": "https://github.com/niftools/nifxml/blob/970a6238218a106daaeb89a61bcda0eeaf9d08c4/nif.xml",
+      "commit": "970a6238218a106daaeb89a61bcda0eeaf9d08c4",
+      "sha256": "d6b76a83ea5fbadd21da5f06348b236a1c43da6bb76d108a2e8b749c22618dd6",
+      "bytes": 565041,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9-header.h",
+      "upstream_url": "https://github.com/Nukem9/skyrimse-test/blob/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.h",
+      "commit": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+      "sha256": "fee6b584673e02de748a61366546ff46b31908eeaac3f5584c6d13b471962a55",
+      "bytes": 5209,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9.cpp",
+      "upstream_url": "https://github.com/Nukem9/skyrimse-test/blob/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp",
+      "commit": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+      "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+      "bytes": 58427,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-common.pas",
+      "upstream_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsCommon.pas",
+      "commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "sha256": "e616b6546f6df74d88ec98bb870906db380c985963d011e4931c5726682b7d26",
+      "bytes": 338167,
+      "publication": "external_reference_only"
+    },
+    {
+      "former_snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-tes5.pas",
+      "upstream_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas",
+      "commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+      "bytes": 377868,
+      "publication": "external_reference_only"
+    }
+  ]
+}

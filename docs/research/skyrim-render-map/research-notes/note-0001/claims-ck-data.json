@@ -1,0 +1,488 @@
+{
+  "schema": "mudcrab-research-note-claims/v1",
+  "note_id": "N001",
+  "domain": "ck-data-hierarchy",
+  "claims": [
+    {
+      "id": "N001-C01",
+      "supplied_statement": "Cell lighting block (XCLL), 92 bytes",
+      "topic": "XCLL layout",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "supported_static",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 20,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "The parser reads the 92-byte layout and the catalog resolves all eleven serialized inheritance groups. CELL and template cubes are retained separately. Data preservation is implemented; individual consumers still need qualification."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C09",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/converter/src/esm/lighting.rs",
+          "symbol": "fn interior",
+          "line": 132,
+          "sha256": "32feb6d8092efe43cce96bea264ea40282c2530720f90214ab160aa5fcd006dc"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Data preservation is implemented; individual consumers still need qualification."
+    },
+    {
+      "id": "N001-C02",
+      "supplied_statement": "each bit inherits one group from the Lighting Template",
+      "topic": "Inheritance groups",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "supported_static",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 20,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "The parser reads the 92-byte layout and the catalog resolves all eleven serialized inheritance groups. CELL and template cubes are retained separately. Data preservation is implemented; individual consumers still need qualification."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C09",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/lighting_catalog.rs",
+          "symbol": "pub fn resolve_interior",
+          "line": 85,
+          "sha256": "bc9c9101f6497de449d8972c638d468817529c2deee1d9d1128973676648ef28"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Data preservation is implemented; individual consumers still need qualification."
+    },
+    {
+      "id": "N001-C03",
+      "supplied_statement": "It has no direct effect on the lighting.",
+      "topic": "Template base Ambient",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 21,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "Exterior lighting uses WTHR DALC without multiplying by scalar NAM0 Ambient. Interior scalar-Ambient fallback is explicit preview policy. The pack has DALC in all 133 templates and zero successful interior scalar-Ambient fallback cases. Adding base Ambient would not repair an identified active error."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C10",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/environment_preview.rs",
+          "symbol": "fn prepare_interior",
+          "line": 444,
+          "sha256": "7d83b7370c61a4d16415ade2dcca60f5a5a2154f3777b84271df8fa12d120ade"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "The pack has DALC in all 133 templates and zero successful interior scalar-Ambient fallback cases. Adding base Ambient would not repair an identified active error."
+    },
+    {
+      "id": "N001-C04",
+      "supplied_statement": "Runtime blend",
+      "topic": "Six-axis ambient blend",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 22,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "Recovered native preparation builds affine rows; the ordinary shader evaluates them outside direct shadow visibility. This inspected arithmetic has stronger evidence than the notes' open question. Effective retail rows and the extra native RGB operand remain unknown."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C03",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/nif_material/native_common.wgsl",
+          "symbol": "fn native_response_parts",
+          "line": 85,
+          "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "This inspected arithmetic has stronger evidence than the notes' open question. Effective retail rows and the extra native RGB operand remain unknown."
+    },
+    {
+      "id": "N001-C05",
+      "supplied_statement": "The ambient cube (X+ through Z-) does not appear in this flag list.",
+      "topic": "Cube inheritance",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 23,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "The preview chooses template DALC using the Ambient inheritance bit. This coupling is approximate. In 411 inherited-ambient interiors, CELL and template cubes differ. Fog getter inheritance does not prove cube ownership."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C10",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/environment_preview.rs",
+          "symbol": "fn prepare_interior",
+          "line": 444,
+          "sha256": "7d83b7370c61a4d16415ade2dcca60f5a5a2154f3777b84271df8fa12d120ade"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "This coupling is approximate. In 411 inherited-ambient interiors, CELL and template cubes differ. Fog getter inheritance does not prove cube ownership."
+    },
+    {
+      "id": "N001-C06",
+      "supplied_statement": "Choosing template NONE lets you set every value by hand.",
+      "topic": "Template NONE",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 24,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "The lighting catalog rejects a nonzero inheritance mask without valid template inputs. Forty-two of 786 interior records have null LTMP and nonzero masks. Selecting one causes fixed preview lighting. Existing native null-template proof covers seven fog fields; ambient/directional handling remains open."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C10",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/lighting_catalog.rs",
+          "symbol": "pub fn resolve_interior",
+          "line": 85,
+          "sha256": "bc9c9101f6497de449d8972c638d468817529c2deee1d9d1128973676648ef28"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Forty-two of 786 interior records have null LTMP and nonzero masks. Selecting one causes fixed preview lighting. Existing native null-template proof covers seven fog fields; ambient/directional handling remains open."
+    },
+    {
+      "id": "N001-C07",
+      "supplied_statement": "described as \"the brightness of the light\"",
+      "topic": "Directional Fade",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 25,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "Fade is retained but unapplied. Interior angles use a stated approximation. Of 744 resolvable interiors, 524 have nonunit Fade and nonblack directional RGB. The two CK pages disagree on Fade's meaning; multiplying by it would be an assumption."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C10",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/environment_preview.rs",
+          "symbol": "fn prepare_interior",
+          "line": 444,
+          "sha256": "7d83b7370c61a4d16415ade2dcca60f5a5a2154f3777b84271df8fa12d120ade"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Of 744 resolvable interiors, 524 have nonunit Fade and nonblack directional RGB. The two CK pages disagree on Fade's meaning; multiplying by it would be an assumption."
+    },
+    {
+      "id": "N001-C08",
+      "supplied_statement": "whether weather lighting affects the cell.",
+      "topic": "Sky lighting precedence",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 26,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "Flags affect environment mode and sky display; authored interior coefficients still ignore their lighting precedence. The pack has 282 ShowSky interiors. Their ambient/directional selection remains unsupported."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C08",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/environment.rs",
+          "symbol": "pub(crate) fn resolve_environment",
+          "line": 442,
+          "sha256": "0cd985cc0344f2fe4bdcdf1ff4308bbbb4d114079267823265bda2cd4f0acc5d"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "The pack has 282 ShowSky interiors. Their ambient/directional selection remains unsupported."
+    },
+    {
+      "id": "N001-C09",
+      "supplied_statement": "only four can be visible at any given time.",
+      "topic": "Local shadow-caster limit",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 27,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "All placed locals become unshadowed PointLights. Native preview takes seven camera-nearest candidates; fallback has a separate 64-light budget. Omni shadows, spotlight and hemispherical distinctions are absent. Neither budget implements the tutorial's four-caster statement."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C15",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/lights.rs",
+          "symbol": "pub fn point_light",
+          "line": 167,
+          "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Omni shadows, spotlight and hemispherical distinctions are absent. Neither budget implements the tutorial's four-caster statement."
+    },
+    {
+      "id": "N001-C10",
+      "supplied_statement": "If Start is 0, the game uses the INI value",
+      "topic": "Local light fade defaults",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "unverified",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 28,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "XCLL/LGTM distances are retained but unused by both local-light consumers. Related INI setting objects and compiled initializers are inventoried; effective values remain unresolved. Effective zero fallbacks, fade interpolation and shadow-caster exemption need a native consumer trace."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C15",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/lights.rs",
+          "symbol": "pub fn point_light",
+          "line": 167,
+          "sha256": "9f56505c96b877e1b2838c73b797fa1421364dfba64cd63aa1920a84257ae040"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Effective zero fallbacks, fade interpolation and shadow-caster exemption need a native consumer trace."
+    },
+    {
+      "id": "N001-C11",
+      "supplied_statement": "An FX object can be told to take the color of a chosen light",
+      "topic": "FX external emittance",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 29,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "Raw XEMI bytes and FormID remapping survive. Typed linkage and the documented FX light-selection policy are absent. An FX reference containing only XEMI is excluded from the typed lighting snapshot. This is a typed/runtime gap, not demonstrated source-byte loss."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C35",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/converter/src/esm/lighting.rs",
+          "symbol": "pub fn decode_placed_light",
+          "line": 443,
+          "sha256": "32feb6d8092efe43cce96bea264ea40282c2530720f90214ab160aa5fcd006dc"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "An FX reference containing only XEMI is excluded from the typed lighting snapshot. This is a typed/runtime gap, not demonstrated source-byte loss."
+    },
+    {
+      "id": "N001-C12",
+      "supplied_statement": "Rooms can have their own image space",
+      "topic": "Room ImageSpace",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 30,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "LNAM/INAM links survive. Explicit room fog endpoints can blend; automatic room selection and room ImageSpace selection are absent. CELL-level template/XCIM selection does not implement room ownership or transitions."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C11",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/environment_render.rs",
+          "symbol": "fn stable_image_space",
+          "line": 134,
+          "sha256": "79341a75ab3704f9426b5d253bb7e14449fea55707d032f4e4181976f57bf473"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "CELL-level template/XCIM selection does not implement room ownership or transitions."
+    },
+    {
+      "id": "N001-C13",
+      "supplied_statement": "does nothing. It was never fully implemented.",
+      "topic": "Template specular controls",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 31,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "Those template controls are separate from active NIF material specular. Their documented no-op does not justify disabling material highlights or reflection families."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C17",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/nif_material.rs",
+          "symbol": "fn build_surface",
+          "line": 390,
+          "sha256": "fb95e955ea2c1b29140fd2eb26ac63136872a9c83bdf81796d90c12710bde051"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Their documented no-op does not justify disabling material highlights or reflection families."
+    },
+    {
+      "id": "N001-C14",
+      "supplied_statement": "the Cell Lighting tab says \"Not used.\"",
+      "topic": "Fog Max conflict",
+      "subject_scope": "CK/CELL authoring claim or open question; runtime evidence separately scoped",
+      "assessment": "partially_supported",
+      "evidence": [
+        {
+          "kind": "prior_implementation_and_primary_source_audit",
+          "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+          "line": 32,
+          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "finding": "The CK pages conflict. Existing native getter/shader evidence supplies an active fog maximum. Preserve the scoped native implementation; the Cell Lighting page alone cannot justify disabling Max."
+        },
+        {
+          "kind": "existing_input_contract",
+          "path": "docs/research/skyrim-render-map/input-contracts.json",
+          "contract_id": "I-C09",
+          "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+        }
+      ],
+      "implementation": [
+        {
+          "path": "crates/engine/src/environment.rs",
+          "symbol": "pub(crate) fn resolve_environment",
+          "line": 442,
+          "sha256": "0cd985cc0344f2fe4bdcdf1ff4308bbbb4d114079267823265bda2cd4f0acc5d"
+        }
+      ],
+      "unresolved": [
+        "This carry-forward claim uses the previous scoped audit; its source authoring statement is not selected retail execution."
+      ],
+      "next_query": "Preserve the scoped native implementation; the Cell Lighting page alone cannot justify disabling Max."
+    }
+  ],
+  "source_audit": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
+  "limitations": [
+    "Four primary CK/CELL pages were fetched in the preceding comparison; original native evidence remains in the central map.",
+    "This is a carry-forward ledger, not fresh runtime or shader verification."
+  ]
+}

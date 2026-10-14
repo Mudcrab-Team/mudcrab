@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Skyrim distance-fog equations</title>
+  <style>
+    body { margin:0; color:var(--foreground,#222); font:14px/1.5 var(--font-sans,system-ui); }
+    h2 { font-size:18px; margin:0 0 6px; }
+    p { margin:8px 0 14px; }
+    .muted { color:var(--muted-foreground,#666); font-size:12px; }
+    .controls { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+    select { color:inherit; background:var(--card,#f6f6f6); border:1px solid var(--border,#bbb); border-radius:5px; padding:6px; font:inherit; }
+    label { font-weight:600; }
+    svg { width:100%; height:280px; overflow:visible; }
+    .axis { stroke:var(--border,#bbb); }
+    .grid { stroke:var(--border,#ddd); stroke-dasharray:3 5; }
+    .labels { fill:var(--muted-foreground,#666); font-size:12px; }
+    .retail { stroke:var(--chart-1,#087ea4); }
+    .current { stroke:var(--chart-2,#c56718); }
+    .retail-line,.current-line { fill:none; stroke-width:3; }
+    .current-line { stroke-dasharray:7 5; }
+    .legend { display:flex; flex-wrap:wrap; gap:18px; font-size:12px; }
+    .swatch { display:inline-block; width:22px; height:3px; vertical-align:middle; margin-right:6px; }
+    .retail-swatch { background:var(--chart-1,#087ea4); }
+    .current-swatch { background:var(--chart-2,#c56718); }
+    .distance { display:flex; gap:12px; align-items:center; margin-top:16px; }
+    input[type=range] { width:100%; accent-color:var(--chart-1,#087ea4); }
+    .numbers { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:10px; }
+    .number { font:600 21px/1.4 var(--font-mono,monospace); }
+    .route { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:20px; }
+    .route div { padding:16px; border:1px solid var(--border,#bbb); border-radius:var(--radius,8px); }
+    .route strong { display:block; margin-bottom:6px; }
+    code { font-family:var(--font-mono,monospace); font-size:12px; }
+    @media(max-width:450px) { .route { grid-template-columns:1fr; } .number { font-size:18px; } }
+  </style>
+</head>
+<body>
+  <h2>Recovered fog factor vs Mudcrab's current approximation</h2>
+  <p class="muted">Analytical curves from the copied records and shipped shaders. The horizontal axis is the fog distance metric after a pass computes it. This is not a retail frame comparison.</p>
+  <div class="controls">
+    <label for="weather">Authored weather</label>
+    <select id="weather">
+      <option value="clearDay">Clear · day</option>
+      <option value="clearNight">Clear · night</option>
+      <option value="fogDay">Fog · day</option>
+      <option value="fogNight">Fog · night</option>
+    </select>
+    <span id="params" class="muted"></span>
+  </div>
+  <svg viewBox="0 0 728 280" role="img" aria-labelledby="chartTitle chartDesc">
+    <title id="chartTitle">Fog factor by distance</title>
+    <desc id="chartDesc">The recovered shader caps a powered normalized distance. The current engine multiplies an exponential by 0.85. These curves differ near the camera and at the plateau.</desc>
+    <g id="axes"></g>
+    <path id="retailPath" class="retail retail-line"></path>
+    <path id="currentPath" class="current current-line"></path>
+    <line id="cursor" class="axis" y1="14" y2="235"></line>
+    <circle id="retailPoint" r="5" fill="var(--chart-1,#087ea4)"></circle>
+    <circle id="currentPoint" r="5" fill="var(--chart-2,#c56718)"></circle>
+  </svg>
+  <div class="legend">
+    <span><i class="swatch retail-swatch"></i>Recovered: min(Max, saturate(d / Far)<sup>Power</sup>)</span>
+    <span><i class="swatch current-swatch"></i>Current: 0.85 × (1 − exp(−6.2e−5 × d))</span>
+  </div>
+  <div class="distance">
+    <label for="distance">Distance</label>
+    <input id="distance" type="range" min="0" max="120000" step="256" value="16384" aria-describedby="metricNote">
+  </div>
+  <div class="numbers" aria-live="polite">
+    <div><div class="number" id="distanceNumber"></div><span class="muted">Creation units</span></div>
+    <div><div class="number" id="retailNumber"></div><span class="muted">Recovered factor</span></div>
+    <div><div class="number" id="currentNumber"></div><span class="muted">Current factor</span></div>
+  </div>
+  <div class="route">
+    <div><strong>Opaque image-space fog</strong>Uses axial camera depth with <code>z′ = 1.01z − 0.01</code>. Fog Near → Far color and scene → fog color both use the factor. Near-far-plane depth bypasses fog.</div>
+    <div><strong>Geometry fog</strong>Lighting and ordinary Effect shaders use clip-space XYZ length before division by W. The vertex fog is interpolated; lighting clamps and blend modes change the final result.</div>
+  </div>
+  <p class="muted" id="metricNote">The same point in the world can produce different distances in the two paths. Effective projection, color domain, draw order and retail captures remain acceptance requirements.</p>
+  <script>
+    const configurations = {
+      clearDay: {far:80000,power:Math.fround(0.4),max:Math.fround(0.85)},
+      clearNight: {far:40000,power:Math.fround(0.4),max:Math.fround(0.85)},
+      fogDay: {far:25000,power:Math.fround(0.4),max:Math.fround(0.95)},
+      fogNight: {far:15000,power:0.375,max:Math.fround(0.95)}
+    };
+    const el = id => document.getElementById(id);
+    const xmin=55,xmax=708,ymin=14,ymax=235,extent=120000;
+    const x = d => xmin+(xmax-xmin)*d/extent;
+    const y = a => ymax-(ymax-ymin)*a;
+    const recovered = (d,c) => Math.min(c.max,Math.pow(Math.max(0,Math.min(1,d/c.far)),c.power));
+    const current = d => 0.85*(1-Math.exp(-6.2e-5*d));
+    const path = fn => Array.from({length:601},(_,i)=>{
+      const d=i*extent/600; return `${i?'L':'M'}${x(d).toFixed(3)},${y(fn(d)).toFixed(3)}`;
+    }).join(' ');
+    let axes='';
+    for(let a=0;a<=1.001;a+=0.25) {
+      axes+=`<line class="grid" x1="${xmin}" x2="${xmax}" y1="${y(a)}" y2="${y(a)}"/><text class="labels" text-anchor="end" x="45" y="${y(a)+4}">${a.toFixed(2)}</text>`;
+    }
+    for(let d=0;d<=extent;d+=30000) {
+      axes+=`<text class="labels" text-anchor="middle" x="${x(d)}" y="258">${d?d/1000+'k':'0'}</text>`;
+    }
+    axes+=`<line class="axis" x1="${xmin}" x2="${xmax}" y1="${ymax}" y2="${ymax}"/>`;
+    el('axes').innerHTML=axes;
+    function update() {
+      const c=configurations[el('weather').value],d=Number(el('distance').value);
+      el('params').textContent=`Near 0 · Far ${c.far.toLocaleString()} · Power ${c.power.toFixed(3)} · Max ${c.max.toFixed(3)}`;
+      el('retailPath').setAttribute('d',path(v=>recovered(v,c)));
+      el('currentPath').setAttribute('d',path(current));
+      el('cursor').setAttribute('x1',x(d)); el('cursor').setAttribute('x2',x(d));
+      for(const [id,a] of [['retailPoint',recovered(d,c)],['currentPoint',current(d)]]) {
+        el(id).setAttribute('cx',x(d));el(id).setAttribute('cy',y(a));
+      }
+      el('distanceNumber').textContent=d.toLocaleString();
+      el('retailNumber').textContent=recovered(d,c).toFixed(3);
+      el('currentNumber').textContent=current(d).toFixed(3);
+    }
+    el('weather').addEventListener('change',update);
+    el('distance').addEventListener('input',update);
+    update();
+    if(Math.abs(recovered(80000,configurations.clearDay)-Math.fround(0.85))>1e-10) throw Error('Curve cap check failed');
+    console.log('Curve check passed; analytical model, no retail capture.');
+  </script>
+</body>
+</html>

@@ -1,0 +1,1064 @@
+{
+  "schema": "mudcrab-research-note-claims/v1",
+  "note_id": "N002",
+  "domain": "imagespace",
+  "source_pin": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0002/supplied-notes.txt",
+    "sha256": "20589ecb5bd3892a4671143a9159ca190b701fc62850dcd87a8e545276c870a6"
+  },
+  "claims": [
+    {
+      "id": "N002-P01",
+      "supplied_statement": "Each weather record defines an 8-stage time-of-day timeline (Sunrise, Day, Sunset, Night, with intermediate transitions)",
+      "subject_scope": "serialized WTHR key layout versus native timeline semantics",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "151-155",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "WTHR NAM0 colors; live selected weather/weight state is open"
+        },
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "lines": "144-159",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121",
+          "locator": "decode_environment WTHR branch and four IMSP/HNAM links"
+        },
+        {
+          "path": "crates/converter/src/esm/lighting.rs",
+          "lines": "176-199",
+          "sha256": "32feb6d8092efe43cce96bea264ea40282c2530720f90214ab160aa5fcd006dc",
+          "locator": "decode_weather groups each NAM0 16-byte record into four RawColor values"
+        },
+        {
+          "path": "crates/shared/src/lighting.rs",
+          "lines": "89-95",
+          "sha256": "df55ce6db61af17a4ef18cc56853ae8275a9992f30f55343d88968dbb5e85ddc",
+          "locator": "WeatherSource documents four Sunrise/Day/Sunset/Night colors per NAM0 group"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment WTHR branch",
+          "lines": "130-160",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        },
+        {
+          "path": "crates/converter/src/esm/lighting.rs",
+          "symbol": "decode_weather NAM0 group decoder",
+          "lines": "176-199",
+          "sha256": "32feb6d8092efe43cce96bea264ea40282c2530720f90214ab160aa5fcd006dc"
+        },
+        {
+          "path": "crates/shared/src/lighting.rs",
+          "symbol": "WeatherSource.colors",
+          "lines": "89-95",
+          "sha256": "df55ce6db61af17a4ef18cc56853ae8275a9992f30f55343d88968dbb5e85ddc"
+        }
+      ],
+      "unresolved": [
+        "Four stored NAM0 color keys (Sunrise, Day, Sunset, Night) do not establish eight distinct authored time stages or the named intermediate transitions.",
+        "Native progression between keys, current/next weather weights, and any WTHR direction-vector producer remain separate open connections."
+      ],
+      "next_query": "Trace the WTHR time-key consumers and capture selected current/next keys with their weights in a controlled retail frame.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence; no new fetch"
+        }
+      ]
+    },
+    {
+      "id": "N002-P02",
+      "supplied_statement": "Active ImageSpace references linked to specific time windows.",
+      "subject_scope": "serialized WTHR image-space links",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "lines": "156-160",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121",
+          "locator": "WTHR IMSP parsed as four links"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "69-73",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "stable exterior WTHR.IMSP selection policy and explicit unresolved transitions"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment WTHR branch",
+          "lines": "156-160",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        }
+      ],
+      "unresolved": [
+        "Native time-key interpretation and active transitions are not captured."
+      ],
+      "next_query": "Connect native WTHR key selection and interpolation to each IMSP record under a captured weather transition.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence; no new fetch"
+        }
+      ]
+    },
+    {
+      "id": "N002-P03",
+      "supplied_statement": "CLMT (Climate Records): Manage seasonal variations, celestial phase definitions (Masser and Secunda moon cycles), sunrise and sunset timings, and weather transition tables.",
+      "subject_scope": "CLMT serialized fields and runtime behavior",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "lines": "162-180",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121",
+          "locator": "CLMT TNAM timing bytes and WLST weather choices"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "152-157",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "CLMT/GMST timing and automatic weather selection gaps"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment CLMT branch",
+          "lines": "162-180",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        }
+      ],
+      "unresolved": [
+        "Seasonal and lunar phase behavior is not established by this parser or cited native trace.",
+        "Native timing selection, GMST overrides, and transition progress owner remain open."
+      ],
+      "next_query": "Trace all CLMT consumers and separately map serialized fields to weather timing, lunar phases, and seasonal selection.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence; no new fetch"
+        }
+      ]
+    },
+    {
+      "id": "N002-P04",
+      "supplied_statement": "eyeAdaptSpeedfloatRate of temporal luminance adaptation between exposure steps.",
+      "subject_scope": "modern serialized IMGS HNAM field count and order",
+      "assessment": "supported_static",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "42-56",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "modern IMGS field offsets and recovered uses"
+        },
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "lines": "305-316",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121",
+          "locator": "modern HNAM decoder"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment IMGS HNAM mapping",
+          "lines": "305-316",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        }
+      ],
+      "unresolved": [
+        "Static field layout does not prove active record values or use in a selected retail frame."
+      ],
+      "next_query": "No layout follow-up needed; close active IMGS identity and native writer/consumer values for a selected draw.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable and serialized-record trace",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P05",
+      "supplied_statement": "Camera exposure, tone curves, and post-processing properties are defined in TESImageSpace records, which are deserialized into runtime memory within ImageSpaceBaseData.",
+      "subject_scope": "IMGS ownership and complete runtime base-data mapping",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/native-image-space-connections.md",
+          "lines": "112-114",
+          "sha256": "c616e8fd3e84cd42cc3c270223a64ac62811358c904f9a2de03dc1bab334dae8",
+          "locator": "native parameters to active IMGS/IMAD linkage remains open"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "40-67",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "stable authored fields and distinct legacy block"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment IMGS branch",
+          "lines": "305-355",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        }
+      ],
+      "unresolved": [
+        "Active base identity, transitions, modifier composition, and all runtime writers are not fully connected.",
+        "The name ImageSpaceBaseData is not independently established by these artifacts."
+      ],
+      "next_query": "Trace source record selection through base-data population and each native parameter writer to the selected shader constants.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P06",
+      "supplied_statement": "eyeAdaptTargetfloatDesired mid-tone reference luminance target.",
+      "subject_scope": "claimed modern IMGS eye-adaptation target field",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "46-63",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "modern HNAM/CNAM/TNAM field inventory has no eye-adapt target"
+        },
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "lines": "305-318",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121",
+          "locator": "nine HNAM values plus separate CNAM/TNAM"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment IMGS HNAM mapping",
+          "lines": "305-318",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        }
+      ],
+      "unresolved": [
+        "No target field is present in the recovered modern HNAM layout; other versions or non-IMGS sources are outside this claim."
+      ],
+      "next_query": "Locate a distinct native or serialized producer if the article intends a runtime target value, and name that source explicitly.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 serialized IMGS layout",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "fetch_date": "2026-10-10",
+          "note": "existing local evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P07",
+      "supplied_statement": "eyeAdaptMinfloatLower exposure clamp floor to prevent excessive scene over-brightening; eyeAdaptMaxfloatUpper exposure clamp ceiling to prevent excessive scene over-darkening.",
+      "subject_scope": "claimed serialized minimum and maximum adaptation clamps",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "42-63",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "modern IMGS layout lists no min/max fields"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "128-144",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "LightAdapt output bounded step and NaN fallback; no exposure clamp"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_adapt",
+          "lines": "35-43",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "A separate runtime policy or settings source may impose limits outside the recovered shader and IMGS record."
+      ],
+      "next_query": "Search exact native writers for adaptation min/max before attributing clamps to IMGS; current recovered shader has none.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ]
+    },
+    {
+      "id": "N002-P08",
+      "supplied_statement": "bloomThresholdfloatLuminance floor for isolating high-intensity pixels for bloom.",
+      "subject_scope": "bloom threshold domain and operation",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "48-53",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "Bloom Threshold: per-component bright-pass threshold"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "293-306",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "componentwise bright-pass equation and alpha path"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_hdr.wgsl",
+          "symbol": "fragment bright-pass branch",
+          "lines": "34-40",
+          "sha256": "3f106a798097287668fb0782cdc801154e7057ca35e27c856267fc64479ebc16"
+        }
+      ],
+      "unresolved": [
+        "The authored threshold's live value and framebuffer-scale value for a retail frame remain unobserved."
+      ],
+      "next_query": "Capture active threshold inputs and bright-pass source samples from the selected retail HDR route.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ]
+    },
+    {
+      "id": "N002-P09",
+      "supplied_statement": "The engine implements temporal eye adaptation by generating a downsampled luminance pyramid. The scene target is iteratively downsampled until reaching a 1 × 1 texture containing the average scene luminance: Lbar = exp((1/N) sum ln(epsilon + L(x,y))).",
+      "subject_scope": "native luminance reduction algorithm and geometric-mean claim",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "215-225",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "weighted RGB dot and arithmetic four/sixteen-tap reductions"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "233-237",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "history route can replace final reduction at a 2x2 minimum"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_hdr.wgsl",
+          "symbol": "fragment reduction loop",
+          "lines": "21-41",
+          "sha256": "3f106a798097287668fb0782cdc801154e7057ca35e27c856267fc64479ebc16"
+        }
+      ],
+      "unresolved": [
+        "Actual native target dimensions vary with settings; 1x1 is not the universal endpoint.",
+        "Active route and loaded settings for any particular retail frame are unobserved."
+      ],
+      "next_query": "No shader-evidence follow-up needed; capture the selected native branch and dimensions for a specific retail configuration.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$\\bar{L} = \\exp\\left( \\frac{1}{N} \\sum*{x,y} \\ln(\\epsilon + L(x,y)) \\right)$$"
+    },
+    {
+      "id": "N002-P10",
+      "supplied_statement": "Ladapted(t) = Ladapted(t−Δt) + (Lbar−Ladapted(t−Δt)) · (1.0−e^(−Δt·rspeed)).",
+      "subject_scope": "per-frame adaptation equation and channel count",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "128-144",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "native update applies separate rates to XY, minimum step 1/256, retains previous XY on NaN"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "239-262",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "native rate derivation from authored speed/strength and time"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_adapt",
+          "lines": "35-43",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "The shader receives rates from CPU parameters; active global scales/time override and live values require a selected runtime capture."
+      ],
+      "next_query": "Capture rates and time source for a retail frame, keeping the two history channels separate.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$L_{\\text{adapted}}(t) = L_{\\text{adapted}}(t - \\Delta t) + (\\bar{L} - L_{\\text{adapted}}(t - \\Delta t)) \\cdot \\left(1.0 - e^{-\\Delta t \\cdot r_{\\text{speed}}}\\right)$$"
+    },
+    {
+      "id": "N002-P11",
+      "supplied_statement": "E = clamp(Ltarget / Ladapted(t), Emin, Emax).",
+      "subject_scope": "native exposure ratio and clamping",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "341-364",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "tone exposure E = luminance * (A.y/A.x), followed by selected curve; no clamp"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "31-40",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "tone shader computes adaptation ratio from sampled XY"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample exposure",
+          "lines": "52-65",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "Static shader arithmetic establishes A.x as the exposure denominator and contrast pivot, and A.y as the exposure numerator; these are adaptation luminance values, not EV100.",
+        "Effective values, producer provenance for the selected route, active draw, and input/output domains remain open."
+      ],
+      "next_query": "Connect selected history XY to active tone draw and preserve the recovered ratio and curve branch.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$E = \\text{clamp}\\left( \\frac{L_{\\text{target}}}{L_{\\text{adapted}}(t)}, E_{\\min}, E_{\\max} \\right)$$"
+    },
+    {
+      "id": "N002-P12",
+      "supplied_statement": "Bright pixels are extracted for bloom accumulation by testing against bloomThreshold: Cbloom_source = max(0, Cscene · E − Thresholdbloom).",
+      "subject_scope": "bloom threshold input, exposure application, and channel arithmetic",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "293-306",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "per-RGB threshold with framebuffer rescale and separate adaptation-derived alpha"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "146-160",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "BrightPass equations; threshold applied to each sampled RGB component"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_hdr.wgsl",
+          "symbol": "fragment BrightPass branch",
+          "lines": "34-40",
+          "sha256": "3f106a798097287668fb0782cdc801154e7057ca35e27c856267fc64479ebc16"
+        }
+      ],
+      "unresolved": [
+        "Active values of scale k, threshold and source-domain conversion require runtime capture."
+      ],
+      "next_query": "Capture the bright-pass draw's source, threshold, framebuffer scale, adaptation input, and intermediate target format.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$\\mathbf{C}*{\\text{bloom\\_source}} = \\max\\left(0.0, \\mathbf{C}*{\\text{scene}} \\cdot E - \\text{Threshold}*{\\text{bloom}}\\right)$$"
+    },
+    {
+      "id": "N002-P13",
+      "supplied_statement": "This thresholded buffer is filtered through a multi-pass separable Gaussian downsampling and upsampling pyramid.",
+      "subject_scope": "HDR bloom pass topology and kernel selection",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "277-291",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "selected odd tap count and vertical bright-pass followed by horizontal ordinary blur"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "312-327",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "pinned binary32 weights for radius 1 through 7"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_hdr.wgsl",
+          "symbol": "fragment blur and bright-pass modes",
+          "lines": "23-58",
+          "sha256": "3f106a798097287668fb0782cdc801154e7057ca35e27c856267fc64479ebc16"
+        }
+      ],
+      "unresolved": [
+        "The cited native HDR route establishes two blur children and authored radius choices; a general downsampling/upsampling pyramid description exceeds this route.",
+        "Do not substitute or renormalize a Gaussian approximation for the recovered tap tables."
+      ],
+      "next_query": "Keep the claim limited to the HDR parent's selected BrightPassN then BlurN route; inspect another caller before generalizing topology.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_excerpt": "This thresholded buffer is filtered through a multi-pass separable Gaussian downsampling and upsampling pyramid."
+    },
+    {
+      "id": "N002-P14",
+      "supplied_statement": "The resulting blurred illumination is modulated by bloomScale and additively blended over the scene prior to tone adjustment.",
+      "subject_scope": "bloom scale location and tone-stage composition",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "293-306",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "scale multiplies first bright-pass RGB; tone shader combines sampled bloom with scene using receive threshold"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "341-353",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "tone composition of scene and bloom inputs"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample scene/bloom composite",
+          "lines": "52-72",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "The simplified statement places BloomScale after accumulation; recovered HDR route multiplies each bright-pass contribution before blur.",
+        "Active pass selection and resource domains remain frame-specific."
+      ],
+      "next_query": "State the recovered scale placement and distinguish BloomScale from Receive Bloom Threshold in any revised account.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_excerpt": "The resulting blurred illumination is modulated by bloomScale and additively blended over the scene prior to tone adjustment."
+    },
+    {
+      "id": "N002-P15",
+      "supplied_statement": "Ctoned = ((Cexposed − 0.5) · Contrast) + 0.5 + Brightness.",
+      "subject_scope": "cinematic brightness and contrast equation and pivot",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "352-364",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "contrast interpolation uses adaptation.x pivot and all RGBA components"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "65-80",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "pixel operations for saturation, tint, brightness, and contrast"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample grading",
+          "lines": "69-80",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "Runtime input values and color-domain interpretation at this point remain open."
+      ],
+      "next_query": "Replace the 0.5 pivot account with the traced adaptation.x pivot and preserve native operation order.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$\\mathbf{C}*{\\text{toned}} = ((\\mathbf{C}*{\\text{exposed}} - 0.5) \\cdot \\text{Contrast}) + 0.5 + \\text{Brightness}$$"
+    },
+    {
+      "id": "N002-P16",
+      "supplied_statement": "Saturation is calculated by interpolating against luminance: Y = 0.2126 R + 0.7152 G + 0.0722 B.",
+      "subject_scope": "luminance coefficients used by shipped image-space programs",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "20-27",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "recovered binary32 weights 0.2125, 0.7154, 0.0721"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "344-355",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "tone and grading use recovered w vector"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample luminance",
+          "lines": "52-57",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "This is the package's coefficient vector, not a claim about physical photometric luminance."
+      ],
+      "next_query": "Use the package's exact coefficients and label them shader weights without assigning an unsupported physical domain.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$Y = 0.2126 R + 0.7152 G + 0.0722 B$$"
+    },
+    {
+      "id": "N002-P17",
+      "supplied_statement": "Cfinal = lerp(Y, Ctoned, Saturation) · Ctint.",
+      "subject_scope": "tint composition and its position relative to saturation",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "352-364",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "saturation followed by amount-weighted tint toward Y*tintRGB, then brightness and contrast"
+        },
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "lines": "69-80",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd",
+          "locator": "shared tone grading implementation"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample tint/grading",
+          "lines": "69-80",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "Active tint values and selected modifier contributions remain unobserved."
+      ],
+      "next_query": "Describe native tint as an amount interpolation from saturated RGBA toward luminance times tint RGBA; retain downstream brightness and contrast order.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ],
+      "supplied_equation_verbatim": "$$\\mathbf{C}*{\\text{final}} = \\text{lerp}(Y, \\mathbf{C}*{\\text{toned}}, \\text{Saturation}) \\cdot \\mathbf{C}*{\\text{tint}}$$"
+    },
+    {
+      "id": "N002-P18",
+      "supplied_statement": "Full-screen color tint multiplier applied to final composited frames.",
+      "subject_scope": "authored TNAM tint interpretation",
+      "assessment": "contradicted",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "57-63",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "Tint Amount and RGB authored separately"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "130-133",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "direct tint copy; luminance-based operation"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "tint decoder",
+          "lines": "45-51",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        },
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample tint",
+          "lines": "69-74",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "Modifier tint accumulation and active TNAM values are not captured for a retail frame."
+      ],
+      "next_query": "Separate authored tint RGB from tint amount and retain the shader's luminance-weighted interpolation.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable and package shaders011.fxp",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local evidence"
+        }
+      ],
+      "supplied_excerpt": "tintColorfloat[4]Full-screen color tint multiplier applied to final composited frames."
+    },
+    {
+      "id": "N002-P19",
+      "supplied_statement": "IMAD records allow designers to interpolate visual settings over time, providing fine-grained control to ... Dynamic saturation, contrast, and brightness curves.",
+      "subject_scope": "IMAD channel interpolation and curve shape",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "120-140",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "native IMAD interpolators and modifier field handling; concrete curve evaluators open"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "161-163",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "IMAD interpolation, stacking and crossfade acceptance boundary"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/image_space.rs",
+          "symbol": "parameter inputs and tone computation",
+          "lines": "90-110",
+          "sha256": "2021a24afbdd208ed86ea3e322cdc5900738341fbb86662ce0f083b4649c27db"
+        }
+      ],
+      "unresolved": [
+        "The native calls to float/color interpolators are established, but concrete channel curves, key data, strength and full Update/crossfade lifecycle are not.",
+        "The listed channels are not individually connected to active IMAD records."
+      ],
+      "next_query": "Capture source IMAD, channel identifiers, interpolator inputs/outputs, and effective strength through a controlled modifier lifecycle.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P20",
+      "supplied_statement": "Every frame, the engine evaluates all active ImageSpaceModifierInstance nodes, blends their animated keyframe curves based on modifier strength and remaining duration, and combines the results with the current ImageSpaceBaseData prior to dispatching post-processing passes.",
+      "subject_scope": "complete IMAD frame lifecycle, ordering, blend, and base composition",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "120-140",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "ordered native modifier frame route, channel arithmetic, color averaging, and open lifecycle"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/native-image-space-connections.md",
+          "lines": "112-114",
+          "sha256": "c616e8fd3e84cd42cc3c270223a64ac62811358c904f9a2de03dc1bab334dae8",
+          "locator": "active IMGS/IMAD linkage and view ownership remain open"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/image_space.rs",
+          "symbol": "ImageSpaceParameters and GPU uniform preparation",
+          "lines": "90-110",
+          "sha256": "2021a24afbdd208ed86ea3e322cdc5900738341fbb86662ce0f083b4649c27db"
+        }
+      ],
+      "unresolved": [
+        "Native ordered traversal and selected channel writes are recovered, but all active nodes, strength/duration lifecycle, crossfades, and base-data composition are not.",
+        "No evidence establishes that all nodes are evaluated every frame or that the list is the only pre-postprocess source."
+      ],
+      "next_query": "Trace Update/list lifecycle and capture two or more simultaneous modifiers with controlled ordering and recorded resulting channels.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P21",
+      "supplied_statement": "Every frame, the engine evaluates all active ImageSpaceModifierInstance nodes",
+      "subject_scope": "native IMAD numeric blend rule for scalar channels and tint/fade",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "120-139",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "native IMAD update formula, ordered p mutation, and color aggregation"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/image_space.rs",
+          "symbol": "ImageSpaceParameters",
+          "lines": "90-110",
+          "sha256": "2021a24afbdd208ed86ea3e322cdc5900738341fbb86662ce0f083b4649c27db"
+        }
+      ],
+      "unresolved": [
+        "This is static algorithm evidence; active node order, strength values, and final base composition remain unknown."
+      ],
+      "next_query": "No arithmetic follow-up needed; obtain a controlled native capture to identify effective inputs and output channels.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P22",
+      "supplied_statement": "Native post-processing begins once opaque, alpha-blended, and volumetric passes have completed writing to the main HDR scene render target. The post-processing pipeline is orchestrated through BSImagespaceShader passes.",
+      "subject_scope": "universal native scene pass order and HDR target domain",
+      "assessment": "unverified",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/native-image-space-connections.md",
+          "lines": "112-114",
+          "sha256": "c616e8fd3e84cd42cc3c270223a64ac62811358c904f9a2de03dc1bab334dae8",
+          "locator": "shader arithmetic is statically connected but active dispatch and numeric domains are open"
+        },
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "164-210",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "ordinary HDR child graph, target format and conditional ownership"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/image_space.rs",
+          "symbol": "image-space camera plugin",
+          "lines": "370-430",
+          "sha256": "2021a24afbdd208ed86ea3e322cdc5900738341fbb86662ce0f083b4649c27db"
+        }
+      ],
+      "unresolved": [
+        "Static graph evidence covers an ordinary HDR route but not all effects, all frames, or every opaque/translucent/volumetric ordering.",
+        "The native HDR intermediates use selected float formats; the scene input and final color domain are separate unanswered questions."
+      ],
+      "next_query": "Capture the selected effect route, input/output resources, and domains for one named camera/frame before asserting global pass order.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P23",
+      "supplied_statement": "Vanilla Skyrim does not implement a standard filmic or ACES tonemapper. Instead, it applies an empirical tonemapping calculation that combines contrast adjustment, brightness scaling, and color tinting directly in non-linear or quasi-linear color spaces.",
+      "subject_scope": "native tone operator identity and input/output numeric domain",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/research/skyrim-render-map/image-space-arithmetic.md",
+          "lines": "29-102",
+          "sha256": "d9cfdbd68ee2ff3684d365ca3149fa3dc86c94716a6276a76e33b91cc1ad8992",
+          "locator": "exact Cinematic/Fade arithmetic including two curve branches and final power"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/native-image-space-connections.md",
+          "lines": "112-114",
+          "sha256": "c616e8fd3e84cd42cc3c270223a64ac62811358c904f9a2de03dc1bab334dae8",
+          "locator": "active selection and numeric domain not established"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/shaders/image_space_shared.wgsl",
+          "symbol": "image_space_native_sample",
+          "lines": "52-84",
+          "sha256": "1aee7a73654689bbe71278f23ce2f91011ebfb4fce3e2fca2829f567255d20fd"
+        }
+      ],
+      "unresolved": [
+        "Exact shader arithmetic is known for the pinned Cinematic/Fade package programs, but the package equations alone do not prove active retail selection.",
+        "The sampled values' physical/color-space domain is open; the supplied non-linear/quasi-linear label is unsupported."
+      ],
+      "next_query": "Describe the two recovered curve branches and leave color-domain labels unresolved until their producers and target transfer are traced.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 package shaders011.fxp",
+          "sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+          "fetch_date": "2026-10-10",
+          "note": "pinned package bytes already decoded"
+        }
+      ]
+    },
+    {
+      "id": "N002-P24",
+      "supplied_statement": "These operations are applied late in the pipeline on 8-bit or non-linear float render targets without a unified wide-gamut transform.",
+      "subject_scope": "HDR grading intermediate precision and universal color-domain assertion",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "docs/specs/engine/image-space.md",
+          "lines": "201-210",
+          "sha256": "76d27045cdb318903cdd8fe159ea422a212ff849a2e66f3faf739bb90864c89c",
+          "locator": "native HDR reduction, adaptation, bloom use R11G11B10_FLOAT or R16G16B16A16_FLOAT"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/native-output-transfer.md",
+          "lines": "146-169",
+          "sha256": "2674fefb04531f5cf3d8d7297b845dd8a1f54279d44596e74dc5ed9b6be79bb7",
+          "locator": "final tone-to-present transfer and numeric domains unresolved"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/engine/src/image_space.rs",
+          "symbol": "image-space render path",
+          "lines": "370-430",
+          "sha256": "2021a24afbdd208ed86ea3e322cdc5900738341fbb86662ce0f083b4649c27db"
+        }
+      ],
+      "unresolved": [
+        "The ordinary HDR intermediates are float formats, not 8-bit targets; final-output formats are not sufficient to establish the grading input domain.",
+        "Wide-gamut transform presence/absence and non-linear encoding at the tone input remain unresolved."
+      ],
+      "next_query": "Trace all intermediate views through the selected tone draw and final output to establish each resource format and transfer.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local native evidence"
+        }
+      ]
+    },
+    {
+      "id": "N002-P25",
+      "supplied_statement": "Directional sunlight color and direction vectors.",
+      "subject_scope": "Whether WTHR provides both directional sunlight color and the directional vector",
+      "assessment": "partially_supported",
+      "evidence_anchors": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "lines": "144-159",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121",
+          "locator": "WTHR NAM0 sunlight colors are decoded; no direction vector in this WTHR branch"
+        },
+        {
+          "path": "docs/research/skyrim-render-map/input-contracts.md",
+          "lines": "45-50",
+          "sha256": "5a25931073b1590214f2d81154c3935d1635bae7f6fe79fa01d2889ffe5b8f74",
+          "locator": "weather RGB, Sun writer/consumer, and trajectory evidence are distinct inputs"
+        }
+      ],
+      "current_implementation": [
+        {
+          "path": "crates/converter/src/esm/environment.rs",
+          "symbol": "decode_environment WTHR branch",
+          "lines": "144-159",
+          "sha256": "d799c143cb5727deb582a175d2cf1f9b0c93196dbefafdbd40fb06f89dc09121"
+        },
+        {
+          "path": "crates/converter/src/esm/lighting.rs",
+          "symbol": "decode_weather NAM0",
+          "lines": "176-199",
+          "sha256": "32feb6d8092efe43cce96bea264ea40282c2530720f90214ab160aa5fcd006dc"
+        }
+      ],
+      "unresolved": [
+        "The decoded WTHR record supplies sunlight color keys, but this WTHR representation contains no directional sunlight vector.",
+        "The native trajectory is associated with climate/time and the effective parent transform, overrides, and selected light remain separate native connections."
+      ],
+      "next_query": "Keep weather color and sun-direction claims separate; trace CLMT/time trajectory and its selected native consumer before attributing direction to WTHR.",
+      "primary_source_pins": [
+        {
+          "source": "SkyrimSE 1.7.104 executable and serialized WTHR decoder",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "fetch_date": "2026-10-10",
+          "note": "existing pinned local evidence"
+        }
+      ]
+    }
+  ]
+}

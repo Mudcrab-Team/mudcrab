@@ -1,0 +1,157 @@
+{
+  "schema": "mudcrab-research-source-coverage/v1",
+  "note_id": "N003",
+  "domain": "mod-interventions",
+  "retrieved_utc": "2026-10-10",
+  "sources": [
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.h",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "src/Features/LightLimitFix.h",
+      "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+      "bytes": 14083,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/LightLimitFix.cpp",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "src/Features/LightLimitFix.cpp",
+      "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+      "bytes": 36557,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.cpp"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/Common.hlsli",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "features/Light Limit Fix/Shaders/LightLimitFix/Common.hlsli",
+      "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+      "bytes": 944,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/Common.hlsli"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/features/Light%20Limit%20Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+      "bytes": 1789,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Deferred.cpp",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "src/Deferred.cpp",
+      "sha256": "2ed2514968700a0a5b291428152ae26735c9b3b263eb2aee773528f0e308cfe9",
+      "bytes": 26626,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Deferred.cpp"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/Effects11.cpp",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "src/Features/Effects11.cpp",
+      "sha256": "67c994dc6b5279bb847d63d767420183f32257bdc9625317fcde9e2903108eb3",
+      "bytes": 43812,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/Effects11.cpp"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/package/Shaders/Common/Color.hlsli",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/community-shaders",
+      "file": "package/Shaders/Common/Color.hlsli",
+      "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+      "bytes": 17942,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/package/Shaders/Common/Color.hlsli"
+    },
+    {
+      "repository": "https://github.com/powerof3/LightPlacer.git",
+      "requested_url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp",
+      "resolved_commit": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/light-placer",
+      "file": "src/LightData.cpp",
+      "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+      "bytes": 15948,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp"
+    },
+    {
+      "repository": "https://github.com/powerof3/LightPlacer.git",
+      "requested_url": "https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/schema.json",
+      "resolved_commit": "6b7c05894de17cb3e7f0b5169e82833c9244e1ed",
+      "local_checkout": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/mod-hooks/light-placer",
+      "file": "schema.json",
+      "sha256": "3da140ce6fed78833d850486717687f5b5f22c05a105ad89875820f413ae6b9a",
+      "bytes": 14606,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/schema.json"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://raw.githubusercontent.com/community-shaders/skyrim-community-shaders/b81bf11cf126f41aaa53d7318b61293677d9c0cc/features/Light%20Limit%20Fix/Shaders/LightLimitFix/Common.hlsli",
+      "resolved_commit": "b81bf11cf126f41aaa53d7318b61293677d9c0cc",
+      "local_checkout": "note-0003/sources-mods/current-dev",
+      "file": "Common.hlsli",
+      "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+      "bytes": 944,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/Common.hlsli"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://raw.githubusercontent.com/community-shaders/skyrim-community-shaders/b81bf11cf126f41aaa53d7318b61293677d9c0cc/src/Features/LightLimitFix.cpp",
+      "resolved_commit": "b81bf11cf126f41aaa53d7318b61293677d9c0cc",
+      "local_checkout": "note-0003/sources-mods/current-dev",
+      "file": "LightLimitFix.cpp",
+      "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+      "bytes": 36557,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/LightLimitFix.cpp"
+    },
+    {
+      "repository": "https://github.com/community-shaders/skyrim-community-shaders.git",
+      "requested_url": "https://raw.githubusercontent.com/community-shaders/skyrim-community-shaders/b81bf11cf126f41aaa53d7318b61293677d9c0cc/features/Light%20Limit%20Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "resolved_commit": "b81bf11cf126f41aaa53d7318b61293677d9c0cc",
+      "local_checkout": "note-0003/sources-mods/current-dev",
+      "file": "LightLimitFix.hlsli",
+      "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+      "bytes": 1789,
+      "outcome": "read and line-anchored from pinned source snapshot; no build or game execution",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/LightLimitFix.hlsli"
+    }
+  ],
+  "web_checks": [
+    {
+      "url": "https://github.com/community-shaders/skyrim-community-shaders/releases/tag/v1.9.1",
+      "resolved_release": "v1.9.1 (2026-09-24)",
+      "outcome": "official notes identify LLF 3-2-0 but do not establish 16-shadow release claim; page body not locally hashed"
+    },
+    {
+      "url": "https://github.com/community-shaders/skyrim-community-shaders/git/ref/tags/v1.6.0-pr1941",
+      "resolved_release": "not found through GitHub REST tag lookup",
+      "outcome": "exact prerelease reference not confirmed"
+    },
+    {
+      "url": "https://enbdev.com/doc_skyrim_effect_en.htm",
+      "resolved_release": "ENB author EFFECT docs",
+      "outcome": "UseOriginalPostProcessing is configurable; source body not locally hashed"
+    }
+  ]
+}

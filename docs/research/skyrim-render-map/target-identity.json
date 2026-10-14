@@ -1,0 +1,112 @@
+{
+  "schema": "mudcrab-render-pe-identity/v1",
+  "path": "/Users/taylor/.local/share/mudcrab-research/rea-20261008/targets/SkyrimSE.exe",
+  "bytes": 37910440,
+  "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "machine": "0x8664",
+  "image_base": "0x140000000",
+  "coff_timestamp": 1787588678,
+  "sections": [
+    {
+      "name": ".text",
+      "rva": 4096,
+      "virtual_size": 24929512,
+      "raw_size": 24929792,
+      "raw_offset": 1024,
+      "characteristics": 1610612768
+    },
+    {
+      "name": ".rdata",
+      "rva": 24936448,
+      "virtual_size": 9097812,
+      "raw_size": 9098240,
+      "raw_offset": 24930816,
+      "characteristics": 1073741888
+    },
+    {
+      "name": ".data",
+      "rva": 34037760,
+      "virtual_size": 23220360,
+      "raw_size": 1208832,
+      "raw_offset": 34029056,
+      "characteristics": 3221225536
+    },
+    {
+      "name": ".pdata",
+      "rva": 57262080,
+      "virtual_size": 1467096,
+      "raw_size": 1467392,
+      "raw_offset": 35237888,
+      "characteristics": 1073741888
+    },
+    {
+      "name": ".text",
+      "rva": 58732544,
+      "virtual_size": 6408,
+      "raw_size": 6656,
+      "raw_offset": 36705280,
+      "characteristics": 3221225536
+    },
+    {
+      "name": "_RDATA",
+      "rva": 58740736,
+      "virtual_size": 1760,
+      "raw_size": 2048,
+      "raw_offset": 36711936,
+      "characteristics": 1073741888
+    },
+    {
+      "name": ".rsrc",
+      "rva": 58744832,
+      "virtual_size": 600848,
+      "raw_size": 601088,
+      "raw_offset": 36713984,
+      "characteristics": 1073741888
+    },
+    {
+      "name": ".reloc",
+      "rva": 59346944,
+      "virtual_size": 350508,
+      "raw_size": 350720,
+      "raw_offset": 37315072,
+      "characteristics": 1107296320
+    },
+    {
+      "name": ".bind",
+      "rva": 59699200,
+      "virtual_size": 234056,
+      "raw_size": 234056,
+      "raw_offset": 37665792,
+      "characteristics": 1610612736
+    }
+  ],
+  "version_resources": [
+    {
+      "file_offset": "0x235fec0",
+      "rva": "0x38628c0",
+      "va": "0x1438628c0",
+      "file_version": [
+        1,
+        7,
+        104,
+        0
+      ],
+      "product_version": [
+        1,
+        7,
+        104,
+        0
+      ]
+    }
+  ],
+  "binary_executed": false,
+  "analysis": "original file bytes only",
+  "catalog_generator_sha256": "3e56ef8873f49f53f6b45dc7cfd404d30d5b6fc849f048ae1932bf49ec744675",
+  "native_identity_catalog_counts": {
+    "all_rtti_types": 8099,
+    "rendering_candidate_types": 560,
+    "complete_object_locators": 8632,
+    "rendering_candidate_vtables": 984,
+    "rendering_candidate_strings": 1650
+  }
+}
