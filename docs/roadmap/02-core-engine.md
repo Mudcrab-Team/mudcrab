@@ -43,7 +43,7 @@
   persistent references. This prevents the persistent `(0,0)` cell from masking the real landscape.
 - Cell lifecycle states prevent duplicate work and use separate load/unload radii for hysteresis.
 - World coordinates are represented as cell grid plus local position; render roots are rebased around the camera to preserve `f32` precision.
-- Bevy 0.19 GPU preprocessing provides material/mesh batching and indirect draw commands. `DepthPrepass` and `OcclusionCulling` are active. Runtime proof records GPU preprocessing/culling state, indirect drawing, occlusion views, HZB views, indirect phase buffers, batch sets and proof frames.
+- Bevy 0.19 GPU preprocessing provides material/mesh batching and indirect draw commands. `DepthPrepass` and `OcclusionCulling` are active on desktop GPUs; the tiled GPU profile used on Metal removes both (`crates/engine/src/gpu_tuning.rs`). Runtime proof records GPU preprocessing/culling state, indirect drawing, occlusion views, HZB views, indirect phase buffers, batch sets and proof frames.
 - Terrain uses a PBR material extension with six KTX2 layers and vertex splat weights.
 - Water uses animated flow normals, an offscreen reflected camera, Fresnel composition, and a separate render layer to prevent recursive reflection.
 - The launcher starts the sibling engine binary and passes the canonical converted-assets path.

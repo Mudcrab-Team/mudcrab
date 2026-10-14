@@ -12,6 +12,54 @@ pub(crate) const MAX_IO_THREADS: usize = 64;
 /// What `--io-threads` takes, with [`MAX_IO_THREADS`] spelled out; a test holds the two equal.
 const IO_THREADS_EXPECTED: &str = "a thread count from 0 to 64";
 
+/// The smallest `--render-scale` factor accepted: a quarter of the window's resolution on each
+/// axis, past which the upscaled view is a smear rather than a cheaper picture.
+pub(crate) const MIN_RENDER_SCALE: f32 = 0.25;
+
+/// What `--render-scale` takes, with [`MIN_RENDER_SCALE`] spelled out.
+const RENDER_SCALE_EXPECTED: &str = "auto, or a factor from 0.25 to 1";
+
+/// What `--gpu-profile` takes.
+const GPU_PROFILE_EXPECTED: &str = "auto, tiled or desktop";
+
+/// Which kind of GPU the renderer's setup is tuned for (`--gpu-profile`); `crate::gpu_tuning`
+/// documents what each changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GpuProfile {
+    /// [`GpuProfile::Tiled`] on Metal, [`GpuProfile::Desktop`] on every other backend.
+    #[default]
+    Auto,
+    /// A tile-based deferred renderer: every GPU Metal drives on Apple Silicon.
+    Tiled,
+    /// An immediate-mode desktop GPU: the setup this engine was first tuned on.
+    Desktop,
+}
+
+impl GpuProfile {
+    /// The profile `--gpu-profile` spells as `name`. A table rather than a `match`, so the option
+    /// scan in the tests does not read the spellings as options of their own.
+    fn from_name(name: &str) -> Option<Self> {
+        [
+            ("auto", Self::Auto),
+            ("tiled", Self::Tiled),
+            ("desktop", Self::Desktop),
+        ]
+        .into_iter()
+        .find_map(|(spelling, profile)| (spelling == name).then_some(profile))
+    }
+}
+
+/// The resolution the 3D view is drawn at before it is scaled to the window (`--render-scale`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RenderScale {
+    /// One pixel per logical point under the tiled profile - a Retina window draws its 3D view at
+    /// the size it is on screen, not at twice that - and the window's full resolution otherwise.
+    #[default]
+    Auto,
+    /// A fraction of the window's physical resolution on each axis, from [`MIN_RENDER_SCALE`] to 1.
+    Factor(f32),
+}
+
 /// How far each terrain LOD tier draws, in Skyrim's `[TerrainManager]` terms:
 /// a tier reaches its block distance times `fSplitDistanceMult`, in Creation
 /// units from the camera. `--ini` reads these from a `SkyrimPrefs.ini`.
@@ -136,6 +184,10 @@ pub struct EngineConfig {
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
     pub physics_fixture: bool,
+    /// `--gpu-profile <auto|tiled|desktop>`: which GPU architecture the renderer is tuned for.
+    pub gpu_profile: GpuProfile,
+    /// `--render-scale <auto|factor>`: the 3D view's resolution relative to the window's.
+    pub render_scale: RenderScale,
 }
 
 impl Default for EngineConfig {
@@ -199,6 +251,8 @@ impl Default for EngineConfig {
             streaming_fixture: false,
             lights: false,
             physics_fixture: false,
+            gpu_profile: GpuProfile::Auto,
+            render_scale: RenderScale::Auto,
         }
     }
 }
@@ -234,6 +288,10 @@ Streaming:
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
+
+Rendering:
+  --gpu-profile <auto|tiled|desktop>    GPU architecture to tune for; auto picks tiled on Metal (default: auto)
+  --render-scale <auto|factor>          3D resolution as a fraction of the window's, 0.25 to 1; auto is one pixel per point on a tiled GPU (default: auto)
 
 Benchmark and profiling:
   --benchmark-only                      run the synthetic benchmark; opens no world database
@@ -754,6 +812,30 @@ impl EngineConfig {
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
                 "--physics-fixture" => config.physics_fixture = true,
+                "--gpu-profile" => {
+                    let raw = take_raw("--gpu-profile", GPU_PROFILE_EXPECTED, args.next())?;
+                    config.gpu_profile = GpuProfile::from_name(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--gpu-profile", Some(raw), GPU_PROFILE_EXPECTED)
+                    })?;
+                }
+                "--render-scale" => {
+                    let raw = take_raw("--render-scale", RENDER_SCALE_EXPECTED, args.next())?;
+                    config.render_scale = if raw == "auto" {
+                        RenderScale::Auto
+                    } else {
+                        raw.parse::<f32>()
+                            .ok()
+                            .filter(|factor| (MIN_RENDER_SCALE..=1.0).contains(factor))
+                            .map(RenderScale::Factor)
+                            .ok_or_else(|| {
+                                ConfigError::invalid_value(
+                                    "--render-scale",
+                                    Some(raw),
+                                    RENDER_SCALE_EXPECTED,
+                                )
+                            })?
+                    };
+                }
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
         }
@@ -1169,6 +1251,57 @@ mod tests {
             parse_error(&["--io-threads", "--headless"]),
             ConfigError::InvalidValue { value: Some(ref value), .. } if value == "--headless"
         ));
+    }
+
+    #[test]
+    fn parses_the_gpu_profile_and_refuses_an_unknown_one() {
+        assert_eq!(EngineConfig::default().gpu_profile, GpuProfile::Auto);
+        assert_eq!(
+            run_config(&["--gpu-profile", "tiled"]).gpu_profile,
+            GpuProfile::Tiled
+        );
+        assert_eq!(
+            run_config(&["--gpu-profile", "desktop"]).gpu_profile,
+            GpuProfile::Desktop
+        );
+        assert_eq!(
+            run_config(&["--gpu-profile", "auto"]).gpu_profile,
+            GpuProfile::Auto
+        );
+        assert!(matches!(
+            parse_error(&["--gpu-profile", "metal"]),
+            ConfigError::InvalidValue { value: Some(ref value), .. } if value == "metal"
+        ));
+    }
+
+    #[test]
+    fn parses_the_render_scale_within_its_range() {
+        assert_eq!(EngineConfig::default().render_scale, RenderScale::Auto);
+        assert_eq!(
+            run_config(&["--render-scale", "auto"]).render_scale,
+            RenderScale::Auto
+        );
+        assert_eq!(
+            run_config(&["--render-scale", "0.75"]).render_scale,
+            RenderScale::Factor(0.75)
+        );
+        assert_eq!(
+            run_config(&["--render-scale", "1"]).render_scale,
+            RenderScale::Factor(1.0)
+        );
+        assert_eq!(
+            run_config(&["--render-scale", "0.25"]).render_scale,
+            RenderScale::Factor(MIN_RENDER_SCALE)
+        );
+        for refused in ["0.2", "1.5", "0", "NaN", "half"] {
+            assert!(
+                matches!(
+                    parse_error(&["--render-scale", refused]),
+                    ConfigError::InvalidValue { value: Some(ref value), .. } if value == refused
+                ),
+                "{refused} should be refused"
+            );
+        }
     }
 
     #[test]

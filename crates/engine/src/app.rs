@@ -209,6 +209,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             SkyPlugin,
             ConsolePlugin,
             crate::nif_material::NifMaterialPlugin,
+            crate::gpu_tuning::GpuTuningPlugin,
         ))
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
@@ -1834,7 +1835,9 @@ const CREATION_UNITS_PER_METRE: f32 = 70.0;
 /// per-light maximum on desktop (`MAX_CASCADES_PER_LIGHT`, `bevy_pbr-0.19.0`
 /// `src/render/light.rs:228`), and with [`sun_shadow_cascades`] reaching the far corner of the
 /// drawn grid, fewer would mean larger cascades and coarser shadows everywhere the player looks.
-const SUN_SHADOW_CASCADES: usize = 4;
+/// That is the desktop count: a tiled GPU pays for each cascade as another pass over the shadow
+/// casters and draws one fewer (`GpuTuning::sun_shadow_cascades`).
+pub(crate) const SUN_SHADOW_CASCADES: usize = 4;
 
 /// The size of each of the sun's cascades, in texels a side. This is Bevy's own default, which
 /// `DirectionalLightShadowMap` documents as having to be a power of two, and it is stated here
@@ -1896,7 +1899,7 @@ const SUN_SHADOW_MAX_GRID_CELLS: i32 = 256;
 ///
 /// [sqrt(2)]: std::f32::consts::SQRT_2
 /// [`maximum_distance`]: CascadeShadowConfigBuilder::maximum_distance
-fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
+fn sun_shadow_cascades(config: &EngineConfig, num_cascades: usize) -> CascadeShadowConfig {
     // Cells draw out to `unload_radius`, one ring past the requested `stream_radius`, and the
     // `+ 1` is the camera's own cell: the grid is `unload_radius` cells around that cell rather
     // than around the camera, which may stand at the far edge of its own. The radius is clamped
@@ -1911,7 +1914,7 @@ fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
         minimum_distance: 0.1 * CREATION_UNITS_PER_METRE,
         maximum_distance: corner.hypot(camera_offset(config).y),
         first_cascade_far_bound: 10.0 * CREATION_UNITS_PER_METRE,
-        num_cascades: SUN_SHADOW_CASCADES,
+        num_cascades,
         ..default()
     }
     .into()
@@ -1937,7 +1940,9 @@ fn setup_world(
     config: Res<EngineConfig>,
     ground_height: Option<Res<InitialCameraGroundHeight>>,
     tuning: Option<Res<MovementTuning>>,
+    gpu: Option<Res<crate::gpu_tuning::GpuTuning>>,
 ) {
+    let gpu = gpu.as_deref().copied().unwrap_or_default();
     let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
     let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
     let camera_offset = if config.interactive_world_physics() {
@@ -1982,7 +1987,7 @@ fn setup_world(
             shadow_maps_enabled: true,
             ..default()
         },
-        sun_shadow_cascades(&config),
+        sun_shadow_cascades(&config, gpu.sun_shadow_cascades()),
         RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)),
     ));
@@ -3089,7 +3094,7 @@ mod tests {
     #[test]
     fn the_sun_shadows_cover_the_drawn_grid() {
         let config = EngineConfig::default();
-        let cascades = sun_shadow_cascades(&config);
+        let cascades = sun_shadow_cascades(&config, SUN_SHADOW_CASCADES);
         let cell = crate::world::components::CELL_SIZE;
         assert_eq!(config.stream_radius, 2);
         // Cells are requested inside the stream radius and kept until they leave the unload ring,
@@ -3174,14 +3179,15 @@ mod tests {
         let above = corner.hypot(camera_offset(&overhead).y);
         assert!(above > walk_around, "the camera's height counts");
 
-        let cascades = sun_shadow_cascades(&overhead);
+        let cascades = sun_shadow_cascades(&overhead, SUN_SHADOW_CASCADES);
         assert!(
             (cascades.bounds[3] - above).abs() < 1.0,
             "the overhead camera's range reaches its own corner: {} against {above}",
             cascades.bounds[3]
         );
 
-        let walk_around_cascades = sun_shadow_cascades(&EngineConfig::default());
+        let walk_around_cascades =
+            sun_shadow_cascades(&EngineConfig::default(), SUN_SHADOW_CASCADES);
         assert!(
             (walk_around_cascades.bounds[3] - walk_around).abs() < 1.0,
             "and the walk-around camera's reaches its: {} against {walk_around}",
@@ -3204,7 +3210,7 @@ mod tests {
                 (config.stream_radius, config.unload_radius),
                 (radius, radius + 1)
             );
-            let cascades = sun_shadow_cascades(&config);
+            let cascades = sun_shadow_cascades(&config, SUN_SHADOW_CASCADES);
             assert_eq!(cascades.bounds.len(), SUN_SHADOW_CASCADES);
             assert_eq!(
                 cascades.bounds[0],
@@ -3248,7 +3254,7 @@ mod tests {
             unload_radius: -3,
             ..EngineConfig::default()
         };
-        let cascades = sun_shadow_cascades(&nothing);
+        let cascades = sun_shadow_cascades(&nothing, SUN_SHADOW_CASCADES);
         assert!(cascades.bounds[3] > 10.0 * CREATION_UNITS_PER_METRE);
         assert!(cascades.bounds.windows(2).all(|pair| pair[0] < pair[1]));
 
@@ -3258,7 +3264,7 @@ mod tests {
         let gigametres = EngineConfig::run_from_args(args);
         let widest = cell * SUN_SHADOW_MAX_GRID_CELLS as f32 * std::f32::consts::SQRT_2;
         let reach = widest.hypot(camera_offset(&gigametres).y);
-        let cascades = sun_shadow_cascades(&gigametres);
+        let cascades = sun_shadow_cascades(&gigametres, SUN_SHADOW_CASCADES);
         assert!(
             (cascades.bounds[3] - reach).abs() < 1.0,
             "a radius of 100000 cells is capped at {SUN_SHADOW_MAX_GRID_CELLS}: {} against {reach}",
@@ -3307,7 +3313,7 @@ mod tests {
         };
         assert!(light.shadow_maps_enabled);
 
-        let expected = sun_shadow_cascades(&config);
+        let expected = sun_shadow_cascades(&config, SUN_SHADOW_CASCADES);
         assert_eq!(cascades.bounds, expected.bounds);
         assert_eq!(cascades.minimum_distance, expected.minimum_distance);
 

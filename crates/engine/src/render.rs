@@ -54,6 +54,9 @@ pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
 pub const WORLD_LAYER: Layer = 0;
 pub const WATER_LAYER: Layer = 1;
 pub const PLACED_OBJECT_LAYER: Layer = 2;
+/// The scaled-up 3D view and the camera that draws it to the window (`crate::render_scale`), on a
+/// layer no world view renders.
+pub const SCALED_VIEW_LAYER: Layer = 3;
 
 /// Everything the player's own cameras draw: terrain, water and the placed objects.
 pub const MAIN_VIEW_LAYERS: &[Layer] = &[WORLD_LAYER, WATER_LAYER, PLACED_OBJECT_LAYER];
@@ -158,6 +161,9 @@ pub struct RendererMetrics {
     pub proof_frames: u64,
     pub renderer_fixture_validated: bool,
     pub renderer_validation_failures: u64,
+    /// The views were set up without occlusion culling - the tiled GPU profile drops it with the
+    /// depth prepass it is built on (`crate::gpu_tuning`) - so no occlusion or HZB view is owed.
+    pub occlusion_culling_off: bool,
 }
 
 impl RendererMetrics {
@@ -165,8 +171,8 @@ impl RendererMetrics {
         self.gpu_preprocessing_active
             && self.gpu_culling_active
             && self.indirect_drawing_active
-            && self.occlusion_culling_views > 0
-            && self.hzb_views > 0
+            && (self.occlusion_culling_off
+                || (self.occlusion_culling_views > 0 && self.hzb_views > 0))
             && self.indirect_phase_buffers > 0
             && self.indirect_batch_sets > 0
             && self.proof_frames > 0
@@ -239,7 +245,12 @@ fn sample_renderer_path(
     bridge.0.frames.fetch_add(1, Ordering::Relaxed);
 }
 
-fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<RendererMetrics>) {
+fn sync_renderer_metrics(
+    bridge: Res<RendererProofBridge>,
+    tuning: Option<Res<crate::gpu_tuning::GpuTuning>>,
+    mut metrics: ResMut<RendererMetrics>,
+) {
+    metrics.occlusion_culling_off = tuning.is_some_and(|tuning| tuning.tiled);
     metrics.gpu_preprocessing_active = bridge.0.gpu_preprocessing.load(Ordering::Relaxed);
     metrics.gpu_culling_active = bridge.0.gpu_culling.load(Ordering::Relaxed);
     metrics.indirect_drawing_active = bridge.0.indirect_drawing.load(Ordering::Relaxed);
@@ -253,26 +264,29 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainExtension {
     #[texture(100)]
-    #[sampler(101)]
     layer_0: Option<Handle<Image>>,
     #[texture(102)]
-    #[sampler(103)]
     layer_1: Option<Handle<Image>>,
     #[texture(104)]
-    #[sampler(105)]
     layer_2: Option<Handle<Image>>,
     #[texture(106)]
-    #[sampler(107)]
     layer_3: Option<Handle<Image>>,
     #[texture(108)]
-    #[sampler(109)]
     layer_4: Option<Handle<Image>>,
     #[texture(110)]
-    #[sampler(111)]
     layer_5: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
-    // Each layer's normal map, sampled through `layer_0_sampler`: every terrain layer image is
+    /// The one sampler every diffuse and normal layer is read through. Every terrain layer image
+    /// is loaded with the same repeating sampler (`terrain_layer_sampler`), so one binding serves
+    /// all twelve, and the material stays under Metal's limit of 16 samplers a stage once Bevy's
+    /// standard material and view bindings are added. `AsBindGroup` takes a sampler from an image
+    /// with a texture binding of its own, so this is one of the layer images, bound again at 119
+    /// for its sampler alone; the shader never reads that texture.
+    #[texture(119)]
+    #[sampler(101)]
+    layer_sampler: Option<Handle<Image>>,
+    // Each layer's normal map, sampled through `layer_sampler`: every terrain layer image is
     // loaded with the same repeating sampler (`terrain_layer_sampler`), so the six need no sampler
     // bindings of their own. Which layers have one is in `TerrainSettings::normal_layers_*`, since
     // Bevy's stand-in for a missing texture is white, which decodes to a steep tilt.
@@ -323,6 +337,19 @@ pub(crate) const OVERLAY_WEIGHT_WORDS: usize =
 /// `weights` array.
 pub(crate) const WEIGHT_FIELD_WORDS: usize = OVERLAY_WEIGHT_SLOTS * OVERLAY_WEIGHT_WORDS;
 
+/// The anisotropic filtering world textures are sampled with.
+///
+/// A desktop GPU filters 16 taps at little more cost than 8. Apple's own GPUs pay for each tap,
+/// and the terrain alone samples up to twelve textures a pixel, so an Apple build takes 8, which
+/// keeps most of the sharpness at grazing angles; an Intel Mac's desktop GPU loses little by it.
+/// This is fixed by the build target rather than chosen by `--gpu-profile`: the glTF loader's
+/// default sampler is set when the plugins are built, before the renderer has picked a backend.
+#[cfg(target_vendor = "apple")]
+pub(crate) const SAMPLER_ANISOTROPY: u16 = 8;
+/// See the Apple definition.
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) const SAMPLER_ANISOTROPY: u16 = 16;
+
 /// The sampler a terrain layer texture needs: the shader tiles every layer `tiling` times across a
 /// cell (`uv * LAND_TEXTURE_REPEATS_PER_CELL`), so the address mode must repeat.
 /// Bevy's default sampler clamps to the edge,
@@ -330,12 +357,15 @@ pub(crate) const WEIGHT_FIELD_WORDS: usize = OVERLAY_WEIGHT_SLOTS * OVERLAY_WEIG
 /// tile - long streaks where the edge column is stretched, and one flat colour where the corner
 /// texel covers the rest. A terrain texture that is not loaded through the asset server - the
 /// synthetic fixtures build theirs in memory - has to be given the same sampler by hand.
+///
+/// The same descriptor is the world glTF loader's default, so [`SAMPLER_ANISOTROPY`] applies to
+/// every world texture.
 pub(crate) fn terrain_layer_sampler() -> ImageSamplerDescriptor {
     ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
         address_mode_w: ImageAddressMode::Repeat,
-        anisotropy_clamp: 16,
+        anisotropy_clamp: SAMPLER_ANISOTROPY,
         ..ImageSamplerDescriptor::linear()
     }
 }
@@ -485,6 +515,7 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
+                layer_sampler: textures.iter().flatten().next().cloned(),
                 settings,
                 normal_0: normals[0].clone(),
                 normal_1: normals[1].clone(),
@@ -518,6 +549,7 @@ impl TerrainExtension {
             layer_3: Some(textures[3].clone()),
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
+            layer_sampler: Some(textures[0].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
             normal_0: None,
             normal_1: None,
@@ -567,6 +599,7 @@ impl Default for TerrainExtension {
             layer_3: None,
             layer_4: None,
             layer_5: None,
+            layer_sampler: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
             normal_0: None,
             normal_1: None,
@@ -701,12 +734,19 @@ const WATER_REFLECTION_FRUSTUM_MARGIN: f32 = 512.0;
 ///
 /// It is the flipped copy of the streaming camera, drawn before the main view, and it renders
 /// [`REFLECTION_VIEW_LAYERS`]: the world layer only. What Skyrim puts in a water reflection, and
-/// why full-detail placed objects are not in it, is documented on that constant.
-fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+/// why full-detail placed objects are not in it, is documented on that constant. Its size and
+/// format come from [`GpuTuning`](crate::gpu_tuning::GpuTuning).
+fn setup_water_reflection(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    gpu: Option<Res<crate::gpu_tuning::GpuTuning>>,
+) {
+    let gpu = gpu.as_deref().copied().unwrap_or_default();
+    let size = gpu.water_reflection_size();
     let image = images.add(Image::new_target_texture(
-        1024,
-        576,
-        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        size.x,
+        size.y,
+        gpu.water_reflection_format(),
         None,
     ));
     commands.insert_resource(WaterReflectionTexture(image.clone()));
@@ -986,6 +1026,31 @@ mod tests {
     }
 
     #[test]
+    fn a_tiled_gpu_draws_a_smaller_reflection_in_a_narrower_format() {
+        use crate::config::{GpuProfile, RenderScale};
+        use crate::gpu_tuning::GpuTuning;
+        use bevy::render::render_resource::TextureFormat;
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .insert_resource(GpuTuning::resolve(
+                GpuProfile::Tiled,
+                None,
+                RenderScale::Auto,
+                true,
+            ))
+            .add_systems(Startup, setup_water_reflection);
+        app.update();
+        let target = &app.world().resource::<WaterReflectionTexture>().0;
+        let image = app.world().resource::<Assets<Image>>().get(target).unwrap();
+        assert_eq!(
+            image.texture_descriptor.format,
+            TextureFormat::Rg11b10Ufloat
+        );
+        assert_eq!(image.size(), UVec2::new(768, 432));
+    }
+
+    #[test]
     fn reflection_tracks_exposure_changes_even_while_not_visible() {
         let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
         for ev100 in [7.0, 12.0, 9.7] {
@@ -1144,14 +1209,14 @@ mod tests {
     }
 
     #[test]
-    fn terrain_sampler_repeats_with_linear_mips_and_16x_anisotropy() {
+    fn terrain_sampler_repeats_with_linear_mips_and_anisotropy() {
         let sampler = terrain_layer_sampler();
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
         assert_eq!(sampler.mag_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.min_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.mipmap_filter, bevy::image::ImageFilterMode::Linear);
-        assert_eq!(sampler.anisotropy_clamp, 16);
+        assert_eq!(sampler.anisotropy_clamp, SAMPLER_ANISOTROPY);
     }
 
     use crate::world::cache::TerrainLayerSnapshot;
@@ -1630,6 +1695,16 @@ mod tests {
         assert!(
             !RendererMetrics {
                 renderer_validation_failures: 1,
+                ..complete.clone()
+            }
+            .final_path_active()
+        );
+        // Views set up without occlusion culling owe no occlusion or HZB view.
+        assert!(
+            RendererMetrics {
+                occlusion_culling_views: 0,
+                hzb_views: 0,
+                occlusion_culling_off: true,
                 ..complete
             }
             .final_path_active()
@@ -1672,14 +1747,14 @@ mod tests {
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_w, ImageAddressMode::Repeat);
-        // Repeat and 16x anisotropy retain linear filtering and the default mip range.
+        // Repeat and anisotropy retain linear filtering and the default mip range.
         let default_sampler = ImageSamplerDescriptor::linear();
         assert_eq!(sampler.mag_filter, default_sampler.mag_filter);
         assert_eq!(sampler.min_filter, default_sampler.min_filter);
         assert_eq!(sampler.mipmap_filter, default_sampler.mipmap_filter);
         assert_eq!(sampler.lod_min_clamp, default_sampler.lod_min_clamp);
         assert_eq!(sampler.lod_max_clamp, default_sampler.lod_max_clamp);
-        assert_eq!(sampler.anisotropy_clamp, 16);
+        assert_eq!(sampler.anisotropy_clamp, SAMPLER_ANISOTROPY);
         assert_eq!(sampler.compare, default_sampler.compare);
         assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
         assert_eq!(
