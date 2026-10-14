@@ -550,7 +550,7 @@ pub(crate) fn convert_plugins(
     )
 }
 
-/// Publish usable records and return every bounded decoder/adapter warning to the caller.
+/// Publish usable records with bounded recovery warnings and compatibility notices.
 /// One authoritative text-source policy applies to candidate admission and publication.
 pub(crate) fn convert_plugins_with_string_sources_report(
     plugin_paths: &[PathBuf],
@@ -647,7 +647,7 @@ fn convert_plugins_with_text_sources_impl(
     .map(|conversion| conversion.records)
 }
 
-/// Return the published records and bounded summaries without changing recovery semantics.
+/// Return published records and summaries by severity without changing recovery semantics.
 fn convert_plugins_with_text_sources_report_impl(
     plugin_paths: &[PathBuf],
     db_path: &Path,
@@ -1020,7 +1020,12 @@ fn convert_plugins_with_text_sources_report_impl(
     let mut report_warnings = decoded
         .diagnostics
         .iter()
-        .flat_map(|(name, diagnostics)| diagnostics.summary_lines(name))
+        .flat_map(|(name, diagnostics)| diagnostics.warning_summary_lines(name))
+        .collect::<Vec<_>>();
+    let report_notices = decoded
+        .diagnostics
+        .iter()
+        .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
         .collect::<Vec<_>>();
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     drop(decoded);
@@ -1029,6 +1034,7 @@ fn convert_plugins_with_text_sources_report_impl(
     Ok(RecordConversion {
         records: master,
         warnings: report_warnings,
+        notices: report_notices,
     })
 }
 

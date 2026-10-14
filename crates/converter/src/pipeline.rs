@@ -86,7 +86,8 @@ pub struct PipelineReport {
     #[serde(default)]
     pub lod_warnings: Vec<String>,
     pub warnings: Vec<String>,
-    /// advisory messages that do not affect completeness
+    /// Advisory messages, including successful reader compatibility remaps,
+    /// that do not affect completeness.
     #[serde(default)]
     pub notices: Vec<String>,
     pub artifacts: Vec<PathBuf>,
@@ -99,8 +100,8 @@ pub struct PipelineReport {
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
-/// still skip or warn, so they still land here. Bounded reader recovery and
-/// compatibility summaries also warn, while usable records still publish.
+/// still skip or warn, so they still land here. Reader data-loss summaries warn
+/// while usable records still publish; successful compatibility remaps are notices.
 pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
@@ -726,6 +727,7 @@ impl AssetPipeline {
                     Some(config.schemas()?.as_ref()),
                 )?;
             report.warnings.extend(conversion.warnings);
+            report.notices.extend(conversion.notices);
             let merged = conversion.records;
             validate_database(&Connection::open(&db_path)?)?;
             if config.record_reader == crate::config::RecordReader::Inhouse {

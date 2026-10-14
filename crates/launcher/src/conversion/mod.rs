@@ -840,6 +840,7 @@ pub(crate) mod tests {
             cache_hits: 3,
             skipped: 0,
             warnings: Vec::new(),
+            notices: Vec::new(),
             lod_chunks: 1693,
             lod_warnings: (0..12).map(|i| format!("Skipped world {i}")).collect(),
             artifacts: 15,

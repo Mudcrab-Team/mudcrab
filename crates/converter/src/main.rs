@@ -1049,10 +1049,12 @@ Use the original conversion's reader/schema identity and encoding settings. --te
 --texture-fallback-quality; it does not select ETC1S encoding.
 
 Converts a Skyrim Data directory into runtime assets.
-Reader recovery preserves usable neighboring records and reports bounded per-plugin warnings.
+Reader recovery preserves usable neighboring records and reports bounded data-loss warnings.
 Warnings mark the report and manifest incomplete and make conversion exit 1 even when the
 usable output was published. --report-json and the launcher show these warnings; metadata
 rebuild with --reuse-assets follows the same completeness rule.
+Successful master-index and supplier-self compatibility remaps are report notices and do
+not affect completeness.
 --mo2-instance overlays enabled MO2 mods and overwrite over physical Data, using the profile's
 active plugins and loadorder.txt. --mo2-profile defaults to ModOrganizer.ini's selected_profile,
 or the first sorted profile if that selection is absent or stale.

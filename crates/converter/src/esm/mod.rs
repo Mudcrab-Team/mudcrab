@@ -36,11 +36,12 @@ mod report_warnings_official_tests;
 
 pub struct EsmParser;
 
-/// Winning projection records and the bounded reader summaries printed during conversion.
+/// Winning records with bounded recovery warnings and harmless compatibility notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
     pub(crate) records: HashMap<u32, RawRecord>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) notices: Vec<String>,
 }
 
 /// Populate the common plugin metadata contract without allocating each complete input.
@@ -154,7 +155,7 @@ impl EsmParser {
             .map(|conversion| conversion.records)
     }
 
-    /// Export the merged legacy records and collect each printed parser/remap summary once.
+    /// Export legacy records with each printed recovery warning and compatibility notice once.
     pub(crate) fn convert_plugins_with_records_report(
         plugin_paths: &[PathBuf],
         db_path: &Path,
@@ -282,10 +283,12 @@ impl EsmParser {
                 }
             }
         }
-        summaries.extend(warnings.report());
+        let (remap_warnings, notices) = warnings.report();
+        summaries.extend(remap_warnings);
         Ok(RecordConversion {
             records: merged,
             warnings: summaries,
+            notices,
         })
     }
 }
@@ -299,8 +302,9 @@ type OutOfRangeCounts = BTreeMap<String, (u64, u32, [u8; 4])>;
 struct RemapWarnings {
     /// Light-plugin local IDs wider than 12 bits, keyed by owning plugin.
     truncations: RefCell<BTreeMap<String, (u64, u32)>>,
-    /// IDs whose master index lies past the plugin's master list, keyed by the plugin that
-    /// contains them; the example keeps its record type.
+    /// IDs beyond the master list observed on the permissive supplier-self path.
+    /// Keyed by the containing plugin, retaining the first record kind.
+    /// Any separate truncation or candidate rejection remains a recovery warning.
     out_of_range: RefCell<OutOfRangeCounts>,
     /// Invalid optional links, counted per containing plugin with the first diagnostic.
     skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
@@ -316,7 +320,7 @@ impl RemapWarnings {
         entry.0 += 1;
     }
 
-    /// Accumulate one ID that names a master the plugin does not have.
+    /// Accumulate one permissive supplier-self remap without changing recovery diagnostics.
     fn out_of_range(&self, plugin: &str, form_id: u32, record_type: [u8; 4]) {
         let mut counts = self.out_of_range.borrow_mut();
         let entry = counts
@@ -347,34 +351,40 @@ impl RemapWarnings {
         entry.0 += 1;
     }
 
-    /// Print and collect the same per-kind/plugin summaries after a successful merge.
-    fn report(&self) -> Vec<String> {
-        let mut summaries = Vec::new();
+    /// Print diagnostics in kind/plugin order and return warnings separately from notices.
+    fn report(&self) -> (Vec<String>, Vec<String>) {
+        let mut warning_lines = Vec::new();
+        let mut notice_lines = Vec::new();
         for (owner, (count, example)) in self.truncations.borrow().iter() {
-            summaries.push(format!(
+            let summary = format!(
                 "warning: {owner}: {count} light-plugin ID occurrences exceeded 12 bits and were truncated (first: {example:08X}); compact the plugin's FormIDs before ESL-flagging it"
-            ));
+            );
+            eprintln!("{summary}");
+            warning_lines.push(summary);
         }
         for (plugin, (count, example, record_type)) in self.out_of_range.borrow().iter() {
-            summaries.push(format!(
-                "warning: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
+            let summary = format!(
+                "notice: {plugin}: {count} FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: {example:08X} in {})",
                 String::from_utf8_lossy(record_type)
-            ));
+            );
+            eprintln!("{summary}");
+            notice_lines.push(summary);
         }
         for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
-            summaries.push(format!(
+            let summary = format!(
                 "warning: {plugin}: skipped {count} invalid optional FormID links (cleared or removed; first: {example})"
-            ));
+            );
+            eprintln!("{summary}");
+            warning_lines.push(summary);
         }
         for (plugin, (count, example)) in self.skipped_records.borrow().iter() {
-            summaries.push(format!(
+            let summary = format!(
                 "warning: {plugin}: skipped {count} unusable record candidate(s); first: {example}; earlier complete candidates and neighboring records retained"
-            ));
-        }
-        for summary in &summaries {
+            );
             eprintln!("{summary}");
+            warning_lines.push(summary);
         }
-        summaries
+        (warning_lines, notice_lines)
     }
 }
 

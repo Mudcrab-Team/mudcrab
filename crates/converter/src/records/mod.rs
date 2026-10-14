@@ -300,8 +300,8 @@ pub struct PluginDiagnostics {
 }
 
 impl PluginDiagnostics {
-    /// Build the same bounded per-plugin lines for terminal output and conversion reports.
-    pub(crate) fn summary_lines(&self, plugin: &str) -> Vec<String> {
+    /// Build bounded data-loss warnings for terminal output and conversion reports.
+    pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
         if let Some(example) = ["record", "field", "link", "unexpected"]
             .iter()
@@ -315,11 +315,17 @@ impl PluginDiagnostics {
                 self.invalid_links
             ));
         }
+        lines
+    }
+
+    /// Successful supplier-self remaps are advisory, even when another issue loses data.
+    pub(crate) fn notice_summary_lines(&self, plugin: &str) -> Vec<String> {
+        let mut lines = Vec::new();
         if self.compatibility_headers != 0
             && let Some(example) = self.first_by_category.get("compatibility")
         {
             lines.push(format!(
-                "warning: {plugin}: used supplier-self runtime compatibility for {} headers (original owners unresolved; first: {example})",
+                "notice: {plugin}: used supplier-self runtime compatibility for {} headers (original owners unresolved; first: {example})",
                 self.compatibility_headers
             ));
         }
@@ -867,7 +873,11 @@ fn read_plugins_with_prepared(
     decoder::validate_targets_with_prepared(&mut result, schema, prepared, order);
     targets_stage.finish(result.records.len());
     for (name, diagnostics) in &result.diagnostics {
-        for line in diagnostics.summary_lines(name) {
+        for line in diagnostics
+            .warning_summary_lines(name)
+            .into_iter()
+            .chain(diagnostics.notice_summary_lines(name))
+        {
             eprintln!("{line}");
         }
     }

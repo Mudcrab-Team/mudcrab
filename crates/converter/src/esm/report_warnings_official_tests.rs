@@ -34,8 +34,8 @@ fn fresh_output(data: &Path, list: &Path) -> PathBuf {
     output
 }
 
-/// Classify retained summary lines for a compact receipt without dropping any warning.
-fn warning_kind(message: &str) -> &'static str {
+/// Classify retained warning and notice lines for a compact receipt without dropping either.
+fn reader_summary_kind(message: &str) -> &'static str {
     if message.contains("malformed record/frame") {
         "malformed_record_frame"
     } else if message.contains("light-plugin ID occurrences") {
@@ -51,7 +51,7 @@ fn warning_kind(message: &str) -> &'static str {
     }
 }
 
-/// Preserve actual DB/report observations before testing the requested zero-warning control.
+/// Preserve actual DB/report observations before checking the two known compatibility notices.
 /// Input hashing and retained-output ownership are enforced by the owning execution receipt.
 /// This exercises reader export plus the shared completeness rule, not a full asset pipeline.
 #[test]
@@ -89,6 +89,7 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         .unwrap();
     let mut report = PipelineReport {
         warnings: conversion.warnings,
+        notices: conversion.notices,
         artifacts: vec![PathBuf::from("skyrim_world.db")],
         ..Default::default()
     };
@@ -109,7 +110,15 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         .collect();
     let mut warning_counts = BTreeMap::<&str, u64>::new();
     for warning in &report.warnings {
-        *warning_counts.entry(warning_kind(warning)).or_default() += 1;
+        *warning_counts
+            .entry(reader_summary_kind(warning))
+            .or_default() += 1;
+    }
+    let mut notice_counts = BTreeMap::<&str, u64>::new();
+    for notice in &report.notices {
+        *notice_counts
+            .entry(reader_summary_kind(notice))
+            .or_default() += 1;
     }
     fs::write(
         output.join("report.json"),
@@ -133,8 +142,11 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
             "database_records": database_records,
             "warning_count": report.warnings.len(),
             "warning_kind_counts": warning_counts,
+            "notice_count": report.notices.len(),
+            "notice_kind_counts": notice_counts,
             "complete": report.complete,
             "warnings": report.warnings,
+            "notices": report.notices,
         }))
         .unwrap(),
     )
@@ -146,6 +158,14 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         report.warnings.is_empty(),
         "official control warnings: {:?}",
         report.warnings
+    );
+    assert_eq!(
+        report.notices,
+        [
+            "notice: dawnguard.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0307B5B9 in ACTI)",
+            "notice: skyrim.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0123C00E in GMST)",
+        ],
+        "official control must retain exactly the two known compatibility notices"
     );
     assert!(
         report.complete,

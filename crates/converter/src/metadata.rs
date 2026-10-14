@@ -68,7 +68,8 @@ impl AssetPipeline {
     /// Publishes only to a new, disjoint directory. The source package and its
     /// retained GLB/KTX2/Luau bytes are never modified or relabeled in place.
     /// MO2 source selection is unsupported by this package-matched Data route.
-    /// Reader warning summaries keep both the rebuilt report and manifest incomplete.
+    /// Reader data-loss warnings keep the rebuilt report and manifest incomplete;
+    /// successful compatibility notices do not affect their shared completeness rule.
     pub async fn rebuild_metadata_async(
         mut config: PipelineConfig,
         source_assets: &Path,
@@ -500,6 +501,7 @@ async fn rebuild_into(
         Some(config.schemas()?.as_ref()),
     )?;
     report.warnings.extend(conversion.warnings);
+    report.notices.extend(conversion.notices);
     let merged = conversion.records;
     validate_database(&Connection::open(&database)?)?;
     if config.record_reader == crate::config::RecordReader::Inhouse {

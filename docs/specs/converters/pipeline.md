@@ -19,18 +19,24 @@ Real deletions still apply. LAND with rejected authored heights
 or incomplete framing is skipped; genuinely heightless texture/color records
 retain the existing default-height cache behavior.
 
-Both readers retain their terminal diagnostics and return each bounded
-per-plugin summary to `PipelineReport.warnings`. This includes malformed
-records/frames, unusable candidates, cleared optional links, truncated light
-IDs, out-of-range header compatibility remaps, and in-house decoder/adapter
-issues. The existing completeness rule requires zero skipped asset inputs and
-no warnings: usable neighboring records still publish, but these summaries mark
+Both readers retain their terminal diagnostics and return bounded per-plugin
+summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
+malformed records/frames, unusable candidates, cleared optional links, truncated
+light IDs, and in-house decoder/adapter issues such as omitted fields or missing
+localized text. `PipelineReport.notices` contains successful compatibility
+remaps: master indices past a plugin's list treated as the plugin's own, and the
+in-house reader's supplier-self compatibility lines. Counts and first examples
+remain bounded per plugin and kind.
+
+The existing completeness rule requires zero skipped asset inputs and no
+warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
-code 1. `--report-json` and the launcher display the same warning lines. Reader
+code 1. Compatibility notices remain visible without affecting completeness or
+the exit code; a mixed run retains both severities and stays incomplete.
+`--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
-and `--reuse-assets` use this same rule when they re-export records. Successful
-compatibility remaps remain warnings, so even official inputs can produce an
-incomplete report without a malformed record.
+and `--reuse-assets` use the same severity and completeness rules when they
+re-export records. Official inputs with only compatibility remaps remain complete.
 
 `record-reader.json` stamps the selected frontend. Legacy `projection_version=3`
 preserves WRLD RNAM payloads and TNAM strings and restores record-aware VMAD

@@ -132,6 +132,35 @@ fn replay_fixture(data: &Path) {
     );
 }
 
+/// Native header ownership compatibility changes no payload or winner identity.
+fn compatibility_fixture(data: &Path, mixed: bool) {
+    let mut body = [
+        record(
+            b"ACTI",
+            0x0700_0810,
+            0,
+            &field(b"EDID", b"CompatibilityTarget\0"),
+        ),
+        record(
+            b"GMST",
+            0x0600_0820,
+            0,
+            &[
+                field(b"EDID", b"fCompatibilityMetric\0"),
+                field(b"DATA", &13.25f32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+        keyword(0x830, b"CompatibilityNeighbor\0"),
+    ]
+    .concat();
+    if mixed {
+        body.extend(record(b"STAT", 0x840, 0x40000, &[7, 0, 0, 0, 0xFF]));
+        body.extend(keyword(0x850, b"AfterCompatibilityAndLoss\0"));
+    }
+    plugin(data, "compat.esm", 1, &[], &body);
+}
+
 /// Configure a records-only fixture through the real asset publication route.
 fn config(data: &Path, output: &Path, reader: RecordReader) -> PipelineConfig {
     let mut config = PipelineConfig::new(data, output);
@@ -241,6 +270,95 @@ fn incomplete(report: &PipelineReport, output: &Path, warning_count: usize) {
         output.join("cell_cache.rkyv").is_file(),
         "usable pack must publish"
     );
+}
+
+/// Match a compatibility category without confusing it with a data-loss summary.
+fn compatibility_kind(reader: RecordReader) -> &'static str {
+    match reader {
+        RecordReader::Legacy => "FormID occurrences name a master index past",
+        RecordReader::Inhouse => "used supplier-self runtime compatibility",
+    }
+}
+
+/// Require one counted compatibility notice while retaining unrelated metadata advisories.
+fn compatibility_notice(report: &PipelineReport, reader: RecordReader) {
+    let kind = compatibility_kind(reader);
+    let messages: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|message| message.contains("compat.esm") && message.contains(kind))
+        .collect();
+    assert_eq!(
+        messages.len(),
+        1,
+        "one compatibility notice: {:?}",
+        report.notices
+    );
+    let message = messages[0];
+    let count = match reader {
+        RecordReader::Legacy => "2 FormID occurrences",
+        RecordReader::Inhouse => "for 1 headers",
+    };
+    assert!(message.contains(count), "{message}");
+    assert!(message.contains("first:"), "{message}");
+    assert!(message.contains("07000810"), "{message}");
+}
+
+/// Benign header compatibility preserves a usable complete pack and the warning bucket stays empty.
+fn complete_notice_pack(report: &PipelineReport, output: &Path, reader: RecordReader) {
+    compatibility_notice(report, reader);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(report.skipped, 0);
+    assert!(
+        report.complete,
+        "compatibility alone must not make the run incomplete"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["complete"], true);
+    assert!(output.join("cell_cache.rkyv").is_file());
+}
+
+/// Exercise authenticated metadata replay with either existing reader through its public route.
+async fn rebuild_with_reader(
+    data: &Path,
+    source: &Path,
+    output: &Path,
+    reader: RecordReader,
+) -> PipelineReport {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let result =
+        AssetPipeline::rebuild_metadata_async(config(data, output, reader), source, tx).await;
+    drain.await.unwrap();
+    result.unwrap()
+}
+
+/// Invoke the normal or reuse-assets CLI without creating a second interpretation of report policy.
+fn compatibility_cli(
+    data: &Path,
+    output: &Path,
+    report_path: &Path,
+    reader: RecordReader,
+    source: Option<&Path>,
+) -> (std::process::Output, PipelineReport) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_converter"));
+    command
+        .arg(data)
+        .arg(output)
+        .arg("--no-lod")
+        .arg("--report-json")
+        .arg(report_path);
+    if reader == RecordReader::Inhouse {
+        command.arg("--record-reader").arg("inhouse");
+    }
+    if let Some(source) = source {
+        command.arg("--reuse-assets").arg(source);
+    }
+    let run = command.output().unwrap();
+    let report = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    (run, report)
 }
 
 /// Malformed records and frames aggregate once while trusted neighboring records publish.
@@ -468,5 +586,225 @@ async fn reuse_assets_cli_report_json_replays_reader_warnings() {
     );
     warning(&report, "replay.esm", "in-house reader skipped");
     warning(&report, "replay.esm", "inhouse adapter reported");
+    incomplete(&report, &output, 2);
+}
+
+/// Both frontends keep bounded ownership compatibility separate from every failure counter.
+#[tokio::test]
+async fn severity_compatibility_only_is_notice_and_complete_for_both_readers() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    compatibility_fixture(&data, false);
+    for (name, reader) in [
+        ("legacy", RecordReader::Legacy),
+        ("inhouse", RecordReader::Inhouse),
+    ] {
+        let output = directory.path().join(name);
+        let report = publish(&data, &output, reader).await;
+        assert_eq!(record_ids(&output), [0x810, 0x820, 0x830]);
+        assert_eq!(
+            fields(&output, 0x810, b"EDID"),
+            [b"CompatibilityTarget\0".to_vec()]
+        );
+        assert_eq!(
+            fields(&output, 0x820, b"DATA"),
+            [13.25f32.to_le_bytes().to_vec()]
+        );
+        complete_notice_pack(&report, &output, reader);
+    }
+}
+
+/// Compatibility notices remain visible in report JSON and the normal CLI succeeds.
+#[test]
+fn severity_compatibility_cli_is_complete_and_exits_zero_for_both_readers() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    compatibility_fixture(&data, false);
+    for (name, reader) in [
+        ("legacy", RecordReader::Legacy),
+        ("inhouse", RecordReader::Inhouse),
+    ] {
+        let output = directory.path().join(name);
+        let report_path = directory.path().join(format!("{name}.json"));
+        let (run, report) = compatibility_cli(&data, &output, &report_path, reader, None);
+        assert_eq!(record_ids(&output), [0x810, 0x820, 0x830]);
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        complete_notice_pack(&report, &output, reader);
+        assert!(String::from_utf8_lossy(&run.stdout).contains(compatibility_kind(reader)));
+    }
+}
+
+/// An ownership notice never hides real record loss or changes the retained usable neighbors.
+#[tokio::test]
+async fn severity_mixed_compatibility_and_record_loss_keep_separate_buckets() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    compatibility_fixture(&data, true);
+    for (name, reader) in [
+        ("legacy", RecordReader::Legacy),
+        ("inhouse", RecordReader::Inhouse),
+    ] {
+        let output = directory.path().join(name);
+        let report = publish(&data, &output, reader).await;
+        assert_eq!(record_ids(&output), [0x810, 0x820, 0x830, 0x850]);
+        assert_eq!(
+            fields(&output, 0x820, b"DATA"),
+            [13.25f32.to_le_bytes().to_vec()]
+        );
+        assert_eq!(
+            fields(&output, 0x850, b"EDID"),
+            [b"AfterCompatibilityAndLoss\0".to_vec()]
+        );
+        compatibility_notice(&report, reader);
+        let kind = match reader {
+            RecordReader::Legacy => "malformed record/frame",
+            RecordReader::Inhouse => "in-house reader skipped",
+        };
+        let loss = warning(&report, "compat.esm", kind);
+        assert!(loss.contains("00000840"), "{loss}");
+        incomplete(&report, &output, 1);
+    }
+}
+
+/// Authenticated unchanged plugin bytes replay compatibility notices through both metadata readers.
+#[tokio::test]
+async fn severity_metadata_rebuild_replays_compatibility_notices_without_source_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    compatibility_fixture(&data, false);
+    let original = publish(&data, &source, RecordReader::Legacy).await;
+    // Metadata replay requires a complete source manifest and authenticated unchanged plugin bytes.
+    complete_notice_pack(&original, &source, RecordReader::Legacy);
+    let input_before = fs::read(data.join("compat.esm")).unwrap();
+    let manifest_before = fs::read(source.join("conversion-manifest.json")).unwrap();
+    let database_before = fs::read(source.join("skyrim_world.db")).unwrap();
+    for (name, reader) in [
+        ("legacy", RecordReader::Legacy),
+        ("inhouse", RecordReader::Inhouse),
+    ] {
+        let output = directory.path().join(name);
+        let report = rebuild_with_reader(&data, &source, &output, reader).await;
+        assert_eq!(record_ids(&output), [0x810, 0x820, 0x830]);
+        complete_notice_pack(&report, &output, reader);
+        if reader == RecordReader::Inhouse {
+            assert!(
+                report
+                    .notices
+                    .iter()
+                    .any(|notice| notice.contains("retained models and textures"))
+            );
+        }
+        assert_eq!(fs::read(data.join("compat.esm")).unwrap(), input_before);
+        assert_eq!(
+            fs::read(source.join("conversion-manifest.json")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            fs::read(source.join("skyrim_world.db")).unwrap(),
+            database_before
+        );
+    }
+}
+
+/// Reuse-assets CLI replay retains notice evidence and succeeds for both frontends.
+#[tokio::test]
+async fn severity_reuse_assets_cli_replays_compatibility_notices_and_exits_zero() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    compatibility_fixture(&data, false);
+    let original = publish(&data, &source, RecordReader::Legacy).await;
+    complete_notice_pack(&original, &source, RecordReader::Legacy);
+    let input_before = fs::read(data.join("compat.esm")).unwrap();
+    let manifest_before = fs::read(source.join("conversion-manifest.json")).unwrap();
+    let database_before = fs::read(source.join("skyrim_world.db")).unwrap();
+    for (name, reader) in [
+        ("legacy", RecordReader::Legacy),
+        ("inhouse", RecordReader::Inhouse),
+    ] {
+        let output = directory.path().join(name);
+        let report_path = directory.path().join(format!("{name}.json"));
+        let (run, report) = compatibility_cli(&data, &output, &report_path, reader, Some(&source));
+        assert_eq!(record_ids(&output), [0x810, 0x820, 0x830]);
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        complete_notice_pack(&report, &output, reader);
+        assert_eq!(fs::read(data.join("compat.esm")).unwrap(), input_before);
+        assert_eq!(
+            fs::read(source.join("conversion-manifest.json")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            fs::read(source.join("skyrim_world.db")).unwrap(),
+            database_before
+        );
+    }
+}
+
+/// Real ESL-width truncation and cleared optional ownership remain warnings, with no compatibility notice.
+#[tokio::test]
+async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("pack");
+    let body = [
+        record(
+            b"ACTI",
+            0x1821,
+            0,
+            &field(b"EDID", b"TruncatedLightIdentity\0"),
+        ),
+        record(b"ACTI", 0x822, 0, &field(b"EDID", b"LightNeighbor\0")),
+        record(
+            b"CELL",
+            0x830,
+            0,
+            &[
+                field(b"DATA", &[1, 0]),
+                field(b"XOWN", &0x0700_0900u32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+    ]
+    .concat();
+    plugin(&data, "loss.esl", 0x201, &[], &body);
+    let report = publish(&data, &output, RecordReader::Legacy).await;
+    assert_eq!(record_ids(&output), [0xFE00_0821, 0xFE00_0822, 0xFE00_0830]);
+    assert_eq!(
+        fields(&output, 0xFE00_0830, b"XOWN"),
+        [0u32.to_le_bytes().to_vec()]
+    );
+    assert!(
+        !report.notices.iter().any(|notice| {
+            notice.contains(compatibility_kind(RecordReader::Legacy))
+                || notice.contains(compatibility_kind(RecordReader::Inhouse))
+        }),
+        "unexpected compatibility notice: {:?}",
+        report.notices
+    );
+    let truncation = warning(&report, "loss.esl", "light-plugin ID occurrences");
+    assert!(
+        truncation.contains("1 light-plugin ID occurrences"),
+        "{truncation}"
+    );
+    assert!(truncation.contains("00001821"), "{truncation}");
+    let optional = warning(&report, "loss.esl", "invalid optional FormID links");
+    assert!(
+        optional.contains("1 invalid optional FormID links"),
+        "{optional}"
+    );
+    assert!(optional.contains("07000900"), "{optional}");
     incomplete(&report, &output, 2);
 }
