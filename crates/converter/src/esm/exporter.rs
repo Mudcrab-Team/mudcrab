@@ -220,6 +220,10 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              plugin_path TEXT PRIMARY KEY, file_hash BLOB NOT NULL, last_converted INTEGER NOT NULL
          );"#
     )?;
+    // Optional interior room graph (db-schema.md section 15); an older reused database gains it
+    // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
+    crate::esm::rooms::migrate_room_portals(conn)?;
+    conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
     conn.execute(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
         [shared::WORLD_DATABASE_SCHEMA_VERSION],
@@ -293,6 +297,13 @@ fn export_records(
         )?;
         cells.insert(form_id, (grid_x, grid_y, record.worldspace_form_id));
     }
+    let interior_cells: std::collections::HashSet<u32> = cells
+        .iter()
+        .filter(|(_, (grid_x, grid_y, worldspace))| {
+            grid_x.is_none() && grid_y.is_none() && worldspace.is_none()
+        })
+        .map(|(&form_id, _)| form_id)
+        .collect();
 
     let mut ordered: Vec<_> = master.iter().collect();
     ordered.sort_unstable_by_key(|(form_id, _)| **form_id);
@@ -506,6 +517,11 @@ fn export_records(
             }
             _ => {}
         }
+    }
+    // Derived snapshot like the grass tables: only a full load-order export owns it, so the
+    // movement annotator's subset export leaves it alone.
+    if order.is_some() {
+        crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
     }
     tx.commit()
 }
@@ -1588,5 +1604,628 @@ mod tests {
             )
             .unwrap();
         assert_eq!(base_radius, 256.0);
+    }
+
+    // ---- Interior room graph (db-schema.md section 15) ----
+
+    use crate::esm::rooms::{self, PORTAL_MARKER_BASE, ROOM_MARKER_BASE};
+
+    fn xprm(half: [f32; 3], shape: u32) -> Vec<u8> {
+        let mut bytes = floats(half);
+        bytes.extend(floats([0.5, 0.5, 0.5]));
+        bytes.extend(0.2f32.to_le_bytes());
+        bytes.extend(shape.to_le_bytes());
+        bytes
+    }
+
+    fn word(value: u32) -> Vec<u8> {
+        value.to_le_bytes().to_vec()
+    }
+
+    /// A marker reference: `NAME`, `DATA` and any extra subrecords.
+    fn marker(
+        form_id: u32,
+        cell: u32,
+        base: u32,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        extra: Vec<(&[u8; 4], Vec<u8>)>,
+    ) -> RawRecord {
+        let mut record = reference(form_id, cell, base, position, rotation);
+        record
+            .subrecords
+            .extend(extra.into_iter().map(|(tag, data)| (tag.to_vec(), data)));
+        record
+    }
+
+    fn room(
+        form_id: u32,
+        cell: u32,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        half: [f32; 3],
+        mut extra: Vec<(&[u8; 4], Vec<u8>)>,
+    ) -> RawRecord {
+        extra.insert(0, (b"XPRM", xprm(half, 1)));
+        marker(form_id, cell, ROOM_MARKER_BASE, position, rotation, extra)
+    }
+
+    fn portal(form_id: u32, cell: u32, sides: Option<(u32, u32)>) -> RawRecord {
+        let mut extra = vec![(b"XPRM", xprm([40.0, 1.0, 60.0], 3))];
+        if let Some((a, b)) = sides {
+            extra.push((b"XPOD", [word(a), word(b)].concat()));
+        }
+        marker(form_id, cell, PORTAL_MARKER_BASE, [0.0; 3], [0.0; 3], extra)
+    }
+
+    fn interior_cell(form_id: u32) -> RawRecord {
+        record(form_id, b"CELL", None, None, Vec::new())
+    }
+
+    /// Exports `records` and returns the connection plus the room graph report.
+    fn export_rooms(records: Vec<RawRecord>) -> (Connection, rooms::RoomGraphReport) {
+        let master: HashMap<u32, RawRecord> = records.into_iter().map(|r| (r.form_id, r)).collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db(&conn, &master).unwrap();
+        let interior: std::collections::HashSet<u32> = master
+            .values()
+            .filter(|r| &r.record_type == b"CELL" && r.worldspace_form_id.is_none())
+            .map(|r| r.form_id)
+            .collect();
+        let tx = conn.unchecked_transaction().unwrap();
+        let report = rooms::export_room_graph(&tx, &master, &interior).unwrap();
+        tx.commit().unwrap();
+        (conn, report)
+    }
+
+    fn rooms_of(conn: &Connection, reference: u32) -> Vec<(u32, i64)> {
+        let mut statement = conn
+            .prepare(
+                "SELECT room_ref, contained FROM reference_rooms WHERE reference_id=?1 ORDER BY room_ref",
+            )
+            .unwrap();
+        statement
+            .query_map([reference], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn assigns_objects_to_the_room_boxes_that_contain_their_pivot() {
+        let (conn, report) = export_rooms(vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [100.0; 3], vec![]),
+            room(
+                0x1002,
+                0x100,
+                [150.0, 0.0, 0.0],
+                [0.0; 3],
+                [100.0; 3],
+                vec![],
+            ),
+            reference(0x2001, 0x100, 0x500, [-50.0, 0.0, 0.0], [0.0; 3]),
+            reference(0x2002, 0x100, 0x500, [1000.0, 0.0, 0.0], [0.0; 3]),
+            reference(0x2003, 0x100, 0x500, [75.0, 0.0, 0.0], [0.0; 3]),
+        ]);
+        assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(rooms_of(&conn, 0x2002), vec![]);
+        assert_eq!(rooms_of(&conn, 0x2003), vec![(0x1001, 1), (0x1002, 1)]);
+        // Markers are not members of anything.
+        assert_eq!(rooms_of(&conn, 0x1001), vec![]);
+        assert_eq!(report.rooms, 2);
+        assert_eq!(report.objects_in_no_room, 1);
+        assert_eq!(report.objects_in_several_rooms, 1);
+        let read = rooms::RoomGraphReport::read(&conn).unwrap();
+        assert_eq!(read, report);
+    }
+
+    #[test]
+    fn a_rotated_room_is_tested_in_its_own_frame() {
+        // Long along local X (half 100), narrow along local Y (half 10). Turned a quarter
+        // turn about Z, the long side lies along world Y.
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            room(
+                0x1001,
+                0x100,
+                [0.0; 3],
+                [0.0, 0.0, std::f32::consts::FRAC_PI_2],
+                [100.0, 10.0, 50.0],
+                vec![],
+            ),
+            reference(0x2001, 0x100, 0x500, [0.0, 80.0, 0.0], [0.0; 3]),
+            reference(0x2002, 0x100, 0x500, [80.0, 0.0, 0.0], [0.0; 3]),
+        ]);
+        assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(rooms_of(&conn, 0x2002), vec![]);
+    }
+
+    #[test]
+    fn writes_room_bounds_with_lighting_template_image_space_flags_and_links() {
+        let xrmr = vec![2, 0xC0, 1, 0];
+        let (conn, report) = export_rooms(vec![
+            interior_cell(0x100),
+            room(
+                0x1001,
+                0x100,
+                [10.0, 20.0, 30.0],
+                [0.1, 0.2, 0.3],
+                [100.0, 200.0, 300.0],
+                vec![
+                    (b"XRMR", xrmr),
+                    (b"LNAM", word(0x0001_2345)),
+                    (b"INAM", word(0x0006_7890)),
+                    (b"XLRM", word(0x1002)),
+                    (b"XLRM", word(0x1003)),
+                    (b"XLRM", word(0)),
+                ],
+            ),
+            room(0x1002, 0x100, [0.0; 3], [0.0; 3], [1.0; 3], vec![]),
+        ]);
+        let (cell, pos_x, pos_z, rot_y, rot_z): (u32, f64, f64, f64, f64) = conn
+            .query_row(
+                "SELECT cell_id,pos_x,pos_z,rot_y,rot_z FROM room_bounds WHERE ref_id=0x1001",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(cell, 0x100);
+        assert_eq!((pos_x, pos_z), (10.0, 30.0));
+        assert_eq!((rot_y, rot_z), (f64::from(0.2f32), f64::from(0.3f32)));
+        let half: (f64, f64, f64) = conn
+            .query_row(
+                "SELECT half_x,half_y,half_z FROM room_bounds WHERE ref_id=0x1001",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(half, (100.0, 200.0, 300.0));
+        let lighting: (Option<u32>, Option<u32>, i64) = conn
+            .query_row(
+                "SELECT lighting_template_id,image_space_id,flags FROM room_bounds WHERE ref_id=0x1001",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        // flags: XRMR flags byte | (u16 << 8)
+        assert_eq!(
+            lighting,
+            (Some(0x0001_2345), Some(0x0006_7890), 0xC0 | (1 << 8))
+        );
+        let second: (Option<u32>, Option<u32>) = conn
+            .query_row(
+                "SELECT lighting_template_id,image_space_id FROM room_bounds WHERE ref_id=0x1002",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(second, (None, None));
+        // Links are stored as written, including one to a room that does not exist; a zero
+        // target (no room) is not a link.
+        let links: Vec<(u32, u32)> = conn
+            .prepare("SELECT room_ref, linked_ref FROM room_links ORDER BY linked_ref")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(links, vec![(0x1001, 0x1002), (0x1001, 0x1003)]);
+        assert_eq!(report.links, 2);
+    }
+
+    #[test]
+    fn portals_name_the_rooms_on_both_sides_or_null() {
+        let (conn, report) = export_rooms(vec![
+            interior_cell(0x100),
+            interior_cell(0x101),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1002, 0x100, [50.0, 0.0, 0.0], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1003, 0x101, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            portal(0x3001, 0x100, Some((0x1001, 0x1002))),
+            portal(0x3002, 0x100, Some((0x1001, 0))),
+            // 0x9999 is no room; 0x1003 is a room of another cell.
+            portal(0x3003, 0x100, Some((0x9999, 0x1003))),
+            portal(0x3004, 0x100, None),
+        ]);
+        let sides = |id: u32| -> (Option<u32>, Option<u32>) {
+            conn.query_row(
+                "SELECT room_a, room_b FROM room_portals WHERE ref_id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(sides(0x3001), (Some(0x1001), Some(0x1002)));
+        assert_eq!(sides(0x3002), (Some(0x1001), None));
+        assert_eq!(sides(0x3003), (None, None));
+        assert_eq!(sides(0x3004), (None, None));
+        let size: (f64, f64) = conn
+            .query_row(
+                "SELECT half_x, half_z FROM room_portals WHERE ref_id=0x3001",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(size, (40.0, 60.0));
+        assert_eq!(report.portals, 4);
+        assert_eq!(report.portals_with_missing_side, 3);
+    }
+
+    /// A portal marker whose `XPOD` is the given raw bytes.
+    fn portal_with_xpod(form_id: u32, cell: u32, xpod: Vec<u8>) -> RawRecord {
+        marker(
+            form_id,
+            cell,
+            PORTAL_MARKER_BASE,
+            [0.0; 3],
+            [0.0; 3],
+            vec![(b"XPRM", xprm([40.0, 1.0, 60.0], 3)), (b"XPOD", xpod)],
+        )
+    }
+
+    fn portal_rows(conn: &Connection, id: u32) -> Vec<(i64, Option<u32>, Option<u32>)> {
+        conn.prepare(
+            "SELECT pair_index, room_a, room_b FROM room_portals WHERE ref_id=?1 ORDER BY pair_index",
+        )
+        .unwrap()
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn a_portal_with_several_xpod_pairs_gets_one_row_per_pair() {
+        let (conn, report) = export_rooms(vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1002, 0x100, [50.0, 0.0, 0.0], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1003, 0x100, [90.0, 0.0, 0.0], [0.0; 3], [10.0; 3], vec![]),
+            // Two pairs.
+            portal_with_xpod(
+                0x3001,
+                0x100,
+                [word(0x1001), word(0x1002), word(0x1002), word(0x1003)].concat(),
+            ),
+            // One pair and four trailing bytes, which are ignored and counted.
+            portal_with_xpod(
+                0x3002,
+                0x100,
+                [word(0x1001), word(0x1002), word(0x1003)].concat(),
+            ),
+            // The old shape: exactly one pair.
+            portal_with_xpod(0x3003, 0x100, [word(0x1002), word(0x1003)].concat()),
+            // Shorter than one pair: one row, NULL sides, counted as trailing bytes.
+            portal_with_xpod(0x3004, 0x100, word(0x1001)),
+            // Empty XPOD, and none at all.
+            portal_with_xpod(0x3005, 0x100, Vec::new()),
+            portal(0x3006, 0x100, None),
+        ]);
+        assert_eq!(
+            portal_rows(&conn, 0x3001),
+            vec![
+                (0, Some(0x1001), Some(0x1002)),
+                (1, Some(0x1002), Some(0x1003))
+            ]
+        );
+        assert_eq!(
+            portal_rows(&conn, 0x3002),
+            vec![(0, Some(0x1001), Some(0x1002))]
+        );
+        assert_eq!(
+            portal_rows(&conn, 0x3003),
+            vec![(0, Some(0x1002), Some(0x1003))]
+        );
+        for id in [0x3004, 0x3005, 0x3006] {
+            assert_eq!(portal_rows(&conn, id), vec![(0, None, None)], "{id:X}");
+        }
+        // Geometry repeats on every row of a portal.
+        let sizes: Vec<(f64, f64)> = conn
+            .prepare("SELECT half_x, half_z FROM room_portals WHERE ref_id=0x3001")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(sizes, vec![(40.0, 60.0); 2]);
+        // `portals` counts markers; the missing-side counter counts rows (3004-3006).
+        assert_eq!(report.portals, 6);
+        assert_eq!(report.portals_with_missing_side, 3);
+        assert_eq!(report.portals_with_extra_pairs, 1);
+        assert_eq!(report.portals_with_trailing_xpod_bytes, 2);
+        let read = rooms::RoomGraphReport::read(&conn).unwrap();
+        assert_eq!(read, report);
+    }
+
+    /// A database whose `room_portals` has the shape before `pair_index`, holding two portals.
+    fn old_shape_database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE room_portals (
+                 ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+                 pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+                 rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+                 half_x REAL NOT NULL, half_z REAL NOT NULL,
+                 room_a INTEGER, room_b INTEGER
+             );
+             CREATE INDEX idx_room_portals_cell ON room_portals(cell_id);
+             INSERT INTO room_portals VALUES (1, 2, 0, 0, 0, 0, 0, 0, 3, 4, 7, 8);
+             INSERT INTO room_portals VALUES (5, 2, 1, 2, 3, 0, 0, 0, 5, 6, NULL, NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// `room_portals` as (ref_id, pair_index, cell_id, half_x, room_a, room_b).
+    type PortalTableRow = (i64, i64, i64, f64, Option<i64>, Option<i64>);
+
+    fn portal_table(conn: &Connection) -> Vec<PortalTableRow> {
+        conn.prepare(
+            "SELECT ref_id, pair_index, cell_id, half_x, room_a, room_b FROM room_portals ORDER BY ref_id, pair_index",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    fn old_shape_rows() -> Vec<PortalTableRow> {
+        vec![(1, 0, 2, 3.0, Some(7), Some(8)), (5, 0, 2, 5.0, None, None)]
+    }
+
+    #[test]
+    fn an_older_room_portals_table_is_migrated_in_place_keeping_its_rows() {
+        let conn = old_shape_database();
+        create_tables(&conn).unwrap();
+        assert_eq!(portal_table(&conn), old_shape_rows());
+        // The key is now (ref_id, pair_index), and the cell index is back.
+        conn.execute(
+            "INSERT INTO room_portals(ref_id, pair_index, cell_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, half_x, half_z)
+             VALUES (1, 1, 2, 0, 0, 0, 0, 0, 0, 3, 4)",
+            [],
+        )
+        .unwrap();
+        let index: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_room_portals_cell'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+        let leftovers: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='room_portals_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftovers, 0);
+        // A second pass is a no-op.
+        create_tables(&conn).unwrap();
+        assert_eq!(portal_table(&conn).len(), 3);
+    }
+
+    #[test]
+    fn a_subset_export_on_a_migrated_database_leaves_the_portals_alone() {
+        let conn = old_shape_database();
+        create_tables(&conn).unwrap();
+        let records = vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+        ];
+        let master: HashMap<u32, RawRecord> = records.into_iter().map(|r| (r.form_id, r)).collect();
+        export_to_db(&conn, &master).unwrap();
+        assert_eq!(portal_table(&conn), old_shape_rows());
+    }
+
+    /// A RELEASE that fails (another connection holds a read lock, so the commit is busy)
+    /// leaves no transaction open and the old table untouched; the next pass migrates it.
+    #[test]
+    fn a_busy_commit_rolls_the_migration_back_and_closes_the_savepoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE room_portals (
+                     ref_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+                     pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+                     rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+                     half_x REAL NOT NULL, half_z REAL NOT NULL,
+                     room_a INTEGER, room_b INTEGER
+                 );
+                 INSERT INTO room_portals VALUES (1, 2, 0, 0, 0, 0, 0, 0, 3, 4, 7, 8);",
+            )
+            .unwrap();
+        writer.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let reader = Connection::open(&path).unwrap();
+        // An open read transaction keeps its shared lock until COMMIT.
+        reader.execute_batch("BEGIN").unwrap();
+        let held: i64 = reader
+            .query_row("SELECT count(*) FROM room_portals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(held, 1);
+
+        assert!(rooms::migrate_room_portals(&writer).is_err());
+        assert!(writer.is_autocommit(), "the savepoint was left open");
+
+        reader.execute_batch("COMMIT").unwrap();
+        use rusqlite::OptionalExtension;
+        let pair_index: Option<i64> = writer
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('room_portals') WHERE name='pair_index'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(pair_index, None);
+        rooms::migrate_room_portals(&writer).unwrap();
+        assert_eq!(
+            portal_table(&writer),
+            vec![(1, 0, 2, 3.0, Some(7), Some(8))]
+        );
+    }
+
+    #[test]
+    fn a_failed_full_export_leaves_the_migrated_portals_intact() {
+        use crate::esm::load_order::LoadOrder;
+        let conn = old_shape_database();
+        create_tables(&conn).unwrap();
+        // Fail when the export writes its counters, which is after it cleared the room tables
+        // inside the transaction.
+        conn.execute_batch(
+            "CREATE TRIGGER fail_stats_insert BEFORE INSERT ON room_graph_stats
+             BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+        )
+        .unwrap();
+        let master: HashMap<u32, RawRecord> = HashMap::new();
+        let error = export_to_db_with_load_order(&conn, &master, &LoadOrder::read(&[]).unwrap())
+            .unwrap_err();
+        assert!(error.to_string().contains("forced failure"), "{error}");
+        assert_eq!(portal_table(&conn), old_shape_rows());
+    }
+
+    #[test]
+    fn skips_non_box_rooms_and_exterior_markers() {
+        let mut sphere = room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]);
+        sphere.subrecords.retain(|(tag, _)| tag != b"XPRM");
+        sphere
+            .subrecords
+            .push((b"XPRM".to_vec(), xprm([10.0; 3], 2)));
+        let (conn, report) = export_rooms(vec![
+            interior_cell(0x100),
+            // An exterior cell: it has a worldspace.
+            record(0x200, b"CELL", None, Some(0x3C), Vec::new()),
+            sphere,
+            room(0x1002, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            room(0x1003, 0x200, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            portal(0x3001, 0x200, Some((0x1003, 0x1003))),
+            reference(0x2001, 0x200, 0x500, [0.0; 3], [0.0; 3]),
+        ]);
+        let ids: Vec<u32> = conn
+            .prepare("SELECT ref_id FROM room_bounds")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ids, vec![0x1002]);
+        assert_eq!(report.rooms, 1);
+        assert_eq!(report.non_box_rooms_skipped, 1);
+        assert_eq!(report.portals, 0);
+        assert_eq!(rooms_of(&conn, 0x2001), vec![]);
+    }
+
+    #[test]
+    fn a_repeated_export_replaces_the_room_tables() {
+        let records = vec![
+            interior_cell(0x100),
+            room(0x1001, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            reference(0x2001, 0x100, 0x500, [0.0; 3], [0.0; 3]),
+        ];
+        let master: HashMap<u32, RawRecord> = records.into_iter().map(|r| (r.form_id, r)).collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db(&conn, &master).unwrap();
+        let interior = std::collections::HashSet::from([0x100u32]);
+        for _ in 0..2 {
+            let tx = conn.unchecked_transaction().unwrap();
+            rooms::export_room_graph(&tx, &master, &interior).unwrap();
+            tx.commit().unwrap();
+        }
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM reference_rooms", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        // With no rooms left in the records the tables empty out.
+        let tx = conn.unchecked_transaction().unwrap();
+        rooms::export_room_graph(&tx, &HashMap::new(), &interior).unwrap();
+        tx.commit().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM room_bounds", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn skips_markers_with_non_finite_sizes() {
+        let (conn, report) = export_rooms(vec![
+            interior_cell(0x100),
+            room(
+                0x1001,
+                0x100,
+                [0.0; 3],
+                [0.0; 3],
+                [f32::NAN, 1.0, 1.0],
+                vec![],
+            ),
+            room(
+                0x1002,
+                0x100,
+                [0.0; 3],
+                [0.0; 3],
+                [f32::INFINITY, 1.0, 1.0],
+                vec![],
+            ),
+            room(0x1003, 0x100, [0.0; 3], [0.0; 3], [10.0; 3], vec![]),
+            marker(
+                0x3001,
+                0x100,
+                PORTAL_MARKER_BASE,
+                [0.0; 3],
+                [0.0; 3],
+                vec![(b"XPRM", xprm([f32::NAN, 1.0, 60.0], 3))],
+            ),
+            portal(0x3002, 0x100, Some((0x1003, 0))),
+        ]);
+        assert_eq!(report.rooms, 1);
+        assert_eq!(report.portals, 1);
+        assert_eq!(report.invalid_markers_skipped, 3);
+        let read = rooms::RoomGraphReport::read(&conn).unwrap();
+        assert_eq!(read.invalid_markers_skipped, 3);
+    }
+
+    /// A room turned 0.6 rad about Z with an asymmetric box: probe points on its long axis are
+    /// inside only under the right inverse. The forward matrix, or the opposite turn, puts the
+    /// same points outside.
+    #[test]
+    fn a_room_turned_by_an_arbitrary_yaw_uses_the_inverse_rotation() {
+        let (sin, cos) = 0.6f32.sin_cos();
+        // Local +X in world space is (cos, -sin) for a Creation yaw of +0.6 (clockwise).
+        let along = |distance: f32| [distance * cos, -distance * sin, 0.0];
+        let mirrored = |distance: f32| [distance * cos, distance * sin, 0.0];
+        let beside = {
+            let on_axis = along(100.0);
+            // 30 from the axis across the narrow side (half 20).
+            [on_axis[0] + 30.0 * sin, on_axis[1] + 30.0 * cos, 0.0]
+        };
+        let (conn, _) = export_rooms(vec![
+            interior_cell(0x100),
+            room(
+                0x1001,
+                0x100,
+                [0.0; 3],
+                [0.0, 0.0, 0.6],
+                [200.0, 20.0, 50.0],
+                vec![],
+            ),
+            reference(0x2001, 0x100, 0x500, along(150.0), [0.0; 3]),
+            reference(0x2002, 0x100, 0x500, along(190.0), [0.0; 3]),
+            reference(0x2003, 0x100, 0x500, along(210.0), [0.0; 3]),
+            reference(0x2004, 0x100, 0x500, mirrored(150.0), [0.0; 3]),
+            reference(0x2005, 0x100, 0x500, beside, [0.0; 3]),
+        ]);
+        assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+        assert_eq!(rooms_of(&conn, 0x2002), vec![(0x1001, 1)]);
+        assert_eq!(rooms_of(&conn, 0x2003), vec![]);
+        assert_eq!(rooms_of(&conn, 0x2004), vec![]);
+        assert_eq!(rooms_of(&conn, 0x2005), vec![]);
     }
 }

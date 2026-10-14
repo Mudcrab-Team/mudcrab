@@ -19,6 +19,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 pub mod records;
+pub mod rooms;
 pub mod types;
 
 pub struct EsmParser;
@@ -391,6 +392,15 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // Image space, music, acoustic space, and the region a cell takes its sky and weather
         // from (`XCCM` names a REGN, not a climate).
         b"XCIM" | b"XCMO" | b"XCAS" | b"XCCM" if record_type == b"CELL" => Fixed(SINGLE),
+        // Room marker references (REFR only; `LNAM` and `INAM` mean other things on other
+        // record types): the rooms a portal joins, links between rooms, and a room's own
+        // lighting template and image space. `XPOD` is an array of (origin, destination)
+        // FormID pairs (xEdit 4.1.5f defs: `wbArray(XPOD, 'Portal Data', wbStruct('References',
+        // [wbFormIDCk('Origin'), wbFormIDCk('Destination')]))`), so every u32 is a FormID.
+        // The official masters only ever store one pair (8 bytes). Like every `Array`, a
+        // length that is not a multiple of the stride is dropped and reported.
+        b"XPOD" if record_type == b"REFR" => Array { stride: 4 },
+        b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array { stride: 4 },
         _ => return None,
