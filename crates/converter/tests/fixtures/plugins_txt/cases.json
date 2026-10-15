@@ -1,0 +1,2412 @@
+{
+  "cases": [
+    {
+      "case": "empty_player_list",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        35,
+        32,
+        103,
+        97,
+        109,
+        101,
+        45,
+        119,
+        114,
+        105,
+        116,
+        116,
+        101,
+        110,
+        32,
+        99,
+        111,
+        109,
+        109,
+        101,
+        110,
+        116,
+        115,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "cc_missing_and_fixed",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        42,
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        83,
+        101,
+        99,
+        111,
+        110,
+        100,
+        46,
+        101,
+        115,
+        108,
+        10,
+        83,
+        107,
+        121,
+        114,
+        105,
+        109,
+        46,
+        101,
+        115,
+        109,
+        10
+      ],
+      "ccc": [
+        70,
+        105,
+        114,
+        115,
+        116,
+        46,
+        101,
+        115,
+        108,
+        10,
+        65,
+        98,
+        115,
+        101,
+        110,
+        116,
+        67,
+        67,
+        46,
+        101,
+        115,
+        108,
+        10,
+        83,
+        101,
+        99,
+        111,
+        110,
+        100,
+        46,
+        101,
+        115,
+        108,
+        10
+      ],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "first.esl",
+        "second.esl",
+        "regular.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "regular.esp": 5,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {
+        "first.esl": 0,
+        "second.esl": 1
+      }
+    },
+    {
+      "case": "inactive_and_duplicates",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        85,
+        110,
+        99,
+        104,
+        101,
+        99,
+        107,
+        101,
+        100,
+        46,
+        101,
+        115,
+        109,
+        10,
+        42,
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        114,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        69,
+        83,
+        80,
+        10,
+        42,
+        65,
+        98,
+        115,
+        101,
+        110,
+        116,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "regular.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "regular.esp": 5,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "duplicate_opposite_activation_last_wins",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        79,
+        116,
+        104,
+        101,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "other.esp",
+        "regular.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "other.esp": 5,
+        "regular.esp": 6,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "ini_unlisted_timestamp_order",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        42,
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "ccc": [],
+      "ini": [
+        91,
+        71,
+        101,
+        110,
+        101,
+        114,
+        97,
+        108,
+        93,
+        10,
+        115,
+        84,
+        101,
+        115,
+        116,
+        70,
+        105,
+        108,
+        101,
+        49,
+        61,
+        84,
+        101,
+        115,
+        116,
+        46,
+        101,
+        115,
+        112,
+        10,
+        115,
+        84,
+        101,
+        115,
+        116,
+        70,
+        105,
+        108,
+        101,
+        49,
+        48,
+        61,
+        79,
+        116,
+        104,
+        101,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "regular.esp",
+        "other.esp",
+        "test.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "other.esp": 6,
+        "regular.esp": 5,
+        "skyrim.esm": 0,
+        "test.esp": 7,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "windows_1252",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        42,
+        67,
+        97,
+        102,
+        233,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "caf\u00e9.esp"
+      ],
+      "normal": {
+        "caf\u00e9.esp": 5,
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "windows_1252_master_dependency",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433176
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433176
+        }
+      ],
+      "list": [
+        42,
+        68,
+        101,
+        112,
+        101,
+        110,
+        100,
+        101,
+        110,
+        116,
+        65,
+        99,
+        99,
+        101,
+        110,
+        116,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        67,
+        97,
+        102,
+        233,
+        46,
+        101,
+        115,
+        109,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "caf\u00e9.esm",
+        "dependentaccent.esp"
+      ],
+      "normal": {
+        "caf\u00e9.esm": 5,
+        "dawnguard.esm": 2,
+        "dependentaccent.esp": 6,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "master_and_light_flags",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        }
+      ],
+      "list": [
+        42,
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        83,
+        109,
+        97,
+        108,
+        108,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        70,
+        108,
+        97,
+        103,
+        103,
+        101,
+        100,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        69,
+        120,
+        116,
+        101,
+        110,
+        115,
+        105,
+        111,
+        110,
+        46,
+        101,
+        115,
+        108,
+        10,
+        42,
+        69,
+        120,
+        116,
+        101,
+        110,
+        115,
+        105,
+        111,
+        110,
+        46,
+        101,
+        115,
+        109,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "flagged.esp",
+        "extension.esl",
+        "extension.esm",
+        "regular.esp",
+        "small.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "extension.esm": 6,
+        "flagged.esp": 5,
+        "hearthfires.esm": 3,
+        "regular.esp": 7,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {
+        "extension.esl": 0,
+        "small.esp": 1
+      }
+    },
+    {
+      "case": "regular_dependency_hoist",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        }
+      ],
+      "list": [
+        42,
+        79,
+        116,
+        104,
+        101,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        68,
+        101,
+        112,
+        101,
+        110,
+        100,
+        101,
+        110,
+        99,
+        121,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        68,
+        101,
+        112,
+        101,
+        110,
+        100,
+        115,
+        46,
+        101,
+        115,
+        109,
+        10
+      ],
+      "ccc": [],
+      "ini": [],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "dependency.esp",
+        "depends.esm",
+        "other.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dependency.esp": 5,
+        "depends.esm": 6,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "other.esp": 7,
+        "skyrim.esm": 0,
+        "update.esm": 1
+      },
+      "light": {}
+    },
+    {
+      "case": "ini_preserves_listed_position",
+      "files": [
+        {
+          "name": "Caf\u00e9.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Caf\u00e9.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dawnguard.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dependency.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "DependentAccent.esp",
+          "blob": "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Depends.esm",
+          "blob": "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Dragonborn.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Extension.esl",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Extension.esm",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1791433177
+        },
+        {
+          "name": "First.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Flagged.esp",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "HearthFires.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Other.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000000
+        },
+        {
+          "name": "Regular.esp",
+          "blob": "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Second.esl",
+          "blob": "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Skyrim.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Small.esp",
+          "blob": "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Test.esp",
+          "blob": "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229",
+          "mtime": 1600000001
+        },
+        {
+          "name": "Unchecked.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        },
+        {
+          "name": "Update.esm",
+          "blob": "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7",
+          "mtime": 1791433177
+        }
+      ],
+      "list": [
+        42,
+        82,
+        101,
+        103,
+        117,
+        108,
+        97,
+        114,
+        46,
+        101,
+        115,
+        112,
+        10,
+        42,
+        84,
+        101,
+        115,
+        116,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "ccc": [],
+      "ini": [
+        91,
+        71,
+        101,
+        110,
+        101,
+        114,
+        97,
+        108,
+        93,
+        10,
+        115,
+        84,
+        101,
+        115,
+        116,
+        70,
+        105,
+        108,
+        101,
+        49,
+        61,
+        84,
+        101,
+        115,
+        116,
+        46,
+        101,
+        115,
+        112,
+        10
+      ],
+      "names": [
+        "skyrim.esm",
+        "update.esm",
+        "dawnguard.esm",
+        "hearthfires.esm",
+        "dragonborn.esm",
+        "regular.esp",
+        "test.esp"
+      ],
+      "normal": {
+        "dawnguard.esm": 2,
+        "dragonborn.esm": 4,
+        "hearthfires.esm": 3,
+        "regular.esp": 5,
+        "skyrim.esm": 0,
+        "test.esp": 6,
+        "update.esm": 1
+      },
+      "light": {}
+    }
+  ],
+  "blobs": {
+    "331884043c754a262ca778ddfcc7c721b83d600ea6bfb34a0825f1587332f4b7": [
+      84,
+      69,
+      83,
+      52,
+      56,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0
+    ],
+    "25597248935bbb76c1921a669817b9d61d8fe40dac9ddf642c3d0b0a079c3229": [
+      84,
+      69,
+      83,
+      52,
+      56,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0
+    ],
+    "30e9d1a4becbac267156ad3cf2610482e6ea4d327a81fa4e23e2811f46816a21": [
+      84,
+      69,
+      83,
+      52,
+      85,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0,
+      77,
+      65,
+      83,
+      84,
+      9,
+      0,
+      67,
+      97,
+      102,
+      233,
+      46,
+      101,
+      115,
+      109,
+      0,
+      68,
+      65,
+      84,
+      65,
+      8,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "92327585420ab90b2a3c93c710e97ca5ef4c8fc49aa4ed5ecb32b7102e14e971": [
+      84,
+      69,
+      83,
+      52,
+      91,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0,
+      77,
+      65,
+      83,
+      84,
+      15,
+      0,
+      68,
+      101,
+      112,
+      101,
+      110,
+      100,
+      101,
+      110,
+      99,
+      121,
+      46,
+      101,
+      115,
+      112,
+      0,
+      68,
+      65,
+      84,
+      65,
+      8,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "8bdd9089a69397d110051c46b9fe3741a08f62a97239bd3d0df885db9eedaea5": [
+      84,
+      69,
+      83,
+      52,
+      56,
+      0,
+      0,
+      0,
+      1,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0
+    ],
+    "4a5ac071935aae0132443d1c28c2289f1dc045bf09334c3286eb453e49b2268a": [
+      84,
+      69,
+      83,
+      52,
+      87,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0,
+      77,
+      65,
+      83,
+      84,
+      11,
+      0,
+      83,
+      107,
+      121,
+      114,
+      105,
+      109,
+      46,
+      101,
+      115,
+      109,
+      0,
+      68,
+      65,
+      84,
+      65,
+      8,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "7599fa59afd21ca77958ce3335f62068453c930552bfbf5ab8a60d0468e7cf88": [
+      84,
+      69,
+      83,
+      52,
+      56,
+      0,
+      0,
+      0,
+      0,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      44,
+      0,
+      0,
+      0,
+      72,
+      69,
+      68,
+      82,
+      12,
+      0,
+      154,
+      153,
+      217,
+      63,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      67,
+      78,
+      65,
+      77,
+      32,
+      0,
+      83,
+      121,
+      110,
+      116,
+      104,
+      101,
+      116,
+      105,
+      99,
+      32,
+      108,
+      111,
+      97,
+      100,
+      45,
+      111,
+      114,
+      100,
+      101,
+      114,
+      32,
+      99,
+      111,
+      109,
+      112,
+      97,
+      114,
+      105,
+      115,
+      111,
+      110,
+      0
+    ]
+  }
+}

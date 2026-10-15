@@ -68,6 +68,7 @@ fn sanitize_texture_slot(raw: &str) -> Option<String> {
     if fixed_path.chars().any(char::is_control) {
         return None;
     }
+    fixed_path = fixed_path.trim().to_owned();
     let bytes = fixed_path.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         fixed_path = fixed_path[2..].trim_start_matches('/').to_owned();
@@ -142,6 +143,29 @@ mod tests {
             sanitize_texture_slot("textures/armor/glass/m/gauntlet.dds").as_deref(),
             Some("textures/armor/glass/m/gauntlet.dds")
         );
+    }
+
+    #[test]
+    fn omits_whitespace_padded_empty_texture_slots() {
+        for placeholder in [" ", "   ", "textures/ ", "textures\\ "] {
+            let values = [
+                "textures/architecture/farmhouse/stonewall01.dds",
+                "textures/architecture/farmhouse/stonewall01_n.dds",
+                "",
+                placeholder,
+            ];
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(values.len() as u32).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(value.as_bytes());
+            }
+            let (_, set) = BSShaderTextureSet::parse(&bytes).unwrap();
+            assert_eq!(set.diffuse.as_deref(), Some(values[0]));
+            assert_eq!(set.normal.as_deref(), Some(values[1]));
+            assert_eq!(set.textures[3], None, "placeholder: {placeholder:?}");
+            assert_eq!(set.height_or_detail, None);
+        }
     }
 
     #[test]

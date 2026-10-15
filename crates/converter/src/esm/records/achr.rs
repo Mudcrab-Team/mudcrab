@@ -145,8 +145,13 @@ impl EsmRecord for AchrRecord {
 
         let mut location_ref_types = Vec::new();
         for (tag, data) in &raw.subrecords {
-            if tag.len() >= 4 && &tag[..4] == b"XLRT" && data.len() >= 4 {
-                location_ref_types.push(u32::from_le_bytes([data[0], data[1], data[2], data[3]]));
+            if tag.as_slice() == b"XLRT" && data.len().is_multiple_of(4) {
+                location_ref_types.extend(
+                    data.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|id| u32::from_le_bytes(*id)),
+                );
             }
         }
 
@@ -156,7 +161,7 @@ impl EsmRecord for AchrRecord {
             .filter(|d| d.len() >= 8)
             .map(|d| SubrecordXESP {
                 parent_ref: u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
-                flags: u32::from_le_bytes([d[4], d[5], d[6], d[7]]),
+                flags: u32::from(d[4]),
             });
 
         let owner = view.get_form_id(b"XOWN");
@@ -231,5 +236,38 @@ mod tests {
         let pdto = achr.topic_data.unwrap();
         assert_eq!(pdto.topic_type, 1);
         assert_eq!(&pdto.data, b"TOPI");
+    }
+
+    #[test]
+    fn reads_all_location_types_and_ignores_enable_parent_padding() {
+        let raw = RawRecord {
+            form_id: 0x800,
+            record_type: *b"ACHR",
+            flags: 0,
+            subrecords: vec![
+                (b"NAME".to_vec(), 7u32.to_le_bytes().to_vec()),
+                (
+                    b"XLRT".to_vec(),
+                    [11u32.to_le_bytes(), 22u32.to_le_bytes()].concat(),
+                ),
+                (b"XLRT".to_vec(), vec![0xAA; 7]),
+                (b"XLRT".to_vec(), 33u32.to_le_bytes().to_vec()),
+                (
+                    b"XESP".to_vec(),
+                    [44u32.to_le_bytes(), [3, 0xAB, 0xCD, 0xEF]].concat(),
+                ),
+            ],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        let parsed = AchrRecord::parse(&raw).unwrap();
+        assert_eq!(parsed.location_ref_types, [11, 22, 33]);
+        let parent = parsed.enable_parent.unwrap();
+        assert_eq!(parent.parent_ref, 44);
+        assert_eq!(parent.flags, 3);
+        assert!(parent.set_enable_opposite());
+        assert!(parent.pop_in());
+        assert_eq!(raw.subrecords[4].1[4..], [3, 0xAB, 0xCD, 0xEF]);
     }
 }

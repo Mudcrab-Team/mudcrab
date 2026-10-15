@@ -1,0 +1,1823 @@
+{
+  "version": 1,
+  "sources": {
+    "conditions-native": {
+      "title": "Skyrim condition native field and function-index facts",
+      "revision": "xedit-4.1.5f f5c00f3",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas",
+      "use": "Manually observed field widths/order/targets5913-6106, function-index/type facts2313-2718, flag facts1219-1310 and parameter-category facts2746-2819; reference-only run-on fact Common849-869. Independently authored schema, no reference-file parsing or Pascal translation."
+    },
+    "conditions-ck": {
+      "title": "Creation Kit condition meaning",
+      "url": "https://skyrimck.uesp.net/wiki/GetEventData",
+      "use": "Event function/member share one native four-byte slot; optional event comparison data is a separate slot. Primary page observed through search2026-10-08. Conditions/category direct fetch403; binary facts pinned to xEdit."
+    }
+  },
+  "definitions": {
+    "condition": {
+      "name": "condition",
+      "kind": "struct",
+      "size": 32,
+      "source": "conditions-native",
+      "members": [
+        {
+          "name": "flags_and_operator",
+          "kind": "u8",
+          "offset": 0,
+          "source": "conditions-native: low five bits are flags; upper three bits masked 224 are comparison operator: 0 equal, 32 not_equal, 64 greater, 96 greater_equal, 128 less, 160 less_equal; 192 and 224 unknown. No decoded bit-slice is claimed.",
+          "flags": {
+            "1": "or",
+            "2": "use_aliases",
+            "4": "use_global",
+            "8": "use_package_data",
+            "16": "swap_subject_target"
+          }
+        },
+        {
+          "name": "unused_prefix",
+          "kind": "bytes",
+          "offset": 1,
+          "size": 3
+        },
+        {
+          "name": "comparison",
+          "kind": "union",
+          "offset": 4,
+          "size": 4,
+          "decider": "condition_comparison",
+          "fields": [
+            {
+              "name": "float",
+              "kind": "f32",
+              "size": 4
+            },
+            {
+              "name": "global",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "GLOB"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "function_index",
+          "kind": "u16",
+          "offset": 8,
+          "enum": {
+            "0": "GetWantBlocking",
+            "1": "GetDistance",
+            "5": "GetLocked",
+            "6": "GetPos",
+            "8": "GetAngle",
+            "10": "GetStartingPos",
+            "11": "GetStartingAngle",
+            "12": "GetSecondsPassed",
+            "14": "GetActorValue",
+            "18": "GetCurrentTime",
+            "24": "GetScale",
+            "25": "IsMoving",
+            "26": "IsTurning",
+            "27": "GetLineOfSight",
+            "32": "GetInSameCell",
+            "35": "GetDisabled",
+            "36": "MenuMode",
+            "39": "GetDisease",
+            "41": "GetClothingValue",
+            "42": "SameFaction",
+            "43": "SameRace",
+            "44": "SameSex",
+            "45": "GetDetected",
+            "46": "GetDead",
+            "47": "GetItemCount",
+            "48": "GetGold",
+            "49": "GetSleeping",
+            "50": "GetTalkedToPC",
+            "53": "GetScriptVariable",
+            "56": "GetQuestRunning",
+            "58": "GetStage",
+            "59": "GetStageDone",
+            "60": "GetFactionRankDifference",
+            "61": "GetAlarmed",
+            "62": "IsRaining",
+            "63": "GetAttacked",
+            "64": "GetIsCreature",
+            "65": "GetLockLevel",
+            "66": "GetShouldAttack",
+            "67": "GetInCell",
+            "68": "GetIsClass",
+            "69": "GetIsRace",
+            "70": "GetIsSex",
+            "71": "GetInFaction",
+            "72": "GetIsID",
+            "73": "GetFactionRank",
+            "74": "GetGlobalValue",
+            "75": "IsSnowing",
+            "77": "GetRandomPercent",
+            "79": "GetQuestVariable",
+            "80": "GetLevel",
+            "81": "IsRotating",
+            "84": "GetDeadCount",
+            "91": "GetIsAlerted",
+            "98": "GetPlayerControlsDisabled",
+            "99": "GetHeadingAngle",
+            "101": "IsWeaponMagicOut",
+            "102": "IsTorchOut",
+            "103": "IsShieldOut",
+            "106": "IsFacingUp",
+            "107": "GetKnockedState",
+            "108": "GetWeaponAnimType",
+            "109": "IsWeaponSkillType",
+            "110": "GetCurrentAIPackage",
+            "111": "IsWaiting",
+            "112": "IsIdlePlaying",
+            "116": "IsIntimidatedbyPlayer",
+            "117": "IsPlayerInRegion",
+            "118": "GetActorAggroRadiusViolated",
+            "122": "GetCrime",
+            "123": "IsGreetingPlayer",
+            "125": "IsGuard",
+            "127": "HasBeenEaten",
+            "128": "GetStaminaPercentage",
+            "129": "GetPCIsClass",
+            "130": "GetPCIsRace",
+            "131": "GetPCIsSex",
+            "132": "GetPCInFaction",
+            "133": "SameFactionAsPC",
+            "134": "SameRaceAsPC",
+            "135": "SameSexAsPC",
+            "136": "GetIsReference",
+            "141": "IsTalking",
+            "142": "GetWalkSpeed",
+            "143": "GetCurrentAIProcedure",
+            "144": "GetTrespassWarningLevel",
+            "145": "IsTrespassing",
+            "146": "IsInMyOwnedCell",
+            "147": "GetWindSpeed",
+            "148": "GetCurrentWeatherPercent",
+            "149": "GetIsCurrentWeather",
+            "150": "IsContinuingPackagePCNear",
+            "152": "GetIsCrimeFaction",
+            "153": "CanHaveFlames",
+            "154": "HasFlames",
+            "157": "GetOpenState",
+            "159": "GetSitting",
+            "161": "GetIsCurrentPackage",
+            "162": "IsCurrentFurnitureRef",
+            "163": "IsCurrentFurnitureObj",
+            "170": "GetDayOfWeek",
+            "172": "GetTalkedToPCParam",
+            "175": "IsPCSleeping",
+            "176": "IsPCAMurderer",
+            "180": "HasSameEditorLocAsRef",
+            "181": "HasSameEditorLocAsRefAlias",
+            "182": "GetEquipped",
+            "185": "IsSwimming",
+            "190": "GetAmountSoldStolen",
+            "192": "GetIgnoreCrime",
+            "193": "GetPCExpelled",
+            "195": "GetPCFactionMurder",
+            "197": "GetPCEnemyofFaction",
+            "199": "GetPCFactionAttack",
+            "203": "GetDestroyed",
+            "214": "HasMagicEffect",
+            "215": "GetDefaultOpen",
+            "219": "GetAnimAction",
+            "223": "IsSpellTarget",
+            "224": "GetVATSMode",
+            "225": "GetPersuasionNumber",
+            "226": "GetVampireFeed",
+            "227": "GetCannibal",
+            "228": "GetIsClassDefault",
+            "229": "GetClassDefaultMatch",
+            "230": "GetInCellParam",
+            "235": "GetVatsTargetHeight",
+            "237": "GetIsGhost",
+            "242": "GetUnconscious",
+            "244": "GetRestrained",
+            "246": "GetIsUsedItem",
+            "247": "GetIsUsedItemType",
+            "248": "IsScenePlaying",
+            "249": "IsInDialogueWithPlayer",
+            "250": "GetLocationCleared",
+            "254": "GetIsPlayableRace",
+            "255": "GetOffersServicesNow",
+            "258": "HasAssociationType",
+            "259": "HasFamilyRelationship",
+            "261": "HasParentRelationship",
+            "262": "IsWarningAbout",
+            "263": "IsWeaponOut",
+            "264": "HasSpell",
+            "265": "IsTimePassing",
+            "266": "IsPleasant",
+            "267": "IsCloudy",
+            "274": "IsSmallBump",
+            "277": "GetBaseActorValue",
+            "278": "IsOwner",
+            "280": "IsCellOwner",
+            "282": "IsHorseStolen",
+            "285": "IsLeftUp",
+            "286": "IsSneaking",
+            "287": "IsRunning",
+            "288": "GetFriendHit",
+            "289": "IsInCombat",
+            "300": "IsInInterior",
+            "304": "IsWaterObject",
+            "305": "GetPlayerAction",
+            "306": "IsActorUsingATorch",
+            "309": "IsXBox",
+            "310": "GetInWorldspace",
+            "312": "GetPCMiscStat",
+            "313": "GetPairedAnimation",
+            "314": "IsActorAVictim",
+            "315": "GetTotalPersuasionNumber",
+            "318": "GetIdleDoneOnce",
+            "320": "GetNoRumors",
+            "323": "GetCombatState",
+            "325": "GetWithinPackageLocation",
+            "327": "IsRidingMount",
+            "329": "IsFleeing",
+            "332": "IsInDangerousWater",
+            "338": "GetIgnoreFriendlyHits",
+            "339": "IsPlayersLastRiddenMount",
+            "353": "IsActor",
+            "354": "IsEssential",
+            "358": "IsPlayerMovingIntoNewSpace",
+            "359": "GetInCurrentLoc",
+            "360": "GetInCurrentLocAlias",
+            "361": "GetTimeDead",
+            "362": "HasLinkedRef",
+            "365": "IsChild",
+            "366": "GetStolenItemValueNoCrime",
+            "367": "GetLastPlayerAction",
+            "368": "IsPlayerActionActive",
+            "370": "IsTalkingActivatorActor",
+            "372": "IsInList",
+            "373": "GetStolenItemValue",
+            "375": "GetCrimeGoldViolent",
+            "376": "GetCrimeGoldNonviolent",
+            "378": "HasShout",
+            "381": "GetHasNote",
+            "390": "GetHitLocation",
+            "391": "IsPC1stPerson",
+            "396": "GetCauseofDeath",
+            "397": "IsLimbGone",
+            "398": "IsWeaponInList",
+            "402": "IsBribedbyPlayer",
+            "403": "GetRelationshipRank",
+            "407": "GetVATSValue",
+            "408": "IsKiller",
+            "409": "IsKillerObject",
+            "410": "GetFactionCombatReaction",
+            "414": "Exists",
+            "415": "GetGroupMemberCount",
+            "416": "GetGroupTargetCount",
+            "426": "GetIsVoiceType",
+            "427": "GetPlantedExplosive",
+            "429": "IsScenePackageRunning",
+            "430": "GetHealthPercentage",
+            "432": "GetIsObjectType",
+            "434": "GetDialogueEmotion",
+            "435": "GetDialogueEmotionValue",
+            "437": "GetIsCreatureType",
+            "444": "GetInCurrentLocFormList",
+            "445": "GetInZone",
+            "446": "GetVelocity",
+            "447": "GetGraphVariableFloat",
+            "448": "HasPerk",
+            "449": "GetFactionRelation",
+            "450": "IsLastIdlePlayed",
+            "453": "GetPlayerTeammate",
+            "454": "GetPlayerTeammateCount",
+            "458": "GetActorCrimePlayerEnemy",
+            "459": "GetCrimeGold",
+            "463": "IsPlayerGrabbedRef",
+            "465": "GetKeywordItemCount",
+            "470": "GetDestructionStage",
+            "473": "GetIsAlignment",
+            "476": "IsProtected",
+            "477": "GetThreatRatio",
+            "479": "GetIsUsedItemEquipType",
+            "487": "IsCarryable",
+            "488": "GetConcussed",
+            "491": "GetMapMarkerVisible",
+            "493": "PlayerKnows",
+            "494": "GetPermanentActorValue",
+            "495": "GetKillingBlowLimb",
+            "497": "CanPayCrimeGold",
+            "499": "GetDaysInJail",
+            "500": "EPAlchemyGetMakingPoison",
+            "501": "EPAlchemyEffectHasKeyword",
+            "503": "GetAllowWorldInteractions",
+            "508": "GetLastHitCritical",
+            "513": "IsCombatTarget",
+            "515": "GetVATSRightAreaFree",
+            "516": "GetVATSLeftAreaFree",
+            "517": "GetVATSBackAreaFree",
+            "518": "GetVATSFrontAreaFree",
+            "519": "GetLockIsBroken",
+            "520": "IsPS3",
+            "521": "IsWin32",
+            "522": "GetVATSRightTargetVisible",
+            "523": "GetVATSLeftTargetVisible",
+            "524": "GetVATSBackTargetVisible",
+            "525": "GetVATSFrontTargetVisible",
+            "528": "IsInCriticalStage",
+            "530": "GetXPForNextLevel",
+            "533": "GetInfamy",
+            "534": "GetInfamyViolent",
+            "535": "GetInfamyNonViolent",
+            "543": "GetQuestCompleted",
+            "547": "IsGoreDisabled",
+            "550": "IsSceneActionComplete",
+            "552": "GetSpellUsageNum",
+            "554": "GetActorsInHigh",
+            "555": "HasLoaded3D",
+            "560": "HasKeyword",
+            "561": "HasRefType",
+            "562": "LocationHasKeyword",
+            "563": "LocationHasRefType",
+            "565": "GetIsEditorLocation",
+            "566": "GetIsAliasRef",
+            "567": "GetIsEditorLocAlias",
+            "568": "IsSprinting",
+            "569": "IsBlocking",
+            "570": "HasEquippedSpell",
+            "571": "GetCurrentCastingType",
+            "572": "GetCurrentDeliveryType",
+            "574": "GetAttackState",
+            "576": "GetEventData",
+            "577": "IsCloserToAThanB",
+            "579": "GetEquippedShout",
+            "580": "IsBleedingOut",
+            "584": "GetRelativeAngle",
+            "589": "GetMovementDirection",
+            "590": "IsInScene",
+            "591": "GetRefTypeDeadCount",
+            "592": "GetRefTypeAliveCount",
+            "594": "GetIsFlying",
+            "595": "IsCurrentSpell",
+            "596": "SpellHasKeyword",
+            "597": "GetEquippedItemType",
+            "598": "GetLocationAliasCleared",
+            "600": "GetLocAliasRefTypeDeadCount",
+            "601": "GetLocAliasRefTypeAliveCount",
+            "602": "IsWardState",
+            "603": "IsInSameCurrentLocAsRef",
+            "604": "IsInSameCurrentLocAsRefAlias",
+            "605": "LocAliasIsLocation",
+            "606": "GetKeywordDataForLocation",
+            "608": "GetKeywordDataForAlias",
+            "610": "LocAliasHasKeyword",
+            "611": "IsNullPackageData",
+            "612": "GetNumericPackageData",
+            "613": "IsFurnitureAnimType",
+            "614": "IsFurnitureEntryType",
+            "615": "GetHighestRelationshipRank",
+            "616": "GetLowestRelationshipRank",
+            "617": "HasAssociationTypeAny",
+            "618": "HasFamilyRelationshipAny",
+            "619": "GetPathingTargetOffset",
+            "620": "GetPathingTargetAngleOffset",
+            "621": "GetPathingTargetSpeed",
+            "622": "GetPathingTargetSpeedAngle",
+            "623": "GetMovementSpeed",
+            "624": "GetInContainer",
+            "625": "IsLocationLoaded",
+            "626": "IsLocAliasLoaded",
+            "627": "IsDualCasting",
+            "629": "GetVMQuestVariable",
+            "630": "GetVMScriptVariable",
+            "631": "IsEnteringInteractionQuick",
+            "632": "IsCasting",
+            "633": "GetFlyingState",
+            "635": "IsInFavorState",
+            "636": "HasTwoHandedWeaponEquipped",
+            "637": "IsExitingInstant",
+            "638": "IsInFriendStateWithPlayer",
+            "639": "GetWithinDistance",
+            "640": "GetActorValuePercent",
+            "641": "IsUnique",
+            "642": "GetLastBumpDirection",
+            "644": "IsInFurnitureState",
+            "645": "GetIsInjured",
+            "646": "GetIsCrashLandRequest",
+            "647": "GetIsHastyLandRequest",
+            "650": "IsLinkedTo",
+            "651": "GetKeywordDataForCurrentLocation",
+            "652": "GetInSharedCrimeFaction",
+            "654": "GetBribeSuccess",
+            "655": "GetIntimidateSuccess",
+            "656": "GetArrestedState",
+            "657": "GetArrestingActor",
+            "659": "EPTemperingItemIsEnchanted",
+            "660": "EPTemperingItemHasKeyword",
+            "664": "GetReplacedItemType",
+            "672": "IsAttacking",
+            "673": "IsPowerAttacking",
+            "674": "IsLastHostileActor",
+            "675": "GetGraphVariableInt",
+            "676": "GetCurrentShoutVariation",
+            "678": "ShouldAttackKill",
+            "680": "GetActivatorHeight",
+            "681": "EPMagic_IsAdvanceSkill",
+            "682": "WornHasKeyword",
+            "683": "GetPathingCurrentSpeed",
+            "684": "GetPathingCurrentSpeedAngle",
+            "691": "EPModSkillUsage_AdvanceObjectHasKeyword",
+            "692": "EPModSkillUsage_IsAdvanceAction",
+            "693": "EPMagic_SpellHasKeyword",
+            "694": "GetNoBleedoutRecovery",
+            "696": "EPMagic_SpellHasSkill",
+            "697": "IsAttackType",
+            "698": "IsAllowedToFly",
+            "699": "HasMagicEffectKeyword",
+            "700": "IsCommandedActor",
+            "701": "IsStaggered",
+            "702": "IsRecoiling",
+            "703": "IsExitingInteractionQuick",
+            "704": "IsPathing",
+            "705": "GetShouldHelp",
+            "706": "HasBoundWeaponEquipped",
+            "707": "GetCombatTargetHasKeyword",
+            "709": "GetCombatGroupMemberCount",
+            "710": "IsIgnoringCombat",
+            "711": "GetLightLevel",
+            "713": "SpellHasCastingPerk",
+            "714": "IsBeingRidden",
+            "715": "IsUndead",
+            "716": "GetRealHoursPassed",
+            "718": "IsUnlockedDoor",
+            "719": "IsHostileToActor",
+            "720": "GetTargetHeight",
+            "721": "IsPoison",
+            "722": "WornApparelHasKeywordCount",
+            "723": "GetItemHealthPercent",
+            "724": "EffectWasDualCast",
+            "725": "GetKnockedStateEnum",
+            "726": "DoesNotExist",
+            "730": "IsOnFlyingMount",
+            "731": "CanFlyHere",
+            "732": "IsFlyingMountPatrolQueud",
+            "733": "IsFlyingMountFastTravelling",
+            "734": "IsOverEncumbered",
+            "735": "GetActorWarmth",
+            "1024": "GetSKSEVersion",
+            "1025": "GetSKSEVersionMinor",
+            "1026": "GetSKSEVersionBeta",
+            "1027": "GetSKSERelease",
+            "1028": "ClearInvalidRegistrations"
+          }
+        },
+        {
+          "name": "unused_function",
+          "kind": "bytes",
+          "offset": 10,
+          "size": 2
+        },
+        {
+          "name": "parameter_1",
+          "kind": "union",
+          "offset": 12,
+          "size": 4,
+          "decider": "condition_parameter_1",
+          "fields": [
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "size": 4
+            },
+            {
+              "name": "none",
+              "kind": "bytes",
+              "size": 4
+            },
+            {
+              "name": "integer",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "actor_value",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "quest_stage",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "alias",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "vats_target_part",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "float",
+              "kind": "f32",
+              "size": 4
+            },
+            {
+              "name": "variable_name",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "sex",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "male",
+                "1": "female"
+              }
+            },
+            {
+              "name": "crime_type",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "steal",
+                "1": "pickpocket",
+                "2": "trespass",
+                "3": "attack",
+                "4": "murder",
+                "5": "escape_jail",
+                "6": "werewolf_transformation",
+                "4294967295": "none"
+              }
+            },
+            {
+              "name": "axis",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "88": "x",
+                "89": "y",
+                "90": "z"
+              }
+            },
+            {
+              "name": "misc_stat",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "alignment",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "form_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "critical_stage",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_function",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "weapon_is",
+                "1": "weapon_in_list",
+                "2": "target_is",
+                "3": "target_in_list",
+                "4": "target_distance",
+                "5": "target_part",
+                "6": "action",
+                "7": "is_success",
+                "8": "is_critical",
+                "9": "critical_effect_is",
+                "10": "critical_effect_in_list",
+                "11": "is_fatal",
+                "12": "explode_part",
+                "13": "dismember_part",
+                "14": "cripple_part",
+                "15": "weapon_type",
+                "16": "is_stranger",
+                "17": "is_paralyzing_palm",
+                "18": "projectile_type",
+                "19": "delivery_type",
+                "20": "casting_type"
+              }
+            },
+            {
+              "name": "player_action",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "casting_source",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "left",
+                "1": "right",
+                "2": "voice",
+                "3": "instant"
+              }
+            },
+            {
+              "name": "package_data",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "furniture_animation",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "1": "sit",
+                "2": "lay",
+                "4": "lean"
+              }
+            },
+            {
+              "name": "furniture_entry",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "ward_state",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "none",
+                "1": "absorbing",
+                "2": "breaking"
+              }
+            },
+            {
+              "name": "vats_action",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_weapon_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_projectile_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_delivery_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_casting_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "equip_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "EQUP"
+              ]
+            },
+            {
+              "name": "object_reference",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "inventory_object",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ARMO",
+                "BOOK",
+                "MISC",
+                "WEAP",
+                "AMMO",
+                "KEYM",
+                "ALCH",
+                "SCRL",
+                "SLGM",
+                "INGR",
+                "FLST",
+                "LIGH",
+                "LVLI",
+                "COBJ"
+              ]
+            },
+            {
+              "name": "actor",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR"
+              ]
+            },
+            {
+              "name": "voice_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "VTYP",
+                "FLST"
+              ]
+            },
+            {
+              "name": "idle",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "name": "form_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "quest",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "QUST"
+              ]
+            },
+            {
+              "name": "faction",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FACT"
+              ]
+            },
+            {
+              "name": "cell",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "CELL"
+              ]
+            },
+            {
+              "name": "class",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "CLAS"
+              ]
+            },
+            {
+              "name": "race",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "RACE"
+              ]
+            },
+            {
+              "name": "actor_base",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "global",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "GLOB"
+              ]
+            },
+            {
+              "name": "weather",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "WTHR"
+              ]
+            },
+            {
+              "name": "package",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PACK"
+              ]
+            },
+            {
+              "name": "encounter_zone",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ECZN"
+              ]
+            },
+            {
+              "name": "perk",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PERK"
+              ]
+            },
+            {
+              "name": "owner",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FACT",
+                "NPC_"
+              ]
+            },
+            {
+              "name": "furniture",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FURN",
+                "FLST"
+              ]
+            },
+            {
+              "name": "magic_item",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SPEL",
+                "ENCH",
+                "ALCH",
+                "INGR",
+                "SCRL"
+              ]
+            },
+            {
+              "name": "magic_effect",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "MGEF"
+              ]
+            },
+            {
+              "name": "worldspace",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "WRLD",
+                "FLST"
+              ]
+            },
+            {
+              "name": "base_object",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "NPC_",
+                "PROJ",
+                "TREE",
+                "SOUN",
+                "ACTI",
+                "DOOR",
+                "STAT",
+                "FURN",
+                "CONT",
+                "ARMO",
+                "AMMO",
+                "MISC",
+                "WEAP",
+                "BOOK",
+                "KEYM",
+                "ALCH",
+                "LIGH",
+                "GRAS",
+                "ASPC",
+                "IDLM",
+                "ARMA",
+                "MSTT",
+                "TACT",
+                "LVLI",
+                "LVSP",
+                "SPEL",
+                "SCRL",
+                "SHOU",
+                "SLGM",
+                "ENCH",
+                "FLOR",
+                "HAZD",
+                "FLST"
+              ]
+            },
+            {
+              "name": "region",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "REGN"
+              ]
+            },
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "KYWD"
+              ]
+            },
+            {
+              "name": "shout",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SHOU"
+              ]
+            },
+            {
+              "name": "location",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "LCTN"
+              ]
+            },
+            {
+              "name": "ref_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "LCRT"
+              ]
+            },
+            {
+              "name": "association_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ASTP"
+              ]
+            },
+            {
+              "name": "scene",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SCEN"
+              ]
+            },
+            {
+              "name": "event_data",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ANY_"
+              ]
+            },
+            {
+              "name": "knowable",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "MGEF",
+                "WOOP",
+                "ENCH"
+              ]
+            },
+            {
+              "name": "optional_faction",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FACT"
+              ]
+            },
+            {
+              "name": "vats_weapon",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "WEAP"
+              ]
+            },
+            {
+              "name": "vats_weapon_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "vats_target",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "vats_target_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "vats_critical_effect",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SPEL"
+              ]
+            },
+            {
+              "name": "vats_critical_effect_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "event",
+              "kind": "struct",
+              "size": 4,
+              "members": [
+                {
+                  "name": "event_function",
+                  "kind": "u16",
+                  "offset": 0,
+                  "enum": {
+                    "0": "is_id",
+                    "1": "is_in_list",
+                    "2": "value",
+                    "3": "has_keyword",
+                    "4": "item_value"
+                  }
+                },
+                {
+                  "name": "event_member",
+                  "kind": "u16",
+                  "offset": 2,
+                  "enum": {
+                    "0": "none",
+                    "12623": "created_object",
+                    "12620": "old_location",
+                    "12876": "new_location",
+                    "12619": "keyword",
+                    "12614": "form",
+                    "12630": "value_1",
+                    "12886": "value_2"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "vats_parameter",
+              "kind": "bytes",
+              "size": 4
+            }
+          ]
+        },
+        {
+          "name": "parameter_2",
+          "kind": "union",
+          "offset": 16,
+          "size": 4,
+          "decider": "condition_parameter_2",
+          "fields": [
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "size": 4
+            },
+            {
+              "name": "none",
+              "kind": "bytes",
+              "size": 4
+            },
+            {
+              "name": "integer",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "actor_value",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "quest_stage",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "alias",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "vats_target_part",
+              "kind": "i32",
+              "size": 4
+            },
+            {
+              "name": "float",
+              "kind": "f32",
+              "size": 4
+            },
+            {
+              "name": "variable_name",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "sex",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "male",
+                "1": "female"
+              }
+            },
+            {
+              "name": "crime_type",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "steal",
+                "1": "pickpocket",
+                "2": "trespass",
+                "3": "attack",
+                "4": "murder",
+                "5": "escape_jail",
+                "6": "werewolf_transformation",
+                "4294967295": "none"
+              }
+            },
+            {
+              "name": "axis",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "88": "x",
+                "89": "y",
+                "90": "z"
+              }
+            },
+            {
+              "name": "misc_stat",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "alignment",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "form_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "critical_stage",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_function",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "weapon_is",
+                "1": "weapon_in_list",
+                "2": "target_is",
+                "3": "target_in_list",
+                "4": "target_distance",
+                "5": "target_part",
+                "6": "action",
+                "7": "is_success",
+                "8": "is_critical",
+                "9": "critical_effect_is",
+                "10": "critical_effect_in_list",
+                "11": "is_fatal",
+                "12": "explode_part",
+                "13": "dismember_part",
+                "14": "cripple_part",
+                "15": "weapon_type",
+                "16": "is_stranger",
+                "17": "is_paralyzing_palm",
+                "18": "projectile_type",
+                "19": "delivery_type",
+                "20": "casting_type"
+              }
+            },
+            {
+              "name": "player_action",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "casting_source",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "left",
+                "1": "right",
+                "2": "voice",
+                "3": "instant"
+              }
+            },
+            {
+              "name": "package_data",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "furniture_animation",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "1": "sit",
+                "2": "lay",
+                "4": "lean"
+              }
+            },
+            {
+              "name": "furniture_entry",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "ward_state",
+              "kind": "u32",
+              "size": 4,
+              "enum": {
+                "0": "none",
+                "1": "absorbing",
+                "2": "breaking"
+              }
+            },
+            {
+              "name": "vats_action",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_weapon_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_projectile_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_delivery_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "vats_casting_type",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "equip_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "EQUP"
+              ]
+            },
+            {
+              "name": "object_reference",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "inventory_object",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ARMO",
+                "BOOK",
+                "MISC",
+                "WEAP",
+                "AMMO",
+                "KEYM",
+                "ALCH",
+                "SCRL",
+                "SLGM",
+                "INGR",
+                "FLST",
+                "LIGH",
+                "LVLI",
+                "COBJ"
+              ]
+            },
+            {
+              "name": "actor",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR"
+              ]
+            },
+            {
+              "name": "voice_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "VTYP",
+                "FLST"
+              ]
+            },
+            {
+              "name": "idle",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "name": "form_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "quest",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "QUST"
+              ]
+            },
+            {
+              "name": "faction",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FACT"
+              ]
+            },
+            {
+              "name": "cell",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "CELL"
+              ]
+            },
+            {
+              "name": "class",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "CLAS"
+              ]
+            },
+            {
+              "name": "race",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "RACE"
+              ]
+            },
+            {
+              "name": "actor_base",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "global",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "GLOB"
+              ]
+            },
+            {
+              "name": "weather",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "WTHR"
+              ]
+            },
+            {
+              "name": "package",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PACK"
+              ]
+            },
+            {
+              "name": "encounter_zone",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ECZN"
+              ]
+            },
+            {
+              "name": "perk",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PERK"
+              ]
+            },
+            {
+              "name": "owner",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FACT",
+                "NPC_"
+              ]
+            },
+            {
+              "name": "furniture",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FURN",
+                "FLST"
+              ]
+            },
+            {
+              "name": "magic_item",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SPEL",
+                "ENCH",
+                "ALCH",
+                "INGR",
+                "SCRL"
+              ]
+            },
+            {
+              "name": "magic_effect",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "MGEF"
+              ]
+            },
+            {
+              "name": "worldspace",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "WRLD",
+                "FLST"
+              ]
+            },
+            {
+              "name": "base_object",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "NPC_",
+                "PROJ",
+                "TREE",
+                "SOUN",
+                "ACTI",
+                "DOOR",
+                "STAT",
+                "FURN",
+                "CONT",
+                "ARMO",
+                "AMMO",
+                "MISC",
+                "WEAP",
+                "BOOK",
+                "KEYM",
+                "ALCH",
+                "LIGH",
+                "GRAS",
+                "ASPC",
+                "IDLM",
+                "ARMA",
+                "MSTT",
+                "TACT",
+                "LVLI",
+                "LVSP",
+                "SPEL",
+                "SCRL",
+                "SHOU",
+                "SLGM",
+                "ENCH",
+                "FLST"
+              ]
+            },
+            {
+              "name": "region",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "REGN"
+              ]
+            },
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "KYWD"
+              ]
+            },
+            {
+              "name": "shout",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SHOU"
+              ]
+            },
+            {
+              "name": "location",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "LCTN"
+              ]
+            },
+            {
+              "name": "ref_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "LCRT"
+              ]
+            },
+            {
+              "name": "association_type",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ASTP"
+              ]
+            },
+            {
+              "name": "scene",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SCEN"
+              ]
+            },
+            {
+              "name": "event_data",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "ANY_"
+              ]
+            },
+            {
+              "name": "knowable",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "MGEF",
+                "WOOP",
+                "ENCH"
+              ]
+            },
+            {
+              "name": "optional_faction",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FACT"
+              ]
+            },
+            {
+              "name": "vats_weapon",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "WEAP"
+              ]
+            },
+            {
+              "name": "vats_weapon_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "vats_target",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "vats_target_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "vats_critical_effect",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "SPEL"
+              ]
+            },
+            {
+              "name": "vats_critical_effect_list",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "name": "event",
+              "kind": "struct",
+              "size": 4,
+              "members": [
+                {
+                  "name": "event_function",
+                  "kind": "u16",
+                  "offset": 0,
+                  "enum": {
+                    "0": "is_id",
+                    "1": "is_in_list",
+                    "2": "value",
+                    "3": "has_keyword",
+                    "4": "item_value"
+                  }
+                },
+                {
+                  "name": "event_member",
+                  "kind": "u16",
+                  "offset": 2,
+                  "enum": {
+                    "0": "none",
+                    "12623": "created_object",
+                    "12620": "old_location",
+                    "12876": "new_location",
+                    "12619": "keyword",
+                    "12614": "form",
+                    "12630": "value_1",
+                    "12886": "value_2"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "vats_parameter",
+              "kind": "bytes",
+              "size": 4
+            }
+          ]
+        },
+        {
+          "name": "run_on",
+          "kind": "u32",
+          "offset": 20,
+          "enum": {
+            "0": "subject",
+            "1": "target",
+            "2": "reference",
+            "3": "combat_target",
+            "4": "linked_reference",
+            "5": "quest_alias",
+            "6": "package_data",
+            "7": "event_data"
+          }
+        },
+        {
+          "name": "reference",
+          "kind": "union",
+          "offset": 24,
+          "size": 4,
+          "decider": "condition_reference",
+          "fields": [
+            {
+              "name": "unused",
+              "kind": "u32",
+              "size": 4
+            },
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "size": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "parameter_3",
+          "kind": "i32",
+          "offset": 28,
+          "source": "conditions-native: native Parameter #3 signed i32 with default -1; contains run-on index for alias/package/event selection, distinct from offset24 explicit reference."
+        }
+      ]
+    },
+    "conditions": {
+      "name": "conditions",
+      "kind": "group",
+      "repeat": true,
+      "source": "conditions-native",
+      "fields": [
+        {
+          "signature": "CTDA",
+          "definition": "condition"
+        },
+        {
+          "name": "parameter_1_string",
+          "kind": "zstring",
+          "signature": "CIS1"
+        },
+        {
+          "name": "parameter_2_string",
+          "kind": "zstring",
+          "signature": "CIS2"
+        }
+      ]
+    }
+  },
+  "common_fields": [],
+  "records": []
+}

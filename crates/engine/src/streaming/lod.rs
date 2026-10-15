@@ -322,6 +322,7 @@ pub(super) fn plan_lod_chunks(
     profiler.record_elapsed("lod/plan", started);
 }
 
+/// Collect LOD query results and request current chunks within the shared commit budget.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_lod_chunks(
     mut commands: Commands,
@@ -348,9 +349,10 @@ pub(super) fn collect_lod_chunks(
             .total_lod_query_micros
             .saturating_add(response.query_micros);
         metrics.max_lod_query_micros = metrics.max_lod_query_micros.max(response.query_micros);
-        profiler.record_micros("lod/db_queue_wait", response.queue_wait_micros);
-        profiler.record_micros("lod/db_query", response.query_micros);
-        profiler.record_micros("lod/db_request_total", response.total_request_micros);
+        profiler.record_completed_latency_micros("lod/db_queue_wait", response.queue_wait_micros);
+        profiler.record_completed_latency_micros("lod/db_query", response.query_micros);
+        profiler
+            .record_completed_latency_micros("lod/db_request_total", response.total_request_micros);
 
         if !is_current_query(&streaming, response.generation) {
             metrics.stale_lod_query_responses = metrics.stale_lod_query_responses.saturating_add(1);
@@ -460,6 +462,7 @@ pub(super) fn collect_lod_chunks(
         let scene_path = GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone());
         // Bevy's load request restarts an asset whose cached load state is Failed.
         let asset = asset_server.load(scene_path);
+        profiler.observe_scene(asset.id(), &asset_server);
         let expected_hash = metadata.content_hash.clone();
         let hash_path = config.assets_dir.join(&metadata.payload_path);
         let hash_task =
@@ -517,6 +520,7 @@ pub(super) fn collect_lod_chunks(
     profiler.record_elapsed("lod/collect", started);
 }
 
+/// Validate loaded LOD chunks and record completion latency or schedule retries for failures.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn track_lod_readiness(
     mut commands: Commands,
@@ -641,7 +645,7 @@ pub(super) fn track_lod_readiness(
             .saturating_add(patches.len() as u64);
         profiler.increment("lod/chunks_ready", 1);
         profiler.increment("lod/terrain_patches_ready", patches.len() as u64);
-        profiler.record_elapsed("lod/chunk_ready", pending.started);
+        profiler.record_completed_latency_elapsed("lod/chunk_ready", pending.started);
         profiler.event(format!("{:?}", root.key), "ready", None);
     }
     update_counts(&streaming, &mut metrics, &mut profiler);

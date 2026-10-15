@@ -138,8 +138,8 @@ V25: P3 lumbermill walkway `MASK` primitive → proxy; masked roof/rope & unrela
 V26: WALK crosses adjacent 15-unit floor rises without jump while existing wall/24-unit step tests remain green.
 V27: P3 converted `STAT`/`TREE` with physical NIF Havok layer + supported shape → authored collider; absent collision or `NONCOLLIDABLE` layer → passable; unsupported shape → counted reason. Legacy GLBs alone use narrow proxy policy.
 V28: P3 bridge/stair compressed mesh follows authored triangles, chunk transforms, body and node transforms; WALK crosses deck/treads without render-beam snag; tankard contacts deck. Invalid refs, indices, transforms → skipped reason, no invented collider.
-V29: Converter output-contract change bumps producer schema; combined converter 24/world 7 includes native-BC DDS, authored emission/specular/normal/UV/alpha, rigid-body metadata, grass & LOD. Runtime accepts complete converter schemas 15–24 & world schemas 3–7; LOD package ! exact 24/7 identity; older/newer/incomplete assets fail startup.
-V30: Historical converter schema 12–15 → 16 migration invalidated GLBs while preserving unchanged texture/script entries. Current producer 24 migration follows V73 & V112; older schema number alone grants no mesh/texture compatibility.
+V29: Converter output-contract change bumps producer schema; combined converter 26/world 9 includes native-BC DDS, authored emission/specular/normal/UV/alpha, rigid-body metadata, grass, LOD, corrected TXST slots & one-byte XESP flags. Runtime accepts complete converter schemas 15–26 & world schemas 3–9; LOD package ! exact 26/9 identity; older/newer/incomplete assets fail startup.
+V30: Historical converter schema 12–15 → 16 migration invalidated GLBs while preserving unchanged texture/script entries. Current producer 26 migration follows V73 & V112; older schema number alone grants no mesh/texture compatibility.
 V31: Packaged Riverwood 5×5 and wider grid `x=-1..11,y=-18..-6` audits → zero unsupported fixed `STAT`/`TREE` models; bridge, stairs, lumbermill, pine solid & clover passable.
 V32: P3 authored multi-shape placement → each mesh/primitive attached as child collider to one fixed body; ⊥ nested Rapier compounds; all child colliders use world groups and answer contact queries without panic.
 V33: P3 placed `FURN` with supported authored NIF collision → fixed streamed collider; authored absence → passable; `FURN` gets no render proxy. MillLogPile contact blocks WALK and tankards. `MISC`/`FLOR` remain outside fixed path.
@@ -180,17 +180,17 @@ V67: `Space` press remains latched across Update frames until WALK fixed tick co
 V68: Exactly one fixture mode selected per run; physics fixture benchmark passes only after validation with zero fixture failures.
 V69: Active airborne WALK with no downward collision ray continues descending across fixed ticks; ground-ray miss alone never resets velocity or reports terrain loading.
 V70: NOCLIP→WALK from far above ground enters WALK & descends when capsule fits; overlap rejection keeps NOCLIP with reason after bounded upward search.
-V71: Runtime accepts passed integration report & world database schemas 3–7; grass-only world 5 loads without LOD tables; legacy world 6 LOD query remains valid; older/newer schemas rejected.
+V71: Runtime accepts passed integration report & world database schemas 3–9; grass-only world 5 loads without LOD tables; legacy world 6 LOD query remains valid; older/newer schemas rejected.
 
 V72: ∀ staged GLB used by texture pruning or world integration → accepted current-run mesh artifact with current schema/configuration, source/dependency hash & output-byte proof; prune audit record alone grants no provenance. Removed source → no bounds update or published GLB; unavailable-source accounting preserved. Same-schema verified pruned resume retains mesh & audit record.
 
-V73: Converter 24 migration from known legacy producers 12–23 rebuilds every GLB/KTX2 & world output; unchanged scripts/archive ingestion reuse ! source/configuration/output proof. Ambiguous schema 18 native-BC/specular identity grants no mesh/texture reuse. Current configuration hash ! encoder selection & GPU quality; batch size scheduling-only. Staged mesh/texture records ! exact current producer 24 & V72 proof; ⊥ relabel old bytes.
+V73: Converter 26 migration from known legacy producers 12–23 rebuilds every GLB/KTX2 & world output; producer 24 rebuilds every KTX2 & world output but reuses explicitly compatible GLBs ! source/dependency/configuration/output proof. Unchanged scripts reuse ! supported original producer, ABI/settings & source/output proof. Archive ingestion reuse is independent of reader/output producer/configuration ! archive source hash & extracted-blob integrity; --invalidate-cache discards these candidates. Ambiguous schema 18 native-BC/specular identity grants no mesh/texture reuse. Current configuration hash ! encoder selection & GPU quality; batch size scheduling-only. Staged mesh/texture records ! exact current producer 26 & V72 proof; ⊥ promote old texture bytes.
 
-V74: Source-surface contract from producer 23 retained by combined 24; schema 22 meshes regenerate. Tangent normal convention, authored UV/clamp aliases & enabled vertex/alpha channels survive conversion and native loading; legacy producers ⊥ relabel to current; V72 provenance & V73 encoder identity retained.
+V74: Source-surface contract from producer 23 retained by combined 26; schema 22 meshes regenerate. Tangent normal convention, authored UV/clamp aliases & enabled vertex/alpha channels survive conversion and native loading; unproven legacy bytes ⊥ relabel to current; proven producer-24 GLBs may migrate under V73 compatibility checks; V72 provenance & V73 encoder identity retained.
 
 V92: Launcher conversion runs existing terrain LOD stage exactly once before final validation/publication; LOD failure cannot report successful conversion. No second compiler or duplicate post-publication job.
 V93: Launcher retains LOD chunk count & LOD warnings; zero chunks, partial world coverage & compiler failure remain distinct. LOD stage label/count accurate; no invented ETA or benchmark acceptance.
-V94: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-24/7 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
+V94: Existing-assets LOD build verifies source manifest, retained asset hashes & matching plugin order/checksums; publishes schema-26/9 derived output to new disjoint directory. Source assets remain unchanged; metadata version relabeling forbidden.
 V95: Existing-assets LOD build unavailable until cancellable metadata API & worker/state tests pass; cancellation checked between retained files & worlds and before publication; in-flight file/world allowed to finish; never reports resumable staging without journal support. Engine-running/path/asset-lock guards retained.
 V96: Publication backups identified by full output name; record-owned recovery restores supported manifests with verified retained output sizes/hashes; incomplete status retained; invalid or symlink backups remain untouched.
 V97: Equivalent existing asset paths share one canonical lock; acquisition fails on resolution errors; missing-tail paths normalized before report containment checks.
@@ -210,9 +210,9 @@ V108: `--ini` retains strict CLI missing/option-shaped value rejection, help pre
 V109: Script CLI drift checks cover utility commands, excluding script-test assertions; non-engine flags classified by owner; comma-separated values remain whole and PowerShell list delimiters still split.
 V110: Serialized legacy `PipelineConfig` without `lod_origins` → empty map, no invented world origin; explicit signed origins retained; existing config fields/defaults unchanged.
 
-V111: LOD producer 24/world 7 distinct from native-BC/lighting 22–23 & grass world 5; staged outputs ! exact current producer/configuration; older numeric staging identities rejected; grass-only world 5 loads without LOD tables.
+V111: LOD producer 26/world 9 distinct from native-BC/lighting 22–23, pre-TXST producer 24/world 7 & grass world 5; staged outputs ! exact current producer/configuration; older numeric staging identities rejected; grass-only world 5 loads without LOD tables.
 
-V112: Combined converter 24/world 7 ! native-BC, lighting, grass & LOD contracts; normal mesh reuse only verified current producer 24, with source/dependency/configuration/output proof. Producer 23 shared before/after rigid-body dynamics export; ⊥ compatible legacy identity. All producers 12–23 regenerate meshes/textures; unchanged scripts/archive ingestion require exact source/configuration/output proof. Metadata-only retained bytes keep explicit original producer/configuration & original manifest/output hashes; ⊥ certify legacy bytes as producer 24.
+V112: Combined converter 26/world 9 ! native-BC, lighting, grass, LOD, corrected TXST & one-byte XESP contracts; normal mesh reuse only verified current producer 26 or explicitly compatible producer 24, with source/dependency/configuration/output proof. Producer 23 shared before/after rigid-body dynamics export; ⊥ compatible legacy identity. All producers 12–23 regenerate meshes/textures; producer 24 regenerates all textures. Unchanged scripts require supported original producer, matching ABI/settings & exact source/output proof. Archive ingestion candidates survive reader/output producer/configuration rejection ! matching archive source hash & extracted-blob integrity. Metadata-only retained bytes keep explicit original producer/configuration & original manifest/output hashes; ⊥ certify retained legacy textures as producer 26.
 
 V113: Launcher Play readiness & runtime startup share read-only world DB/LOD validation; actual schema ! report schema. Empty/corrupt/unsupported DB ⊥ ready; grass-only schema 5 requires no LOD tables. Advertised current LOD ! exact producer/world/build identity & chunk count; stale/missing/mismatched identity ⊥ ready.
 
@@ -223,6 +223,9 @@ V116: Launcher LOD bar ! labeled stage completion, no fabricated overall weight/
 V117: CI Clippy & test builds ! distinct immutable GitHub kache key prefixes; successful test build can save independently.
 
 V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite result; legacy schema3/4 success & mismatch rejection retained; CI correctness suite excludes Criterion; release budgets use warmed median & bounded scaling.
+
+V210: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
+V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
 
 ## §T TASKS
 
@@ -271,6 +274,9 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
+
+T110|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V210
+T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
 
 ## §B BUGS
 
@@ -357,3 +363,10 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
 B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
 B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets
+
+B210|2026-10-05|GPU tests validated shader/container without dispatching encoder|V210
+
+B211|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V210 unchanged
+
+B212|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V210,V118; same workspace/target selection for both test steps
+B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190

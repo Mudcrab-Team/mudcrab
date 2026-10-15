@@ -293,7 +293,7 @@ mod multi_bound {
     }
 
     /// An empty `BSTriShape` payload: NiAVObject, bound, skin/shader/alpha
-    /// references, vertex descriptor and zero counts.
+    /// references, vertex descriptor, zero counts and zero particle size.
     fn empty_shape_bytes() -> Vec<u8> {
         shape_bytes(0)
     }
@@ -312,6 +312,7 @@ mod multi_bound {
         bytes.extend_from_slice(&num_triangles.to_le_bytes()); // triangles
         bytes.extend_from_slice(&0u16.to_le_bytes()); // vertices
         push_u32(&mut bytes, 0); // data size
+        push_u32(&mut bytes, 0); // particle size (count of u16 values)
         bytes
     }
 
@@ -321,7 +322,6 @@ mod multi_bound {
         segments: &[(u8, u32, u32)],
     ) -> Vec<u8> {
         let mut bytes = shape_bytes(num_triangles);
-        push_u32(&mut bytes, 0); // trailing shape value
         push_u32(&mut bytes, declared_segments);
         for (flag, value, primitives) in segments {
             bytes.push(*flag);
@@ -346,6 +346,23 @@ mod multi_bound {
         assert_eq!(shape.segments[1].num_primitives, 30);
         assert_eq!(shape.bs_tri_shape.num_triangles, 42);
         assert_eq!(shape.bs_tri_shape.num_vertices, 0);
+    }
+
+    #[test]
+    fn sub_index_segments_follow_the_particle_payload() {
+        let mut bytes = sub_index_bytes(42, 1, &[(7, 4096, 42)]);
+        let particle_offset = shape_bytes(42).len() - 4;
+        bytes.splice(
+            particle_offset..particle_offset + 4,
+            [3, 0, 0, 0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+        );
+        let (rest, shape) = BSSubIndexTriShape::parse(&bytes).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(shape.num_segments, 1);
+        assert_eq!(shape.segments.len(), 1);
+        assert_eq!(shape.segments[0].flag, 7);
+        assert_eq!(shape.segments[0].value, 4096);
+        assert_eq!(shape.segments[0].num_primitives, 42);
     }
 
     #[test]
@@ -384,7 +401,7 @@ mod multi_bound {
         let mut bytes = empty_shape_bytes();
         push_u32(&mut bytes, 5);
         let (rest, _) = NifBlock::parse(&bytes, "BSTriShape".to_string()).unwrap();
-        assert_eq!(rest.len(), 4);
+        assert_eq!(rest, &5u32.to_le_bytes());
     }
 
     #[test]
