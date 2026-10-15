@@ -24,6 +24,8 @@ use crate::{
 
 /// Fixed physics step: 60 Hz Rapier simulation (V15, V18).
 pub const PHYSICS_TIMESTEP: f32 = 1.0 / 60.0;
+/// Retail target of both default movement types (`DOBJ` `DMWL` and `DMRN` in
+/// Skyrim.esm), used for packages converted before `default_objects` existed.
 const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
 /// Shared downward gravity in Creation units/s^2 for WALK and tankards (V11, V15).
 pub const GRAVITY_CREATION_UNITS: f32 = 900.0;
@@ -57,8 +59,9 @@ pub struct MovementTuning {
 
 #[derive(Debug, Clone)]
 pub struct DirectionalMovementSpeeds {
-    /// Each pair is [walk, run], ordered left/right/forward/back.
-    pub directions: [[f32; 2]; 4],
+    /// Each direction is [walk, run], ordered left/right/forward/back.
+    pub walk_directions: [[f32; 2]; 4],
+    pub run_directions: [[f32; 2]; 4],
     pub source: String,
 }
 
@@ -83,13 +86,90 @@ impl Default for MovementTuning {
     }
 }
 
+/// Load a MOVT's speeds. Retail profiles have zero speeds in some directions,
+/// so every speed must be finite and non-negative, and `required` (the forward
+/// speed this profile supplies) must be positive.
+fn load_movement_profile(
+    conn: &Connection,
+    form_id: u32,
+    required: usize,
+) -> Result<(String, [f32; 8], String)> {
+    let selected: Option<(String, [f32; 8], String)> = conn
+        .query_row(
+            "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
+                m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
+                COALESCE(p.name, '<unknown plugin>') \
+         FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \
+         WHERE m.id=?1",
+            params![form_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    [
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ],
+                    row.get(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (editor_id, values, plugin) = selected.ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "RACE movement link MOVT {form_id:08X} is missing; reconvert assets"
+        )
+    })?;
+    for (index, value) in values.iter().enumerate() {
+        ensure!(
+            value.is_finite() && *value >= 0.0 && (index != required || *value > 0.0),
+            "MOVT {form_id:08X} SPED[{index}] is invalid: {value}"
+        );
+    }
+    Ok((editor_id, values, plugin))
+}
+
+/// The MOVT a race uses for an unset movement link.
+///
+/// SkyrimSE.exe 1.7.104.0: the race movement-type getter (RVA `0x3e64a0`)
+/// returns the race slot when set and otherwise the default object for that
+/// slot (RVA `0x393860`), so an unset WKMV uses `DMWL` and an unset RNMV uses
+/// `DMRN`. Packages without `default_objects` use the retail target.
+fn default_movement_type(conn: &Connection, key: &str) -> Result<(u32, &'static str)> {
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='default_objects')",
+        [],
+        |row| row.get(0),
+    )?;
+    let exported: Option<u32> = if has_table {
+        conn.query_row(
+            "SELECT form_id FROM default_objects WHERE key=?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()?
+    } else {
+        None
+    };
+    match exported {
+        Some(0) => color_eyre::eyre::bail!("DOBJ {key} has an invalid MOVT link"),
+        Some(id) => Ok((id, "DOBJ")),
+        None => Ok((NPC_DEFAULT_MOVT_FORM_ID, "retail default")),
+    }
+}
+
 impl MovementTuning {
     pub fn capsule_half_height(&self) -> f32 {
         (self.capsule_standing_height * 0.5 - self.capsule_radius).max(1.0)
     }
 
-    /// Legacy packages lack `movement_types`. A package with the table must
-    /// contain a valid selected profile; otherwise it cannot claim record speeds.
+    /// Legacy packages lack `movement_types`. Packages with it resolve the
+    /// Player race's WKMV/RNMV records, using the default movement types when unset.
     pub fn from_world_database(path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .wrap_err_with(|| format!("opening movement records in {}", path.display()))?;
@@ -123,60 +203,46 @@ impl MovementTuning {
             .wrap_err_with(|| {
                 format!("RACE {race_id:08X} movement links missing; reconvert assets")
             })?;
-        ensure!(
-            walk_link.is_none() && run_link.is_none(),
-            "RACE {race_id:08X} has WKMV={walk_link:?} RNMV={run_link:?}; first-pass NPC_Default_MT selection supports only unset race links"
-        );
-        let selected: Option<(String, [f32; 8], String)> = conn
-            .query_row(
-                "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \
-                    m.forward_walk, m.forward_run, m.back_walk, m.back_run, \
-                    COALESCE(p.name, '<unknown plugin>') \
-             FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \
-             WHERE m.id=?1",
-                params![NPC_DEFAULT_MOVT_FORM_ID],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        [
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                            row.get(8)?,
-                        ],
-                        row.get(9)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let (editor_id, values, plugin) = selected.ok_or_else(|| color_eyre::eyre::eyre!(
-            "movement_types exists but MOVT 0003580D NPC_Default_MT is missing; reconvert assets"
-        ))?;
-        ensure!(
-            editor_id == "NPC_Default_MT",
-            "MOVT 0003580D EDID is {editor_id}, expected NPC_Default_MT"
-        );
-        for (index, value) in values.iter().enumerate() {
-            ensure!(
-                value.is_finite() && *value > 0.0,
-                "MOVT 0003580D SPED[{index}] is invalid: {value}"
-            );
-        }
+        let load_link = |link: Option<u32>, tag: &str, key: &str, required: usize| {
+            let (id, via) = match link {
+                Some(id) => (id, tag.to_owned()),
+                None => {
+                    let (id, origin) = default_movement_type(&conn, key)?;
+                    (id, format!("{tag} unset, {origin} {key}"))
+                }
+            };
+            let profile = load_movement_profile(&conn, id, required)?;
+            if id == NPC_DEFAULT_MOVT_FORM_ID {
+                ensure!(
+                    profile.0 == "NPC_Default_MT",
+                    "MOVT 0003580D EDID is {}, expected NPC_Default_MT",
+                    profile.0
+                );
+            }
+            Ok::<_, color_eyre::Report>((via, profile))
+        };
+        let (walk_via, walk) = load_link(walk_link, "WKMV", "DMWL", 4)?;
+        let (run_via, run) = load_link(run_link, "RNMV", "DMRN", 5)?;
         Ok(Self {
-            walk_speed: values[4],
-            run_speed: values[5],
+            walk_speed: walk.1[4],
+            run_speed: run.1[5],
             record_speeds: Some(DirectionalMovementSpeeds {
-                directions: [
-                    [values[0], values[1]],
-                    [values[2], values[3]],
-                    [values[4], values[5]],
-                    [values[6], values[7]],
+                walk_directions: [
+                    [walk.1[0], walk.1[1]],
+                    [walk.1[2], walk.1[3]],
+                    [walk.1[4], walk.1[5]],
+                    [walk.1[6], walk.1[7]],
                 ],
-                source: format!("MOVT 0003580D NPC_Default_MT ({plugin})"),
+                run_directions: [
+                    [run.1[0], run.1[1]],
+                    [run.1[2], run.1[3]],
+                    [run.1[4], run.1[5]],
+                    [run.1[6], run.1[7]],
+                ],
+                source: format!(
+                    "{walk_via}: {} ({}); {run_via}: {} ({})",
+                    walk.0, walk.2, run.0, run.2
+                ),
             }),
             ..Self::default()
         })
@@ -198,8 +264,13 @@ impl MovementTuning {
         };
         let x = strafe.x.abs();
         let y = strafe.y.abs();
-        let lateral = speeds.directions[if strafe.x < 0.0 { 0 } else { 1 }][gait];
-        let longitudinal = speeds.directions[if strafe.y < 0.0 { 2 } else { 3 }][gait];
+        let directions = if gait == 0 {
+            &speeds.walk_directions
+        } else {
+            &speeds.run_directions
+        };
+        let lateral = directions[if strafe.x < 0.0 { 0 } else { 1 }][gait];
+        let longitudinal = directions[if strafe.y < 0.0 { 2 } else { 3 }][gait];
         let base = (lateral * x + longitudinal * y) / (x + y).max(1.0);
         if sprint {
             base * self.sprint_multiplier
@@ -651,7 +722,9 @@ mod tests {
             tuning.target_speed(Vec2::new(1.0, -1.0), false, false),
             370.0
         );
-        assert!(tuning.record_speeds.unwrap().source.contains("Skyrim.esm"));
+        let source = tuning.record_speeds.unwrap().source;
+        assert!(source.contains("Skyrim.esm"));
+        assert!(source.contains("WKMV unset, retail default DMWL: NPC_Default_MT"));
         conn.execute(
             "UPDATE records SET record_type='STAT' WHERE form_id=79686",
             [],
@@ -673,12 +746,52 @@ mod tests {
             [],
         )
         .unwrap();
+        let linked = MovementTuning::from_world_database(&path).unwrap();
+        assert!(
+            linked
+                .record_speeds
+                .unwrap()
+                .source
+                .contains("WKMV: NPC_Default_MT")
+        );
+        // Exported default objects pick the unset RNMV's MOVT. Retail profiles
+        // can have zero speeds; only the supplied forward speed must be positive.
+        conn.execute_batch(
+            "CREATE TABLE default_objects(key TEXT PRIMARY KEY, form_id INTEGER NOT NULL);
+            INSERT INTO default_objects VALUES('DMWL', 219149), ('DMRN', 847823);
+            INSERT INTO movement_types VALUES(847823, 'NPC_Drunk_MT',
+                0, 0, 0, 0, 29.5, 29.5, 0, 0, 0);",
+        )
+        .unwrap();
+        let defaulted = MovementTuning::from_world_database(&path).unwrap();
+        assert_eq!((defaulted.walk_speed, defaulted.run_speed), (80.1, 29.5));
+        assert!(
+            defaulted
+                .record_speeds
+                .unwrap()
+                .source
+                .contains("RNMV unset, DOBJ DMRN: NPC_Drunk_MT")
+        );
+        conn.execute(
+            "UPDATE movement_types SET forward_run=0 WHERE id=847823",
+            [],
+        )
+        .unwrap();
         assert!(
             MovementTuning::from_world_database(&path)
                 .unwrap_err()
                 .to_string()
-                .contains("supports only unset race links")
+                .contains("SPED[5]")
         );
+        conn.execute("UPDATE default_objects SET form_id=0 WHERE key='DMRN'", [])
+            .unwrap();
+        assert!(
+            MovementTuning::from_world_database(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("DOBJ DMRN has an invalid MOVT link")
+        );
+        conn.execute("DROP TABLE default_objects", []).unwrap();
         conn.execute(
             "UPDATE race_movement_links SET walk_movt_id=NULL WHERE id=79686",
             [],

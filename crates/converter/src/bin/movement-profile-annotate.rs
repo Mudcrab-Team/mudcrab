@@ -1,5 +1,9 @@
 //! Add the selected movement projection to an existing schema-4 or newer compatible package.
 //! Reads the package's own winning raw records; no source plugin is reparsed.
+//!
+//! `DOBJ` is not projected: packages converted before the key-by-key merge
+//! stored only the last override, which lacks Skyrim.esm's default movement
+//! keys. The engine then uses the retail `NPC_Default_MT` fallback.
 
 use color_eyre::{
     Result,
@@ -26,12 +30,26 @@ fn main() -> Result<()> {
         "database schema {version} is unsupported"
     );
     let mut selected = HashMap::new();
-    for (form_id, expected_type) in [
+    // Every MOVT, so an explicit race WKMV/RNMV link resolves.
+    let mut movement_ids = conn
+        .prepare("SELECT form_id FROM records WHERE record_type='MOVT'")?
+        .query_map([], |row| row.get::<_, u32>(0))?
+        .collect::<rusqlite::Result<Vec<u32>>>()?;
+    movement_ids.sort_unstable();
+    let wanted = [
         (0x0001_3746_u32, "RACE"),
         (0x0003_580D_u32, "MOVT"),
         (0x0001_EC72, "GMST"),
         (0x000A_BEF6, "GMST"),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        movement_ids
+            .into_iter()
+            .filter(|id| *id != 0x0003_580D)
+            .map(|id| (id, "MOVT")),
+    );
+    for (form_id, expected_type) in wanted {
         let (record_type, blob, load_order): (String, Vec<u8>, u32) = conn
             .query_row(
                 "SELECT record_type, data, load_order FROM records WHERE form_id=?1",

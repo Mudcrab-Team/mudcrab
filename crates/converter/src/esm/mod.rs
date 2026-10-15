@@ -127,6 +127,11 @@ impl EsmParser {
                 if record.is_deleted() {
                     merged.remove(&record.form_id);
                 } else {
+                    if record.record_type == *b"DOBJ"
+                        && let Some(previous) = merged.get(&record.form_id)
+                    {
+                        merge_default_objects(previous, &mut record);
+                    }
                     merged.insert(record.form_id, record);
                 }
             }
@@ -134,6 +139,35 @@ impl EsmParser {
         warnings.report();
         Ok(merged)
     }
+}
+
+/// Merge a `DOBJ` override into the earlier winner key by key.
+///
+/// SkyrimSE.exe 1.7.104.0 (`BGSDefaultObjectManager` Load, RVA `0x31b8b0`)
+/// writes each listed key's slot and never clears the table, so an override
+/// changes only the keys it lists. Update.esm and the DLC override `DOBJ`
+/// `00000031` with partial lists; replacing the whole record would drop, for
+/// example, Skyrim.esm's default movement types.
+fn merge_default_objects(previous: &RawRecord, record: &mut RawRecord) {
+    let pairs = |record: &RawRecord| -> Vec<[u8; 8]> {
+        record
+            .subrecords
+            .iter()
+            .filter(|(tag, _)| tag.as_slice() == b"DNAM")
+            .flat_map(|(_, data)| data.as_chunks::<8>().0.iter().copied())
+            .collect()
+    };
+    let mut merged = pairs(previous);
+    for pair in pairs(record) {
+        match merged.iter_mut().find(|earlier| earlier[..4] == pair[..4]) {
+            Some(earlier) => *earlier = pair,
+            None => merged.push(pair),
+        }
+    }
+    record
+        .subrecords
+        .retain(|(tag, _)| tag.as_slice() != b"DNAM");
+    record.subrecords.push((b"DNAM".to_vec(), merged.concat()));
 }
 
 /// Per-plugin count of out-of-range master indices, with the first ID and its record type.
@@ -302,8 +336,8 @@ fn is_form_id_subrecord(record_type: &[u8; 4], tag: &[u8], len: usize) -> bool {
 enum FormIdLayout {
     /// A fixed-size structure: each accepted byte length with its FormID offsets.
     Fixed(&'static [(usize, &'static [usize])]),
-    /// A packed array of `stride`-byte entries, each starting with a FormID.
-    Array { stride: usize },
+    /// A packed array of `stride`-byte entries, each with a FormID at byte `offset`.
+    Array { stride: usize, offset: usize },
 }
 
 /// Field layouts per xEdit's TES5 definitions
@@ -341,7 +375,10 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // Each activate parent is a separate subrecord: reference plus f32 delay.
         b"XAPR" if placed => Fixed(&[(8, &[0])]),
         // Location reference types.
-        b"XLRT" if placed => Array { stride: 4 },
+        b"XLRT" if placed => Array {
+            stride: 4,
+            offset: 0,
+        },
         // A rider's horse.
         b"XHOR" if record_type == b"ACHR" => Fixed(SINGLE),
         // Lighting template, on cells and on worldspaces.
@@ -359,7 +396,15 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"XPOD" if record_type == b"REFR" => Array { stride: 4 },
         b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
         // Regions.
-        b"XCLR" if record_type == b"CELL" => Array { stride: 4 },
+        b"XCLR" if record_type == b"CELL" => Array {
+            stride: 4,
+            offset: 0,
+        },
+        // Default objects: (four-character key, FormID) pairs.
+        b"DNAM" if record_type == b"DOBJ" => Array {
+            stride: 8,
+            offset: 4,
+        },
         _ => return None,
     })
 }
@@ -489,9 +534,9 @@ fn remap_record_form_ids(
                             data.len()
                         )
                     }),
-                FormIdLayout::Array { stride } => {
+                FormIdLayout::Array { stride, offset } => {
                     if data.len().is_multiple_of(stride) {
-                        Ok((0..data.len()).step_by(stride).collect())
+                        Ok((offset..data.len()).step_by(stride).collect())
                     } else {
                         Err(format!(
                             "{name} length {} is not a multiple of {stride}",
@@ -703,6 +748,73 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(race.subrecords[0].1[..4].try_into().unwrap()),
             0x0300_1234
+        );
+    }
+
+    fn default_objects(pairs: &[(&[u8; 4], u32)]) -> RawRecord {
+        RawRecord {
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                pairs
+                    .iter()
+                    .flat_map(|(key, id)| [**key, id.to_le_bytes()].concat())
+                    .collect(),
+            )],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        }
+    }
+
+    #[test]
+    fn remaps_default_object_form_ids_but_not_keys() {
+        let normal_indices = HashMap::from([
+            ("skyrim.esm".to_string(), 0),
+            ("update.esm".to_string(), 3),
+            ("dawnguard.esm".to_string(), 5),
+        ]);
+        // Master 1 is update.esm (load order 3); index 2 is the plugin itself (5).
+        let mut record = default_objects(&[
+            (b"DMWL", 0x0003_580D),
+            (b"DMRN", 0x0100_0800),
+            (b"DMSW", 0x0200_0900),
+        ]);
+        remap_record_form_ids(
+            &mut record,
+            "dawnguard.esm",
+            &["skyrim.esm".to_string(), "update.esm".to_string()],
+            &normal_indices,
+            &HashMap::new(),
+            &RemapWarnings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.subrecords,
+            default_objects(&[
+                (b"DMWL", 0x0003_580D),
+                (b"DMRN", 0x0300_0800),
+                (b"DMSW", 0x0500_0900),
+            ])
+            .subrecords
+        );
+    }
+
+    #[test]
+    fn default_object_overrides_merge_by_key() {
+        let base = default_objects(&[(b"DMWL", 0x0003_580D), (b"DMRN", 0x0003_580D)]);
+        let mut patch = default_objects(&[(b"DMRN", 0x0200_0001), (b"DMSW", 0x0003_6D42)]);
+        merge_default_objects(&base, &mut patch);
+        assert_eq!(
+            patch.subrecords,
+            default_objects(&[
+                (b"DMWL", 0x0003_580D),
+                (b"DMRN", 0x0200_0001),
+                (b"DMSW", 0x0003_6D42),
+            ])
+            .subrecords
         );
     }
 

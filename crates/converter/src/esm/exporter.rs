@@ -19,13 +19,12 @@ fn invalid_movement_field(form_id: u32, field: &str) -> rusqlite::Error {
     )))
 }
 
-fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
-    if view.get_string(b"EDID").as_deref() != Some("NPC_Default_MT") {
-        return Err(invalid_movement_field(
-            form_id,
-            "MOVT EDID (expected NPC_Default_MT)",
-        ));
-    }
+/// Decode the eight directional walk/run speeds of a `MOVT` `SPED`.
+///
+/// Retail data has zero speeds (40 of 107 records, for example creatures that
+/// cannot strafe), so only negative or non-finite values are rejected here.
+/// The engine checks the speeds a selected profile must supply.
+fn decode_movement_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[f32; 8]> {
     let data = view
         .find(b"SPED")
         .ok_or_else(|| invalid_movement_field(form_id, "MOVT SPED"))?;
@@ -38,7 +37,7 @@ fn decode_npc_default_speeds(view: &SubrecordView<'_>, form_id: u32) -> Result<[
     let mut speeds = [0.0; 8];
     for (index, speed) in speeds.iter_mut().enumerate() {
         *speed = f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
-        if !speed.is_finite() || *speed <= 0.0 {
+        if !speed.is_finite() || *speed < 0.0 {
             return Err(invalid_movement_field(
                 form_id,
                 &format!("MOVT SPED[{index}]"),
@@ -154,6 +153,10 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
              back_walk REAL NOT NULL, back_run REAL NOT NULL,
              load_order INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS default_objects (
+             key TEXT PRIMARY KEY,          -- DOBJ DNAM four-character key, e.g. DMWL
+             form_id INTEGER NOT NULL       -- load-order FormID, 0 when the link was invalid
          );
          CREATE TABLE IF NOT EXISTS race_movement_links (
              id INTEGER PRIMARY KEY, walk_movt_id INTEGER, run_movt_id INTEGER,
@@ -273,6 +276,8 @@ fn export_records(
             [shared::WORLD_DATABASE_SCHEMA_VERSION],
         )?;
         tx.execute("DELETE FROM landscape_texture_grasses", [])?;
+        // Partial exports may lack DOBJ; only a full export owns the merged defaults.
+        tx.execute("DELETE FROM default_objects", [])?;
         tx.execute("DELETE FROM grass_types", [])?;
     }
     let mut cells: HashMap<u32, CellMetadata> = HashMap::new();
@@ -425,12 +430,36 @@ fn export_records(
                     params![form_id, walk, run, record.load_order],
                 )?;
             }
-            "MOVT" if form_id == 0x0003_580D => {
-                let speeds = decode_npc_default_speeds(&view, form_id)?;
+            "MOVT" => {
+                let speeds = decode_movement_speeds(&view, form_id)?;
                 tx.execute(
                     "INSERT OR REPLACE INTO movement_types(id, editor_id, left_walk, left_run, right_walk, right_run, forward_walk, forward_run, back_walk, back_run, load_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![form_id, "NPC_Default_MT", speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
+                    params![form_id, view.get_string(b"EDID").unwrap_or_default(), speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5], speeds[6], speeds[7], record.load_order],
                 )?;
+            }
+            // Overrides were merged key by key in merge_plugins_with_load_order.
+            // A DOBJ without usable pairs (a mod's empty override, or a DNAM the remap
+            // dropped as malformed) adds no defaults; the engine keeps its fallback.
+            "DOBJ" => {
+                let Some(data) = view.find(b"DNAM") else {
+                    eprintln!("warning: DOBJ {form_id:08X} has no DNAM; no default objects");
+                    continue;
+                };
+                if !data.len().is_multiple_of(8) {
+                    eprintln!(
+                        "warning: DOBJ {form_id:08X} DNAM is {} bytes, not 8-byte pairs; no default objects",
+                        data.len()
+                    );
+                    continue;
+                }
+                for pair in data.as_chunks::<8>().0 {
+                    let key = String::from_utf8_lossy(&pair[..4]);
+                    let target = u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
+                    tx.execute(
+                        "INSERT OR REPLACE INTO default_objects(key, form_id) VALUES (?1, ?2)",
+                        params![key, target],
+                    )?;
+                }
             }
             "GMST" => {
                 let editor_id = view.get_string(b"EDID");
@@ -798,6 +827,7 @@ mod tests {
             "lights",
             "npcs",
             "movement_types",
+            "default_objects",
             "race_movement_links",
             "movement_game_settings",
             "scripts",
@@ -907,6 +937,63 @@ mod tests {
         legacy.subrecords[1].1.truncate(40);
         export_to_db(&conn, &HashMap::from([(legacy.form_id, legacy)])).unwrap();
 
+        // Any MOVT exports, including retail zero speeds (no strafing).
+        let mut creature = movement.clone();
+        creature.form_id = 0x000C_EFCF;
+        creature.subrecords[0].1 = b"NPC_Drunk_MT\0".to_vec();
+        creature.subrecords[1].1[0..4].copy_from_slice(&0.0f32.to_le_bytes());
+        let defaults = RawRecord {
+            form_id: 0x0000_0031,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords: vec![(
+                b"DNAM".to_vec(),
+                [
+                    *b"DMWL",
+                    0x0003_580Du32.to_le_bytes(),
+                    *b"DMRN",
+                    0x000C_EFCFu32.to_le_bytes(),
+                ]
+                .concat(),
+            )],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 4,
+        };
+        export_to_db(
+            &conn,
+            &HashMap::from([(creature.form_id, creature), (defaults.form_id, defaults)]),
+        )
+        .unwrap();
+        let (editor_id, left_walk): (String, f32) = conn
+            .query_row(
+                "SELECT editor_id, left_walk FROM movement_types WHERE id=0x000CEFCF",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((editor_id.as_str(), left_walk), ("NPC_Drunk_MT", 0.0));
+        let walk_default: u32 = conn
+            .query_row(
+                "SELECT form_id FROM default_objects WHERE key='DMWL'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let run_default: u32 = conn
+            .query_row(
+                "SELECT form_id FROM default_objects WHERE key='DMRN'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((walk_default, run_default), (0x0003_580D, 0x000C_EFCF));
+
+        let mut negative = movement.clone();
+        negative.subrecords[1].1[4..8].copy_from_slice(&(-1.0f32).to_le_bytes());
+        let error =
+            export_to_db(&conn, &HashMap::from([(negative.form_id, negative)])).unwrap_err();
+        assert!(error.to_string().contains("MOVT SPED[1]"));
         let mut broken = movement;
         broken.subrecords[1].1[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
         let error = export_to_db(&conn, &HashMap::from([(broken.form_id, broken)])).unwrap_err();
@@ -918,6 +1005,47 @@ mod tests {
         let error =
             export_to_db(&conn, &HashMap::from([(broken_race.form_id, broken_race)])).unwrap_err();
         assert!(error.to_string().contains("RACE WKMV length"));
+    }
+
+    #[test]
+    fn default_objects_without_usable_dnam_are_skipped_not_fatal() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let dobj = |form_id: u32, subrecords: Vec<(Vec<u8>, Vec<u8>)>| RawRecord {
+            form_id,
+            record_type: *b"DOBJ",
+            flags: 0,
+            subrecords,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 3,
+        };
+        let missing = dobj(0x0100_0031, vec![(b"EDID".to_vec(), b"Mod\0".to_vec())]);
+        let malformed = dobj(0x0200_0031, vec![(b"DNAM".to_vec(), vec![1, 2, 3])]);
+        let valid = dobj(
+            0x0000_0031,
+            vec![(
+                b"DNAM".to_vec(),
+                [*b"DMWL", 0x0003_580Du32.to_le_bytes()].concat(),
+            )],
+        );
+        export_to_db(
+            &conn,
+            &HashMap::from([
+                (missing.form_id, missing),
+                (malformed.form_id, malformed),
+                (valid.form_id, valid),
+            ]),
+        )
+        .unwrap();
+        let rows: Vec<(String, u32)> = conn
+            .prepare("SELECT key, form_id FROM default_objects")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, [("DMWL".to_string(), 0x0003_580D)]);
     }
 
     #[test]
@@ -1472,6 +1600,58 @@ mod tests {
     ///
     /// Reads the game install, so it is opt-in:
     /// `cargo test -p converter --lib -- --ignored`.
+    /// Update.esm and every DLC override `DOBJ` `00000031` with a partial key
+    /// list. Merged key by key, Skyrim.esm's default walk and run movement
+    /// types survive as `NPC_Default_MT`, and every retail MOVT exports
+    /// (zero strafe speeds included).
+    ///
+    /// Reads the game install, so it is opt-in:
+    /// `cargo test -p converter --lib -- --ignored`.
+    #[test]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
+    fn default_movement_types_of_the_real_masters_survive_overrides() {
+        let data_dir = std::env::var_os("MUDCRAB_SKYRIM_DATA")
+            .or_else(|| std::env::var_os("OPENSKYRIM_SKYRIM_DATA"))
+            .map(std::path::PathBuf::from)
+            .expect("set MUDCRAB_SKYRIM_DATA to the Skyrim Data directory");
+        let plugins: Vec<_> = [
+            "Skyrim.esm",
+            "Update.esm",
+            "Dawnguard.esm",
+            "HearthFires.esm",
+            "Dragonborn.esm",
+        ]
+        .iter()
+        .map(|name| data_dir.join(name))
+        .collect();
+        let merged = crate::esm::EsmParser::merge_plugins(&plugins).unwrap();
+        let selected: HashMap<u32, RawRecord> = merged
+            .into_iter()
+            .filter(|(_, record)| matches!(&record.record_type, b"DOBJ" | b"MOVT"))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_to_db(&conn, &selected).unwrap();
+        for key in ["DMWL", "DMRN"] {
+            let (form_id, editor_id): (u32, String) = conn
+                .query_row(
+                    "SELECT d.form_id, m.editor_id FROM default_objects d \
+                     JOIN movement_types m ON m.id = d.form_id WHERE d.key = ?1",
+                    [key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (form_id, editor_id.as_str()),
+                (0x0003_580D, "NPC_Default_MT")
+            );
+        }
+        let movement_types: i64 = conn
+            .query_row("SELECT count(*) FROM movement_types", [], |row| row.get(0))
+            .unwrap();
+        assert!(movement_types >= 107, "only {movement_types} MOVT exported");
+    }
+
     #[test]
     #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
     fn lights_of_the_real_plugin_decode_through_export() {
