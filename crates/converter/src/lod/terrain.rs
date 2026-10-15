@@ -1072,7 +1072,12 @@ mod tests {
         origin: LodOrigin,
         cells: &[TerrainCellInput],
     ) -> Result<Vec<TerrainChunk>> {
-        super::compile_world_terrain(world, origin, cells, &TerrainTextures::default())
+        super::compile_world_terrain(
+            world,
+            origin,
+            cells,
+            &TerrainTextures::with_flat_default([1.0; 3]),
+        )
     }
 
     fn flat_cell(grid_x: i32, grid_y: i32, height: f32) -> TerrainCellInput {
@@ -1230,8 +1235,12 @@ mod tests {
             f32::from_le_bytes(chunk.glb[offset..offset + 4].try_into().unwrap())
         };
         let members: Vec<_> = cells.iter().collect();
-        let atlas =
-            TerrainAtlas::bake(chunk.key.tier, &members, &TerrainTextures::default()).unwrap();
+        let atlas = TerrainAtlas::bake(
+            chunk.key.tier,
+            &members,
+            &TerrainTextures::with_flat_default([1.0; 3]),
+        )
+        .unwrap();
         assert_eq!([uv(0, 0), uv(0, 1)], atlas.uv(0, 0.0, 0.0));
         assert_eq!([uv(16, 0), uv(16, 1)], atlas.uv(0, 1.0, 0.0));
         assert_eq!([uv(48, 0), uv(48, 1)], atlas.uv(0, 0.0, 1.0));

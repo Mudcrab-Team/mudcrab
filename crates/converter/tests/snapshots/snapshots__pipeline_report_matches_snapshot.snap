@@ -26,14 +26,15 @@ expression: report
     "textures/generated_cube.ktx2",
     "textures/generated_normal.ktx2",
     "textures/generated_normal.opensky-wrap0.ktx2",
-    "textures/generated_volume.ktx2"
+    "textures/generated_volume.ktx2",
+    "textures/landscape/dirt02.ktx2"
   ],
   "cache_hits": 0,
   "complete": true,
-  "converted": 16,
+  "converted": 18,
   "elapsed_ms": "[elapsed_ms]",
   "inputs_by_kind": {
-    "dds": 5,
+    "dds": 6,
     "nif": 1,
     "pex": 2
   },

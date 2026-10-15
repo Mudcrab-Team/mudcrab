@@ -66,6 +66,7 @@ The `esm` format has to be included for either.
 | `textures/generated_color_x8.dds` | Uncompressed `X8R8G8B8` texture, 32×32, 6 mips. |
 | `textures/generated_cube.dds` | BC1 cube map, 32×32, 6 mips, six faces. |
 | `textures/generated_volume.dds` | BC1 volume texture, 16×16×16, 5 mips. |
+| `textures/landscape/dirt02.dds` | BC1 texture, 64×64, 7 mips; stand-in for Skyrim's default land texture, which terrain LOD paints on quadrants with no base texture. |
 | `meshes/generated.nif` | Skyrim SE `20.2.0.7` static quad with a lighting shader and texture set. |
 | `Skyrim - Misc.bsa` | SSE `v105` BSA (24-byte folder records) with zlib payloads. |
 | `Skyrim - Meshes.bsa` | SSE `v105` BSA containing the generated NIF. |

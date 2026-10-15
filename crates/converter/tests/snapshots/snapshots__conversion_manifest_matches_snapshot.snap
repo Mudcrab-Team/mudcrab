@@ -56,6 +56,11 @@ expression: manifest
           "hash": "[hash]",
           "path": "textures/generated_volume.dds",
           "size": 2876
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/landscape/dirt02.dds",
+          "size": 2892
         }
       ],
       "source_hash": "[source_hash]"
@@ -111,11 +116,17 @@ expression: manifest
       "output_hash": "[output_hash]",
       "output_size": 2689,
       "source_hash": "[source_hash]"
+    },
+    "textures/landscape/dirt02.dds": {
+      "output": "textures/landscape/dirt02.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 3169,
+      "source_hash": "[source_hash]"
     }
   },
   "failures": {},
   "inputs_by_kind": {
-    "dds": 5,
+    "dds": 6,
     "nif": 1,
     "pex": 2
   },
