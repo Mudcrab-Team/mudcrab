@@ -33,6 +33,8 @@ struct TerrainSettings {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var layer_0: texture_2d<f32>;
+// One sampler for every diffuse and normal layer, keeping the material under Metal's 16 samplers
+// a stage: every terrain layer image carries the same repeating sampler.
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var layer_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var layer_1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var layer_2: texture_2d<f32>;
@@ -40,8 +42,7 @@ struct TerrainSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var layer_4: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var layer_5: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(112) var<uniform> terrain: TerrainSettings;
-// Each layer's normal map; they share `layer_sampler` (every terrain layer image carries the same
-// repeating sampler), so they bind no samplers of their own.
+// Each layer's normal map, read through `layer_sampler` too.
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var normal_0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(114) var normal_1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(115) var normal_2: texture_2d<f32>;
@@ -53,13 +54,38 @@ struct TerrainSettings {
 // the tangent frame's +Y. One constant, settled by an A/B render of lit slopes.
 const NORMAL_GREEN_SIGN: f32 = -1.0;
 
-// One layer's tangent-space normal, or straight up when the layer has no map bound. The z
-// component is rebuilt from x and y, so the map's blue channel does not matter.
-fn layer_normal(map: texture_2d<f32>, uv: vec2<f32>, present: f32) -> vec3<f32> {
-    if present < 0.5 {
+// One layer's colour scaled by its weight, or nothing without reading the texture when the layer
+// has no weight at this pixel. Most of a quadrant shows one or two of its six layers, so skipping
+// the rest saves most of the reads; the derivatives come from the caller, taken in uniform control
+// flow, because this branch differs from pixel to pixel.
+fn weighted_layer(
+    map: texture_2d<f32>,
+    weight: f32,
+    uv: vec2<f32>,
+    uv_dx: vec2<f32>,
+    uv_dy: vec2<f32>,
+) -> vec4<f32> {
+    if weight <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    return textureSampleGrad(map, layer_sampler, uv, uv_dx, uv_dy) * weight;
+}
+
+// One layer's tangent-space normal, or straight up when the layer has no map bound or no weight at
+// this pixel (the caller scales it by that weight, so the texture is not read). The z component is
+// rebuilt from x and y, so the map's blue channel does not matter.
+fn layer_normal(
+    map: texture_2d<f32>,
+    present: f32,
+    weight: f32,
+    uv: vec2<f32>,
+    uv_dx: vec2<f32>,
+    uv_dy: vec2<f32>,
+) -> vec3<f32> {
+    if present < 0.5 || weight <= 0.0 {
         return vec3<f32>(0.0, 0.0, 1.0);
     }
-    let xy = textureSample(map, layer_sampler, uv).xy * 2.0 - 1.0;
+    let xy = textureSampleGrad(map, layer_sampler, uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
     let tilt = vec2<f32>(xy.x, NORMAL_GREEN_SIGN * xy.y);
     return vec3<f32>(tilt, sqrt(max(0.0, 1.0 - dot(tilt, tilt))));
 }
@@ -153,22 +179,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     weights[0] = max(0.0, 1.0 - weights[1] - weights[2] - weights[3] - weights[4] - weights[5]);
     let total = max(0.0001, weights[0] + weights[1] + weights[2] + weights[3] + weights[4] + weights[5]);
     let uv = in.uv * terrain.tiling_and_layer_count.xy;
-    var color = textureSample(layer_0, layer_sampler, uv) * weights[0];
-    color += textureSample(layer_1, layer_sampler, uv) * weights[1];
-    color += textureSample(layer_2, layer_sampler, uv) * weights[2];
-    color += textureSample(layer_3, layer_sampler, uv) * weights[3];
-    color += textureSample(layer_4, layer_sampler, uv) * weights[4];
-    color += textureSample(layer_5, layer_sampler, uv) * weights[5];
+    let uv_dx = dpdx(uv);
+    let uv_dy = dpdy(uv);
+    var color = weighted_layer(layer_0, weights[0], uv, uv_dx, uv_dy);
+    color += weighted_layer(layer_1, weights[1], uv, uv_dx, uv_dy);
+    color += weighted_layer(layer_2, weights[2], uv, uv_dx, uv_dy);
+    color += weighted_layer(layer_3, weights[3], uv, uv_dx, uv_dy);
+    color += weighted_layer(layer_4, weights[4], uv, uv_dx, uv_dy);
+    color += weighted_layer(layer_5, weights[5], uv, uv_dx, uv_dy);
     pbr_input.material.base_color *= color / total;
     // The layers' normal maps, blended by the same weights in the shared tangent frame and turned
     // into a world normal once. Only materials with at least one map do the extra reads.
     if dot(terrain.normal_layers_0, vec4<f32>(1.0)) + terrain.normal_layers_1.x + terrain.normal_layers_1.y > 0.5 {
-        var tangent_normal = layer_normal(normal_0, uv, terrain.normal_layers_0.x) * weights[0];
-        tangent_normal += layer_normal(normal_1, uv, terrain.normal_layers_0.y) * weights[1];
-        tangent_normal += layer_normal(normal_2, uv, terrain.normal_layers_0.z) * weights[2];
-        tangent_normal += layer_normal(normal_3, uv, terrain.normal_layers_0.w) * weights[3];
-        tangent_normal += layer_normal(normal_4, uv, terrain.normal_layers_1.x) * weights[4];
-        tangent_normal += layer_normal(normal_5, uv, terrain.normal_layers_1.y) * weights[5];
+        var tangent_normal = layer_normal(normal_0, terrain.normal_layers_0.x, weights[0], uv, uv_dx, uv_dy) * weights[0];
+        tangent_normal += layer_normal(normal_1, terrain.normal_layers_0.y, weights[1], uv, uv_dx, uv_dy) * weights[1];
+        tangent_normal += layer_normal(normal_2, terrain.normal_layers_0.z, weights[2], uv, uv_dx, uv_dy) * weights[2];
+        tangent_normal += layer_normal(normal_3, terrain.normal_layers_0.w, weights[3], uv, uv_dx, uv_dy) * weights[3];
+        tangent_normal += layer_normal(normal_4, terrain.normal_layers_1.x, weights[4], uv, uv_dx, uv_dy) * weights[4];
+        tangent_normal += layer_normal(normal_5, terrain.normal_layers_1.y, weights[5], uv, uv_dx, uv_dy) * weights[5];
         let geometric = normalize(pbr_input.world_normal);
         pbr_input.N = normalize(terrain_tbn(geometric) * normalize(tangent_normal));
     }

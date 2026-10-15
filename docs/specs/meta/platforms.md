@@ -47,6 +47,21 @@ This document outlines the multi-platform target strategy for Mudcrab, ensuring 
 ### 🍏 macOS & iOS (`aarch64-apple-darwin` / `aarch64-apple-ios`)
 
 - Fully native on Apple Silicon (M1/M2/M3/M4) chips via Metal.
+- Apple GPUs are tile-based deferred renderers, so on Metal the engine applies a tiled GPU profile
+  (`--gpu-profile`, `crates/engine/src/gpu_tuning.rs`): no depth prepass or occlusion culling
+  (hidden-surface removal already does that work), three sun shadow cascades with hardware 2x2
+  filtering, a smaller water reflection in `Rg11b10Ufloat`, and the 3D view drawn at one pixel per
+  point on a Retina window and scaled up (`--render-scale`, `crates/engine/src/render_scale.rs`).
+  Apple builds also sample world textures at 8x anisotropy instead of 16x.
+  With the GPU off the critical path, Metal frames are bound by draw encoding on the render
+  thread (wgpu has no multi-draw on Metal), so the profile also cuts draws: sun shadows stop at
+  Skyrim's Ultra `fShadowDistance` (8000 units) unless an INI sets it, and small placed objects
+  stop drawing beyond a distance proportional to their size.
+  The reflection draws its own layer with a shadowless copy of the sun (no extra shadow cascades)
+  and is reused while the camera stands still; views draw directly rather than from indirect
+  buffers; and lights are clustered on the CPU. Pipelines compile asynchronously on macOS through a
+  vendored `bevy_render` (`vendor/bevy_render`, bevyengine/bevy#26151). Measurements are in
+  `docs/research/metal-performance-loop-20261014.md`.
 - iOS builds compile with touch UI overlays and MFi gamepad support.
 
 ### 🐧 Linux (`x86_64-unknown-linux-gnu`)

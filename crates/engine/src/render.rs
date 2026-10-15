@@ -38,6 +38,18 @@ use std::sync::{
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExtension>;
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
+/// The wave phase a water material carries in `wave_scale_speed_strength.w` when its waves run on
+/// the shader's own clock (`globals.time`). Any value of zero or more pins the phase to that time
+/// instead, which is how captures keep their frames comparable ([`pin_water_phase`]).
+///
+/// The clock is read on the GPU so no water material changes from frame to frame: writing the time
+/// into every material each frame made Bevy re-extract and re-prepare all of them, bind groups
+/// included, on every frame.
+const ANIMATED_WAVE_PHASE: f32 = -1.0;
+
+/// The wave time a capture pins every water surface to.
+const PINNED_WAVE_TIME: f32 = 1.0;
+
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
 const WAVE_STRENGTH: f32 = 0.05;
@@ -57,6 +69,14 @@ pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
 pub const WORLD_LAYER: Layer = 0;
 pub const WATER_LAYER: Layer = 1;
 pub const PLACED_OBJECT_LAYER: Layer = 2;
+/// The scaled-up 3D view and the camera that draws it to the window (`crate::render_scale`), on a
+/// layer no world view renders.
+pub const SCALED_VIEW_LAYER: Layer = 3;
+/// What the water reflection draws under the tiled GPU profile: every mesh on [`WORLD_LAYER`] also
+/// carries this layer (`crate::gpu_tuning`), and the reflection camera draws it alone, so the sun -
+/// on [`LIGHT_LAYERS`], which does not include it - neither lights nor shadows the reflection view.
+/// A shadowless copy of the sun on this layer lights it instead.
+pub const REFLECTED_LAYER: Layer = 4;
 
 /// Everything the player's own cameras draw: terrain, water and the placed objects.
 pub const MAIN_VIEW_LAYERS: &[Layer] = &[WORLD_LAYER, WATER_LAYER, PLACED_OBJECT_LAYER];
@@ -130,7 +150,7 @@ impl Plugin for VercidiumRendererPlugin {
         .add_systems(
             Update,
             (
-                animate_water_materials,
+                pin_water_phase,
                 update_water_reflection_camera,
                 sync_renderer_metrics,
             ),
@@ -195,17 +215,24 @@ pub struct RendererMetrics {
     pub proof_frames: u64,
     pub renderer_fixture_validated: bool,
     pub renderer_validation_failures: u64,
+    /// The views were set up without occlusion culling - the tiled GPU profile drops it with the
+    /// depth prepass it is built on (`crate::gpu_tuning`) - so no occlusion or HZB view is owed.
+    pub occlusion_culling_off: bool,
+    /// The views draw directly rather than from indirect buffers - the tiled GPU profile's
+    /// `NoIndirectDrawing` (`crate::gpu_tuning`) - so no indirect batch set is owed.
+    pub indirect_drawing_off: bool,
 }
 
 impl RendererMetrics {
     pub fn final_path_active(&self) -> bool {
         self.gpu_preprocessing_active
             && self.gpu_culling_active
-            && self.indirect_drawing_active
-            && self.occlusion_culling_views > 0
-            && self.hzb_views > 0
-            && self.indirect_phase_buffers > 0
-            && self.indirect_batch_sets > 0
+            && (self.indirect_drawing_off
+                || (self.indirect_drawing_active
+                    && self.indirect_phase_buffers > 0
+                    && self.indirect_batch_sets > 0))
+            && (self.occlusion_culling_off
+                || (self.occlusion_culling_views > 0 && self.hzb_views > 0))
             && self.proof_frames > 0
             && self.renderer_validation_failures == 0
     }
@@ -276,7 +303,14 @@ fn sample_renderer_path(
     bridge.0.frames.fetch_add(1, Ordering::Relaxed);
 }
 
-fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<RendererMetrics>) {
+fn sync_renderer_metrics(
+    bridge: Res<RendererProofBridge>,
+    tuning: Option<Res<crate::gpu_tuning::GpuTuning>>,
+    mut metrics: ResMut<RendererMetrics>,
+) {
+    let tiled = tuning.is_some_and(|tuning| tuning.tiled);
+    metrics.occlusion_culling_off = tiled;
+    metrics.indirect_drawing_off = tiled;
     metrics.gpu_preprocessing_active = bridge.0.gpu_preprocessing.load(Ordering::Relaxed);
     metrics.gpu_culling_active = bridge.0.gpu_culling.load(Ordering::Relaxed);
     metrics.indirect_drawing_active = bridge.0.indirect_drawing.load(Ordering::Relaxed);
@@ -360,6 +394,19 @@ pub(crate) const OVERLAY_WEIGHT_WORDS: usize =
 /// `weights` array.
 pub(crate) const WEIGHT_FIELD_WORDS: usize = OVERLAY_WEIGHT_SLOTS * OVERLAY_WEIGHT_WORDS;
 
+/// The anisotropic filtering world textures are sampled with.
+///
+/// A desktop GPU filters 16 taps at little more cost than 8. Apple's own GPUs pay for each tap,
+/// and the terrain alone samples up to twelve textures a pixel, so an Apple build takes 8, which
+/// keeps most of the sharpness at grazing angles; an Intel Mac's desktop GPU loses little by it.
+/// This is fixed by the build target rather than chosen by `--gpu-profile`: the glTF loader's
+/// default sampler is set when the plugins are built, before the renderer has picked a backend.
+#[cfg(target_vendor = "apple")]
+pub(crate) const SAMPLER_ANISOTROPY: u16 = 8;
+/// See the Apple definition.
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) const SAMPLER_ANISOTROPY: u16 = 16;
+
 /// The sampler a terrain layer texture needs: the shader tiles every layer `tiling` times across a
 /// cell (`uv * LAND_TEXTURE_REPEATS_PER_CELL`), so the address mode must repeat.
 /// Bevy's default sampler clamps to the edge,
@@ -367,12 +414,15 @@ pub(crate) const WEIGHT_FIELD_WORDS: usize = OVERLAY_WEIGHT_SLOTS * OVERLAY_WEIG
 /// tile - long streaks where the edge column is stretched, and one flat colour where the corner
 /// texel covers the rest. A terrain texture that is not loaded through the asset server - the
 /// synthetic fixtures build theirs in memory - has to be given the same sampler by hand.
+///
+/// The same descriptor is the world glTF loader's default, so [`SAMPLER_ANISOTROPY`] applies to
+/// every world texture.
 pub(crate) fn terrain_layer_sampler() -> ImageSamplerDescriptor {
     ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
         address_mode_w: ImageAddressMode::Repeat,
-        anisotropy_clamp: 16,
+        anisotropy_clamp: SAMPLER_ANISOTROPY,
         ..ImageSamplerDescriptor::linear()
     }
 }
@@ -672,7 +722,12 @@ impl Default for WaterExtension {
     fn default() -> Self {
         Self {
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
+                wave_scale_speed_strength: Vec4::new(
+                    0.006,
+                    0.15,
+                    WAVE_STRENGTH,
+                    ANIMATED_WAVE_PHASE,
+                ),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, 0.0),
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
@@ -717,7 +772,12 @@ impl WaterExtension {
             reflection: Some(reflection),
             flow_normal,
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
+                wave_scale_speed_strength: Vec4::new(
+                    0.006,
+                    0.15,
+                    WAVE_STRENGTH,
+                    ANIMATED_WAVE_PHASE,
+                ),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
                 fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 0.0, 0.0),
             },
@@ -731,21 +791,29 @@ impl MaterialExtension for WaterExtension {
     }
 }
 
-fn animate_water_materials(
-    time: Res<Time>,
+/// Pins every water surface's wave phase for the runs that compare frames - the terrain-water
+/// fixture and shots - and leaves the waves on the shader's clock otherwise. A material is written
+/// only when its phase is not already pinned, so after the first frame nothing changes.
+fn pin_water_phase(
     config: Option<Res<crate::config::EngineConfig>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    if !config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
+        return;
+    }
     let started = std::time::Instant::now();
-    let elapsed =
-        if config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
-            1.0
-        } else {
-            time.elapsed_secs()
-        };
-    for (_, material) in materials.iter_mut() {
-        material.extension.settings.wave_scale_speed_strength.w = elapsed;
+    let unpinned: Vec<_> = materials
+        .iter()
+        .filter(|(_, material)| {
+            material.extension.settings.wave_scale_speed_strength.w != PINNED_WAVE_TIME
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in unpinned {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.settings.wave_scale_speed_strength.w = PINNED_WAVE_TIME;
+        }
     }
     profiler.record_elapsed("render/water_animation", started);
 }
@@ -772,12 +840,19 @@ const WATER_REFLECTION_FRUSTUM_MARGIN: f32 = 512.0;
 ///
 /// It is the flipped copy of the streaming camera, drawn before the main view, and it renders
 /// [`REFLECTION_VIEW_LAYERS`]: the world layer only. What Skyrim puts in a water reflection, and
-/// why full-detail placed objects are not in it, is documented on that constant.
-fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+/// why full-detail placed objects are not in it, is documented on that constant. Its size and
+/// format come from [`GpuTuning`](crate::gpu_tuning::GpuTuning).
+fn setup_water_reflection(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    gpu: Option<Res<crate::gpu_tuning::GpuTuning>>,
+) {
+    let gpu = gpu.as_deref().copied().unwrap_or_default();
+    let size = gpu.water_reflection_size();
     let image = images.add(Image::new_target_texture(
-        1024,
-        576,
-        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        size.x,
+        size.y,
+        gpu.water_reflection_format(),
         None,
     ));
     commands.insert_resource(WaterReflectionTexture(image.clone()));
@@ -796,7 +871,7 @@ fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Imag
         Transform::default(),
         DepthPrepass,
         OcclusionCulling,
-        RenderLayers::from_layers(REFLECTION_VIEW_LAYERS),
+        gpu.reflection_view_layers(),
         WaterReflectionCamera,
     ));
 }
@@ -816,8 +891,23 @@ type WaterReflectionObserverView = (
     Option<&'static Exposure>,
 );
 
+/// How many frames a tiled GPU keeps a still camera's water reflection before drawing it again, so
+/// terrain and LOD land that stream in while the camera stands still still reach the reflection.
+const STILL_REFLECTION_REFRESH_FRAMES: u32 = 16;
+
+/// What the water reflection was last drawn from, so a tiled GPU can skip redrawing it while the
+/// camera stands still: everything the reflection draws - terrain, LOD land and the sky - is static
+/// and lit by a fixed sun, so the same pose draws the same image.
+#[derive(Default)]
+struct ReflectionReuse {
+    pose: Option<Transform>,
+    frames_since_drawn: u32,
+}
+
 fn update_water_reflection_camera(
     mut commands: Commands,
+    gpu: Option<Res<crate::gpu_tuning::GpuTuning>>,
+    mut reuse: Local<ReflectionReuse>,
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
     mut reflection_camera: Query<
@@ -840,9 +930,11 @@ fn update_water_reflection_camera(
     if let Some(mut reflection_exposure) = reflection_exposure {
         if reflection_exposure.ev100 != ev100 {
             reflection_exposure.ev100 = ev100;
+            reuse.pose = None;
         }
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
+        reuse.pose = None;
     }
     // The surface nearest the main camera fixes the mirror plane; a further surface would put the
     // reflection at the wrong height when more than one water level is streamed in.
@@ -871,9 +963,26 @@ fn update_water_reflection_camera(
     };
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
-    reflection.set_if_neq(reflected_camera_transform(main, surface.translation().y));
-    if camera.is_active != surface_in_view {
-        camera.is_active = surface_in_view;
+    let pose = reflected_camera_transform(main, surface.translation().y);
+    reflection.set_if_neq(pose);
+    // On a tiled GPU a still camera reuses the reflection it last drew, redrawing it every
+    // `STILL_REFLECTION_REFRESH_FRAMES` for whatever streamed in meanwhile. A desktop GPU draws it
+    // every frame water is in view, as before.
+    let reusable = gpu.is_some_and(|gpu| gpu.tiled)
+        && reuse.pose == Some(pose)
+        && reuse.frames_since_drawn < STILL_REFLECTION_REFRESH_FRAMES;
+    let active = surface_in_view && !reusable;
+    if active {
+        reuse.pose = Some(pose);
+        reuse.frames_since_drawn = 0;
+    } else if surface_in_view {
+        reuse.frames_since_drawn += 1;
+    } else {
+        // Out of view the texture is not drawn at all, so it cannot be reused on the way back.
+        reuse.pose = None;
+    }
+    if camera.is_active != active {
+        camera.is_active = active;
     }
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
@@ -1033,6 +1142,40 @@ mod tests {
         transform: Transform,
     }
 
+    #[test]
+    fn a_tiled_gpu_reuses_a_still_cameras_reflection_and_refreshes_it() {
+        use crate::config::{GpuProfile, RenderScale};
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness
+            .app
+            .insert_resource(crate::gpu_tuning::GpuTuning::resolve(
+                GpuProfile::Tiled,
+                None,
+                RenderScale::Auto,
+                true,
+            ));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert!(
+            harness.frame().active,
+            "the first frame draws the reflection"
+        );
+        for frame in 0..STILL_REFLECTION_REFRESH_FRAMES {
+            assert!(!harness.frame().active, "still frame {frame} reuses it");
+        }
+        assert!(
+            harness.frame().active,
+            "a long-still reflection is refreshed"
+        );
+        assert!(!harness.frame().active);
+        harness
+            .app
+            .world_mut()
+            .get_mut::<GlobalTransform>(harness.main_camera)
+            .unwrap()
+            .clone_from(&GlobalTransform::from(Transform::from_xyz(5.0, 120.0, 0.0)));
+        assert!(harness.frame().active, "a moved camera draws it again");
+    }
+
     fn main_camera_projection() -> Projection {
         Projection::Perspective(PerspectiveProjection {
             far: MAIN_CAMERA_FAR,
@@ -1085,6 +1228,31 @@ mod tests {
         let (_, tonemapping, exposure) = cameras.single(app.world()).unwrap();
         assert_eq!(*tonemapping, Tonemapping::None);
         assert_eq!(exposure.ev100, 9.7);
+    }
+
+    #[test]
+    fn a_tiled_gpu_draws_a_smaller_reflection_in_a_narrower_format() {
+        use crate::config::{GpuProfile, RenderScale};
+        use crate::gpu_tuning::GpuTuning;
+        use bevy::render::render_resource::TextureFormat;
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .insert_resource(GpuTuning::resolve(
+                GpuProfile::Tiled,
+                None,
+                RenderScale::Auto,
+                true,
+            ))
+            .add_systems(Startup, setup_water_reflection);
+        app.update();
+        let target = &app.world().resource::<WaterReflectionTexture>().0;
+        let image = app.world().resource::<Assets<Image>>().get(target).unwrap();
+        assert_eq!(
+            image.texture_descriptor.format,
+            TextureFormat::Rg11b10Ufloat
+        );
+        assert_eq!(image.size(), UVec2::new(768, 432));
     }
 
     #[test]
@@ -1303,14 +1471,14 @@ mod tests {
     }
 
     #[test]
-    fn terrain_sampler_repeats_with_linear_mips_and_16x_anisotropy() {
+    fn terrain_sampler_repeats_with_linear_mips_and_anisotropy() {
         let sampler = terrain_layer_sampler();
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
         assert_eq!(sampler.mag_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.min_filter, bevy::image::ImageFilterMode::Linear);
         assert_eq!(sampler.mipmap_filter, bevy::image::ImageFilterMode::Linear);
-        assert_eq!(sampler.anisotropy_clamp, 16);
+        assert_eq!(sampler.anisotropy_clamp, SAMPLER_ANISOTROPY);
     }
 
     use crate::world::cache::TerrainLayerSnapshot;
@@ -1739,13 +1907,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn animated_water_advances_the_shader_phase() {
+    /// The app [`pin_water_phase`] runs in, with one water material, after one frame.
+    fn water_phase_after_a_frame(config: crate::config::EngineConfig) -> f32 {
         let mut app = App::new();
-        app.init_resource::<Time>()
+        app.insert_resource(config)
             .init_resource::<Assets<WaterMaterial>>()
             .init_resource::<ProfilingState>()
-            .add_systems(Update, animate_water_materials);
+            .add_systems(Update, pin_water_phase);
         let handle = app
             .world_mut()
             .resource_mut::<Assets<WaterMaterial>>()
@@ -1753,16 +1921,32 @@ mod tests {
                 base: StandardMaterial::default(),
                 extension: WaterExtension::default(),
             });
-        app.world_mut()
-            .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_secs(2));
         app.update();
-        let material = app
-            .world()
+        app.world()
             .resource::<Assets<WaterMaterial>>()
             .get(&handle)
-            .unwrap();
-        assert_eq!(material.extension.settings.wave_scale_speed_strength.w, 2.0);
+            .unwrap()
+            .extension
+            .settings
+            .wave_scale_speed_strength
+            .w
+    }
+
+    #[test]
+    fn water_waves_run_on_the_shader_clock_outside_captures() {
+        assert_eq!(
+            water_phase_after_a_frame(crate::config::EngineConfig::default()),
+            ANIMATED_WAVE_PHASE
+        );
+    }
+
+    #[test]
+    fn captures_pin_the_water_phase() {
+        let config = crate::config::EngineConfig {
+            terrain_water_fixture: true,
+            ..default()
+        };
+        assert_eq!(water_phase_after_a_frame(config), PINNED_WAVE_TIME);
     }
 
     #[test]
@@ -1789,6 +1973,34 @@ mod tests {
         assert!(
             !RendererMetrics {
                 renderer_validation_failures: 1,
+                ..complete.clone()
+            }
+            .final_path_active()
+        );
+        // Views set up without occlusion culling owe no occlusion or HZB view.
+        assert!(
+            RendererMetrics {
+                occlusion_culling_views: 0,
+                hzb_views: 0,
+                occlusion_culling_off: true,
+                ..complete.clone()
+            }
+            .final_path_active()
+        );
+        // Views that draw directly owe no indirect batch.
+        assert!(
+            RendererMetrics {
+                indirect_drawing_active: false,
+                indirect_batch_sets: 0,
+                indirect_drawing_off: true,
+                ..complete.clone()
+            }
+            .final_path_active()
+        );
+        assert!(
+            !RendererMetrics {
+                indirect_drawing_active: false,
+                indirect_batch_sets: 0,
                 ..complete
             }
             .final_path_active()
@@ -1831,14 +2043,14 @@ mod tests {
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_w, ImageAddressMode::Repeat);
-        // Repeat and 16x anisotropy retain linear filtering and the default mip range.
+        // Repeat and anisotropy retain linear filtering and the default mip range.
         let default_sampler = ImageSamplerDescriptor::linear();
         assert_eq!(sampler.mag_filter, default_sampler.mag_filter);
         assert_eq!(sampler.min_filter, default_sampler.min_filter);
         assert_eq!(sampler.mipmap_filter, default_sampler.mipmap_filter);
         assert_eq!(sampler.lod_min_clamp, default_sampler.lod_min_clamp);
         assert_eq!(sampler.lod_max_clamp, default_sampler.lod_max_clamp);
-        assert_eq!(sampler.anisotropy_clamp, 16);
+        assert_eq!(sampler.anisotropy_clamp, SAMPLER_ANISOTROPY);
         assert_eq!(sampler.compare, default_sampler.compare);
         assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
         assert_eq!(

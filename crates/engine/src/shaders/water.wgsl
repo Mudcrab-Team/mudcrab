@@ -3,7 +3,7 @@
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
 }
-#import bevy_pbr::mesh_view_bindings::view
+#import bevy_pbr::mesh_view_bindings::{globals, view}
 
 struct WaterSettings {
     wave_scale_speed_strength: vec4<f32>,
@@ -24,7 +24,11 @@ struct WaterSettings {
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     let scale = water.wave_scale_speed_strength.x;
-    let phase = water.wave_scale_speed_strength.w * water.wave_scale_speed_strength.y;
+    // A negative phase runs the waves on the frame clock; zero or more pins them (`render.rs`,
+    // `ANIMATED_WAVE_PHASE`).
+    let pinned = water.wave_scale_speed_strength.w;
+    let time = select(globals.time, pinned, pinned >= 0.0);
+    let phase = time * water.wave_scale_speed_strength.y;
     let strength = water.wave_scale_speed_strength.z;
     let p = in.world_position.xz * scale + water.flow_direction.xy * phase;
     var dx = cos(p.x + sin(p.y * 1.7)) * strength;
