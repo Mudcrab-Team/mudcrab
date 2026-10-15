@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from unittest import mock
 import zlib
 
@@ -26,12 +27,12 @@ def json_file(path, value):
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def png(width=2, height=1, compressed=None):
+def png(width=2, height=1, compressed=None, color=2, depth=8):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
     return (
         b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, 0))
         + chunk(b"IDAT", compressed if compressed is not None else zlib.compress((b"\0" + b"\x40\x80\xa0" * width) * height))
         + chunk(b"IEND", b"")
     )
@@ -147,6 +148,41 @@ class ValidationTests(unittest.TestCase):
         self.assertFalse(result["functional_checks_passed"])
         self.assertTrue(any("camera offset" in message for message in result["failures"]))
         self.assertTrue(any("inputs changed" in message for message in result["failures"]))
+
+    def test_black_capture_is_rejected_for_every_filter_and_alpha(self):
+        for color, channels in ((0, 1), (2, 3), (4, 2), (6, 4)):
+            for filter_type in range(5):
+                with self.subTest(color=color, filter=filter_type):
+                    # Opaque alpha must not make black RGB appear nonblack.
+                    pixel = bytes(channels - 1) + b"\xff" if color in (4, 6) else bytes(channels)
+                    first = b"\0" + pixel * 2
+                    current = pixel * 2
+                    previous = current
+                    encoded = bytearray()
+                    for i, value in enumerate(current):
+                        left = current[i - channels] if i >= channels else 0
+                        up = previous[i]
+                        corner = previous[i - channels] if i >= channels else 0
+                        predictors = (0, left, up, (left + up) // 2)
+                        if filter_type == 4:
+                            estimate = left + up - corner
+                            distances = [abs(estimate - x) for x in (left, up, corner)]
+                            predictor = (left, up, corner)[distances.index(min(distances))]
+                        else:
+                            predictor = predictors[filter_type]
+                        encoded.append((value - predictor) & 255)
+                    image = png(height=2, color=color, compressed=zlib.compress(first + bytes([filter_type]) + encoded))
+                    (self.root / "frame.png").write_bytes(image)
+                    self.assertTrue(any("nonblack" in x for x in self.validate()["failures"]))
+
+    def test_visible_pixel_passes_but_transparent_color_does_not(self):
+        for color, pixels, accepted in ((6, b"\xff\x00\x00\xff" * 2, True),
+                                        (6, b"\xff\x00\x00\x00" * 2, False),
+                                        (4, b"\x80\xff" * 2, True),
+                                        (0, b"\x00\x80", True)):
+            with self.subTest(color=color, accepted=accepted):
+                (self.root / "frame.png").write_bytes(png(color=color, compressed=zlib.compress(b"\0" + pixels)))
+                self.assertEqual(self.validate()["functional_checks_passed"], accepted)
 
     def test_truncated_or_corrupt_png_cannot_pass_by_header_dimensions(self):
         for image in (png()[:24], png()[:-12], png()[:40] + b"broken" + png()[46:]):
@@ -414,6 +450,33 @@ class ProcessTests(unittest.TestCase):
             if campaign.poll() is None:
                 campaign.kill()
                 campaign.communicate(timeout=5)
+
+    def test_interrupt_while_publishing_owned_group_preserves_partial_evidence(self):
+        self.engine.write_text(self.engine.read_text() + "import time\ntime.sleep(60)\n")
+        output = self.root / "interrupted-publication"
+        output.mkdir()
+        args = RUNNER.parse_args(self.command(output)[2:])
+        write_json = RUNNER.write_json
+        interrupted = False
+
+        def interrupt_publication(path, value):
+            nonlocal interrupted
+            write_json(path, value)
+            if "owned_process_group" in value and value["ended_utc"] is None and not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt
+
+        directory = output / "16mib-01"
+        with patch.object(RUNNER, "write_json", side_effect=interrupt_publication):
+            result, stopped = RUNNER.run_one(args, directory, 16, "16mib-01", os.environ.copy())
+        self.assertTrue(stopped)
+        self.assertFalse(result["functional_checks_passed"])
+        manifest = json.loads((directory / "run.json").read_text())
+        self.assertTrue(manifest["interrupted"])
+        self.assertIsNotNone(manifest["ended_utc"])
+        self.assertTrue((directory / "validation.json").is_file())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(manifest["owned_process_group"], 0)
 
 
 if __name__ == "__main__":

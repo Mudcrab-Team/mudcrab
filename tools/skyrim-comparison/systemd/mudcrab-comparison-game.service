@@ -1,0 +1,8 @@
+[Unit]
+Description=Isolated Skyrim SE comparison game
+After=mudcrab-comparison-display.service mudcrab-comparison-steam.service
+Requires=mudcrab-comparison-display.service
+[Service]
+ExecStart=/run/current-system/sw/bin/python3 /home/taylor/Games/MudcrabComparison/bin/launch-headless-game.py
+WorkingDirectory=/home/taylor/Games/MudcrabComparison
+KillMode=control-group

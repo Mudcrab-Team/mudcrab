@@ -228,6 +228,9 @@ V172: LOD pipeline retains ≤ CPU worker count completed chunk payloads per bat
 V173: Winning LAND selected by highest plugin priority; distinct LAND records tied at the winning priority abort before publishing, including user mod lists. LOD cell-cache snapshot read/validated once per stage; each winning diffuse source read once & each selected authored DDS mip decoded once per stage; tier images shared across worlds/FormIDs; source bytes reverified before publication.
 V174: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; bytes 5–7 unused, excluded from typed/exported flags. Raw flags/unused bytes retained; normal load-order path remaps parent only & drops non-eight-byte XESP. Missing/truncated XESP → absent parent/flags.
 
+V210: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
+V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -275,6 +278,9 @@ T40|.|Deferred by owner 2026-10-03: PR105 final-head Fiji stationary/moving/reco
 T41|x|Separate test-job kache cache; action input verified against upstream action.yml; main CI log confirms shared-key save collision and 0/778 hits|V117
 T42|x|Strengthen quaternion/performance regressions & preserve both legacy schema gates|V118
 T70|x|Remove redundant atlas compression; fuse diffuse decode/tier resizing; share stage inputs; bounded transactional chunk batches; verified prior-package chunk reuse; correctness regressions & cold/warm Fiji measurements|V29,V72,V92,V93,V100,V103,V105,V114,V115,V170,V171,V172,V173
+
+T110|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V210
+T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
 
 ## §B BUGS
 
@@ -361,6 +367,13 @@ B78|2026-10-04|report-projection fixture and serialized snapshot retained old re
 B79|2026-10-05|Clippy & tests share immutable kache key; Clippy cache prevents test-artifact save|V117; independent test-job prefix
 B80|2026-10-05|Non-finite guard uncovered; ten-second tiny-workload budgets & tautological assert hid regressions|V118
 B81|2026-10-05|Proposed20x scaling threshold uncalibrated; unchanged linear-pass writer measured26–28x across four release samples|V118; measured40x gate, keep warmed medians & absolute budgets
+
+B210|2026-10-05|GPU tests validated shader/container without dispatching encoder|V210
+
+B211|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict Clippy|use as_chunks::<4>(); mechanical lint fix, V210 unchanged
+
+B212|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V210,V118; same workspace/target selection for both test steps
+B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190
 B170|2026-10-04|Fiji terrain LOD took 3302.352s for 4673 chunks; every enabled run rebuilt all chunks; atlas independently encoded supplied mips then discarded extra generated pyramid; per-world cache reads & per-tier DDS decodes repeated; world retained all GLBs|V170,V171,V172,V173; measured contributions pending
 B171|2026-10-06|XESP exporter & typed ACHR decoder read flags plus three unused bytes as u32, persisting non-zero retail padding as flags|V174; shared one-byte decoder; padded/missing/truncated regressions
 B172|2026-10-09|Cached GLB forward node/mesh links used unchecked indexing, and reuse refusal reasons were discarded|V171; checked links, matching-hash malformed-cache regression, refusal notices and per-world totals; V116 overall weights unchanged

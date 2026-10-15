@@ -1844,7 +1844,7 @@ fn validate_ktx2(bytes: &[u8], encoding: TextureEncoding) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use basis_universal::{
         DecodeFlags, LowLevelUastcTranscoder, SliceParametersUastc, TranscoderBlockFormat,
@@ -3965,7 +3965,7 @@ mod tests {
         out
     }
 
-    fn decode_uastc_level(bytes: &[u8], mip: usize) -> Vec<u8> {
+    pub(crate) fn decode_uastc_level(bytes: &[u8], mip: usize) -> Vec<u8> {
         let reader = ktx2::Reader::new(bytes).unwrap();
         let header = reader.header();
         let level = reader.levels().nth(mip).unwrap();

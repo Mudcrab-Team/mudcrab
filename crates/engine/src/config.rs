@@ -1,4 +1,8 @@
-use crate::{skyrim_ini::SkyrimIni, world::components::CELL_SIZE};
+use crate::{
+    color_pipeline::{SCENE_GRADE_VALUES, SceneGradeMode, SceneVisualPreset},
+    skyrim_ini::SkyrimIni,
+    world::components::CELL_SIZE,
+};
 use bevy::prelude::Resource;
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
@@ -71,6 +75,10 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    pub sun_shadow_distance_limit: Option<f32>,
+    /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
+    pub sun_position: Option<(f32, f32)>,
     pub terrain_lod: TerrainLodDistances,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
@@ -80,6 +88,24 @@ pub struct EngineConfig {
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
     pub max_model_spawns_per_frame: usize,
+    /// Camera and bounds based queue ordering. Off preserves fixed FIFO activation.
+    pub prioritize_streaming: bool,
+    /// Outstanding unique Scene(0) jobs, including recursive CPU dependencies.
+    /// Zero retains unlimited admission; this count does not bound memory bytes.
+    pub max_scene_loads: usize,
+    /// Opt-in startup, walking and recovery budgets. Also enables spatial priority.
+    pub adaptive_streaming: bool,
+    /// Downstream queue high watermark; zero disables it outside adaptive mode.
+    pub max_streaming_backlog: usize,
+    /// Estimated streaming allocation allowance. Zero disables memory admission
+    /// outside adaptive mode, which otherwise uses a finite automatic allowance.
+    pub streaming_memory_mib: usize,
+    /// Override for converter-generated streaming cost metadata.
+    pub streaming_costs: Option<PathBuf>,
+    /// Free system memory reserved for the rest of the process and other apps.
+    pub streaming_headroom_mib: usize,
+    /// Controller frame target. Benchmark acceptance keeps its separate thresholds.
+    pub streaming_frame_ms: f64,
     /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
     /// threads, at least one and at most four. A nonzero count must be at most
     /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
@@ -90,10 +116,37 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Select the cinematic A/B experiment without changing scene lighting.
+    pub color_grade: SceneGradeMode,
+    /// Named sky and grading look; Vivid preserves the approved configuration.
+    pub visual_preset: SceneVisualPreset,
+    /// Seed a live world camera from a validated one-pose shots file.
+    pub start_shot: Option<PathBuf>,
+    /// Accept developer console commands on this process's stdin.
+    pub stdin_console: bool,
+    /// Disable Bevy's GPU timing and pipeline-statistics query collection.
+    pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
+    /// `--benchmark-jump <grid-x>,<grid-y>`: once the world around the camera is first fully
+    /// loaded, move the camera to the centre of that cell of the same worldspace and measure how
+    /// long the world takes to become fully loaded again (`time_to_world_ready_after_jump_ms`).
+    /// Coordinates must be within [`JUMP_GRID_LIMIT`]; anything further out is ignored with a
+    /// warning, since the position maths would not survive it.
+    pub benchmark_jump: Option<(i32, i32)>,
+    /// Keep the interactive app's presentation mode for an opt-in benchmark.
+    pub benchmark_vsync: bool,
+    /// Dedicated post-settlement camera route; Some(0) measures its stationary tail.
+    pub streaming_benchmark_route_speed: Option<f64>,
+    pub streaming_benchmark_route_secs: f64,
+    pub streaming_benchmark_tail_secs: f64,
+    pub streaming_benchmark_settle_secs: f64,
+    pub streaming_benchmark_expected_models: Option<u64>,
+    pub streaming_benchmark_expected_lod_chunks: Option<usize>,
+    pub streaming_benchmark_expected_terrain: Option<u64>,
+    pub streaming_benchmark_expected_water: Option<u64>,
     pub benchmark_output: PathBuf,
     /// Where to write every measured frame time, in order, as CSV (`--benchmark-frame-times`).
     /// Off by default: the report's summary is what acceptance reads; the series is for choosing
@@ -109,6 +162,7 @@ pub struct EngineConfig {
     pub allow_incomplete_assets: bool,
     pub synthetic_instances: usize,
     pub profile_output_dir: Option<PathBuf>,
+    pub profile_gpu_inventory: bool,
     pub profile_scenario: String,
     pub profile_run_id: String,
     pub profile_commit: String,
@@ -124,6 +178,8 @@ pub struct EngineConfig {
     /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
     /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
     pub shots_out: Option<PathBuf>,
+    /// Maximum settling time per shot, in seconds.
+    pub shots_settle_timeout: f32,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -145,6 +201,8 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            sun_shadow_distance_limit: None,
+            sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
@@ -157,6 +215,14 @@ impl Default for EngineConfig {
             // still spreads a burst over frames; `0` arms the whole batch at once, the behaviour
             // before this budget existed (docs/roadmap/02-profiling.md, "Load speed defaults").
             max_model_spawns_per_frame: 32,
+            prioritize_streaming: false,
+            max_scene_loads: 0,
+            adaptive_streaming: false,
+            max_streaming_backlog: 0,
+            streaming_memory_mib: 0,
+            streaming_costs: None,
+            streaming_headroom_mib: 2_048,
+            streaming_frame_ms: 16.67,
             // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
             io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
@@ -166,10 +232,25 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            color_grade: SceneGradeMode::Full,
+            visual_preset: SceneVisualPreset::Vivid,
+            start_shot: None,
+            stdin_console: false,
+            no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
+            benchmark_jump: None,
+            benchmark_vsync: false,
+            streaming_benchmark_route_speed: None,
+            streaming_benchmark_route_secs: 45.0,
+            streaming_benchmark_tail_secs: 10.0,
+            streaming_benchmark_settle_secs: 5.0,
+            streaming_benchmark_expected_models: None,
+            streaming_benchmark_expected_lod_chunks: None,
+            streaming_benchmark_expected_terrain: None,
+            streaming_benchmark_expected_water: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
             run_label: None,
@@ -180,6 +261,7 @@ impl Default for EngineConfig {
             allow_incomplete_assets: false,
             synthetic_instances: 250_000,
             profile_output_dir: None,
+            profile_gpu_inventory: false,
             profile_scenario: "adhoc".into(),
             profile_run_id: "run-1".into(),
             profile_commit: "unknown".into(),
@@ -190,6 +272,7 @@ impl Default for EngineConfig {
             shots: None,
             matched_route: None,
             shots_out: None,
+            shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -220,6 +303,9 @@ Assets and start position:
   --worldspace <id>                     worldspace form id, decimal or 0x-hex (default: 0x3c)
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
+  --start-shot <file>                  start the live camera at one exterior shot pose
+  --stdin-console                     accept developer console commands on stdin
+  --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
@@ -231,6 +317,15 @@ Streaming:
   --max-commit-ms <ms>                  cell commit time allowed per frame (default: 16.67)
   --max-unloads-per-frame <count>       cells despawned per frame; 0 despawns all at once (default: 2)
   --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
+  --prioritize-streaming               prioritize nearby collision and view-facing bounds
+  --max-scene-loads <count>             outstanding unique scene jobs; 0 is unlimited (default: 0)
+  --adaptive-streaming                 adapt startup/walking budgets; enables spatial priority
+  --max-streaming-backlog <count>      downstream queue limit; 0 disables it, adaptive uses 256
+  --streaming-memory-mib <mib>         estimated allowance; 0 disables it unless adaptive
+                                     adaptive: half detected RAM, at most 16 GiB (fallback: 8 GiB)
+  --streaming-costs <file>             override streaming cost metadata (default: asset pack metadata)
+  --streaming-headroom-mib <mib>       system memory kept free (default: 2048)
+  --streaming-frame-ms <ms>            controller frame target (default: 16.67)
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
@@ -240,6 +335,16 @@ Benchmark and profiling:
   --benchmark-frames <count>            stop after this many measured frames
   --benchmark-duration <seconds>        stop after this many measured seconds
   --benchmark-warmup-frames <count>     frames discarded before measuring (default: 60)
+  --benchmark-jump <x,y>                after the world first loads, jump to this grid cell and time the reload
+  --benchmark-vsync                     use the interactive app's vsync during benchmarks
+  --streaming-benchmark-route-speed <units/s>  start a real-time route after CPU settlement; 0 is stationary
+  --streaming-benchmark-route-secs <seconds>   moving route duration (default: 45)
+  --streaming-benchmark-tail-secs <seconds>    stationary tail duration (default: 10)
+  --streaming-benchmark-settle-secs <seconds>  continuous CPU-settled wait before starting (default: 5)
+  --streaming-benchmark-expected-models <count>       optional initial validated model count
+  --streaming-benchmark-expected-lod-chunks <count>   optional initial resident LOD chunk count
+  --streaming-benchmark-expected-terrain <count>      optional initial validated terrain patch count
+  --streaming-benchmark-expected-water <count>        optional initial validated water surface count
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
   --run-label [<text>]                  name the run in the window title
@@ -250,9 +355,14 @@ Benchmark and profiling:
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
+  --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear (default: full)
+  --visual-preset <vivid|cool-gray>      select sky and grading look (default: vivid)
+  --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
+  --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
   --profile-run-id <id>                 run id recorded in the profile (default: run-1)
   --profile-commit <hash>               commit recorded in the profile (default: unknown)
@@ -389,6 +499,42 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    pub fn streaming_controls_enabled(&self) -> bool {
+        self.adaptive_streaming || self.max_streaming_backlog != 0 || self.streaming_memory_mib != 0
+    }
+
+    pub fn streaming_backlog_limit(&self) -> usize {
+        if self.max_streaming_backlog == 0 && self.adaptive_streaming {
+            256
+        } else {
+            self.max_streaming_backlog
+        }
+    }
+
+    /// A limit on estimated streaming allocations, not process RSS. Without an
+    /// explicit adaptive limit this returns the 8 GiB fallback; the runtime
+    /// selects half detected RAM within the 16 GiB and system-headroom limits.
+    /// Available system memory is checked separately before reservations.
+    pub fn memory_budget_bytes(&self) -> Option<u64> {
+        let mib = if self.streaming_memory_mib != 0 {
+            self.streaming_memory_mib
+        } else if self.adaptive_streaming {
+            8_192
+        } else {
+            return None;
+        };
+        Some(
+            mib.checked_mul(1024 * 1024)
+                .expect("streaming memory size must fit bytes") as u64,
+        )
+    }
+
+    pub fn streaming_headroom_bytes(&self) -> u64 {
+        self.streaming_headroom_mib
+            .checked_mul(1024 * 1024)
+            .expect("streaming headroom size must fit bytes") as u64
+    }
+
     /// The per-frame render-asset upload budget in bytes, or `None` when
     /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
     pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
@@ -397,9 +543,12 @@ impl EngineConfig {
     }
 
     /// Interactive exterior play owns the mouse/controller; automated camera paths keep their
-    /// existing movement and framing.
+    /// existing movement and framing. A `--benchmark-jump` run is one of those even without a frame
+    /// limit: the jump moves only the camera, and in WALK the camera follow would put it straight
+    /// back at the player's body.
     pub fn interactive_world_physics(&self) -> bool {
         !self.headless
+            && self.benchmark_jump.is_none()
             && !self.hidden_window
             && !self.benchmark_only
             && self.benchmark_frames.is_none()
@@ -408,6 +557,7 @@ impl EngineConfig {
             && self.shots.is_none()
             && self.matched_route.is_none()
             && self.auto_fly_speed <= 0.0
+            && self.streaming_benchmark_route_speed.is_none()
             && !self.material_fixture
             && !self.terrain_water_fixture
             && !self.transform_bounds_fixture
@@ -420,10 +570,31 @@ impl EngineConfig {
         Self::from_args(std::env::args().skip(1))
     }
 
+    /// Whether this is a benchmark run: `--benchmark-frames` or `--benchmark-duration` was given.
+    /// The same test the report uses to decide whether to write itself (`metrics::collect_and_finish`),
+    /// so anything that only makes sense for a benchmark can key off it.
+    pub fn is_benchmark_run(&self) -> bool {
+        self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some()
+    }
+
+    /// Whether the pacing instrumentation should run at all. It is measurement only, and only a
+    /// benchmark report or the profiling campaign (itself a benchmark run) reads it, so an ordinary
+    /// play session installs none of it. A jump without a frame limit or duration still installs it:
+    /// the jump is documented to run without a report and warn that it has none.
+    pub fn measures_pacing(&self) -> bool {
+        self.is_benchmark_run() || self.benchmark_jump.is_some()
+    }
+
+    /// Whether the readiness scan records how far behind the flying camera each model finishes
+    /// loading. Only the pacing report reads it, so a plain `--auto-fly-speed` run records nothing.
+    pub fn records_fly_lag(&self) -> bool {
+        self.auto_fly_speed > 0.0 && self.measures_pacing()
+    }
+
     /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
     /// the taskbar says what it is. An interactive run is plain "Mudcrab".
     pub fn window_title(&self) -> String {
-        let kind = if self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some() {
+        let kind = if self.is_benchmark_run() {
             Some("benchmark")
         } else if self.streaming_fixture {
             Some("streaming fixture")
@@ -542,6 +713,54 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--prioritize-streaming" => config.prioritize_streaming = true,
+                "--max-scene-loads" => {
+                    config.max_scene_loads = take_value(
+                        "--max-scene-loads",
+                        "a scene job count, 0 for unlimited",
+                        args.next(),
+                    )?;
+                }
+                "--adaptive-streaming" => {
+                    config.adaptive_streaming = true;
+                    config.prioritize_streaming = true;
+                }
+                "--max-streaming-backlog" => {
+                    config.max_streaming_backlog = take_value(
+                        "--max-streaming-backlog",
+                        "a downstream queue count, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-memory-mib" => {
+                    config.streaming_memory_mib = take_mib(
+                        "--streaming-memory-mib",
+                        "a MiB size that fits bytes, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-costs" => {
+                    config.streaming_costs = Some(take_value(
+                        "--streaming-costs",
+                        "a file path for streaming cost metadata",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-headroom-mib" => {
+                    config.streaming_headroom_mib = take_mib(
+                        "--streaming-headroom-mib",
+                        "a MiB size that fits bytes, 0 to reserve no headroom",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-frame-ms" => {
+                    config.streaming_frame_ms = take_number(
+                        "--streaming-frame-ms",
+                        "a positive number of milliseconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
                 // 0 keeps the automatic size; a count past the cap is refused like a value that
                 // fails to parse.
                 "--io-threads" => {
@@ -594,6 +813,86 @@ impl EngineConfig {
                 "--benchmark-warmup-frames" => {
                     config.benchmark_warmup_frames =
                         take_value("--benchmark-warmup-frames", "a frame count", args.next())?;
+                }
+                // Unlike its neighbours, a bad jump only warns: the jump is an add-on to a
+                // benchmark run, which still measures and writes its report without it.
+                "--benchmark-jump" => match args.next_if(|value| !value.starts_with("--")) {
+                    Some(raw) => match parse_grid(&raw) {
+                        Some(value) if in_jump_grid_range(value) => {
+                            config.benchmark_jump = Some(value)
+                        }
+                        Some((x, y)) => eprintln!(
+                            "warning: ignoring --benchmark-jump {x},{y}: grid coordinates must be within {}..={JUMP_GRID_LIMIT}",
+                            -JUMP_GRID_LIMIT
+                        ),
+                        None => eprintln!(
+                            "warning: ignoring malformed --benchmark-jump {raw:?}; expected \"<grid-x>,<grid-y>\" integers"
+                        ),
+                    },
+                    None => eprintln!(
+                        "warning: missing value for --benchmark-jump; expected \"<grid-x>,<grid-y>\" integers"
+                    ),
+                },
+                "--benchmark-vsync" => config.benchmark_vsync = true,
+                "--streaming-benchmark-route-speed" => {
+                    config.streaming_benchmark_route_speed = Some(take_number(
+                        "--streaming-benchmark-route-speed",
+                        "a finite speed in units per second, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-route-secs" => {
+                    config.streaming_benchmark_route_secs = take_number(
+                        "--streaming-benchmark-route-secs",
+                        "a positive finite number of seconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-tail-secs" => {
+                    config.streaming_benchmark_tail_secs = take_number(
+                        "--streaming-benchmark-tail-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-settle-secs" => {
+                    config.streaming_benchmark_settle_secs = take_number(
+                        "--streaming-benchmark-settle-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-expected-models" => {
+                    config.streaming_benchmark_expected_models = Some(take_value(
+                        "--streaming-benchmark-expected-models",
+                        "a model count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-lod-chunks" => {
+                    config.streaming_benchmark_expected_lod_chunks = Some(take_value(
+                        "--streaming-benchmark-expected-lod-chunks",
+                        "a LOD chunk count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-terrain" => {
+                    config.streaming_benchmark_expected_terrain = Some(take_value(
+                        "--streaming-benchmark-expected-terrain",
+                        "a terrain patch count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-water" => {
+                    config.streaming_benchmark_expected_water = Some(take_value(
+                        "--streaming-benchmark-expected-water",
+                        "a water surface count",
+                        args.next(),
+                    )?);
                 }
                 "--benchmark-output" => {
                     config.benchmark_output = take_value(
@@ -669,6 +968,7 @@ impl EngineConfig {
                         take_value("--profile-commit", "a commit hash", args.next())?;
                 }
                 "--profile-dirty-worktree" => config.profile_dirty_worktree = true,
+                "--profile-gpu-inventory" => config.profile_gpu_inventory = true,
                 "--profile-hardware" => {
                     config.profile_hardware = take_value(
                         "--profile-hardware",
@@ -705,8 +1005,58 @@ impl EngineConfig {
                         args.next(),
                     )?);
                 }
+                "--color-grade" => {
+                    let raw = take_raw("--color-grade", SCENE_GRADE_VALUES, args.next())?;
+                    config.color_grade = SceneGradeMode::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--color-grade", Some(raw), SCENE_GRADE_VALUES)
+                    })?;
+                }
+                "--visual-preset" => {
+                    let raw = take_raw("--visual-preset", "vivid or cool-gray", args.next())?;
+                    config.visual_preset = SceneVisualPreset::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--visual-preset",
+                            Some(raw),
+                            "vivid or cool-gray",
+                        )
+                    })?;
+                }
+                "--sun-position" => {
+                    let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
+                    config.sun_position = Some(parse_sun_position(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--sun-position",
+                            Some(raw),
+                            SUN_POSITION_EXPECTED,
+                        )
+                    })?);
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
+                }
+                "--start-shot" => {
+                    config.start_shot = Some(take_value(
+                        "--start-shot",
+                        "a one-pose shots file",
+                        args.next(),
+                    )?);
+                }
+                "--stdin-console" => config.stdin_console = true,
+                "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--shots-settle-timeout" => {
+                    const EXPECTED: &str = "a positive number of seconds up to 600";
+                    let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
+                    config.shots_settle_timeout = raw
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|value| value.is_finite() && *value > 0.0 && *value <= 600.0)
+                        .ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--shots-settle-timeout",
+                                Some(raw),
+                                EXPECTED,
+                            )
+                        })?;
                 }
                 "--shots-out" => {
                     config.shots_out = Some(take_value(
@@ -726,7 +1076,93 @@ impl EngineConfig {
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
         }
+        config.drop_jump_the_run_would_overwrite();
+        if config.streaming_benchmark_route_speed.is_some()
+            && (config.benchmark_only
+                || config.acceptance_screenshot.is_some()
+                || config.shots.is_some()
+                || config.material_fixture
+                || config.terrain_water_fixture
+                || config.transform_bounds_fixture
+                || config.renderer_fixture
+                || config.streaming_fixture
+                || config.physics_fixture)
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-speed",
+                config
+                    .streaming_benchmark_route_speed
+                    .map(|speed| speed.to_string()),
+                "a world camera route without screenshots, shots, synthetic mode or fixtures",
+            ));
+        }
+        if let Some(speed) = config.streaming_benchmark_route_speed
+            && (!(speed * config.streaming_benchmark_route_secs).is_finite()
+                || !(config.streaming_benchmark_route_secs + config.streaming_benchmark_tail_secs)
+                    .is_finite())
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-secs",
+                Some(config.streaming_benchmark_route_secs.to_string()),
+                "a duration whose route distance and total duration remain finite",
+            ));
+        }
         Ok(ConfigAction::Run(Box::new(config)))
+    }
+
+    /// The reason text for a fixture run that builds no streaming runtime (see `app.rs`), or
+    /// `None` when none of those fixtures is selected.
+    fn non_streaming_fixture(&self) -> Option<&'static str> {
+        if self.material_fixture {
+            Some("--material-fixture creates no streaming runtime to jump in")
+        } else if self.terrain_water_fixture {
+            Some("--terrain-water-fixture creates no streaming runtime to jump in")
+        } else if self.transform_bounds_fixture {
+            Some("--transform-bounds-fixture creates no streaming runtime to jump in")
+        } else if self.renderer_fixture {
+            Some("--renderer-fixture creates no streaming runtime to jump in")
+        } else if self.physics_fixture {
+            Some("--physics-fixture creates no streaming runtime to jump in")
+        } else {
+            None
+        }
+    }
+
+    /// `--benchmark-jump` moves the camera once, so a run that keeps driving it would undo the
+    /// jump: auto-fly keeps moving it, the streaming fixture moves it every frame, a shots run poses
+    /// it for each shot, and a screenshot run anchors streaming on the start cell. A synthetic
+    /// `--benchmark-only` run loads no world, so nothing would carry the jump out.
+    fn drop_jump_the_run_would_overwrite(&mut self) {
+        let reason = if self.benchmark_only {
+            Some("--benchmark-only loads no world to jump in")
+        } else if let Some(fixture) = self.non_streaming_fixture() {
+            Some(fixture)
+        } else if self.auto_fly_speed > 0.0 {
+            Some("--auto-fly-speed keeps driving the camera")
+        } else if self.acceptance_screenshot.is_some() {
+            Some("--acceptance-screenshot anchors streaming on the start cell")
+        } else if self.streaming_fixture {
+            Some("--streaming-fixture moves the camera every frame")
+        } else if self.shots.is_some() {
+            Some("--shots sets the camera pose for each shot")
+        } else {
+            None
+        };
+        let Some(reason) = reason else {
+            // The jump still runs, but with no frame limit or duration no benchmark report (which
+            // carries the pacing fields) is written, so there is nothing to read the jump out of.
+            if let Some((x, y)) = self.benchmark_jump
+                && !self.is_benchmark_run()
+            {
+                eprintln!(
+                    "warning: --benchmark-jump {x},{y} has no report to appear in without --benchmark-frames or --benchmark-duration"
+                );
+            }
+            return;
+        };
+        if let Some((x, y)) = self.benchmark_jump.take() {
+            eprintln!("warning: ignoring --benchmark-jump {x},{y}: {reason}");
+        }
     }
 }
 
@@ -738,6 +1174,10 @@ pub const MAX_STREAM_RADIUS: i32 = (i32::MAX - 3) / 2;
 /// What `--stream-radius` takes, with [`MAX_STREAM_RADIUS`] spelled out; a test holds the two
 /// equal.
 const STREAM_RADIUS_EXPECTED: &str = "a cell count from 0 to 1073741822";
+
+/// What `--sun-position` takes: azimuth clockwise from north, then elevation above the horizon.
+const SUN_POSITION_EXPECTED: &str =
+    "two finite angles in degrees: azimuth,elevation (elevation 0 to 90)";
 
 /// Test shorthand for a command line that must ask for a run.
 #[cfg(test)]
@@ -759,6 +1199,37 @@ fn parse_offset(value: &str) -> Option<(f32, f32, f32)> {
         return None;
     }
     Some((x, y, z))
+}
+
+/// The furthest grid coordinate `--benchmark-jump` accepts. The jump position maths subtracts the
+/// render origin and scales by the cell size, so an extreme `i32` would overflow; half the distance
+/// to `i32::MAX` in cells is far past any converted world.
+const JUMP_GRID_LIMIT: i32 = 512;
+
+fn in_jump_grid_range((x, y): (i32, i32)) -> bool {
+    (-JUMP_GRID_LIMIT..=JUMP_GRID_LIMIT).contains(&x)
+        && (-JUMP_GRID_LIMIT..=JUMP_GRID_LIMIT).contains(&y)
+}
+
+fn parse_grid(value: &str) -> Option<(i32, i32)> {
+    let mut parts = value.split(',');
+    let x: i32 = parts.next()?.trim().parse().ok()?;
+    let y: i32 = parts.next()?.trim().parse().ok()?;
+    parts.next().is_none().then_some((x, y))
+}
+
+fn parse_sun_position(value: &str) -> Option<(f32, f32)> {
+    let mut parts = value.split(',');
+    let azimuth: f32 = parts.next()?.trim().parse().ok()?;
+    let elevation: f32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some()
+        || !azimuth.is_finite()
+        || !elevation.is_finite()
+        || !(0.0..=90.0).contains(&elevation)
+    {
+        return None;
+    }
+    Some((azimuth.rem_euclid(360.0), elevation))
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -800,6 +1271,18 @@ fn take_value<T: std::str::FromStr>(
     value
         .parse::<T>()
         .map_err(|_| ConfigError::invalid_value(option, Some(value), expected))
+}
+
+fn take_mib(
+    option: &'static str,
+    expected: &'static str,
+    value: Option<String>,
+) -> Result<usize, ConfigError> {
+    let raw = take_raw(option, expected, value)?;
+    raw.parse::<usize>()
+        .ok()
+        .filter(|mib| mib.checked_mul(1024 * 1024).is_some())
+        .ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
 }
 
 /// The range a numeric option's value must fall in. Neither admits NaN or an infinity.
@@ -934,8 +1417,18 @@ mod tests {
         "--ignore-submodules",   // git diff
         "--quiet",               // git diff
         "--short",               // git rev-parse
-        "--output",              // world inspection, profiling, startup runner
+        "--output",              // world-inspect, repeat-terrain-startup.py, profiling
         "--pairs-output",        // correlate_drawables.py
+        "--native-preset",       // prepare_skyrim_comparison.py
+        "--calibration",         // prepare_skyrim_comparison.py
+        "--timeout",             // run_skyrim_comparison.py
+        "--user",                // systemctl
+        "--property",            // systemctl
+        "--value",               // systemctl
+        "--onlyvisible",         // xdotool
+        "--name",                // xdotool
+        "--sync",                // xdotool
+        "--psm",                 // tesseract
         "--radius",              // world-inspect
         "--library-path",        // ld-linux
         "--meshes",              // audit-collision.py
@@ -975,6 +1468,16 @@ mod tests {
         "--timeout",             // repeat-terrain-startup.py
         "--launch-prefix",       // repeat-terrain-startup.py
         "--commit",              // repeat-terrain-startup.py
+        "--costs",               // compare-streaming-modes.py
+        "--thermal-probe",       // compare-streaming-modes.py
+        "--ablation-repeats",    // compare-streaming-modes.py
+        "--resume",              // compare-streaming-modes.py
+        "--seed",                // streaming comparison scripts
+        "--smoke",               // compare-streaming-modes.py
+        "--experiment",          // analyze-streaming-comparison.py
+        "--output-dir",          // analyze-streaming-comparison.py
+        "--bootstrap-samples",   // analyze-streaming-comparison.py
+        "--comparison",          // analyze-streaming-comparison.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -1017,6 +1520,291 @@ mod tests {
     }
 
     #[test]
+    fn gpu_inventory_is_separate_from_normal_profile_output() {
+        assert!(!EngineConfig::default().profile_gpu_inventory);
+        assert!(!run_config(&["--profile-output", "profiles/test"]).profile_gpu_inventory);
+        let diagnostic = run_config(&[
+            "--profile-gpu-inventory",
+            "--profile-output",
+            "profiles/test",
+        ]);
+        assert!(diagnostic.profile_gpu_inventory);
+        assert_eq!(
+            diagnostic.profile_output_dir,
+            Some(PathBuf::from("profiles/test"))
+        );
+        // Parsing the switch alone must not implicitly enable profile collection.
+        let without_output = run_config(&["--profile-gpu-inventory"]);
+        assert!(without_output.profile_gpu_inventory);
+        assert!(without_output.profile_output_dir.is_none());
+    }
+
+    #[test]
+    fn demand_scheduling_is_opt_in_and_keeps_zero_unlimited() {
+        let defaults = EngineConfig::default();
+        assert!(!defaults.prioritize_streaming);
+        assert_eq!(defaults.max_scene_loads, 0);
+        let candidate = run_config(&["--prioritize-streaming", "--max-scene-loads", "32"]);
+        assert!(candidate.prioritize_streaming);
+        assert_eq!(candidate.max_scene_loads, 32);
+        assert_eq!(run_config(&["--max-scene-loads", "0"]).max_scene_loads, 0);
+        assert!(matches!(
+            parse_error(&["--max-scene-loads", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_controls_default_off_and_preserve_fixed_limits() {
+        let config = run_config(&[]);
+        assert!(!config.adaptive_streaming);
+        assert!(!config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 0);
+        assert_eq!(config.memory_budget_bytes(), None);
+        assert_eq!(config.streaming_headroom_bytes(), 2_048 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 16.67);
+        assert!(config.streaming_costs.is_none());
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+        assert_eq!(config.max_upload_bytes_per_frame(), Some(16 * 1024 * 1024));
+    }
+
+    #[test]
+    fn dedicated_streaming_benchmark_route_is_opt_in_and_accepts_stationary_speed() {
+        let defaults = run_config(&[]);
+        assert!(!defaults.benchmark_vsync);
+        assert!(defaults.streaming_benchmark_route_speed.is_none());
+        assert_eq!(defaults.streaming_benchmark_settle_secs, 5.0);
+        let config = run_config(&[
+            "--streaming-benchmark-route-speed",
+            "0",
+            "--streaming-benchmark-route-secs",
+            "45",
+            "--streaming-benchmark-tail-secs",
+            "10",
+            "--streaming-benchmark-settle-secs",
+            "5",
+            "--streaming-benchmark-expected-models",
+            "2029",
+            "--streaming-benchmark-expected-lod-chunks",
+            "176",
+            "--streaming-benchmark-expected-terrain",
+            "100",
+            "--streaming-benchmark-expected-water",
+            "25",
+            "--benchmark-vsync",
+        ]);
+        assert_eq!(config.streaming_benchmark_route_speed, Some(0.0));
+        assert_eq!(config.streaming_benchmark_route_secs, 45.0);
+        assert_eq!(config.streaming_benchmark_tail_secs, 10.0);
+        assert_eq!(config.streaming_benchmark_expected_models, Some(2029));
+        assert_eq!(config.streaming_benchmark_expected_lod_chunks, Some(176));
+        assert_eq!(config.streaming_benchmark_expected_terrain, Some(100));
+        assert_eq!(config.streaming_benchmark_expected_water, Some(25));
+        assert!(config.benchmark_vsync);
+        assert!(!config.interactive_world_physics());
+        assert!(!config.streaming_controls_enabled());
+    }
+
+    #[test]
+    fn benchmark_route_rejects_invalid_numbers_and_anchored_camera_modes() {
+        for option in [
+            "--streaming-benchmark-route-speed",
+            "--streaming-benchmark-tail-secs",
+            "--streaming-benchmark-settle-secs",
+        ] {
+            for value in ["-1", "NaN", "inf"] {
+                assert!(matches!(
+                    parse_error(&[option, value]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+        }
+        for value in ["0", "-1", "NaN", "inf"] {
+            assert!(matches!(
+                parse_error(&["--streaming-benchmark-route-secs", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        for args in [
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--acceptance-screenshot",
+                "out.png",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--shots",
+                "poses.json",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--benchmark-only",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--physics-fixture",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "1e308",
+                "--streaming-benchmark-route-secs",
+                "1e308",
+            ],
+        ] {
+            assert!(matches!(
+                parse_error(&args),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn adaptive_mode_enables_priority_and_finite_automatic_pipeline_limits() {
+        let config = run_config(&["--adaptive-streaming"]);
+        assert!(config.adaptive_streaming);
+        assert!(config.prioritize_streaming);
+        assert!(config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        // Legacy fields keep their meaning; the runtime translates unlimited
+        // values into finite controller ceilings only for adaptive mode.
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+    }
+
+    #[test]
+    fn explicit_pipeline_limits_override_adaptive_fallbacks() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--max-streaming-backlog",
+            "48",
+            "--streaming-memory-mib",
+            "4096",
+            "--streaming-headroom-mib",
+            "1024",
+            "--streaming-frame-ms",
+            "33.33",
+            "--streaming-costs",
+            "metadata/custom-costs.json",
+        ]);
+        assert_eq!(config.streaming_backlog_limit(), 48);
+        assert_eq!(config.memory_budget_bytes(), Some(4_096 * 1024 * 1024));
+        assert_eq!(config.streaming_headroom_bytes(), 1_024 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(
+            config.streaming_costs,
+            Some(PathBuf::from("metadata/custom-costs.json"))
+        );
+    }
+
+    #[test]
+    fn backlog_and_memory_admission_can_be_enabled_without_adaptation() {
+        for args in [
+            vec!["--max-streaming-backlog", "64"],
+            vec!["--streaming-memory-mib", "1024"],
+        ] {
+            let config = run_config(&args);
+            assert!(config.streaming_controls_enabled());
+            assert!(!config.adaptive_streaming);
+            assert!(!config.prioritize_streaming);
+        }
+        for args in [
+            vec!["--max-streaming-backlog", "0"],
+            vec!["--streaming-memory-mib", "0"],
+            vec!["--streaming-costs", "costs.json"],
+            vec!["--streaming-frame-ms", "8.33"],
+            vec!["--streaming-headroom-mib", "0"],
+        ] {
+            assert!(!run_config(&args).streaming_controls_enabled());
+        }
+    }
+
+    #[test]
+    fn zero_pipeline_limits_select_automatic_limits_only_in_adaptive_mode() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--streaming-memory-mib",
+            "0",
+            "--max-streaming-backlog",
+            "0",
+            "--streaming-headroom-mib",
+            "0",
+        ]);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.streaming_headroom_bytes(), 0);
+    }
+
+    #[test]
+    fn pipeline_mib_values_must_fit_bytes_and_negative_values_are_rejected() {
+        let overflow = (usize::MAX / (1024 * 1024) + 1).to_string();
+        let maximum = (usize::MAX / (1024 * 1024)).to_string();
+        for option in ["--streaming-memory-mib", "--streaming-headroom-mib"] {
+            for invalid in ["-1", "NaN", "inf", overflow.as_str()] {
+                assert!(matches!(
+                    parse_error(&[option, invalid]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+            let config = run_config(&[option, &maximum]);
+            if option == "--streaming-memory-mib" {
+                assert_eq!(
+                    config.memory_budget_bytes(),
+                    Some((usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64)
+                );
+            } else {
+                assert_eq!(
+                    config.streaming_headroom_bytes(),
+                    (usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64
+                );
+            }
+        }
+        assert!(matches!(
+            parse_error(&["--max-streaming-backlog", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_frame_target_is_positive_finite_and_independent_of_acceptance() {
+        for value in ["0", "-1", "NaN", "inf", "-inf", "1e999"] {
+            assert!(matches!(
+                parse_error(&["--streaming-frame-ms", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        let config = run_config(&["--streaming-frame-ms", "33.33"]);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(config.accept_p95_ms, 16.67);
+        assert_eq!(config.accept_min_fps, 60.0);
+    }
+
+    #[test]
+    fn pipeline_options_require_values_without_swallowing_following_flags() {
+        for option in [
+            "--max-streaming-backlog",
+            "--streaming-memory-mib",
+            "--streaming-costs",
+            "--streaming-headroom-mib",
+            "--streaming-frame-ms",
+        ] {
+            assert!(matches!(
+                parse_error(&[option]),
+                ConfigError::InvalidValue { value: None, .. }
+            ));
+            assert!(matches!(
+                parse_error(&[option, "--headless"]),
+                ConfigError::InvalidValue { value: Some(value), .. } if value == "--headless"
+            ));
+        }
+    }
+
+    #[test]
     fn help_shows_the_model_spawn_default_the_engine_uses() {
         let line = HELP_TEXT
             .lines()
@@ -1027,6 +1815,73 @@ mod tests {
             .expect("--help has a --max-model-spawns-per-frame line");
         let default = EngineConfig::default().max_model_spawns_per_frame;
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
+    }
+
+    #[test]
+    fn parses_live_start_camera_and_opt_in_stdin_console() {
+        let config = run_config(&[
+            "--start-shot",
+            "camera.json",
+            "--stdin-console",
+            "--no-render-diagnostics",
+        ]);
+        assert_eq!(config.start_shot, Some(PathBuf::from("camera.json")));
+        assert!(config.stdin_console);
+        assert!(config.no_render_diagnostics);
+        assert!(config.interactive_world_physics());
+        assert!(!EngineConfig::default().stdin_console);
+        assert!(!EngineConfig::default().no_render_diagnostics);
+        assert!(
+            parse_error(&["--start-shot"])
+                .to_string()
+                .contains("--start-shot")
+        );
+    }
+
+    #[test]
+    fn parses_visual_preset_without_changing_diagnostic_grade() {
+        assert_eq!(
+            EngineConfig::default().visual_preset,
+            SceneVisualPreset::Vivid
+        );
+        for (value, expected) in [
+            ("vivid", SceneVisualPreset::Vivid),
+            ("COOL-GRAY", SceneVisualPreset::CoolGray),
+        ] {
+            let config = run_config(&["--visual-preset", value, "--color-grade", "saturation"]);
+            assert_eq!(config.visual_preset, expected);
+            assert_eq!(config.color_grade, SceneGradeMode::Saturation);
+        }
+        for args in [
+            &["--visual-preset"][..],
+            &["--visual-preset", "invalid"][..],
+        ] {
+            assert!(parse_error(args).to_string().contains("--visual-preset"));
+        }
+    }
+
+    #[test]
+    fn parses_color_grade_and_rejects_unknown_modes() {
+        for (value, wanted) in [
+            ("off", SceneGradeMode::Off),
+            ("saturation", SceneGradeMode::Saturation),
+            ("FULL", SceneGradeMode::Full),
+            ("SNAPSHOT-SRGB", SceneGradeMode::SnapshotSrgb),
+            ("snapshot-linear", SceneGradeMode::SnapshotLinear),
+        ] {
+            assert_eq!(run_config(&["--color-grade", value]).color_grade, wanted);
+        }
+        assert_eq!(EngineConfig::default().color_grade, SceneGradeMode::Full);
+        assert!(
+            parse_error(&["--color-grade", "bad"])
+                .to_string()
+                .contains(SCENE_GRADE_VALUES)
+        );
+        assert!(
+            parse_error(&["--color-grade"])
+                .to_string()
+                .contains("--color-grade")
+        );
     }
 
     /// Hidden capture selects rendering without enabling interactive mouse ownership.
@@ -1112,6 +1967,57 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_benchmark_jump_target() {
+        let config = EngineConfig::run_from_args(["--benchmark-jump", "12,-7"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, Some((12, -7)));
+        assert_eq!(EngineConfig::default().benchmark_jump, None);
+        for bad in ["12", "12,", "a,b", "1,2,3", "1.5,2", ""] {
+            let config = EngineConfig::run_from_args(["--benchmark-jump", bad].map(str::to_owned));
+            assert_eq!(config.benchmark_jump, None, "{bad:?}");
+        }
+        // A missing value sets no target and does not swallow the next option.
+        let config = EngineConfig::run_from_args(["--benchmark-jump"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, None);
+        let config =
+            EngineConfig::run_from_args(["--benchmark-jump", "--headless"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, None);
+        assert!(config.headless);
+    }
+
+    #[test]
+    fn a_jump_grid_coordinate_is_dropped_when_out_of_range() {
+        let args =
+            |list: &[&str]| EngineConfig::run_from_args(list.iter().map(|v| (*v).to_owned()));
+        // The ends of the accepted range are kept.
+        assert_eq!(
+            args(&["--benchmark-jump", "512,-512"]).benchmark_jump,
+            Some((512, -512))
+        );
+        assert_eq!(
+            args(&["--benchmark-jump", "-512,512"]).benchmark_jump,
+            Some((-512, 512))
+        );
+        // One past either end is dropped, including the extremes that would overflow the position
+        // maths, and a flag after it is still read.
+        for bad in [
+            "513,0",
+            "0,513",
+            "-513,0",
+            "0,-513",
+            "2147483647,0",
+            "0,-2147483648",
+        ] {
+            let config = args(&["--benchmark-jump", bad, "--benchmark-frames", "60"]);
+            assert_eq!(config.benchmark_jump, None, "{bad:?}");
+            assert_eq!(
+                config.benchmark_frames,
+                Some(60),
+                "{bad:?} ate the next flag"
+            );
+        }
+    }
+
+    #[test]
     fn a_negative_budget_is_refused() {
         for option in [
             "--max-unloads-per-frame",
@@ -1129,6 +2035,135 @@ mod tests {
     }
 
     #[test]
+    fn pacing_is_measured_only_for_a_benchmark_or_a_jump() {
+        assert!(!EngineConfig::default().measures_pacing());
+        assert!(
+            EngineConfig {
+                benchmark_frames: Some(60),
+                ..EngineConfig::default()
+            }
+            .measures_pacing()
+        );
+        assert!(
+            EngineConfig {
+                benchmark_duration_secs: Some(30.0),
+                ..EngineConfig::default()
+            }
+            .measures_pacing()
+        );
+        // A jump without a frame limit or duration still runs, and warns that it has no report.
+        assert!(
+            EngineConfig {
+                benchmark_jump: Some((3, 4)),
+                ..EngineConfig::default()
+            }
+            .measures_pacing()
+        );
+    }
+
+    #[test]
+    fn fly_lag_is_recorded_only_while_flying_in_a_measured_run() {
+        let flying = EngineConfig {
+            auto_fly_speed: 900.0,
+            ..EngineConfig::default()
+        };
+        assert!(!flying.records_fly_lag(), "flying alone measures nothing");
+        assert!(
+            EngineConfig {
+                benchmark_frames: Some(60),
+                ..flying.clone()
+            }
+            .records_fly_lag()
+        );
+        assert!(
+            !EngineConfig {
+                benchmark_frames: Some(60),
+                ..EngineConfig::default()
+            }
+            .records_fly_lag(),
+            "a benchmark that does not fly has no fly lag"
+        );
+    }
+
+    #[test]
+    fn a_jump_is_ignored_when_the_run_drives_the_camera() {
+        let args =
+            |list: &[&str]| EngineConfig::run_from_args(list.iter().map(|v| (*v).to_owned()));
+        // In either order of the flags.
+        for list in [
+            ["--benchmark-jump", "3,4", "--auto-fly-speed", "900"],
+            ["--auto-fly-speed", "900", "--benchmark-jump", "3,4"],
+        ] {
+            let config = args(&list);
+            assert_eq!(config.benchmark_jump, None, "{list:?}");
+            assert_eq!(config.auto_fly_speed, 900.0);
+        }
+        let config = args(&[
+            "--benchmark-jump",
+            "3,4",
+            "--acceptance-screenshot",
+            "a.png",
+        ]);
+        assert_eq!(config.benchmark_jump, None);
+        // The streaming fixture drives the camera every frame too.
+        let config = args(&["--benchmark-jump", "3,4", "--streaming-fixture"]);
+        assert_eq!(config.benchmark_jump, None);
+        assert!(config.streaming_fixture);
+        // A shots run poses the camera for each shot, and a jump would move it off a pose.
+        let config = args(&[
+            "--benchmark-jump",
+            "3,4",
+            "--benchmark-frames",
+            "600",
+            "--shots",
+            "shots.json",
+        ]);
+        assert_eq!(config.benchmark_jump, None);
+        assert!(config.shots.is_some());
+        // A synthetic benchmark loads no world, so no streaming system would issue the jump.
+        let config = args(&[
+            "--benchmark-only",
+            "--benchmark-frames",
+            "120",
+            "--benchmark-jump",
+            "1,2",
+        ]);
+        assert_eq!(config.benchmark_jump, None);
+        assert!(config.benchmark_only);
+        // The single-scene fixtures create no streaming runtime either.
+        for flag in [
+            "--material-fixture",
+            "--terrain-water-fixture",
+            "--transform-bounds-fixture",
+            "--renderer-fixture",
+            "--physics-fixture",
+        ] {
+            let config = args(&["--benchmark-jump", "3,4", "--benchmark-frames", "600", flag]);
+            assert_eq!(config.benchmark_jump, None, "{flag}");
+        }
+        assert_eq!(
+            args(&["--benchmark-jump", "3,4"]).benchmark_jump,
+            Some((3, 4))
+        );
+    }
+
+    /// Without a frame limit or duration no report is written, so the jump has nowhere to appear:
+    /// the run warns but keeps the target (an interactive run may still be worth watching).
+    #[test]
+    fn a_jump_without_a_report_keeps_the_target() {
+        let config = EngineConfig::run_from_args(["--benchmark-jump", "3,4"].map(str::to_owned));
+        assert_eq!(config.benchmark_jump, Some((3, 4)));
+        assert!(!config.is_benchmark_run());
+        // The jump is an automated camera path: no player whose WALK camera follow would undo it.
+        assert!(!config.interactive_world_physics());
+        let config = EngineConfig::run_from_args(
+            ["--benchmark-jump", "3,4", "--benchmark-frames", "600"].map(str::to_owned),
+        );
+        assert_eq!(config.benchmark_jump, Some((3, 4)));
+        assert!(config.is_benchmark_run());
+    }
+
+    #[test]
     fn parses_screenshot_camera_offset() {
         let config = run_config(&["--screenshot-camera-offset", "0,6000,12000"]);
         assert_eq!(
@@ -1138,6 +2173,25 @@ mod tests {
         let config = run_config(&["--screenshot-camera-offset", "-10, 2.5 ,0"]);
         assert_eq!(config.screenshot_camera_offset, Some((-10.0, 2.5, 0.0)));
         assert_eq!(EngineConfig::default().screenshot_camera_offset, None);
+    }
+
+    #[test]
+    fn parses_the_optional_sun_bearing_and_elevation() {
+        let config = run_config(&["--sun-position", "450,35"]);
+        assert_eq!(config.sun_position, Some((90.0, 35.0)));
+
+        for value in ["0", "north,35", "0,91", "0,-1", "0,35,2", "NaN,35"] {
+            assert!(
+                matches!(
+                    parse_error(&["--sun-position", value]),
+                    ConfigError::InvalidValue {
+                        option: "--sun-position",
+                        ..
+                    }
+                ),
+                "{value} was accepted"
+            );
+        }
     }
 
     #[test]
@@ -1225,6 +2279,22 @@ mod tests {
                 .window_title()
                 .contains("matched-route")
         );
+    }
+
+    #[test]
+    fn shots_settle_timeout_is_finite_positive_and_bounded() {
+        assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
+        assert_eq!(
+            run_config(&["--shots-settle-timeout", "120"]).shots_settle_timeout,
+            120.0
+        );
+        for value in ["0", "-1", "NaN", "inf", "601"] {
+            assert!(
+                parse_error(&["--shots-settle-timeout", value])
+                    .to_string()
+                    .contains("--shots-settle-timeout")
+            );
+        }
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a
@@ -1406,6 +2476,10 @@ mod tests {
             },
             EngineConfig {
                 shots: Some("poses.json".into()),
+                ..EngineConfig::default()
+            },
+            EngineConfig {
+                benchmark_jump: Some((3, 4)),
                 ..EngineConfig::default()
             },
             EngineConfig {

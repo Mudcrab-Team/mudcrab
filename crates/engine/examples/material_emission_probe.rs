@@ -21,7 +21,7 @@ use converter::{
     texture::{TextureConverter, TextureEncoding},
 };
 use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
-use engine::color_pipeline::SceneColorPipeline;
+use engine::color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -223,6 +223,7 @@ fn main() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>(),
     )
+    .add_plugins(SkyrimCinematicPostPlugin)
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
     ));

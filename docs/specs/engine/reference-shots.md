@@ -41,7 +41,7 @@ do not capture interactive mouse/controller input.
 
 | Field | Meaning |
 | :-- | :-- |
-| `width`, `height` | The frame size in pixels, at most 8192 each. The window is opened at this size, so the PNG is too, unless the system gives the window a different size (a screen smaller than the frame, for example); that shot's `shots.log` line then records `window=<w>x<h>`. Use the size the reference screenshots were taken at. |
+| `width`, `height` | The frame size in pixels, at most 8192 each. The production camera renders into a dedicated image target at this size, independent of window size or display scaling. Use the size the reference screenshots were taken at. |
 | `name` | Output file stem: the image is `<out>/<name>.png`. A plain file name, unique in the file, that Windows can create (see below). |
 | `worldspace_id` | The worldspace of an exterior shot (60 is Tamriel). `null` or absent leaves it to `--worldspace`. |
 | `interior_cell_id` | An interior cell. Such a shot is skipped and logged: the streamer holds exterior cells only. |
@@ -78,15 +78,14 @@ renderer's final path running, for `SETTLE_QUIET_FRAMES`
 pipelines compile. The frame count is exact: a view that has been quiet for ten frames running is
 photographed on the tenth, and the `frames=` of its log line is then 10 - the count of quiet
 frames is advanced before it is read, so it is not one more than the constant. The run then saves
-the primary window to `<out>/<name>.png`. A shot that has not settled after
-`SETTLE_TIMEOUT_SECONDS` (30 s) is still captured, and the log says the timeout took it and what
+the camera's dedicated image target to `<out>/<name>.png`. A shot that has not settled after
+`--shots-settle-timeout` seconds (default 30 s; positive, finite, at most 600 s) is still captured, and the log says the timeout took it and what
 was still pending or which failures prevented settling. A new failure prevents that shot from
 settling even after pending work drains; its timeout capture fails the run.
 
 `--shots-out` defaults to a `<file stem>-shots/` folder beside the shots file. `shots.log` there
 has one line per shot: its name, the frames it waited, whether it settled or timed out, the image's
-path, and, when the window was not the frame the file asked for, `window=<w>x<h>` - that image is
-not the shape the reference is, and the engine log warns about it once. Skipped shots have a line
+path and exact render-target dimensions. Skipped shots have a line
 saying why. Each line is appended as its shot finishes, and the file is created with the first
 line, so a run that is killed keeps the shots it had already taken.
 
@@ -97,6 +96,6 @@ acceptance run's gates did not pass. `scripts/phase2-acceptance.ps1` records tha
 command and marks the command failed on anything but 0, so a failed shots or acceptance run is now
 visible in a campaign report instead of being read as a pass.
 
-`--headless` is ignored during a shots run, since the image is taken of the window. `--shots`
+`--headless` is ignored during a shots run, because the shots runner requires the render loop. `--shots`
 cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-speed` or a fixture.
 `--run-label` names the run in the window title (`Mudcrab - shots: <label>`).
