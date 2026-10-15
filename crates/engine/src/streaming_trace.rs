@@ -144,6 +144,7 @@ pub(crate) struct StreamingFrameSample {
     pub completion_latencies_ms: BTreeMap<String, f64>,
     /// Sampled render-world aggregates retain their own source-frame identifiers.
     pub gpu: Option<crate::streaming_gpu_metrics::GpuPreparationObservation>,
+    pub adaptive: Option<crate::streaming::runtime::RuntimeSnapshot>,
 }
 
 #[derive(Resource)]
@@ -306,6 +307,7 @@ mod tests {
             scene_admission: None,
             scenes: SceneCounts::default(),
             process_memory_gib: None,
+            adaptive: None,
             cpu_spans_ms: BTreeMap::new(),
             completion_latencies_ms: BTreeMap::new(),
             gpu: None,

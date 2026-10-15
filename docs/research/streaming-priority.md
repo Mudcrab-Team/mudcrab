@@ -1,17 +1,17 @@
 # Streaming priority and scene admission
 
-This implements queue priority and an initial admission bound from [issue #202](https://github.com/Mudcrab-Team/mudcrab/issues/202), phases 2 and 3. Both are opt-in. It does not yet implement the startup/cruise controller, memory reservations, a downstream backlog limit or a bounded residency cache.
+This implements queue priority and shared scene admission from [issue #202](https://github.com/Mudcrab-Team/mudcrab/issues/202), phases 2 and 3. The optional [pipeline controls](adaptive-streaming.md) add downstream backpressure, estimated memory reservations and startup/cruise/recovery pacing. All controls are opt-in; the existing fixed path remains the default. There is no separately budgeted residency cache.
 
 ## Switches and limits
 
 | Option | Default | Effect |
 | --- | --- | --- |
 | `--prioritize-streaming` | Off | Order cell requests, unique scene dispatch and ready placement activation by relevant demand. |
-| `--max-scene-loads <count>` | `0` | Limit outstanding unique `Scene(0)` jobs. `0` means unlimited. |
+| `--max-scene-loads <count>` | `0` | Limit outstanding unique `Scene(0)` jobs. `0` means unlimited with pipeline controls disabled. |
 | `--max-model-spawns-per-frame <count>` | `32` | Limit ready placements handed to the scene spawner per frame. `0` means unlimited. |
 | `--max-upload-mib-per-frame <mib>` | `16` | Keep the existing soft render-asset preparation allowance. `0` means unlimited. |
 
-With both new switches at their defaults, the existing loading and FIFO activation path remains active. Either new switch enables shared scene admission for full-cell models and coarse terrain LOD. In that mode, both kinds of placement use the existing model activation quota. Setting a scene cap alone keeps sequence-based dispatch and FIFO ready activation; it does not enable spatial priority. Priority alone leaves scene admission unlimited.
+With priority, scene and pipeline controls at their defaults, the existing loading and FIFO activation path remains active. Priority, a scene cap or a pipeline control enables shared scene admission for full-cell models and coarse terrain LOD. Both kinds of placement share the model activation quota. Setting a scene cap alone keeps sequence-based dispatch and FIFO ready activation; it does not enable spatial priority. Priority alone leaves scene admission unlimited. Pipeline controls translate unlimited settings into finite ceilings and can temporarily pause intake; adaptive mode also enables spatial priority.
 
 The scene cap counts jobs still awaiting root or recursive CPU dependency completion. It does not limit individual GLB dependencies, decode scratch, queued ready placements, GPU uploads, resident bytes or frame duration. A count of 32 jobs is therefore neither a 32-asset memory bound nor a guarantee against running out of memory. The upload allowance remains soft because preparation starts whole assets.
 
@@ -31,7 +31,9 @@ The footprint estimate uses a forward hemisphere expanded by the bounding sphere
 
 Collision candidate priority applies to `STAT`, `TREE` and `FURN` references when interactive world physics is enabled. Automated benchmarks, screenshots and headless runs do not enable that physics path, so their scheduling captures do not exercise collision protection.
 
-Every eighth completed dispatch choice services the oldest queued scene demand. Every eighth completed activation choice similarly services the oldest ready placement. These counters advance when work is served, independently for the two stages, rather than once per frame. This also gives coarse or unknown-bound demand service. Collision protection is priority, not proof that a collider exists, is registered or prevents unsafe movement; aged service can select another job.
+Every eighth completed dispatch choice uses age-based service among eligible queued scene demand. Every eighth completed activation choice similarly services old ready placement demand. These counters advance when work is served, independently for the two stages, rather than once per frame. This also gives coarse or unknown-bound demand service. Refused memory reservations do not advance the service counter or start asset loads. They rotate behind untried candidates and then through retries so an unaffordable prefix cannot repeatedly consume every bounded scan. Collision protection is priority, not proof that a collider exists, is registered or prevents unsafe movement; aged service can select another job.
+
+Pipeline intake pauses do not skip ownership reconciliation or loader status polling. Already-dispatched jobs keep progressing and sharing handles. Bounded collision-only intake admits only actual protected collision demand and still obeys resource reservations and the hard scene cap. Admission attempts are limited to 128 per controlled frame and its wall-clock allowance, with at least one candidate attempt for progress. Reconciliation, sorting, fanout and individual loads remain indivisible work outside a strict dispatch-loop time bound.
 
 Unstarted requests in retiring full cells cannot dispatch or activate. Revival makes the retained requests eligible again. Existing LOD generation and unload checks remove irrelevant chunk roots. Removing the last placement subscriber cancels queued scene demand, but an already dispatched job keeps its handle and occupies a slot until the loader reports a terminal state. An absent loader state alone does not confirm cancellation.
 
@@ -49,7 +51,7 @@ LOD keeps its existing build/content validation, hash verification, bounded retr
 
 ## Trace fields
 
-The existing [streaming trace](streaming-trace.md) receives an additive `scene_admission` object when either new switch enables admission; the default fixed path records `null`. The trace retains `format_version: 1`, benchmark format 7 and the existing measured-frame CSV layout.
+The existing [streaming trace](streaming-trace.md) receives an additive `scene_admission` object when priority, a scene cap or pipeline controls enable admission; the default fixed path records `null`. Pipeline controls also report their effective budgets, mode, reasons and reservation observations. The trace retains `format_version: 1`, benchmark format 7 and the existing measured-frame CSV layout.
 
 | Field | Meaning |
 | --- | --- |
@@ -62,6 +64,8 @@ The existing [streaming trace](streaming-trace.md) receives an additive `scene_a
 | `peak_active` | Largest observed outstanding-job count. |
 
 Equivalent counts are exposed as `admission/*` gauges. `admission/cleanup_waiting_jobs` reports unique scenes waiting for failed-root cleanup. `streaming/admit_scenes` measures synchronous admission work, including reconciliation and state polling. `streaming/scene_admission_wait` records elapsed queue time when a subscriber receives its handle; it does not measure scene completion. Admission and CPU readiness do not establish GPU preparation, successful drawing or collision readiness.
+
+`admission/configured_job_limit` keeps the configured value, including legacy zero. When pipeline controls are enabled, `admission/effective_job_limit` reports the current finite ordinary-intake cap; zero means paused intake. `admission/reservation_attempts_this_frame` reports attempted dispatch reservations, including refusals. Existing/adopted handles are accounted for even if they already exceed a newly applied memory allowance; accounting does not cancel live work.
 
 The current production path does not report confirmed loader cancellation, so `canceled_total` remains zero. Orphaned loads stay active until success or failure is observed.
 
@@ -95,7 +99,7 @@ STREAMING_REVISION=replace-with-built-commit
   --profile-commit "$STREAMING_REVISION"
 ```
 
-The candidate cap of 32 is an example, not a selected default or a measured optimum. Add `--profile-dirty-worktree` when the binary includes uncommitted changes. The frame trace includes warmup and measured frames, so startup can be analyzed without discarding its first 600 frames. Keep the existing benchmark acceptance gates and inspect failures separately from functional completion. Remove `--prioritize-streaming` and set `--max-scene-loads 0` to restore the fixed path.
+The candidate cap of 32 is an example, not a selected default or a measured optimum. Add `--profile-dirty-worktree` when the binary includes uncommitted changes. The frame trace includes warmup and measured frames, so startup can be analyzed without discarding its first 600 frames. Keep the existing benchmark acceptance gates and inspect failures separately from functional completion. Remove `--prioritize-streaming` and `--adaptive-streaming`, and set scene, backlog and streaming-memory limits to zero to restore the fixed path.
 
 Repeat startup and movement captures, retain settled complete-load and visual checks, and report missing-building duration alongside frame pacing. Camera flight does not validate walking collision. This document describes scheduling behavior and makes no performance claim.
 
@@ -103,4 +107,6 @@ Repeat startup and movement captures, retain settled complete-load and visual ch
 
 The shared job cap covers referenced full-cell GLB scenes and coarse terrain LOD scenes. Full-detail terrain material images and water textures still load directly; generated terrain/water meshes and terrain collider construction occur during cell commitment. Scene dependency requests and later per-placement collision work also sit outside this job-count bound.
 
-Phase 3 still needs downstream backlog control and a bounded cache with release accounting. Phase 4 needs converter cost metadata and reservations covering dependencies, decode scratch, ECS/collision, generated terrain, render staging and residency, including these bypasses. Phase 5 adds the adaptive startup/cruise/recovery controller after those contracts and measurements exist. Current cell commit, retirement, model activation and upload settings remain independent fixed controls.
+The [pipeline controls](adaptive-streaming.md) now add feedback from downstream queues, converter cost metadata, shared/per-placement reservations, generated terrain/water accounting and adaptive budgets for phases 3–5. Reservations retain orphaned work until actual absence is confirmed and release preparation scratch separately from residency. Estimates and sampled feedback do not certify exact RSS, GPU residency, drawing or safe movement.
+
+A separately bounded residency cache, validated estimate calibration and reductions to expensive indivisible work remain follow-up work. Cell retirement retains its existing independent control.

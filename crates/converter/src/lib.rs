@@ -16,6 +16,7 @@ mod metadata;
 pub mod pipeline;
 pub mod progress;
 pub mod script;
+pub mod streaming_costs;
 pub mod texture;
 pub mod texture_gpu;
 
