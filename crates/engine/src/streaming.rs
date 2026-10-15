@@ -766,6 +766,7 @@ fn despawn_subtree(world: &mut World, root: Entity) -> usize {
     entities
 }
 
+/// Collect database responses, reject stale generations and commit cells within the shared budget.
 #[allow(clippy::too_many_arguments)]
 fn collect_cells(
     mut commands: Commands,
@@ -996,6 +997,7 @@ fn cell_within_unload_radius(key: CellKey, center: IVec2, radius: i32) -> bool {
     }
 }
 
+/// Build a cell hierarchy and request its model scenes, recording their IDs for optional tracing.
 #[allow(clippy::too_many_arguments)]
 fn spawn_cell(
     commands: &mut Commands,
@@ -1794,6 +1796,7 @@ fn mark_world_instance_ready(
     }
 }
 
+/// Validate spawned model instances, account for failures and record completed readiness latency.
 #[allow(clippy::too_many_arguments)]
 fn track_asset_readiness(
     mut commands: Commands,

@@ -27,6 +27,7 @@ use std::{
 pub struct AcceptanceMetricsPlugin;
 
 impl Plugin for AcceptanceMetricsPlugin {
+    /// Install benchmark collection and enable frame tracing when profile output is configured.
     fn build(&self, app: &mut App) {
         app.init_resource::<BenchmarkSamples>()
             .add_plugins((
@@ -75,6 +76,7 @@ struct BenchmarkSamples {
     finished: bool,
 }
 
+/// Classify the current frame before benchmark collection advances its counters.
 fn benchmark_window(config: &EngineConfig, samples: &BenchmarkSamples) -> BenchmarkWindow {
     if config.benchmark_frames.is_none() && config.benchmark_duration_secs.is_none() {
         BenchmarkWindow::OutsideBenchmark
@@ -95,6 +97,8 @@ struct PreviousCamera {
     rotation: Quat,
 }
 
+/// Record stable world coordinates and motion relative to the previous comparable camera.
+/// Origin rebases and equivalent quaternion signs do not count as movement.
 fn observe_camera(
     entity: Entity,
     transform: &GlobalTransform,
@@ -692,6 +696,7 @@ mod tests {
         assert!(!installed(None), "no config means no measured run");
     }
 
+    /// Verify trace frame ordering across all benchmark windows with GPU inventory on and off.
     #[test]
     fn trace_keeps_warmup_and_capture_settlement_on_one_frame_clock() {
         for gpu_inventory_enabled in [false, true] {
@@ -699,6 +704,7 @@ mod tests {
         }
     }
 
+    /// Run a short benchmark and verify frame windows, span attribution and exported frame IDs.
     fn check_trace_windows(gpu_inventory_enabled: bool) {
         use crate::profiling::ProfilingPlugin;
         use bevy::time::TimeUpdateStrategy;
@@ -787,6 +793,7 @@ mod tests {
         }
     }
 
+    /// Verify camera motion uses stable coordinates and resets across worldspace changes.
     #[test]
     fn camera_motion_ignores_rebases_and_quaternion_sign() {
         let entity = Entity::from_raw_u32(1).unwrap();

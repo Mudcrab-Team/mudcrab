@@ -322,6 +322,7 @@ pub(super) fn plan_lod_chunks(
     profiler.record_elapsed("lod/plan", started);
 }
 
+/// Collect LOD query results and request current chunks within the shared commit budget.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_lod_chunks(
     mut commands: Commands,
@@ -519,6 +520,7 @@ pub(super) fn collect_lod_chunks(
     profiler.record_elapsed("lod/collect", started);
 }
 
+/// Validate loaded LOD chunks and record completion latency or schedule retries for failures.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn track_lod_readiness(
     mut commands: Commands,

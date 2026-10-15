@@ -28,6 +28,7 @@ const MAX_STREAMING_SCENES: usize = 20_000;
 pub struct ProfilingPlugin;
 
 impl Plugin for ProfilingPlugin {
+    /// Install aggregate profiling and enable bounded frame tracing only for profile output.
     fn build(&self, app: &mut App) {
         app.init_resource::<ProfilingState>()
             .add_systems(Update, sample_scene_inventory);
@@ -72,6 +73,7 @@ pub struct ProfilingState {
 }
 
 impl Default for ProfilingState {
+    /// Start an empty aggregate profile with frame tracing disabled.
     fn default() -> Self {
         Self {
             started: Instant::now(),
@@ -116,6 +118,7 @@ impl ProfilingState {
         self.record_completed_latency_ms(name.into(), micros as f64 / 1000.0);
     }
 
+    /// Record elapsed asynchronous latency in the arrival frame and the aggregate profile.
     pub(crate) fn record_completed_latency_elapsed(
         &mut self,
         name: impl Into<String>,
@@ -124,6 +127,7 @@ impl ProfilingState {
         self.record_completed_latency_ms(name.into(), started.elapsed().as_secs_f64() * 1000.0);
     }
 
+    /// Accumulate completion latency separately from frame CPU spans while preserving aggregate samples.
     fn record_completed_latency_ms(&mut self, name: String, value: f64) {
         if self.trace.is_some() {
             *self
@@ -135,6 +139,7 @@ impl ProfilingState {
         push_bounded(self.cpu_spans_ms.entry(name).or_default(), value);
     }
 
+    /// Record a CPU span in the bounded aggregate and, when enabled, sum it into this frame.
     pub fn record_ms(&mut self, name: impl Into<String>, value: f64) {
         let name = name.into();
         if self.trace.is_some() {
@@ -152,10 +157,12 @@ impl ProfilingState {
         }
     }
 
+    /// Return the shared main-frame index used by trace samples and timeline events.
     pub(crate) fn main_frame(&self) -> u64 {
         self.frame
     }
 
+    /// Return milliseconds since this profiling session began.
     pub(crate) fn elapsed_ms(&self) -> f64 {
         self.started.elapsed().as_secs_f64() * 1000.0
     }
@@ -187,6 +194,7 @@ impl ProfilingState {
         });
     }
 
+    /// Collect render diagnostics and periodic memory samples, advancing the clock when tracing is off.
     pub fn sample_frame(
         &mut self,
         diagnostics: &DiagnosticsStore,
@@ -216,6 +224,8 @@ impl ProfilingState {
         }
     }
 
+    /// Write aggregate profiling files and the optional frame trace to the configured output directory.
+    /// Return without writing when no directory is configured; propagate filesystem and JSON errors.
     pub fn write_bundle(
         &self,
         config: &EngineConfig,
@@ -312,6 +322,8 @@ impl ProfilingState {
     }
 }
 
+/// Advance the trace clock, retain the real frame delta and clear frame-local span totals.
+/// Request a matching render observation when GPU inventory is enabled.
 fn begin_trace_frame(
     time: Res<Time<Real>>,
     bridge: Option<Res<StreamingGpuMetricsBridge>>,
@@ -326,6 +338,7 @@ fn begin_trace_frame(
     }
 }
 
+/// Refresh an observed scene from asset-server state, marking it inactive if no state remains.
 pub(crate) fn reconcile_scene(
     trace: &mut StreamingTrace,
     server: &AssetServer,
@@ -338,6 +351,8 @@ pub(crate) fn reconcile_scene(
     }
 }
 
+/// Classify scene loading, requiring recursive dependencies for CPU readiness.
+/// An absent load state remains unknown; scene or recursive dependency failures count as failed.
 fn scene_status(
     states: Option<(LoadState, DependencyLoadState, RecursiveDependencyLoadState)>,
 ) -> Option<SceneLoadStatus> {
@@ -698,6 +713,7 @@ mod tests {
         assert!((memory_slope(&samples).unwrap() - 0.1).abs() < 0.0001);
     }
 
+    /// Verify aggregate bundle files are written without a frame sidecar when tracing is disabled.
     #[test]
     fn writes_complete_profile_bundle() {
         let directory = tempfile::tempdir().unwrap();
@@ -744,6 +760,7 @@ mod tests {
         assert!(!directory.path().join("streaming-frames.json").exists());
     }
 
+    /// Verify ordinary runs install neither frame tracing nor the GPU inventory bridge.
     #[test]
     fn normal_runs_do_not_install_trace_collection() {
         let mut app = App::new();
@@ -753,6 +770,7 @@ mod tests {
         assert!(!app.world().contains_resource::<StreamingGpuMetricsBridge>());
     }
 
+    /// Verify profile output enables frame tracing while leaving GPU inventory disabled.
     #[test]
     fn profile_trace_does_not_install_expensive_gpu_inventory_by_default() {
         let mut app = App::new();
@@ -765,6 +783,7 @@ mod tests {
         assert!(!app.world().contains_resource::<StreamingGpuMetricsBridge>());
     }
 
+    /// Verify recursive dependency loading and failure determine scene readiness.
     #[test]
     fn scene_status_requires_recursive_dependencies_and_catches_their_failures() {
         use bevy::asset::{AssetLoadError, io::AssetReaderError};

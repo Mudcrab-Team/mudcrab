@@ -142,6 +142,7 @@ pub struct EngineConfig {
 }
 
 impl Default for EngineConfig {
+    /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
         Self {
             assets_dir: PathBuf::from("modern_assets"),
@@ -344,6 +345,7 @@ impl ConfigError {
 }
 
 impl fmt::Display for ConfigError {
+    /// Format a configuration error with the relevant option and usage guidance.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownOption {
@@ -1135,6 +1137,7 @@ mod tests {
         assert_eq!(config.io_threads, 0);
     }
 
+    /// Verify GPU inventory is opt-in and requires a profile output directory.
     #[test]
     fn gpu_inventory_is_separate_from_normal_profile_output() {
         assert!(!EngineConfig::default().profile_gpu_inventory);

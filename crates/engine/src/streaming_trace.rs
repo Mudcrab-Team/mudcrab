@@ -62,6 +62,7 @@ pub(crate) struct StreamingSnapshot {
 }
 
 impl From<&StreamingMetrics> for StreamingSnapshot {
+    /// Copy streaming counters into a trace snapshot, preserving lifetime and current-state meanings.
     fn from(value: &StreamingMetrics) -> Self {
         Self {
             loading_cells: value.loading_cells,
@@ -177,6 +178,7 @@ impl StreamingTrace {
         }
     }
 
+    /// Record whether this trace includes the separately enabled GPU inventory diagnostic.
     pub(crate) fn set_gpu_inventory_enabled(&mut self, enabled: bool) {
         self.gpu_inventory_enabled = enabled;
     }
@@ -267,6 +269,7 @@ impl StreamingTrace {
         }
     }
 
+    /// Append a frame with current scene counts, or count a dropped sample once capacity is reached.
     pub(crate) fn push_frame(&mut self, mut sample: StreamingFrameSample) {
         if self.samples.len() >= self.sample_capacity {
             self.dropped_samples = self.dropped_samples.saturating_add(1);
@@ -276,6 +279,7 @@ impl StreamingTrace {
         self.samples.push(sample);
     }
 
+    /// Borrow retained frame samples and report capacities, truncation and scene accounting.
     pub(crate) fn report(&self) -> StreamingTraceReport<'_> {
         StreamingTraceReport {
             format_version: 1,
@@ -313,6 +317,7 @@ mod tests {
     use super::*;
     use bevy::prelude::Assets;
 
+    /// Create a deterministic test frame with empty observations and a twenty-millisecond interval.
     fn frame(main_frame: u64, benchmark_window: BenchmarkWindow) -> StreamingFrameSample {
         StreamingFrameSample {
             main_frame,
@@ -329,6 +334,8 @@ mod tests {
         }
     }
 
+    /// Measure loaded-scene ledger scanning and frame appends at representative scene counts.
+    /// This manual CPU diagnostic excludes asset-server queries, rendering and serialization.
     #[test]
     #[ignore = "manual CPU-only ledger diagnostic; timings are not an acceptance gate"]
     fn measures_bounded_ledger_collection_cost() {
@@ -385,6 +392,7 @@ mod tests {
         }
     }
 
+    /// Verify retained frames are a startup prefix and rejected frames increase the truncation count.
     #[test]
     fn keeps_startup_samples_and_reports_truncation() {
         let mut trace = StreamingTrace::new(2, 1);
@@ -405,6 +413,7 @@ mod tests {
         assert_eq!(zero.report().dropped_samples, 1);
     }
 
+    /// Verify shared scene IDs and reloads preserve unique lifetime counts across state changes.
     #[test]
     fn shared_placements_and_reload_do_not_duplicate_lifetime_scene_counts() {
         let id = AssetId::<WorldAsset>::default();
@@ -435,6 +444,7 @@ mod tests {
         assert_eq!(counts.active_failed, 0);
     }
 
+    /// Compare running totals with a full recount after repeated scene transitions and capacity rejection.
     #[test]
     fn running_scene_counts_match_a_full_recount() {
         let assets = Assets::<WorldAsset>::default();
@@ -463,6 +473,7 @@ mod tests {
         assert!(!trace.scene_counts().identity_tracking_complete);
     }
 
+    /// Verify a full scene ledger rejects new IDs and reports incomplete identity tracking in frame samples.
     #[test]
     fn full_identity_ledger_remains_bounded_and_marks_counts_incomplete() {
         let assets = Assets::<WorldAsset>::default();
@@ -485,6 +496,7 @@ mod tests {
         assert_eq!(counts.lifetime_unique_cpu_loaded, 0);
     }
 
+    /// Verify sidecar serialization preserves null observations, benchmark labels and trace metadata.
     #[test]
     fn sidecar_schema_preserves_unavailable_data_and_window_labels() {
         let mut trace = StreamingTrace::new(4, 0);
@@ -520,6 +532,7 @@ mod tests {
         );
     }
 
+    /// Verify snapshot fields distinguish current queues and frame work from lifetime validation totals.
     #[test]
     fn placement_snapshot_keeps_lifetime_and_current_work_separate() {
         let metrics = StreamingMetrics {

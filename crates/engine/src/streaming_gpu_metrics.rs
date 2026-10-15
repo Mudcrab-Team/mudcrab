@@ -20,6 +20,7 @@ use std::{
 
 pub(crate) const GPU_INVENTORY_INTERVAL_FRAMES: u64 = 8;
 
+/// Sample frame one and subsequent eight-frame multiples, excluding the unset frame zero.
 fn should_observe_inventory(source_main_frame: u64) -> bool {
     source_main_frame > 0
         && (source_main_frame == 1
@@ -53,6 +54,8 @@ struct BridgeState {
 pub struct StreamingGpuMetricsBridge(Arc<Mutex<BridgeState>>);
 
 impl StreamingGpuMetricsBridge {
+    /// Request the newest main frame, ignoring older requests.
+    /// Without a render app, publish an unavailable observation rather than zero inventory counts.
     pub fn request(&self, main_frame: u64) {
         let Ok(mut state) = self.0.lock() else { return };
         if state
@@ -70,14 +73,17 @@ impl StreamingGpuMetricsBridge {
         }
     }
 
+    /// Clone the latest observation, returning `None` before publication or if the mutex is poisoned.
     pub fn latest(&self) -> Option<GpuPreparationObservation> {
         self.0.lock().ok()?.latest.clone()
     }
 
+    /// Return the latest requested main frame, or `None` if unset or the mutex is poisoned.
     fn requested_frame(&self) -> Option<u64> {
         self.0.lock().ok()?.requested_frame
     }
 
+    /// Publish observations in increasing source-frame and sequence order, allowing render pipeline lag.
     fn publish(&self, observation: GpuPreparationObservation) {
         let Ok(mut state) = self.0.lock() else { return };
         // A pipelined render frame may legitimately lag the newest request. Reject
@@ -97,6 +103,7 @@ impl StreamingGpuMetricsBridge {
 pub struct StreamingGpuMetricsPlugin;
 
 impl Plugin for StreamingGpuMetricsPlugin {
+    /// Share the observation bridge with the render app and sample after bind-group preparation.
     fn build(&self, app: &mut App) {
         app.init_resource::<StreamingGpuMetricsBridge>();
         let bridge = app.world().resource::<StreamingGpuMetricsBridge>().clone();
@@ -122,6 +129,7 @@ struct ExtractedRequest {
     sequence: u64,
 }
 
+/// Copy the requested main-frame identity into the render world for correlation.
 fn extract_request(
     bridge: Extract<Res<StreamingGpuMetricsBridge>>,
     mut request: ResMut<ExtractedRequest>,
@@ -129,6 +137,8 @@ fn extract_request(
     request.source_main_frame = bridge.requested_frame();
 }
 
+/// Sample render-resource inventories on the diagnostic cadence and publish collector CPU cost.
+/// Missing resources yield unknown counts; inventories do not establish placement readiness.
 fn observe_preparation(
     bridge: Res<StreamingGpuMetricsBridge>,
     mut request: ResMut<ExtractedRequest>,
@@ -202,7 +212,8 @@ fn observe_preparation(
     bridge.publish(observation);
 }
 
-// Matches #201's residency predicate without changing the retry module's API.
+/// Check that allocator ranges cover every vertex and required index.
+/// Required ranges must be present and large enough; zero indices need no index allocation.
 fn resident_ranges_match(
     vertex_count: u32,
     indexed_count: Option<u32>,
@@ -227,6 +238,7 @@ fn resident_ranges_match(
 mod tests {
     use super::*;
 
+    /// Verify headless requests report unavailable rendering with unknown inventory counts.
     #[test]
     fn headless_requests_report_unavailable_not_zero_ready() {
         let mut app = App::new();
@@ -241,6 +253,7 @@ mod tests {
         assert_eq!(result.material_bind_groups_ready, None);
     }
 
+    /// Verify lagging render results can publish while older frames, sequences and requests are rejected.
     #[test]
     fn bridge_accepts_lagging_pipeline_but_rejects_stale_results() {
         let bridge = StreamingGpuMetricsBridge::default();
@@ -268,6 +281,7 @@ mod tests {
         assert_eq!(bridge.requested_frame(), Some(10));
     }
 
+    /// Verify residency requires complete vertex and, for indexed meshes, index ranges.
     #[test]
     fn descriptors_require_complete_allocator_ranges() {
         assert!(!resident_ranges_match(4, Some(6), None, Some(0..6)));
@@ -290,6 +304,7 @@ mod tests {
         assert!(resident_ranges_match(4, None, Some(0..4), None));
     }
 
+    /// Verify missing render inventories report unknown counts while observed empty inventories report zero.
     #[test]
     fn absent_inventory_differs_from_observed_empty_inventory() {
         let mut app = App::new();
@@ -324,6 +339,7 @@ mod tests {
         assert_eq!(empty.render_observation_seq, 2);
     }
 
+    /// Verify inventory sampling includes frame one and eight-frame multiples only.
     #[test]
     fn inventory_cadence_samples_first_frame_and_eight_frame_multiples() {
         assert!(!should_observe_inventory(0));
