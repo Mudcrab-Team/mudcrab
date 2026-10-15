@@ -6228,9 +6228,10 @@ mod tests {
     /// Times artifact validation on a real converted output, for before/after comparisons.
     ///
     /// `MUDCRAB_VALIDATE_OUTPUT` names a converted output folder, which is only read.
-    /// `MUDCRAB_VALIDATE_LIMIT` caps the artifact count; the cap samples the manifest evenly so
-    /// every kind is represented. `MUDCRAB_VALIDATE_JOBS` sets the thread count (default: every
-    /// core, as a conversion does). Run with
+    /// `MUDCRAB_VALIDATE_LIMIT` caps the artifact count by sampling evenly across the sorted
+    /// manifest; this does not guarantee every artifact kind is represented.
+    /// `MUDCRAB_VALIDATE_JOBS` sets the thread count (default: every core, as a conversion does).
+    /// Run with
     /// `cargo test --release -p converter validation_timing_on_a_real_output -- --ignored --nocapture`.
     ///
     /// Checks every manifest artifact present in this output (packages can contain a subset).
