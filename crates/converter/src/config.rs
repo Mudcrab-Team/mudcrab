@@ -22,6 +22,19 @@ pub enum TextureEncoder {
     },
 }
 
+/// Which texture entry 0 of the land texture table stands for (#215): the quadrant base of a
+/// cell with no BTXT.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainDefaultTexture {
+    /// A generated white diffuse, with no normal map.
+    #[default]
+    White,
+    /// `[Landscape] sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture` of a Skyrim.ini
+    /// (`terrain_ini`), or the built-in Dirt02 paths without one.
+    SkyrimIni,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub data_dir: PathBuf,
@@ -46,6 +59,26 @@ pub struct PipelineConfig {
     /// are unchanged; generated database/LOD outputs are rebuilt on every run.
     #[serde(default)]
     pub no_lod: bool,
+    /// Build the merged-terrain outputs (#215) after the world database and the land textures:
+    /// the land texture arrays, one merged mesh per exterior cell and the terrain chunk files.
+    /// Off by default, because the engine half that reads them has not landed, and converted
+    /// asset bytes are unchanged either way; generated terrain outputs are rebuilt every run.
+    #[serde(default)]
+    pub merged_terrain: bool,
+    /// Where entry 0 of the land texture table comes from; `white` unless a user selects the
+    /// game's own default.
+    #[serde(default)]
+    pub terrain_default_texture: TerrainDefaultTexture,
+    /// The `Skyrim.ini` a `skyrim_ini` default texture is read from. `None` uses the built-in
+    /// `textures/landscape/Dirt02.dds` and `Dirt02_N.dds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain_ini: Option<PathBuf>,
+    /// Passed to the land texture array builder
+    /// (`terrain_arrays::ArrayOptions::allow_downscale`): a land texture larger than the largest
+    /// size class is downscaled into it, and the report labels every one, instead of stopping the
+    /// merged-terrain build.
+    #[serde(default)]
+    pub terrain_allow_downscale: bool,
     pub cpu_jobs: usize,
     pub io_jobs: usize,
     pub enable_ba2: bool,
@@ -82,6 +115,10 @@ impl PipelineConfig {
             mo2: None,
             lod_origins: BTreeMap::new(),
             no_lod: false,
+            merged_terrain: false,
+            terrain_default_texture: TerrainDefaultTexture::default(),
+            terrain_ini: None,
+            terrain_allow_downscale: false,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
             io_jobs: 2,
             enable_ba2: true,

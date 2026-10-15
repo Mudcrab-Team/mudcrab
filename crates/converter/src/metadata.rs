@@ -12,7 +12,7 @@ use crate::{
         CONVERTER_SCHEMA_VERSION, ConversionManifest, configuration_hash, hash_bytes, hash_file,
         retained_configuration_matches,
     },
-    esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
+    esm::{EsmParser, cell_cache::write_cell_cache_with, exporter::validate_database},
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
@@ -310,8 +310,23 @@ async fn rebuild_into(
     let database = staging.join("skyrim_world.db");
     let merged = EsmParser::convert_plugins_with_records(plugins, &database)?;
     validate_database(&Connection::open(&database)?)?;
-    write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
-    drop(merged);
+    write_cell_cache_with(
+        &merged,
+        &staging.join("cell_cache.rkyv"),
+        config.merged_terrain,
+    )?;
+    // The merged terrain stage keys every cell from LAND, LTEX, TXST, CELL and WRLD records, so
+    // with the option on the rebuild keeps only those for it; with the option off — and for every
+    // other record type — the map is dropped here as before. One LAND per cell, chosen by load
+    // order, is checked first, before the LOD chunks compile, so a bad load order fails in
+    // minutes; the same warning lines surface from `write_cell_cache` above and the terrain
+    // stage reports them again when it builds.
+    if config.merged_terrain {
+        crate::esm::cell_cache::land_per_cell(&merged, true)?;
+    }
+    let merged_records = config
+        .merged_terrain
+        .then(|| crate::terrain_pipeline::terrain_records(merged));
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
     for archive in &archives {
         ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
@@ -363,6 +378,19 @@ async fn rebuild_into(
     )
     .await?;
     report.lod_elapsed_ms = lod_started.elapsed().as_millis();
+    // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
+    // are, so a rebuild with the option on produces it instead of ignoring the option.
+    if config.merged_terrain {
+        crate::terrain_pipeline::run_merged_terrain_stage(
+            staging,
+            merged_records,
+            plugins,
+            &crate::terrain_pipeline::TerrainOptions::from_config(config),
+            progress,
+            &mut report,
+        )
+        .await?;
+    }
     let integration = finalize_world_database(staging)?
         .ok_or_else(|| color_eyre::eyre::eyre!("missing rebuilt world database"))?;
     ensure!(
@@ -375,11 +403,12 @@ async fn rebuild_into(
         .artifacts
         .push(PathBuf::from("integration-report.json"));
     // Albedo is embedded in new LOD payloads. Retained textures still match
-    // the source manifest; validate copied model dependencies separately.
+    // the source manifest; validate copied model dependencies separately. The merged terrain
+    // payloads (#215) are generated here too and are validated the same way.
     let payloads = report
         .artifacts
         .iter()
-        .filter(|path| path.starts_with("lod"))
+        .filter(|path| path.starts_with("lod") || path.starts_with("terrain"))
         .cloned()
         .collect::<Vec<_>>();
     validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;

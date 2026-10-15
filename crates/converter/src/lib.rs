@@ -17,6 +17,9 @@ pub mod pipeline;
 pub mod progress;
 pub mod repair;
 pub mod script;
+pub mod terrain_arrays;
+pub mod terrain_chunks;
+pub mod terrain_pipeline;
 pub mod texture;
 pub mod texture_gpu;
 
