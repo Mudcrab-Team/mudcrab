@@ -110,6 +110,17 @@ pub struct EngineConfig {
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
+    /// Keep the interactive app's presentation mode for an opt-in benchmark.
+    pub benchmark_vsync: bool,
+    /// Dedicated post-settlement camera route; Some(0) measures its stationary tail.
+    pub streaming_benchmark_route_speed: Option<f64>,
+    pub streaming_benchmark_route_secs: f64,
+    pub streaming_benchmark_tail_secs: f64,
+    pub streaming_benchmark_settle_secs: f64,
+    pub streaming_benchmark_expected_models: Option<u64>,
+    pub streaming_benchmark_expected_lod_chunks: Option<usize>,
+    pub streaming_benchmark_expected_terrain: Option<u64>,
+    pub streaming_benchmark_expected_water: Option<u64>,
     pub benchmark_output: PathBuf,
     /// Where to write every measured frame time, in order, as CSV (`--benchmark-frame-times`).
     /// Off by default: the report's summary is what acceptance reads; the series is for choosing
@@ -192,6 +203,15 @@ impl Default for EngineConfig {
             benchmark_frames: None,
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
+            benchmark_vsync: false,
+            streaming_benchmark_route_speed: None,
+            streaming_benchmark_route_secs: 45.0,
+            streaming_benchmark_tail_secs: 10.0,
+            streaming_benchmark_settle_secs: 5.0,
+            streaming_benchmark_expected_models: None,
+            streaming_benchmark_expected_lod_chunks: None,
+            streaming_benchmark_expected_terrain: None,
+            streaming_benchmark_expected_water: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
             run_label: None,
@@ -270,6 +290,15 @@ Benchmark and profiling:
   --benchmark-frames <count>            stop after this many measured frames
   --benchmark-duration <seconds>        stop after this many measured seconds
   --benchmark-warmup-frames <count>     frames discarded before measuring (default: 60)
+  --benchmark-vsync                     use the interactive app's vsync during benchmarks
+  --streaming-benchmark-route-speed <units/s>  start a real-time route after CPU settlement; 0 is stationary
+  --streaming-benchmark-route-secs <seconds>   moving route duration (default: 45)
+  --streaming-benchmark-tail-secs <seconds>    stationary tail duration (default: 10)
+  --streaming-benchmark-settle-secs <seconds>  continuous CPU-settled wait before starting (default: 5)
+  --streaming-benchmark-expected-models <count>       optional initial validated model count
+  --streaming-benchmark-expected-lod-chunks <count>   optional initial resident LOD chunk count
+  --streaming-benchmark-expected-terrain <count>      optional initial validated terrain patch count
+  --streaming-benchmark-expected-water <count>        optional initial validated water surface count
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
   --run-label [<text>]                  name the run in the window title
@@ -472,6 +501,7 @@ impl EngineConfig {
             && self.acceptance_screenshot.is_none()
             && self.shots.is_none()
             && self.auto_fly_speed <= 0.0
+            && self.streaming_benchmark_route_speed.is_none()
             && !self.material_fixture
             && !self.terrain_water_fixture
             && !self.transform_bounds_fixture
@@ -704,6 +734,67 @@ impl EngineConfig {
                     config.benchmark_warmup_frames =
                         take_value("--benchmark-warmup-frames", "a frame count", args.next())?;
                 }
+                "--benchmark-vsync" => config.benchmark_vsync = true,
+                "--streaming-benchmark-route-speed" => {
+                    config.streaming_benchmark_route_speed = Some(take_number(
+                        "--streaming-benchmark-route-speed",
+                        "a finite speed in units per second, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-route-secs" => {
+                    config.streaming_benchmark_route_secs = take_number(
+                        "--streaming-benchmark-route-secs",
+                        "a positive finite number of seconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-tail-secs" => {
+                    config.streaming_benchmark_tail_secs = take_number(
+                        "--streaming-benchmark-tail-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-settle-secs" => {
+                    config.streaming_benchmark_settle_secs = take_number(
+                        "--streaming-benchmark-settle-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-expected-models" => {
+                    config.streaming_benchmark_expected_models = Some(take_value(
+                        "--streaming-benchmark-expected-models",
+                        "a model count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-lod-chunks" => {
+                    config.streaming_benchmark_expected_lod_chunks = Some(take_value(
+                        "--streaming-benchmark-expected-lod-chunks",
+                        "a LOD chunk count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-terrain" => {
+                    config.streaming_benchmark_expected_terrain = Some(take_value(
+                        "--streaming-benchmark-expected-terrain",
+                        "a terrain patch count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-water" => {
+                    config.streaming_benchmark_expected_water = Some(take_value(
+                        "--streaming-benchmark-expected-water",
+                        "a water surface count",
+                        args.next(),
+                    )?);
+                }
                 "--benchmark-output" => {
                     config.benchmark_output = take_value(
                         "--benchmark-output",
@@ -828,6 +919,36 @@ impl EngineConfig {
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
+        }
+        if config.streaming_benchmark_route_speed.is_some()
+            && (config.benchmark_only
+                || config.acceptance_screenshot.is_some()
+                || config.shots.is_some()
+                || config.material_fixture
+                || config.terrain_water_fixture
+                || config.transform_bounds_fixture
+                || config.renderer_fixture
+                || config.streaming_fixture
+                || config.physics_fixture)
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-speed",
+                config
+                    .streaming_benchmark_route_speed
+                    .map(|speed| speed.to_string()),
+                "a world camera route without screenshots, shots, synthetic mode or fixtures",
+            ));
+        }
+        if let Some(speed) = config.streaming_benchmark_route_speed
+            && (!(speed * config.streaming_benchmark_route_secs).is_finite()
+                || !(config.streaming_benchmark_route_secs + config.streaming_benchmark_tail_secs)
+                    .is_finite())
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-secs",
+                Some(config.streaming_benchmark_route_secs.to_string()),
+                "a duration whose route distance and total duration remain finite",
+            ));
         }
         Ok(ConfigAction::Run(Box::new(config)))
     }
@@ -1079,6 +1200,16 @@ mod tests {
         "--timeout",             // repeat-terrain-startup.py
         "--launch-prefix",       // repeat-terrain-startup.py
         "--commit",              // repeat-terrain-startup.py
+        "--costs",               // compare-streaming-modes.py
+        "--thermal-probe",       // compare-streaming-modes.py
+        "--ablation-repeats",    // compare-streaming-modes.py
+        "--resume",              // compare-streaming-modes.py
+        "--seed",                // streaming comparison scripts
+        "--smoke",               // compare-streaming-modes.py
+        "--experiment",          // analyze-streaming-comparison.py
+        "--output-dir",          // analyze-streaming-comparison.py
+        "--bootstrap-samples",   // analyze-streaming-comparison.py
+        "--comparison",          // analyze-streaming-comparison.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -1168,6 +1299,100 @@ mod tests {
         assert_eq!(config.max_scene_loads, 0);
         assert_eq!(config.max_model_spawns_per_frame, 32);
         assert_eq!(config.max_upload_bytes_per_frame(), Some(16 * 1024 * 1024));
+    }
+
+    #[test]
+    fn dedicated_streaming_benchmark_route_is_opt_in_and_accepts_stationary_speed() {
+        let defaults = run_config(&[]);
+        assert!(!defaults.benchmark_vsync);
+        assert!(defaults.streaming_benchmark_route_speed.is_none());
+        assert_eq!(defaults.streaming_benchmark_settle_secs, 5.0);
+        let config = run_config(&[
+            "--streaming-benchmark-route-speed",
+            "0",
+            "--streaming-benchmark-route-secs",
+            "45",
+            "--streaming-benchmark-tail-secs",
+            "10",
+            "--streaming-benchmark-settle-secs",
+            "5",
+            "--streaming-benchmark-expected-models",
+            "2029",
+            "--streaming-benchmark-expected-lod-chunks",
+            "176",
+            "--streaming-benchmark-expected-terrain",
+            "100",
+            "--streaming-benchmark-expected-water",
+            "25",
+            "--benchmark-vsync",
+        ]);
+        assert_eq!(config.streaming_benchmark_route_speed, Some(0.0));
+        assert_eq!(config.streaming_benchmark_route_secs, 45.0);
+        assert_eq!(config.streaming_benchmark_tail_secs, 10.0);
+        assert_eq!(config.streaming_benchmark_expected_models, Some(2029));
+        assert_eq!(config.streaming_benchmark_expected_lod_chunks, Some(176));
+        assert_eq!(config.streaming_benchmark_expected_terrain, Some(100));
+        assert_eq!(config.streaming_benchmark_expected_water, Some(25));
+        assert!(config.benchmark_vsync);
+        assert!(!config.interactive_world_physics());
+        assert!(!config.streaming_controls_enabled());
+    }
+
+    #[test]
+    fn benchmark_route_rejects_invalid_numbers_and_anchored_camera_modes() {
+        for option in [
+            "--streaming-benchmark-route-speed",
+            "--streaming-benchmark-tail-secs",
+            "--streaming-benchmark-settle-secs",
+        ] {
+            for value in ["-1", "NaN", "inf"] {
+                assert!(matches!(
+                    parse_error(&[option, value]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+        }
+        for value in ["0", "-1", "NaN", "inf"] {
+            assert!(matches!(
+                parse_error(&["--streaming-benchmark-route-secs", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        for args in [
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--acceptance-screenshot",
+                "out.png",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--shots",
+                "poses.json",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--benchmark-only",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--physics-fixture",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "1e308",
+                "--streaming-benchmark-route-secs",
+                "1e308",
+            ],
+        ] {
+            assert!(matches!(
+                parse_error(&args),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
     }
 
     #[test]

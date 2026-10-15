@@ -126,12 +126,26 @@ pub(crate) struct SceneAdmissionSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct StreamingBenchmarkRouteSnapshot {
+    pub phase: &'static str,
+    pub elapsed_ms: f64,
+    pub real_elapsed_ms: f64,
+    pub cpu_settled_elapsed_ms: Option<f64>,
+    pub movement_started_elapsed_ms: Option<f64>,
+    pub movement_finished_elapsed_ms: Option<f64>,
+    pub tail_finished_elapsed_ms: Option<f64>,
+    pub route_distance_units: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct StreamingFrameSample {
     pub main_frame: u64,
     pub elapsed_ms: f64,
     /// Actual frame delta, including warmup; not an average or a synthesized interval.
     pub delta_ms: f64,
     pub benchmark_window: BenchmarkWindow,
+    /// Present only for the opt-in route; timestamps share `elapsed_ms`'s epoch.
+    pub streaming_benchmark_route: Option<StreamingBenchmarkRouteSnapshot>,
     pub camera: Option<CameraObservation>,
     pub streaming: Option<StreamingSnapshot>,
     pub scene_admission: Option<SceneAdmissionSnapshot>,
@@ -302,6 +316,7 @@ mod tests {
             elapsed_ms: main_frame as f64 * 20.0,
             delta_ms: 20.0,
             benchmark_window,
+            streaming_benchmark_route: None,
             camera: None,
             streaming: None,
             scene_admission: None,
