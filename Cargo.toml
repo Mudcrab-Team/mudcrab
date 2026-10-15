@@ -83,3 +83,8 @@ debug = 0
 inherits = "release"
 opt-level = "s"
 strip = "debuginfo"
+
+# bevy_render 0.19.0 with one change: async pipeline compilation on macOS too
+# (vendor/bevy_render/src/render_resource/pipeline_cache.rs, bevyengine/bevy#26151).
+[patch.crates-io]
+bevy_render = { path = "vendor/bevy_render" }
