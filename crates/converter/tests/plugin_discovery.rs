@@ -793,10 +793,14 @@ fn header_and_record_errors_include_the_plugin_path() {
     assert!(format!("{error:?}").contains(path.to_str().unwrap()));
     let malformed = record(b"STAT", 0x800, 0, b"DATA\x04\x00\x01".to_vec());
     fs::write(&path, [record(b"TES4", 0, 0, vec![]), malformed].concat()).unwrap();
-    let error = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap_err();
+    // The strict parser names the plugin and the reason.
+    let error = converter::esm::binary::parse_plugin_file(&path).unwrap_err();
     let message = format!("{error:?}");
     assert!(
         message.contains(path.to_str().unwrap()) && message.contains("truncated DATA"),
         "{message}"
     );
+    // The merge leaves just that record out with a warning (Mudcrab #182).
+    let merged = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap();
+    assert!(!merged.contains_key(&0x800));
 }

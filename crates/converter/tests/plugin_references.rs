@@ -350,8 +350,10 @@ fn remaps_cell_and_world_water_references_and_preserves_nulls() {
     assert_eq!(world.get_form_id(b"NAM3"), Some(0));
 }
 
+/// Mudcrab #182: a malformed terrain-texture or alternate-texture subrecord is dropped
+/// with a warning; the record and its other subrecords survive.
 #[test]
-fn rejects_malformed_land_and_alternate_texture_references() {
+fn drops_malformed_land_and_alternate_texture_references() {
     for (kind, payload) in [
         (b"LAND", sub(b"BTXT", &[0; 7])),
         (b"LAND", sub(b"ATXT", &[0; 9])),
@@ -365,9 +367,13 @@ fn rejects_malformed_land_and_alternate_texture_references() {
             "Base.esm",
             &[],
             0,
-            record(kind, 0x800, 0, payload),
+            record(kind, 0x800, 0, [sub(b"EDID", b"Kept\0"), payload].concat()),
         );
-        assert!(EsmParser::merge_plugins(&[base]).is_err());
+        let merged = EsmParser::merge_plugins(&[base]).unwrap();
+        assert_eq!(
+            merged[&0x800].subrecords,
+            [(b"EDID".to_vec(), b"Kept\0".to_vec())]
+        );
     }
 }
 
@@ -518,9 +524,12 @@ fn rejects_duplicate_plugins_missing_masters_and_invalid_indices() {
     );
     assert!(LoadOrder::read(std::slice::from_ref(&patch)).is_err());
     assert!(LoadOrder::read(&[patch.clone(), base.clone()]).is_err());
-    assert!(EsmParser::merge_plugins(&[base, patch]).is_err());
+    // An invalid master index or an over-wide light ID on a grass record leaves that
+    // record out with a warning rather than failing the merge (Mudcrab #182).
+    let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
+    assert!(merged.values().all(|record| record.record_type != *b"GRAS"));
     let oversized = plugin(dir.path(), "Oversized.esl", &[], 0x200, grass(0x1800, 35));
-    assert!(EsmParser::merge_plugins(&[oversized]).is_err());
+    assert!(EsmParser::merge_plugins(&[oversized]).unwrap().is_empty());
 }
 
 #[test]

@@ -9,6 +9,7 @@ use std::{collections::HashMap, fs::File, io::Write, path::Path};
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
     let water_by_cell = water_by_cell(records);
     let mut cells_by_id = HashMap::new();
+    let mut invalid_weights = std::collections::BTreeMap::<u32, (u64, u32)>::new();
     for record in records
         .values()
         .filter(|record| &record.record_type == b"LAND")
@@ -36,8 +37,14 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
         );
         let normals = decode_normals(view.find(b"VNML").unwrap_or_default(), &heights);
         let vertex_colors = view.find(b"VCLR").unwrap_or_default().to_vec();
-        let (mut layers, dropped_layers) = extract_texture_layers(&record.subrecords)
+        let (mut layers, dropped_layers, invalid) = extract_texture_layers(&record.subrecords)
             .wrap_err_with(|| format!("invalid LAND layers for cell {cell_id:08X}"))?;
+        if invalid > 0 {
+            let entry = invalid_weights
+                .entry(record.load_order)
+                .or_insert((0, cell_id));
+            entry.0 += invalid;
+        }
         for DroppedLayer {
             quadrant: q,
             layer: s,
@@ -86,6 +93,11 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
                 water_height,
                 water_type_form_id,
             },
+        );
+    }
+    for (plugin, (count, cell)) in invalid_weights {
+        eprintln!(
+            "warning: plugin load-order {plugin}: dropped {count} invalid terrain vertex weights (first in LAND {cell:08X})"
         );
     }
     let mut cells: Vec<_> = cells_by_id.into_values().collect();
@@ -265,8 +277,9 @@ struct DroppedLayer {
 /// Validate every LAND payload and return retained layers plus discarded duplicate assignments.
 fn extract_texture_layers(
     subrecords: &[(Vec<u8>, Vec<u8>)],
-) -> Result<(Vec<TerrainLayer>, Vec<DroppedLayer>)> {
+) -> Result<(Vec<TerrainLayer>, Vec<DroppedLayer>, u64)> {
     let mut layers = Vec::new();
+    let mut invalid_weights = 0;
     let mut active: Option<usize> = None;
     for (tag, data) in subrecords {
         match tag.as_slice() {
@@ -308,10 +321,10 @@ fn extract_texture_layers(
                         vertex < 17 * 17,
                         "VTXT vertex {vertex} is outside a LAND quadrant"
                     );
-                    color_eyre::eyre::ensure!(
-                        opacity.is_finite() && (0.0..=1.0).contains(&opacity),
-                        "VTXT opacity {opacity} is invalid"
-                    );
+                    if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+                        invalid_weights += 1;
+                        continue;
+                    }
                     layers[index]
                         .weights
                         .push(TerrainWeight { vertex, opacity });
@@ -370,7 +383,7 @@ fn extract_texture_layers(
             "quadrant {quadrant} has {bases} BTXT base layers"
         );
     }
-    Ok((layers, dropped_layers))
+    Ok((layers, dropped_layers, invalid_weights))
 }
 
 fn normalize_texture_layers(layers: &mut Vec<TerrainLayer>) {
@@ -558,7 +571,7 @@ mod tests {
             bytes.extend([quadrant, 0, 2, 0]);
             (b"ATXT".to_vec(), bytes)
         };
-        let (layers, dropped) = extract_texture_layers(&[overlay(1, 0), overlay(2, 0)]).unwrap();
+        let (layers, dropped, _) = extract_texture_layers(&[overlay(1, 0), overlay(2, 0)]).unwrap();
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].texture_form_id, 2);
         assert_eq!(
@@ -573,10 +586,10 @@ mod tests {
             [overlay(1, 0), overlay(1, 1)],
             [overlay(0, 0), overlay(1, 0)],
         ] {
-            let (_, dropped) = extract_texture_layers(&subrecords).unwrap();
+            let (_, dropped, _) = extract_texture_layers(&subrecords).unwrap();
             assert!(dropped.is_empty());
         }
-        let (_, dropped) =
+        let (_, dropped, _) =
             extract_texture_layers(&[overlay(1, 0), overlay(2, 1), overlay(3, 1), overlay(4, 0)])
                 .unwrap();
         assert_eq!(
@@ -625,7 +638,7 @@ mod tests {
                 overlay(0, 0), // A later null assignment must not replace a real texture.
                 overlay(4, 1), // The same slot in another quadrant is independent.
             ];
-            let (_, dropped) = extract_texture_layers(&land.subrecords).unwrap();
+            let (_, dropped, _) = extract_texture_layers(&land.subrecords).unwrap();
             assert_eq!(
                 dropped,
                 [
@@ -678,6 +691,44 @@ mod tests {
                 overlay,
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_vertex_opacities_are_dropped_while_valid_weights_survive() {
+        let overlay = (b"ATXT".to_vec(), vec![1, 0, 0, 0, 0, 0, 2, 0]);
+        let weight = |vertex: u16, opacity: f32| {
+            [
+                vertex.to_le_bytes().as_slice(),
+                &[0, 0],
+                &opacity.to_le_bytes(),
+            ]
+            .concat()
+        };
+        let (layers, _, invalid) = extract_texture_layers(&[
+            overlay,
+            (
+                b"VTXT".to_vec(),
+                [
+                    weight(1, 0.5),
+                    weight(2, 1.5),
+                    weight(3, f32::NAN),
+                    weight(4, -0.25),
+                    weight(5, f32::INFINITY),
+                    weight(6, 1.0),
+                ]
+                .concat(),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(invalid, 4);
+        assert_eq!(
+            layers[0]
+                .weights
+                .iter()
+                .map(|weight| (weight.vertex, weight.opacity))
+                .collect::<Vec<_>>(),
+            [(1, 0.5), (6, 1.0)]
         );
     }
 
@@ -844,7 +895,7 @@ mod tests {
         let mut weight = 18u16.to_le_bytes().to_vec();
         weight.extend([0, 0]);
         weight.extend(0.75f32.to_le_bytes());
-        let (layers, dropped) = extract_texture_layers(&[
+        let (layers, dropped, _) = extract_texture_layers(&[
             (b"BTXT".to_vec(), base),
             (b"ATXT".to_vec(), alpha),
             (b"VTXT".to_vec(), weight),

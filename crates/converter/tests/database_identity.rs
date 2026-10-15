@@ -39,7 +39,7 @@ fn grass(id: u32, density: u8) -> Vec<u8> {
 }
 
 #[test]
-fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
+fn oversized_light_ids_warn_for_references_but_skip_landscape_records() {
     const CHILD_PLUGIN: &str = "MUDCRAB_LIGHT_ID_WARNING_TEST_PLUGIN";
     if let Some(path) = std::env::var_os(CHILD_PLUGIN) {
         let path = PathBuf::from(path);
@@ -80,7 +80,7 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "oversized_light_ids_warn_for_references_but_reject_landscape_records",
+            "oversized_light_ids_warn_for_references_but_skip_landscape_records",
             "--nocapture",
         ])
         .env(CHILD_PLUGIN, path)
@@ -106,21 +106,23 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
             && stderr.contains("compact the plugin's FormIDs"),
         "{stderr}"
     );
+    // Truncating a landscape record's ID could land it on another record, so the record
+    // is left out with a warning instead; its neighbours still convert (Mudcrab #182).
     for tag in [b"GRAS", b"LTEX", b"TXST", b"LAND", b"CELL", b"WRLD"] {
         let path = plugin(
             dir.path(),
             "Strict.esp",
             &[],
             0x200,
-            record(tag, 0x1800, 0, vec![]),
+            [
+                record(tag, 0x1800, 0, vec![]),
+                record(tag, 0x0800, 0, vec![]),
+            ]
+            .concat(),
         );
-        let error = EsmParser::merge_plugins(&[path]).unwrap_err();
-        let message = format!("{error:?}");
-        assert!(
-            message.contains("light-plugin local ID exceeds 12 bits")
-                && message.contains("00001800"),
-            "{message}"
-        );
+        let merged = EsmParser::merge_plugins(&[path]).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert!(merged.contains_key(&0xFE00_0800));
     }
 }
 
@@ -295,12 +297,34 @@ fn ambiguous_new_game_setting_ids_fail_instead_of_overwriting_another_record() {
         .concat(),
         [grass(0x800, 1), setting(0x800, "fFirst", 1.0, 0)].concat(),
         [setting(0x800, "fFirst", 1.0, 0), grass(0x800, 1)].concat(),
-        setting(0, "fUnknown", 1.0, 0),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(dir.path(), "Base.esm", &[], 0, bytes);
         assert!(EsmParser::merge_plugins(&[base]).is_err());
     }
+}
+
+#[test]
+fn unusable_game_setting_identities_are_skipped_with_neighbors_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(
+        dir.path(),
+        "Base.esm",
+        &[],
+        0,
+        [
+            setting(0x800, "fFirst", 1.0, 0),
+            setting(0x801, "", 9.0, 0),
+            setting(0, "fNull", 9.0, 0),
+            setting(0x802, "fThird", 5.0, 0),
+        ]
+        .concat(),
+    );
+    let merged = EsmParser::merge_plugins(&[base]).unwrap();
+    // `merged` is a HashMap, so its key order is not defined.
+    let mut ids = merged.keys().copied().collect::<Vec<_>>();
+    ids.sort_unstable();
+    assert_eq!(ids, [0x800, 0x802]);
 }
 
 #[test]
@@ -401,7 +425,7 @@ fn unknown_header_only_deletions_do_not_delete_unrelated_forms_or_fail_conversio
 }
 
 #[test]
-fn live_game_settings_still_require_editor_ids() {
+fn live_game_settings_without_editor_ids_are_skipped() {
     for payload in [Vec::new(), sub(b"EDID", b"\0")] {
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(
@@ -411,12 +435,7 @@ fn live_game_settings_still_require_editor_ids() {
             0,
             record(b"GMST", 0x800, 0, payload),
         );
-        assert!(
-            EsmParser::merge_plugins(&[base])
-                .unwrap_err()
-                .to_string()
-                .contains("has no EditorID")
-        );
+        assert!(EsmParser::merge_plugins(&[base]).unwrap().is_empty());
     }
 }
 

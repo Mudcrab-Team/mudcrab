@@ -43,6 +43,8 @@ expression: report
     "exterior_cells": 9,
     "invalid_model_count": 0,
     "issues": [],
+    "malformed_model_path_count": 0,
+    "malformed_texture_path_count": 0,
     "missing_model_count": 0,
     "missing_texture_count": 0,
     "passed": true,

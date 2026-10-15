@@ -255,8 +255,9 @@ the winning plugin's priority. Game settings override by case-insensitive
 EditorID and retain the first definition's identity. A deletion with no EDID
 resolves through any previously encountered non-null FormID alias; an unknown
 header-only deletion is skipped with a warning. Later restorations keep the
-original identity. Ambiguous aliases and live settings without an EDID are
-errors, rather than silently replacing or dropping another record.
+original identity. Ambiguous aliases are errors, rather than silently replacing
+another record. Live settings without an EDID, or whose identity resolves to a
+null FormID, are left out and counted in the per-plugin skipped-records warning.
 
 Known FormID fields inside the published subrecord blobs (`records.data`,
 `cells.data`, `references.data`) are rewritten into the same load-order numbering
@@ -307,6 +308,20 @@ remain zero. Other bytes in retained subrecords (such as teleport coordinates,
 enable flags, navmesh triangles and activation delays) are preserved. Unlisted fields remain opaque,
 not an assurance that all FormIDs in arbitrary Skyrim or mod subrecords have
 been resolved.
+
+GRAS, LTEX, TXST, LAND, CELL and WRLD records validate every FormID the same
+way, but an invalid one is never kept as zero: a single-FormID field (such as
+`LTEX.GNAM`, `CELL.XCWT` or `WRLD.NAM2`) is removed, an unresolvable
+`GRAS.MODS` alternate texture or `LAND.VTEX` entry is removed from its list, and
+a `LAND` `BTXT` or `ATXT` layer is removed (an `ATXT` together with its `VTXT`
+weights), since a null texture would draw the default one. Malformed `MODS`,
+`BTXT`/`ATXT` that are not 8 bytes and `VTEX` that is not a multiple of 4 bytes
+are dropped the same way. These count in the same per-plugin warning. A record
+of these kinds whose own FormID, parent cell or parent worldspace is
+unresolvable is left out of the merge. Records whose payload cannot be
+decompressed or whose subrecord stream is malformed are also left out whole.
+Left-out records are counted in a second per-plugin warning with the first
+reason (Mudcrab #182).
 
 Existing packs must be converted again to obtain these corrected links. This
 does not change the schema-4 table or blob layout, so the database and asset

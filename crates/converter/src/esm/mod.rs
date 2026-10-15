@@ -1,5 +1,5 @@
 use crate::esm::{
-    binary::parse_plugin_file,
+    binary::parse_plugin_file_skipping_malformed,
     exporter::{create_tables, export_to_db_with_load_order},
     records::RawRecord,
 };
@@ -67,28 +67,44 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         order: &load_order::LoadOrder,
     ) -> Result<HashMap<u32, RawRecord>> {
+        let warnings = RemapWarnings::default();
+        let merged = Self::merge_with_warnings(plugin_paths, order, &warnings)?;
+        warnings.report();
+        Ok(merged)
+    }
+
+    /// Merge into `warnings` without reporting them, so the caller decides when to emit.
+    fn merge_with_warnings(
+        plugin_paths: &[PathBuf],
+        order: &load_order::LoadOrder,
+        warnings: &RemapWarnings,
+    ) -> Result<HashMap<u32, RawRecord>> {
         let mut merged = HashMap::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
         // Keep keys through deletions so a later restoration has the same ID.
         let mut game_settings = GameSettingIdentities::default();
-        let warnings = RemapWarnings::default();
         for (priority, path) in plugin_paths.iter().enumerate() {
             let masters = &order.metadata[priority].masters;
             // Final ID -> (source ID, whether its master index was out of range). Two different
             // source IDs that resolve to one final ID would silently replace each other.
             let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
-            for mut record in parse_plugin_file(path)? {
+            // One record that cannot be decoded is left out, not fatal (Mudcrab #182).
+            let (records, skipped) = parse_plugin_file_skipping_malformed(path)?;
+            if let Some(first) = skipped.first {
+                warnings.skipped_records(&order.names[priority], skipped.count, first);
+            }
+            for mut record in records {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
                 let out_of_range = (source_id >> 24) as usize > masters.len();
-                remap_record_form_ids(
+                let remapped = remap_record_form_ids(
                     &mut record,
                     &order.names[priority],
                     masters,
                     &order.normal,
                     &order.light,
-                    &warnings,
+                    warnings,
                 )
                 .wrap_err_with(|| {
                     format!(
@@ -98,6 +114,9 @@ impl EsmParser {
                         record.form_id
                     )
                 })?;
+                if remapped == Remapped::Skipped {
+                    continue;
+                }
                 if let Some((earlier, earlier_out_of_range)) =
                     sources.insert(record.form_id, (source_id, out_of_range))
                 {
@@ -111,8 +130,12 @@ impl EsmParser {
                     );
                 }
                 if record.record_type == *b"GMST" {
-                    let Some(canonical) =
-                        game_settings.resolve(&record, &order.names[priority], &merged)?
+                    let Some(canonical) = game_settings.resolve(
+                        &record,
+                        &order.names[priority],
+                        &merged,
+                        warnings,
+                    )?
                     else {
                         continue;
                     };
@@ -131,7 +154,6 @@ impl EsmParser {
                 }
             }
         }
-        warnings.report();
         Ok(merged)
     }
 }
@@ -150,6 +172,8 @@ struct RemapWarnings {
     out_of_range: RefCell<OutOfRangeCounts>,
     /// Invalid optional links, counted per containing plugin with the first diagnostic.
     skipped_optional: RefCell<BTreeMap<String, (u64, String)>>,
+    /// Records left out of the merge, counted per containing plugin with the first reason.
+    skipped_records: RefCell<BTreeMap<String, (u64, String)>>,
 }
 
 impl RemapWarnings {
@@ -176,6 +200,13 @@ impl RemapWarnings {
         entry.0 += 1;
     }
 
+    /// Count `count` records left out of the merge, keeping the first reason per plugin.
+    fn skipped_records(&self, plugin: &str, count: u64, example: String) {
+        let mut counts = self.skipped_records.borrow_mut();
+        let entry = counts.entry(plugin.to_owned()).or_insert((0, example));
+        entry.0 += count;
+    }
+
     /// Emit one deterministic summary per affected plugin after a successful merge.
     fn report(&self) {
         for (owner, (count, example)) in self.truncations.borrow().iter() {
@@ -192,6 +223,11 @@ impl RemapWarnings {
         for (plugin, (count, example)) in self.skipped_optional.borrow().iter() {
             eprintln!(
                 "warning: {plugin}: skipped {count} invalid optional FormID links (cleared or removed; first: {example})"
+            );
+        }
+        for (plugin, (count, example)) in self.skipped_records.borrow().iter() {
+            eprintln!(
+                "warning: {plugin}: skipped {count} invalid records (left out of the conversion; first: {example})"
             );
         }
     }
@@ -212,6 +248,7 @@ impl GameSettingIdentities {
         record: &RawRecord,
         plugin: &str,
         merged: &HashMap<u32, RawRecord>,
+        warnings: &RemapWarnings,
     ) -> Result<Option<u32>> {
         let source_id = record.form_id;
         let editor_id = extractors::SubrecordView::new(&record.subrecords)
@@ -228,14 +265,15 @@ impl GameSettingIdentities {
                 );
                 return Ok(None);
             }
-            color_eyre::eyre::bail!("{plugin} GMST {source_id:08X} has no EditorID");
+            warnings.skipped_records(plugin, 1, format!("GMST {source_id:08X} has no EditorID"));
+            return Ok(None);
         };
         let known = self.canonical_ids.get(&editor_id).copied();
         let canonical = known.unwrap_or(source_id);
-        color_eyre::eyre::ensure!(
-            canonical != 0,
-            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"
-        );
+        if canonical == 0 {
+            warnings.skipped_records(plugin, 1, format!("GMST {editor_id} has a null FormID"));
+            return Ok(None);
+        }
         if source_id != 0 {
             color_eyre::eyre::ensure!(
                 self.aliases
@@ -364,6 +402,70 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
     })
 }
 
+/// Whether a record survived FormID remapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Remapped {
+    Kept,
+    /// Left out of the merge and counted in `RemapWarnings::skipped_records`.
+    Skipped,
+}
+
+/// A link that resolved into load-order numbering, or why it could not be resolved
+/// without guessing its owner or truncating it onto another ID.
+type Link = std::result::Result<u32, String>;
+
+/// Remap a `GRAS.MODS` alternate-texture list, dropping each entry whose texture cannot
+/// be resolved. Returns the dropped entries' reasons, or the reason the whole list is
+/// malformed (truncated or trailing bytes), in which case `data` is left unchanged.
+fn remap_alternate_textures(
+    data: &mut Vec<u8>,
+    resolve: impl Fn(u32) -> Result<Link>,
+) -> Result<std::result::Result<Vec<String>, String>> {
+    let Some((count, mut rest)) = data.split_first_chunk::<4>() else {
+        return Ok(Err("truncated GRAS alternate textures".to_owned()));
+    };
+    let mut entries = Vec::new();
+    for _ in 0..u32::from_le_bytes(*count) {
+        let Some((length, after)) = rest.split_first_chunk::<4>() else {
+            return Ok(Err("truncated MODS name length".to_owned()));
+        };
+        let length = u32::from_le_bytes(*length) as usize;
+        if after.len() < length.saturating_add(8) {
+            return Ok(Err("truncated MODS entry".to_owned()));
+        }
+        let (name, after) = after.split_at(length);
+        let (texture, after) = after.split_at(4);
+        let (index, after) = after.split_at(4);
+        entries.push((name, texture, index));
+        rest = after;
+    }
+    if !rest.is_empty() {
+        return Ok(Err(format!("{} trailing bytes in GRAS MODS", rest.len())));
+    }
+    let mut kept = Vec::with_capacity(entries.len());
+    let mut dropped = Vec::new();
+    for (name, texture, index) in entries {
+        let mut value = [0; 4];
+        value.copy_from_slice(texture);
+        match resolve(u32::from_le_bytes(value))? {
+            Ok(texture) => kept.push((name, texture, index)),
+            Err(reason) => dropped.push(format!(
+                "MODS alternate texture for {}: {reason}",
+                String::from_utf8_lossy(name).trim_end_matches('\0')
+            )),
+        }
+    }
+    let mut rebuilt = (kept.len() as u32).to_le_bytes().to_vec();
+    for (name, texture, index) in kept {
+        rebuilt.extend((name.len() as u32).to_le_bytes());
+        rebuilt.extend_from_slice(name);
+        rebuilt.extend(texture.to_le_bytes());
+        rebuilt.extend_from_slice(index);
+    }
+    *data = rebuilt;
+    Ok(Ok(dropped))
+}
+
 /// Remaps local FormIDs within a record header, parent cell/worldspace references,
 /// and relevant subrecords according to master plugin load-order indices.
 fn remap_record_form_ids(
@@ -373,26 +475,47 @@ fn remap_record_form_ids(
     normal_indices: &HashMap<String, u32>,
     light_indices: &HashMap<String, u32>,
     warnings: &RemapWarnings,
-) -> Result<()> {
-    // Enforce strict reference validation for landscape and grass record kinds.
-    // Preserve legacy handling elsewhere until their record-specific exceptions
-    // (including shipped GMST IDs outside the master table) have been audited.
-    // Optional link fields in `form_id_layout` clear invalid IDs or drop malformed
-    // subrecords instead, even on these record kinds; see the layout branch below.
+) -> Result<Remapped> {
+    // Landscape, grass and texture records validate every FormID strictly: an ID with a
+    // master index past the master list, or a light-plugin ID wider than 12 bits, is never
+    // treated as the plugin's own or truncated, because either could name another record.
+    // Such a link is removed instead, and a record whose own identity (or parent cell or
+    // worldspace) is unresolvable is left out (Mudcrab #182). Other record kinds keep the
+    // legacy handling until their record-specific exceptions (including shipped GMST IDs
+    // outside the master table) have been audited. Optional link fields in
+    // `form_id_layout` clear invalid IDs or drop malformed subrecords on every record kind.
     let strict = matches!(
         &record.record_type,
         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
     );
     let record_type = record.record_type;
+    let type_name = String::from_utf8_lossy(&record_type).into_owned();
+    // Why `form_id` cannot be resolved without guessing, or `None` when it can.
+    let unresolvable = |form_id: u32| -> Option<String> {
+        if form_id == 0 {
+            return None;
+        }
+        let local_index = (form_id >> 24) as usize;
+        if local_index > masters.len() {
+            return Some(format!(
+                "{plugin_name}: {form_id:08X} has invalid master index {local_index}"
+            ));
+        }
+        let owner = masters.get(local_index).map_or_else(
+            || plugin_name.to_owned(),
+            |master| master.to_ascii_lowercase(),
+        );
+        (light_indices.contains_key(&owner) && form_id & 0x00ff_ffff > 0xfff)
+            .then(|| format!("{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"))
+    };
     let remap_with_validation = |form_id: u32, strict: bool| -> Result<u32> {
         if form_id == 0 {
             return Ok(0);
         }
+        if strict && let Some(reason) = unresolvable(form_id) {
+            color_eyre::eyre::bail!(reason);
+        }
         let local_index = (form_id >> 24) as usize;
-        color_eyre::eyre::ensure!(
-            !strict || local_index <= masters.len(),
-            "{plugin_name}: {form_id:08X} has invalid master index {local_index}"
-        );
         if local_index > masters.len() {
             // Treated as the plugin's own, which shipped data relies on (Skyrim.esm and
             // Dawnguard.esm each carry one such ID). Reported, and the merge rejects it when
@@ -406,10 +529,6 @@ fn remap_record_form_ids(
         };
         if let Some(index) = light_indices.get(&owner) {
             if form_id & 0x00ff_ffff > 0xfff {
-                color_eyre::eyre::ensure!(
-                    !strict,
-                    "{owner}: light-plugin local ID exceeds 12 bits: {form_id:08X}"
-                );
                 warnings.truncated(&owner, form_id);
             }
             return Ok(0xFE00_0000 | (index << 12) | (form_id & 0xFFF));
@@ -420,50 +539,102 @@ fn remap_record_form_ids(
         Ok((index << 24) | (form_id & 0x00FF_FFFF))
     };
     let remap = |form_id| remap_with_validation(form_id, strict);
+    // On a strict record an unresolvable link is reported to the caller, which removes
+    // it; elsewhere it follows the legacy handling. A master missing from the load order
+    // is still an error.
+    let resolve_link = |form_id: u32| -> Result<Link> {
+        if strict && let Some(reason) = unresolvable(form_id) {
+            return Ok(Err(reason));
+        }
+        remap(form_id).map(Ok)
+    };
     let source_id = record.form_id;
+    if strict
+        && let Some(reason) = [
+            Some(record.form_id),
+            record.cell_form_id,
+            record.worldspace_form_id,
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(&unresolvable)
+    {
+        warnings.skipped_records(
+            plugin_name,
+            1,
+            format!("{type_name} record source {source_id:08X}: {reason}"),
+        );
+        return Ok(Remapped::Skipped);
+    }
     record.form_id = remap(record.form_id)?;
     record.cell_form_id = record.cell_form_id.map(&remap).transpose()?;
     record.worldspace_form_id = record.worldspace_form_id.map(&remap).transpose()?;
+    let load_order_id = record.form_id;
+    let skip_field = |reason: String| {
+        warnings.skipped_optional(
+            plugin_name,
+            format!(
+                "{type_name} record source {source_id:08X} (load-order {load_order_id:08X}) {reason}"
+            ),
+        );
+    };
     let mut malformed_subrecords = Vec::new();
+    // Set after an ATXT layer is dropped, so its VTXT weights go with it rather than
+    // attaching to whichever layer precedes them.
+    let mut dropped_layer = false;
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
-        if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
-            color_eyre::eyre::ensure!(data.len() >= 4, "truncated GRAS alternate textures");
-            let count = u32::from_le_bytes(data[..4].try_into().unwrap());
-            let mut offset = 4usize;
-            for _ in 0..count {
-                color_eyre::eyre::ensure!(
-                    data.len().saturating_sub(offset) >= 4,
-                    "truncated MODS name length"
-                );
-                let length =
-                    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-                offset += 4;
-                color_eyre::eyre::ensure!(
-                    data.len().saturating_sub(offset) >= length.saturating_add(8),
-                    "truncated MODS entry"
-                );
-                offset += length;
-                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-                data[offset..offset + 4].copy_from_slice(&remap(value)?.to_le_bytes());
-                offset += 8;
+        let after_dropped_layer = std::mem::take(&mut dropped_layer);
+        if record_type == *b"LAND" && tag.as_slice() == b"VTXT" && after_dropped_layer {
+            malformed_subrecords.push(index);
+            dropped_layer = true;
+            continue;
+        }
+        if record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
+            match remap_alternate_textures(data, resolve_link)? {
+                Ok(dropped) => dropped.into_iter().for_each(&skip_field),
+                Err(reason) => {
+                    skip_field(reason);
+                    malformed_subrecords.push(index);
+                }
             }
-            color_eyre::eyre::ensure!(offset == data.len(), "trailing bytes in GRAS MODS");
             continue;
         }
-        if record.record_type == *b"LAND" && matches!(tag.as_slice(), b"BTXT" | b"ATXT") {
-            color_eyre::eyre::ensure!(data.len() == 8, "invalid LAND texture reference length");
-            let value = u32::from_le_bytes(data[..4].try_into().unwrap());
-            data[..4].copy_from_slice(&remap(value)?.to_le_bytes());
+        if record_type == *b"LAND" && matches!(tag.as_slice(), b"BTXT" | b"ATXT") {
+            let name = String::from_utf8_lossy(tag).into_owned();
+            let link = match data.first_chunk::<4>() {
+                Some(value) if data.len() == 8 => resolve_link(u32::from_le_bytes(*value))?
+                    .map_err(|reason| format!("{name} texture {reason}")),
+                _ => Err(format!("{name} must be 8 bytes, found {}", data.len())),
+            };
+            match link {
+                Ok(texture) => data[..4].copy_from_slice(&texture.to_le_bytes()),
+                Err(reason) => {
+                    // Without its texture the layer cannot be drawn; a null base or
+                    // overlay would paint the default texture instead.
+                    skip_field(reason);
+                    malformed_subrecords.push(index);
+                    dropped_layer = tag.as_slice() == b"ATXT";
+                }
+            }
             continue;
         }
-        if record.record_type == *b"LAND" && tag.as_slice() == b"VTEX" {
+        if record_type == *b"LAND" && tag.as_slice() == b"VTEX" {
             // xEdit's TES5 LAND definition uses an array of wbFormIDCk(LTEX,
             // NULL), unlike the 8-byte BTXT/ATXT layer structures above:
             // https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas
-            color_eyre::eyre::ensure!(data.len().is_multiple_of(4), "invalid LAND VTEX length");
-            for value in data.as_chunks_mut::<4>().0 {
-                *value = remap(u32::from_le_bytes(*value))?.to_le_bytes();
+            if !data.len().is_multiple_of(4) {
+                skip_field(format!("VTEX length {} is not a multiple of 4", data.len()));
+                malformed_subrecords.push(index);
+                continue;
             }
+            let mut kept = Vec::with_capacity(data.len());
+            for value in data.as_chunks::<4>().0 {
+                match resolve_link(u32::from_le_bytes(*value))? {
+                    Ok(texture) => kept.extend(texture.to_le_bytes()),
+                    Err(reason) => skip_field(format!("VTEX entry {reason}")),
+                }
+            }
+            *data = kept;
             continue;
         }
         if tag.as_slice() == b"VMAD" {
@@ -537,13 +708,21 @@ fn remap_record_form_ids(
             }
             continue;
         }
-        if is_form_id_subrecord(&record.record_type, tag, data.len()) {
-            let value = u32::from_le_bytes(data[..4].try_into().unwrap());
-            data[..4].copy_from_slice(
-                &remap(value)
-                    .wrap_err_with(|| format!("{} reference", String::from_utf8_lossy(tag)))?
-                    .to_le_bytes(),
-            );
+        if is_form_id_subrecord(&record.record_type, tag, data.len())
+            && let Some(value) = data.first_chunk::<4>()
+        {
+            let name = String::from_utf8_lossy(tag).into_owned();
+            match resolve_link(u32::from_le_bytes(*value))
+                .wrap_err_with(|| format!("{name} reference"))?
+            {
+                Ok(resolved) => data[..4].copy_from_slice(&resolved.to_le_bytes()),
+                Err(reason) => {
+                    // Removing the link reads as "not set", as the game treats a
+                    // missing field; a null value could be read as an explicit choice.
+                    skip_field(format!("{name} reference {reason}"));
+                    malformed_subrecords.push(index);
+                }
+            }
         }
     }
     if !malformed_subrecords.is_empty() {
@@ -556,12 +735,369 @@ fn remap_record_form_ids(
             keep
         });
     }
-    Ok(())
+    Ok(Remapped::Kept)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sub(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
+        [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
+    }
+
+    fn record_bytes(tag: &[u8; 4], id: u32, flags: u32, payload: &[u8]) -> Vec<u8> {
+        [
+            tag.as_slice(),
+            &(payload.len() as u32).to_le_bytes(),
+            &flags.to_le_bytes(),
+            &id.to_le_bytes(),
+            &[0; 8],
+            payload,
+        ]
+        .concat()
+    }
+
+    fn write_plugin(
+        root: &Path,
+        name: &str,
+        masters: &[&str],
+        flags: u32,
+        records: &[u8],
+    ) -> PathBuf {
+        let mut header = Vec::new();
+        for master in masters {
+            header.extend(sub(b"MAST", format!("{master}\0").as_bytes()));
+            header.extend(sub(b"DATA", &[0; 8]));
+        }
+        let path = root.join(name);
+        std::fs::write(
+            &path,
+            [record_bytes(b"TES4", 0, flags, &header), records.to_vec()].concat(),
+        )
+        .unwrap();
+        path
+    }
+
+    /// Merge with a caller-owned warning collector so a test can inspect the aggregates.
+    fn merge_collecting(paths: &[PathBuf]) -> (HashMap<u32, RawRecord>, RemapWarnings) {
+        let order = load_order::LoadOrder::read(paths).unwrap();
+        let warnings = RemapWarnings::default();
+        let merged = EsmParser::merge_with_warnings(paths, &order, &warnings).unwrap();
+        (merged, warnings)
+    }
+
+    fn stat(id: u32) -> Vec<u8> {
+        record_bytes(b"STAT", id, 0, &sub(b"EDID", b"Valid\0"))
+    }
+
+    /// Mudcrab #182 row 1: a record whose payload cannot be decoded is skipped by itself.
+    /// Its length comes from the record header, so the records after it still parse.
+    #[test]
+    fn undecodable_records_are_skipped_and_counted_per_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncated_subrecord = record_bytes(b"STAT", 0x801, 0, b"DATA\x04\x00\x01");
+        let mut bad_zlib = 6u32.to_le_bytes().to_vec();
+        bad_zlib.extend_from_slice(b"not a zlib stream");
+        let undecompressable = record_bytes(b"STAT", 0x802, 0x0004_0000, &bad_zlib);
+        let short_compressed = record_bytes(b"STAT", 0x804, 0x0004_0000, &[1, 2]);
+        let base = write_plugin(
+            dir.path(),
+            "Base.esm",
+            &[],
+            0,
+            &[
+                stat(0x800),
+                truncated_subrecord,
+                undecompressable,
+                short_compressed,
+                stat(0x803),
+            ]
+            .concat(),
+        );
+        let (merged, warnings) = merge_collecting(&[base]);
+        let mut ids: Vec<_> = merged.keys().copied().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [0x800, 0x803]);
+        let skipped = warnings.skipped_records.borrow();
+        let (count, example) = &skipped["base.esm"];
+        assert_eq!(*count, 3);
+        assert!(
+            example.contains("00000801") && example.contains("truncated DATA"),
+            "{example}"
+        );
+    }
+
+    fn group_bytes(kind: i32, label: u32, payload: &[u8]) -> Vec<u8> {
+        [
+            b"GRUP".as_slice(),
+            &(payload.len() as u32 + 24).to_le_bytes(),
+            &label.to_le_bytes(),
+            &kind.to_le_bytes(),
+            &[0; 8],
+            payload,
+        ]
+        .concat()
+    }
+
+    fn layer(tag: &[u8; 4], texture: u32, quadrant: u8, index: u16) -> Vec<u8> {
+        sub(
+            tag,
+            &[
+                texture.to_le_bytes().as_slice(),
+                &[quadrant, 0],
+                &index.to_le_bytes(),
+            ]
+            .concat(),
+        )
+    }
+
+    fn weights(vertex: u16, opacity: f32) -> Vec<u8> {
+        sub(
+            b"VTXT",
+            &[
+                vertex.to_le_bytes().as_slice(),
+                &[0, 0],
+                &opacity.to_le_bytes(),
+            ]
+            .concat(),
+        )
+    }
+
+    fn ids(values: &[u32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    fn tags(record: &RawRecord) -> Vec<String> {
+        record
+            .subrecords
+            .iter()
+            .map(|(tag, _)| String::from_utf8_lossy(tag).into_owned())
+            .collect()
+    }
+
+    /// Mudcrab #182 row 2: an unresolvable FormID on a terrain, grass or texture record no
+    /// longer stops the merge. A link field is removed (never truncated or guessed, which
+    /// could name another record); an unresolvable record identity drops that record.
+    #[test]
+    fn unresolvable_terrain_and_grass_form_ids_are_dropped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = write_plugin(dir.path(), "Base.esm", &[], 0, &[]);
+        let records = [
+            record_bytes(
+                b"LTEX",
+                0x0100_0810,
+                0,
+                &[
+                    sub(b"TNAM", &0x0000_0900u32.to_le_bytes()),
+                    sub(b"GNAM", &0x0500_0901u32.to_le_bytes()),
+                    sub(b"GNAM", &0x0000_0902u32.to_le_bytes()),
+                    sub(b"MNAM", &0x0700_0000u32.to_le_bytes()),
+                ]
+                .concat(),
+            ),
+            // The record's own master index is past the master list.
+            record_bytes(b"GRAS", 0x0500_0820, 0, &sub(b"EDID", b"Lost\0")),
+            record_bytes(
+                b"CELL",
+                0x0100_0830,
+                0,
+                &[
+                    sub(b"EDID", b"Cell\0"),
+                    sub(b"XCWT", &0x0900_0001u32.to_le_bytes()),
+                ]
+                .concat(),
+            ),
+            record_bytes(
+                b"LAND",
+                0x0100_0840,
+                0,
+                &[
+                    layer(b"BTXT", 0x0500_0001, 0, 0),
+                    layer(b"BTXT", 0x0000_0006, 1, 0),
+                    layer(b"ATXT", 0x0500_0002, 1, 0),
+                    weights(3, 0.5),
+                    layer(b"ATXT", 0x0000_0003, 1, 1),
+                    weights(4, 0.25),
+                    sub(b"VTEX", &ids(&[0x0000_0004, 0x0500_0005, 0x0100_0006])),
+                ]
+                .concat(),
+            ),
+            record_bytes(
+                b"WRLD",
+                0x0100_0850,
+                0,
+                &sub(b"NAM2", &0x0600_0000u32.to_le_bytes()),
+            ),
+            // A LAND whose parent cell (the group label) is unresolvable.
+            group_bytes(9, 0x0500_0999, &record_bytes(b"LAND", 0x0100_0860, 0, &[])),
+        ]
+        .concat();
+        let patch = write_plugin(dir.path(), "Patch.esp", &["Base.esm"], 0, &records);
+        // A light plugin's local ID wider than 12 bits would be truncated onto another ID.
+        let light = write_plugin(
+            dir.path(),
+            "Light.esl",
+            &[],
+            0x200,
+            &record_bytes(b"GRAS", 0x1800, 0, &sub(b"EDID", b"Wide\0")),
+        );
+        let (merged, warnings) = merge_collecting(&[base, patch, light]);
+        let mut found: Vec<_> = merged.keys().copied().collect();
+        found.sort_unstable();
+        assert_eq!(found, [0x0100_0810, 0x0100_0830, 0x0100_0840, 0x0100_0850]);
+
+        let ltex = &merged[&0x0100_0810];
+        assert_eq!(
+            ltex.subrecords,
+            [
+                (b"TNAM".to_vec(), 0x0000_0900u32.to_le_bytes().to_vec()),
+                (b"GNAM".to_vec(), 0x0000_0902u32.to_le_bytes().to_vec()),
+            ]
+        );
+        assert_eq!(tags(&merged[&0x0100_0830]), ["EDID"]);
+        assert!(merged[&0x0100_0850].subrecords.is_empty());
+        let land = &merged[&0x0100_0840];
+        assert_eq!(
+            land.subrecords,
+            [
+                (
+                    b"BTXT".to_vec(),
+                    [0x0000_0006u32.to_le_bytes().as_slice(), &[1, 0, 0, 0]].concat()
+                ),
+                (
+                    b"ATXT".to_vec(),
+                    [0x0000_0003u32.to_le_bytes().as_slice(), &[1, 0, 1, 0]].concat()
+                ),
+                (
+                    b"VTXT".to_vec(),
+                    [
+                        4u16.to_le_bytes().as_slice(),
+                        &[0, 0],
+                        &0.25f32.to_le_bytes()
+                    ]
+                    .concat()
+                ),
+                (b"VTEX".to_vec(), ids(&[0x0000_0004, 0x0100_0006])),
+            ]
+        );
+
+        let records = warnings.skipped_records.borrow();
+        assert_eq!(records["patch.esp"].0, 2, "{:?}", records["patch.esp"]);
+        assert!(
+            records["patch.esp"].1.contains("05000820"),
+            "{}",
+            records["patch.esp"].1
+        );
+        assert_eq!(records["light.esl"].0, 1);
+        assert!(records["light.esl"].1.contains("12 bits"));
+        let fields = warnings.skipped_optional.borrow();
+        // GNAM, MNAM, XCWT, a BTXT, an ATXT with its VTXT, one VTEX entry and NAM2.
+        assert_eq!(fields["patch.esp"].0, 7, "{:?}", fields["patch.esp"]);
+        assert!(warnings.out_of_range.borrow().is_empty());
+        assert!(warnings.truncations.borrow().is_empty());
+    }
+
+    fn alternate_textures(entries: &[(&[u8], u32, u32)]) -> Vec<u8> {
+        let mut bytes = (entries.len() as u32).to_le_bytes().to_vec();
+        for (name, texture, index) in entries {
+            bytes.extend((name.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(name);
+            bytes.extend(texture.to_le_bytes());
+            bytes.extend(index.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Mudcrab #182 row 3: malformed `GRAS.MODS` drops that subrecord; an unresolvable
+    /// alternate texture drops only its own entry.
+    #[test]
+    fn malformed_grass_alternate_textures_are_dropped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = write_plugin(dir.path(), "Base.esm", &[], 0, &[]);
+        let grass = |id: u32, mods: Vec<u8>| {
+            record_bytes(
+                b"GRAS",
+                id,
+                0,
+                &[sub(b"EDID", b"Grass\0"), sub(b"MODS", &mods)].concat(),
+            )
+        };
+        let mut trailing = alternate_textures(&[(b"a", 0x0000_0001, 0)]);
+        trailing.push(0);
+        let records = [
+            grass(
+                0x0100_0870,
+                alternate_textures(&[(b"a", 0x0500_0001, 0), (b"bb", 0x0100_0002, 1)]),
+            ),
+            grass(0x0100_0871, 1u32.to_le_bytes().to_vec()),
+            grass(0x0100_0872, vec![0; 3]),
+            grass(0x0100_0873, trailing),
+        ]
+        .concat();
+        let patch = write_plugin(dir.path(), "Patch.esp", &["Base.esm"], 0, &records);
+        let (merged, warnings) = merge_collecting(&[base, patch]);
+        assert_eq!(merged.len(), 4);
+        assert_eq!(
+            extractors::SubrecordView::new(&merged[&0x0100_0870].subrecords).find(b"MODS"),
+            Some(alternate_textures(&[(b"bb", 0x0100_0002, 1)]).as_slice())
+        );
+        for id in [0x0100_0871, 0x0100_0872, 0x0100_0873] {
+            assert_eq!(tags(&merged[&id]), ["EDID"], "{id:08X}");
+        }
+        let fields = warnings.skipped_optional.borrow();
+        assert_eq!(fields["patch.esp"].0, 4, "{:?}", fields["patch.esp"]);
+        assert!(warnings.skipped_records.borrow().is_empty());
+    }
+
+    /// Mudcrab #182 row 4: a LAND texture layer or VTEX list with the wrong length is
+    /// dropped (an ATXT with its VTXT weights); the rest of the LAND survives.
+    #[test]
+    fn malformed_land_texture_subrecords_are_dropped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let land = record_bytes(
+            b"LAND",
+            0x800,
+            0,
+            &[
+                sub(b"DATA", &[1, 0, 0, 0]),
+                sub(b"BTXT", &[0; 7]),
+                sub(b"ATXT", &[0; 9]),
+                weights(1, 0.5),
+                layer(b"ATXT", 0x0000_0003, 2, 1),
+                weights(2, 0.75),
+                sub(b"VTEX", &[0; 3]),
+            ]
+            .concat(),
+        );
+        let base = write_plugin(
+            dir.path(),
+            "Base.esm",
+            &[],
+            0,
+            &[land, stat(0x801)].concat(),
+        );
+        let (merged, warnings) = merge_collecting(&[base]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(tags(&merged[&0x800]), ["DATA", "ATXT", "VTXT"]);
+        assert_eq!(
+            extractors::SubrecordView::new(&merged[&0x800].subrecords).find(b"VTXT"),
+            Some(
+                [
+                    2u16.to_le_bytes().as_slice(),
+                    &[0, 0],
+                    &0.75f32.to_le_bytes()
+                ]
+                .concat()
+                .as_slice()
+            )
+        );
+        let fields = warnings.skipped_optional.borrow();
+        assert_eq!(fields["base.esm"].0, 3, "{:?}", fields["base.esm"]);
+    }
 
     #[test]
     fn invalid_optional_links_are_cleared_and_warnings_are_aggregated() {

@@ -37,6 +37,14 @@ pub struct IntegrationReport {
     pub room_graph: crate::esm::rooms::RoomGraphReport,
     pub missing_texture_count: u64,
     pub unavailable_texture_source_count: u64,
+    /// Model paths the converter refuses as asset paths (rooted, `..` traversal or
+    /// invalid characters). Like an unavailable source, no converted asset can exist for
+    /// one, so the record is skipped and reported instead of failing integration.
+    #[serde(default)]
+    pub malformed_model_path_count: u64,
+    /// Diffuse and flow-normal texture paths refused the same way.
+    #[serde(default)]
+    pub malformed_texture_path_count: u64,
     pub issues: Vec<String>,
     pub passed: bool,
 }
@@ -96,9 +104,23 @@ pub fn finalize_world_database_with_sources(
     };
     let transaction = connection.transaction()?;
     for (form_id, model_path) in static_models {
-        let key = converted_key(&model_path, "meshes", "glb")?;
+        // One record's malformed path (rooted, `..`, invalid characters) names no asset
+        // the converter could have produced. Skip and report it instead of failing the run.
+        let keys = converted_key(&model_path, "meshes", "glb").and_then(|key| {
+            converted_key(&model_path, "meshes", "nif").map(|source_key| (key, source_key))
+        });
+        let (key, source_key) = match keys {
+            Ok(keys) => keys,
+            Err(error) => {
+                report.malformed_model_path_count += 1;
+                issue(
+                    &mut report,
+                    format!("malformed model path {model_path} for {form_id:08X}: {error:#}"),
+                );
+                continue;
+            }
+        };
         let Some(path) = files.get(&key) else {
-            let source_key = converted_key(&model_path, "meshes", "nif")?;
             if sources.contains_key(&source_key) {
                 report.missing_model_count += 1;
                 issue(
@@ -143,9 +165,12 @@ pub fn finalize_world_database_with_sources(
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
     for (form_id, texture_path) in diffuse_paths {
-        let key = converted_key(&texture_path, "textures", "ktx2")?;
+        let Some((key, source_key)) =
+            texture_keys(&mut report, &texture_path, "diffuse", "TXST", form_id)
+        else {
+            continue;
+        };
         if !files.contains_key(&key) {
-            let source_key = converted_key(&texture_path, "textures", "dds")?;
             if sources.contains_key(&source_key) {
                 report.missing_texture_count += 1;
                 issue(
@@ -170,9 +195,12 @@ pub fn finalize_world_database_with_sources(
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
     for (form_id, texture_path) in flow_paths {
-        let key = converted_key(&texture_path, "textures", "ktx2")?;
+        let Some((key, source_key)) =
+            texture_keys(&mut report, &texture_path, "flow-normal", "WATR", form_id)
+        else {
+            continue;
+        };
         if !files.contains_key(&key) {
-            let source_key = converted_key(&texture_path, "textures", "dds")?;
             if sources.contains_key(&source_key) {
                 report.missing_texture_count += 1;
                 issue(
@@ -248,6 +276,33 @@ fn converted_file_index(staging: &Path) -> Result<HashMap<String, PathBuf>> {
         }
     }
     Ok(files)
+}
+
+/// The converted and source keys of a texture path, or `None` after counting and reporting
+/// a malformed path, which no converted asset can exist for.
+fn texture_keys(
+    report: &mut IntegrationReport,
+    texture_path: &str,
+    role: &str,
+    record_type: &str,
+    form_id: u32,
+) -> Option<(String, String)> {
+    let keys = converted_key(texture_path, "textures", "ktx2").and_then(|key| {
+        converted_key(texture_path, "textures", "dds").map(|source_key| (key, source_key))
+    });
+    match keys {
+        Ok(keys) => Some(keys),
+        Err(error) => {
+            report.malformed_texture_path_count += 1;
+            issue(
+                report,
+                format!(
+                    "malformed {role} texture path {texture_path} for {record_type} {form_id:08X}: {error:#}"
+                ),
+            );
+            None
+        }
+    }
 }
 
 fn converted_key(source: &str, kind: &str, extension: &str) -> Result<String> {
@@ -351,6 +406,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bounds, (-2.0, 7.0, 1));
+    }
+
+    /// Mudcrab #180: one record's malformed asset path must not fail integration. It is
+    /// counted and reported with its path, and the valid static still gets its bounds.
+    #[test]
+    fn malformed_asset_paths_are_reported_without_failing_integration() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        for (id, path) in [
+            (1, "test/lost.nif"),
+            (2, "..\\..\\outside.nif"),
+            (3, "/rooted/model.nif"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO statics(id,model_path,flags) VALUES(?1,?2,0)",
+                    params![id, path],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO texture_sets(id,diffuse_path) VALUES(4,'c:\\absolute.dds')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO waters(id,flags,flow_normal_path,data) VALUES(5,0,'../flow.dds',x'')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        empty_cache(directory.path());
+
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+        assert!(report.passed, "{:?}", report.issues);
+        assert_eq!(report.unavailable_model_source_count, 1);
+        assert_eq!(report.malformed_model_path_count, 2);
+        assert_eq!(report.malformed_texture_path_count, 2);
+        for expected in [
+            "..\\..\\outside.nif",
+            "/rooted/model.nif",
+            "c:\\absolute.dds",
+            "../flow.dds",
+        ] {
+            assert!(
+                report.issues.iter().any(|issue| issue.contains(expected)),
+                "{expected} missing from {:?}",
+                report.issues
+            );
+        }
     }
 
     #[test]

@@ -179,13 +179,59 @@ pub fn parse_group_header(input: &[u8]) -> IResult<&[u8], GroupHeader> {
     ))
 }
 
+/// Records a recovering parse left out of one plugin: how many, and the first reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkippedRecords {
+    pub count: u64,
+    pub first: Option<String>,
+}
+
+impl SkippedRecords {
+    fn skip(&mut self, reason: String) {
+        self.count += 1;
+        self.first.get_or_insert(reason);
+    }
+}
+
 /// Parse nested groups in file order using an explicit stack, so malformed
 /// nesting cannot overflow the call stack. Group context is restored for siblings.
+/// Any record whose payload cannot be decoded fails the parse.
 pub fn parse_group(
     input: &[u8],
     current_cell: Option<u32>,
     current_worldspace: Option<u32>,
     records: &mut Vec<RawRecord>,
+) -> Result<()> {
+    parse_group_inner(input, current_cell, current_worldspace, records, None)
+}
+
+/// Like [`parse_group`], but a record whose payload cannot be decompressed or whose
+/// subrecord stream is malformed is left out and counted in `skipped`, not fatal. Its
+/// header still gives its length, so the records after it parse normally. The record is
+/// dropped whole; a valid prefix of its subrecords is never kept. Broken group or record
+/// framing still fails, because nothing after it can be located.
+pub fn parse_group_skipping_malformed(
+    input: &[u8],
+    current_cell: Option<u32>,
+    current_worldspace: Option<u32>,
+    records: &mut Vec<RawRecord>,
+    skipped: &mut SkippedRecords,
+) -> Result<()> {
+    parse_group_inner(
+        input,
+        current_cell,
+        current_worldspace,
+        records,
+        Some(skipped),
+    )
+}
+
+fn parse_group_inner(
+    input: &[u8],
+    current_cell: Option<u32>,
+    current_worldspace: Option<u32>,
+    records: &mut Vec<RawRecord>,
+    mut skipped: Option<&mut SkippedRecords>,
 ) -> Result<()> {
     let mut curr = input;
     let mut current_cell = current_cell;
@@ -248,60 +294,81 @@ pub fn parse_group(
                 ));
             }
             let raw_payload = &rest[..record_len];
-            let subrecords = if header.flags & FLAG_COMPRESSED != 0 {
-                if raw_payload.len() < 4 {
-                    return Err(eyre!("truncated compressed record {:08x}", header.form_id));
-                } else {
-                    let decompressed_size = u32::from_le_bytes([
-                        raw_payload[0],
-                        raw_payload[1],
-                        raw_payload[2],
-                        raw_payload[3],
-                    ]) as usize;
-
-                    let compressed_bytes = &raw_payload[4..];
-                    let decompressed_data = read_bounded(compressed_bytes, decompressed_size)
-                        .map_err(|error| {
-                            eyre!(
-                                "failed to decompress record {:08x}: {error}",
-                                header.form_id
-                            )
-                        })?;
-                    if decompressed_data.len() != decompressed_size {
-                        return Err(eyre!(
-                            "decompressed size mismatch for {:08x}: expected {decompressed_size}, got {}",
-                            header.form_id,
-                            decompressed_data.len()
-                        ));
-                    }
-                    extract_subrecords(&decompressed_data)
-                        .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))?
-                }
-            } else {
-                extract_subrecords(raw_payload)
-                    .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))?
-            };
-
-            records.push(RawRecord {
-                form_id: header.form_id,
-                record_type: header.type_tag,
-                flags: header.flags,
-                subrecords,
-                cell_form_id: current_cell,
-                worldspace_form_id: current_worldspace,
-                load_order: 0,
-            });
+            match decode_record_payload(&header, raw_payload) {
+                Ok(subrecords) => records.push(RawRecord {
+                    form_id: header.form_id,
+                    record_type: header.type_tag,
+                    flags: header.flags,
+                    subrecords,
+                    cell_form_id: current_cell,
+                    worldspace_form_id: current_worldspace,
+                    load_order: 0,
+                }),
+                Err(error) => match skipped.as_deref_mut() {
+                    Some(skipped) => skipped.skip(format!(
+                        "{} {error}",
+                        String::from_utf8_lossy(&header.type_tag)
+                    )),
+                    None => return Err(error),
+                },
+            }
             curr = &rest[record_len..];
         }
     }
 }
 
+/// Decode one record's subrecords, inflating a compressed payload first.
+fn decode_record_payload(
+    header: &RecordHeader,
+    raw_payload: &[u8],
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    if header.flags & FLAG_COMPRESSED == 0 {
+        return extract_subrecords(raw_payload)
+            .map_err(|error| eyre!("record {:08x}: {error}", header.form_id));
+    }
+    let Some((size, compressed_bytes)) = raw_payload.split_first_chunk::<4>() else {
+        return Err(eyre!("truncated compressed record {:08x}", header.form_id));
+    };
+    let decompressed_size = u32::from_le_bytes(*size) as usize;
+    let decompressed_data = read_bounded(compressed_bytes, decompressed_size).map_err(|error| {
+        eyre!(
+            "failed to decompress record {:08x}: {error}",
+            header.form_id
+        )
+    })?;
+    if decompressed_data.len() != decompressed_size {
+        return Err(eyre!(
+            "decompressed size mismatch for {:08x}: expected {decompressed_size}, got {}",
+            header.form_id,
+            decompressed_data.len()
+        ));
+    }
+    extract_subrecords(&decompressed_data)
+        .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))
+}
+
+/// Parse every record of a plugin. Any record whose payload cannot be decoded fails it.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
-    parse_plugin_file_inner(path)
+    parse_plugin_file_inner(path, None)
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
 }
 
-fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
+/// Parse a plugin, leaving out (and counting) records whose payload cannot be decoded; see
+/// [`parse_group_skipping_malformed`]. An unreadable file, a broken TES4 header or broken
+/// group framing still fails.
+pub fn parse_plugin_file_skipping_malformed(
+    path: &Path,
+) -> Result<(Vec<RawRecord>, SkippedRecords)> {
+    let mut skipped = SkippedRecords::default();
+    let records = parse_plugin_file_inner(path, Some(&mut skipped))
+        .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))?;
+    Ok((records, skipped))
+}
+
+fn parse_plugin_file_inner(
+    path: &Path,
+    skipped: Option<&mut SkippedRecords>,
+) -> Result<Vec<RawRecord>> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
 
@@ -330,7 +397,13 @@ fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
     } else {
         extract_subrecords(payload)?;
     }
-    parse_group(&after_header[header_payload..], None, None, &mut records)?;
+    parse_group_inner(
+        &after_header[header_payload..],
+        None,
+        None,
+        &mut records,
+        skipped,
+    )?;
 
     Ok(records)
 }
