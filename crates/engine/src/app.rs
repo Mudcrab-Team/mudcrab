@@ -170,6 +170,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
+    // The run fingerprint is measurement data: an ordinary play session neither builds one nor
+    // pays for the startup system that reads it.
+    let records_measurements = crate::fingerprint::records_measurements(&config);
     app.insert_resource(config)
         .insert_resource(origin)
         .insert_resource(render_asset_budget)
@@ -215,6 +218,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::lights::LightsPlugin)
         .add_systems(PostUpdate, keep_windows_hidden);
     add_camera_and_capture_systems(&mut app);
+    if records_measurements {
+        app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
+    }
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
             .insert_resource(catalog)

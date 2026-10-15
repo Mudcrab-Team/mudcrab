@@ -3,6 +3,7 @@ pub mod cell_commands;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;
+pub mod fingerprint;
 pub mod lights;
 pub mod mesh_preparation_retry;
 pub mod metrics;

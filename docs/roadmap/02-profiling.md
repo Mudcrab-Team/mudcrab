@@ -26,7 +26,121 @@ Each run writes a self-contained directory containing `metadata.json`, `frame-me
   the first and last samples after a steady-state settling window equal to 10% of the scenario
   duration, capped at 60 seconds. Peak memory still covers the entire run. This excludes one-time
   asset and pipeline warm-up without hiding sustained growth in the long acceptance scenarios.
-- Metadata records scenario, run, commit, dirty-worktree state, build profile and machine details.
+- Metadata records scenario, run, hardware label, worldspace and grid, and the run's fingerprint
+  (`fingerprint`, format version 2). The fingerprint is written once, in both the bundle and the
+  benchmark report, and the fields it carries (commit, dirty-worktree state, build profile, window
+  resolution, engine and Bevy versions, stream radius) are no longer repeated beside it.
+
+## Run fingerprint, per-pass GPU time and memory
+
+A report is only comparable to another run that ran the same thing. These three sections, and the
+`fingerprint` object in `metadata.json`, say what a run actually was; all of them are installed only
+when the run records measurements (`--benchmark-frames` or `--benchmark-duration`, or
+`--profile-output`). An ordinary play session adds no startup system, no diagnostic plugin and no
+per-frame sampling for any of them.
+
+### Fingerprint
+
+`fingerprint` appears in the benchmark report (report `format_version` 10) and in the bundle's
+`metadata.json` (format version 2):
+
+- `commit`, `dirty_worktree` — the `--profile-commit` / `--profile-dirty-worktree` values.
+- `engine_version`, `bevy_version`, `build_profile` — `release` or `debug`, from the build itself
+  (`cfg!(debug_assertions)`) and nothing finer: cargo's `quick` profile inherits `release` (Cargo.toml
+  marks it "not for measuring"), so a `quick` build reports `release`, and an engine report from any
+  other cargo profile that says `release` cannot be told apart from a real `release` run — although
+  `phase2-baseline.ps1` only ever runs the `release` engine binary, so a `quick` build is never
+  measured by that command.
+- `renderer` — the adapter Bevy selected: `backend` (`Vulkan`, `Dx12`, `Metal`, …), `adapter`,
+  `driver`, `driver_info`, `device_type` (`DiscreteGpu`, …), and the device features the GPU
+  diagnostics depend on (`timestamp_queries_supported`, `pipeline_statistics_supported`). `null`
+  for a run with no renderer.
+- `resolution` — the primary window's physical pixels as the run actually opened it, `null` for a
+  headless run. Compare runs at the same resolution: it changes every pixel-count-bound number.
+- `world_database_schema` — what this engine build expects (`shared::WORLD_DATABASE_SCHEMA_VERSION`),
+  and `opened_world_database_schema` — what the database the run opened actually says in its
+  `schema_info` table (`null` when the run opened none, e.g. the synthetic benchmark).
+  `cell_cache_version` is the layout `cell_cache.rkyv` must match; a cache of any other version
+  fails to open.
+- `graphics` — the effective settings, after `--ini` files and the command line have both been
+  applied: `stream_radius`, `unload_radius`, the three terrain LOD block distances and
+  `split_distance_mult`, `max_upload_mib_per_frame`, `lights`, `headless`, and the window's
+  `present_mode`. This engine keeps no separate graphics-settings type; `EngineConfig` is where a
+  run's render-affecting settings live.
+
+### `gpu_passes`
+
+Per-pass GPU time over the measured frames (after the warm-up), from Bevy's render diagnostics:
+`mean`, `p95`, `worst` and `total` (with `count`, `p50`, `p99`) for each pass path,
+`measured_frames` (the frames of the measured window the numbers rest on), plus
+`timestamp_queries_supported` and `pipeline_statistics_supported` from the device. The GPU
+readback lags a frame or two behind the frame that ran the pass, so the first measured samples
+can describe passes of the last warm-up frames (a measurement already in flight when the window
+opens is kept; the warm-up's own samples are consumed and dropped). Every observation Bevy
+records is taken exactly once, not resampled from its latest value, so a pass's `count` is its
+real sample count: larger than `measured_frames` when several cameras ran the pass, smaller when
+the GPU readback lagged or the pass did not run every frame; `phase2-baseline.ps1` marks a pass
+whose count is below its window's `measured_frames` for exactly that reason.
+
+A path is Bevy's own: `render/<pass>/elapsed_gpu`, where `<pass>` is the label the render pass was
+created with — `main_opaque_pass_3d`, `tonemapping`, `upscaling`, `ssao`, `clustering`, and so on.
+Two things to know when reading one:
+
+- Several cameras that run the same pass write the same path, so a row covers every camera that ran
+  it, not one camera. Compare cameras by rendering them in separate runs.
+- Shadow views are labelled per light and cascade
+  (`shadow_directional_light_<light>_cascade_<cascade>`, `shadow_point_light_<light>_<face>`,
+  `shadow_spot_light_<light>`), but Bevy's standard shadow node does not open a diagnostic span for
+  them (only its meshlet path does), so those passes are normally absent from the report rather than
+  zero. A missing row means "not measured here". Bevy 0.20 (0.20.0 was released 2026-10-08) adds more
+  GPU tracing spans (bevy PR #25398, merged 2026-08-19): one around the auxiliary-view loop (a point
+  light's six shadow views, a spot light's one) and a `per_view_shadow_pass` span whose documentation
+  says it renders the directional light shadows. This engine is on Bevy 0.19 and measures none of
+  them yet, so cascade and point/spot shadow GPU time needs a frame capture (RenderDoc or PIX) until
+  it moves to 0.20.
+
+When the device cannot time GPU work — any backend but Vulkan and DX12 — `passes` is empty and
+`unavailable.elapsed_gpu` carries the reason; a run with no renderer at all gets "no renderer in
+this run" for both `elapsed_gpu` and `pipeline_statistics` instead of a backend complaint. An empty
+`passes` on a device that *can* time GPU work says no pass was recorded, which is also a reason
+rather than a zero. Pipeline statistics (the per-pass shader-invocation counters the bundle keeps in
+`gpu-passes.json`) are a separate device
+feature and are described under `unavailable.pipeline_statistics` when absent. Never diff numbers
+across backends.
+
+### `memory`
+
+Split by where the memory is:
+
+- `cpu.mesh_bytes` and `cpu.image_bytes` — the CPU-side bytes of the mesh and image assets, summed
+  once at the end of the run (not per frame): each mesh's vertex attributes (element size times
+  vertex count) plus its indices, and each image's pixel data. `meshes` and `images` say how many
+  assets were counted, and `meshes_without_cpu_data` how many meshes Bevy extracted to the render
+  world without keeping a main-world copy (a `RenderAssetUsages::RENDER_WORLD` mesh whose GPU data
+  was taken). Bevy 0.19's glTF loader keeps meshes in both worlds by default
+  (`GltfLoaderSettings::load_meshes` is `RenderAssetUsages::default()`) and the engine does not
+  override it, so streamed models do keep main-world mesh data; only those render-world-only meshes
+  contribute no bytes to `mesh_bytes`.
+- `gpu.mesh_allocator_slab_bytes`, `gpu.mesh_allocator_slabs`, `gpu.mesh_allocator_allocations` —
+  Bevy's mesh allocator: the byte size of its slabs (the one true byte figure here) and how many
+  slabs and mesh allocations are live.
+- `gpu.render_asset_counts` — how many GPU-side assets are live, by type: `mesh`, `image`,
+  `material`. These are **counts, not bytes**: wgpu reports the number of live resources and the
+  engine can read no vendor VRAM counter. `material` is one shared count, not one per material
+  type: every `MeshMaterial3d<M>` prepares into the same `PreparedMaterial` map, so Bevy reports
+  the same number for any material type it is asked about.
+- `gpu.unavailable` — a reason for every counter that was not sampled; the mesh allocator and
+  render-asset counters stay `null` until the render world has actually measured them (Bevy publishes
+  their atomics in main-world `PreUpdate` from the first frame, at zero), `gpu.measured_frames` says
+  on how many measured frames they were sampled, and a run with no renderer says "no renderer in
+  this run" rather than claiming the diagnostic was not sampled (a run that rendered no frame, for
+  instance). Counters are never zero-filled.
+
+`gpu.mesh_allocator_*` and `gpu.render_asset_counts` come from Bevy's mesh-allocator and
+render-asset diagnostic plugins, which are installed only for measured runs. They are gauges, not
+distributions: the report keeps their last value in the measured window, and only once the render
+world has measured them (until then they are `null`, as above). The process-level memory figures stay where they were
+(`peak_process_memory_gib`, `process_memory_growth_gib` and the bundle's `memory.json`).
 
 ## Reproducible campaign
 
@@ -45,12 +159,18 @@ Run every scenario with converted assets and coordinates selected during integra
 
 ```powershell
 ./scripts/phase2-profile.ps1 -Scenario all -Assets D:\SkyrimConverted `
-  -RuralGridX 0 -RuralGridY 0 -DenseGridX 12 -DenseGridY 8 `
+  -RuralGridX 0 -RuralGridY 0 -DenseGridX 3 -DenseGridY -12 `
   -WaterGridX 7 -WaterGridY -2 -Repetitions 3
 ```
 
 Results go to `target/profiling/<timestamp>-<cpu>-<gpu>`. The runner uses medians to reduce noise.
-Pass `-UpdateBaseline` to write `profiling-baseline.json`. Against an existing baseline, material
+Pass `-UpdateBaseline` to write `profiling-baseline.json`, which stores each scenario's `place`
+beside its medians — its worldspace and grid, or `synthetic` for a scene that runs in no world
+place. A stored entry with no place (a baseline written before places were recorded) or one measured
+in another place describes a different scene — `dense` moved from 18,-5 to Riverwood — so that
+scenario's comparison is skipped with one warning line naming the scenario and the reason, and the
+campaign is not failed for it; re-run once with `-UpdateBaseline` to record places. Against an
+existing baseline, material
 regressions over 5% are warnings and regressions over 10% fail the campaign. Fixed noise floors of
 5 FPS, 1.5 ms and 0.05 GiB prevent sub-millisecond scheduler jitter and sample granularity from being
 amplified into false percentage regressions. Higher FPS is better; lower frame latency and memory
@@ -66,7 +186,7 @@ retains the complete bundles as CI artifacts.
 
 These measurements show where world-loading time goes; they change nothing about what the engine
 loads or in what order. They are fields of the benchmark report (`--benchmark-output`, report
-`format_version` 8) and spans and events in the profiling bundle. They are installed only when the
+`format_version` 10) and spans and events in the profiling bundle. They are installed only when the
 run measures pacing (`EngineConfig::measures_pacing`: a benchmark run, or a jump target with no
 frame limit); an ordinary play session adds none of the marker schedules, asset-arrival counts or
 window scans.
@@ -160,12 +280,184 @@ cargo run --release -p engine -- --assets D:\SkyrimConverted --grid-x 0 --grid-y
   --benchmark-output target/pacing-fly.json --run-label pacing-fly
 ```
 
+## Scene counts and CPU time in the report (format version 10)
+
+The benchmark report (`acceptance.json`, and the same value as the bundle's `frame-metrics.json`)
+carries two more sections, and every field in them is `null` plus a reason rather than a zero when
+the run could not measure it.
+
+- **`scene`** — what the frame drew. `entity_count` is Bevy's own entity-count diagnostic;
+  `mesh_entities`, `terrain_patches` and `water_surfaces` are the engine's scene inventory, sampled
+  every 60th frame and kept only from a frame inside the measured window (a count never sampled
+  there is `null`, never the warm-up's number, so a synthetic run's real zero terrain patches and a
+  missing sample are told apart). `pipeline_statistics_supported` is the
+  device's answer, and on a device that has pipeline statistics (Vulkan; DX12 offers none) the
+  section lists per pass `vertex_shader_invocations` and `clipper_primitives_out`, each a
+  distribution over the measured frames, with `measured_frames` giving the frames those numbers rest
+  on; a run with no renderer gets "no renderer in this run" as the `pipeline_statistics` reason.
+  `draw_calls` is always `null`:
+  `unavailable["draw_calls"]` says "Bevy 0.19 exposes no draw-call count", because no Bevy, wgpu or
+  engine API counts them (bevy issue #17445 asks for one; Bevy 0.20 does not add it).
+- **`cpu`** — where the frame's CPU time went, in milliseconds. `schedules` is one summary per Bevy
+  main schedule (`main_schedule/<name>`, the eight `schedule_timing` times), `spans` is one per
+  span the engine records by hand, the `streaming/*` spans among them (the schedule summaries are
+  not repeated in `spans`, and the `assets_added/*` counts are in neither: they are counts, not
+  milliseconds, and stay in the bundle's `cpu-spans.json`). Each summary carries count, total,
+  mean, p50, p95, p99 and worst. `render_world_prep` is always `null`: Bevy 0.19 has no diagnostic
+  that times the render app's schedules (`bevy_diagnostic` ships no schedule timer and
+  `RenderDiagnosticsPlugin` records only per-pass spans), so the report says so instead of
+  inventing one. What does exist for render-world work is the report's own `render_world` section
+  and the `render_world/*` spans in `cpu.spans` (main world, extract, the wait for the render
+  thread, the render thread's phases), and per pass `render/<pass>/elapsed_cpu` in the bundle's
+  `gpu-passes.json`. The two kinds of span cover different windows: the `streaming/*` spans are
+  recorded on every frame of the run, warm-up frames included, while the `render_world/*` spans come
+  from the render-timing collector, which records only while the measured window is open, so those
+  describe the measured frames alone.
+
+## The baseline command
+
+`scripts/phase2-baseline.ps1` runs the fixed scenes on whatever branch is checked out and writes a
+small `baseline.json` and `baseline.md` for it:
+
+```powershell
+pwsh -File scripts/phase2-baseline.ps1 -Assets D:\SkyrimConverted            # 3 repeats of the six baseline scenes
+pwsh -File scripts/phase2-baseline.ps1 -Assets D:\SkyrimConverted -Scenarios stress -Repeats 5 -DurationSeconds 180
+pwsh -File scripts/phase2-baseline.ps1                                       # synthetic only: no -Assets needed
+```
+
+The world scenes use the same places as `docs/roadmap/02-acceptance.md` in Tamriel (`0x3c`), with
+the references within two cells of each: rural at grid 0,0 (about 1,050), dense at 3,-12 (Riverwood,
+about 2,900, the densest cell neighbourhood in Tamriel) and water at 7,-2 (about 1,580).
+`-RuralGridX`, `-DenseGridX`, `-WaterGridX` and their `Y` partners override them. Rural and dense
+are the same default in all three commands; water is not: `phase2-baseline.ps1` defaults it to 7,-2,
+and the acceptance campaign's documented command line passes 7,-2, while `phase2-profile.ps1` keeps
+its own water default of grid 0,0 and `phase2-acceptance.ps1` shares that 0,0 default — the place
+its own rural scene already measures. A water run is this standard place only when the command it
+runs under is given these coordinates, and a stored baseline for another place is not compared (see
+**Comparing baselines** below).
+
+`dense-legacy` is the old dense place, 18,-5 (about 1,530 references; `-DenseLegacyGridX`/`Y`). It
+is accepted by every script but is not in `-Scenario all` or the default sets, and is kept for one
+release, then removed. Baselines and
+`profiling-baseline.json` results made before this change are not comparable for `dense`, which is
+now a different, about twice as dense place. The scripts do not map an old `dense` entry to
+`dense-legacy`: compare an old `dense` median with a new `dense-legacy` median by hand.
+
+Both scripts need PowerShell 7 (`pwsh`): they read reports with `ConvertFrom-Json -AsHashtable`.
+The command builds the engine once (`cargo build --release --bin engine`, skipped with `-NoBuild`,
+and the binary is looked for under `CARGO_TARGET_DIR` when that is set), prints the number of
+windows and the expected duration before starting, and reuses `phase2-profile.ps1`'s scenario
+definitions and engine invocation (that file is dot-sourced with `-AsLibrary`, so the two commands
+cannot drift apart).
+
+- **Windows.** Every scenario gets a standing-still window. A scenario that moves — `stress` and
+  `stability`, which fly the camera — gets a second, streaming window: the same scene once with the
+  camera left in place and once as the scenario defines it. That is how steady frames and streaming
+  frames are reported separately; nothing in the engine's CLI measures both in one run. Every
+  engine run is labelled `--run-label "baseline <scenario> <n>/<repeats>"`, and the streaming
+  window adds `streaming`.
+- **Scenarios.** The default set is `synthetic`, `rural`, `dense`, `water`, `stress`. `stability`
+  is left out because it is a 30-minute soak, not a baseline; `-Scenarios all` includes it, and
+  `-Scenarios` takes any of the names `phase2-profile.ps1` knows. Without `-Assets` the bare
+  default runs `synthetic` only, the one scene that needs no converted data, because the default is
+  a convenience rather than a request. An explicit request is not narrowed that way: naming a world
+  scenario without `-Assets` fails, and `-Scenarios all` without `-Assets` fails with that reason
+  instead of quietly running the synthetic scene alone.
+- **Fresh reports.** Every campaign writes its bundles to its own timestamped directory,
+  `-Out/runs/<timestamp>-<hardware>/`, so a `run-N` is never a file an earlier campaign left
+  behind. A repeat counts only when the engine wrote a report this invocation can identify as its
+  own — the format version this script reads, a timestamp at or after the run started, measured
+  frames, and the run id and scenario in the bundle's `metadata.json` — and the engine runs from
+  the repository root, as the profiling campaign always has. Anything else throws with the
+  scenario, repeat and directory rather than being aggregated.
+- **`baseline.json`** (`format_version` 3). The campaign level carries what every window shares —
+  `commit`, the machine, the repeats, the window lengths, the run directory, and a `fingerprint`
+  holding only the fields that must be the same in every window (engine and Bevy versions, build
+  profile, resolution, renderer, world-database and cell-cache schemas). The script throws when two
+  windows disagree on any of those. Each scenario window then carries its own full `fingerprint`
+  and its `scenario_inputs` — worldspace, grid, effective stream radius, duration, warm-up frames, and the
+  workload itself: the `fly_speed` the scenario flew at (`null` when the camera was left standing
+  still), the `synthetic_instances` it rendered, and the resolved full path of the `assets` set it
+  loaded. The window comparison checks every one of them, so a rerun at another flight speed,
+  another instance count or against another asset set is refused rather than scored against a
+  different workload. The data set's identity is among them: `assets_identity` holds the size and
+  last-write time of `skyrim_world.db`, the size of `cell_cache.rkyv` (a re-conversion or another
+  plugin set rewrites both) and the `configuration_hash` and `schema_version` of the
+  `conversion-manifest.json` (the converter's settings). They are `null`, with the reason in
+  `assets_identity_unavailable`, when the window loaded no data set or a file could not be read, so
+  two runs whose `assets` path is the same but whose data is not are refused too. Format 3 added those fields and the `measured_frames` below; a
+  format-2 file does not carry them and cannot be compared with a run of this script — nor can a
+  format-3 file written before `assets_identity` existed, which the window comparison refuses as a
+  missing input.
+  The measurements follow: frame metrics (count, mean, p50, p95, p99, worst, average FPS) as
+  median/min/max over the repeats, `gpu_passes.passes` (per pass, the median over the repeats)
+  with `gpu_passes.measured_frames` (the frames the pass samples rest on, median/min/max over the
+  repeats), `gpu_passes.pass_samples` (each pass's own sample count, so a count below
+  `measured_frames` — GPU readback lag, or a pass that did not run every frame — is visible in the
+  file) and `gpu_passes.unavailable`, `memory` (the process figures, `cpu` asset bytes, and the
+  `gpu` counters with their own `measured_frames`) with `memory.gpu.unavailable`, `scene` (the
+  counts, `measured_frames`, and the per-pass pipeline-statistics counters) with
+  `scene.unavailable`, and `cpu` (per schedule and per span) with `cpu.unavailable`. Every
+  map takes the union of its keys across the repeats and each entry keeps `samples`, the number of
+  repeats that measured it, so a pass or span only one repeat recorded is still visible. A window a
+  scenario does not have is `null` with the reason in the scenario's `streaming_unavailable`.
+  Nothing is zero-filled here either: a counter the report left `null` stays `null`. When the engine
+  ends a repeat on a failed acceptance gate the window records `acceptance`: `runs_failed_gates` (the
+  repeats whose report says `passed: false`), `runs` (the repeat count) and `failed_gates` (the sorted
+  union of the `thresholds` names whose value is the boolean `false`); a baseline run measures through
+  an engine gate rather than failing on it, because the report a gated run wrote is still a
+  measurement, and only a report that cannot be shown to be this repeat's (missing, stale, malformed,
+  zero frames, another run's) throws.
+- **`baseline.md`.** One short table per scenario window, whose "median (min-max over N runs)"
+  cells are exactly what `baseline.json` holds; a short memory table (CPU asset bytes in MiB, the
+  GPU counters as counts with their unit); the slowest GPU passes and CPU spans; and every
+  counter a window could not measure with the reason the report gave for it. When GPU pass times
+  are missing the row prints the GPU reason, not the CPU-schedule one. The measured frame counts
+  are printed beside those tables — "Measured frames" for the GPU passes, the pipeline statistics
+  and the GPU counters — and every pass whose sample count is below its window's measured frames is
+  listed under the table as "fewer samples than frames (GPU readback lag or a pass that did not run
+  every frame)". Under the table of a window whose `acceptance.runs_failed_gates` is above zero, one
+  line names the gates and the runs: "Acceptance gates failed in N of M runs: <names>. The numbers
+  above are still measurements of those runs." — the numbers stand, they are just read with the
+  failed gate in view.
+- **Comparing baselines.** With `-CompareTo <baseline.json>` (or, without it, an existing
+  `baseline.json` in `-Out`; a `-CompareTo` path that does not exist is refused rather than
+  ignored), the new numbers are set against the old ones using the profiling campaign's noise
+  floors. The baseline picked up from `-Out` was not asked for, so it is checked before the first
+  window and, when it is unreadable, of an older format or otherwise unusable, it is skipped with
+  one warning line and the campaign runs without a comparison; `-CompareTo` names a comparison the
+  user asked for, so a file like that is refused there instead. A requested comparison is refused
+  before the remaining windows are run when the two runs differ in any field that changes the
+  numbers: the machine — the campaign-level `hardware` label (CPU, GPU and driver) and the
+  fingerprint's renderer backend, adapter and driver — resolution, build
+  profile, graphics settings, world-database and cell-cache schemas, or any window's scenario
+  inputs (flight speed, synthetic instance count and the data set included). The data set is checked
+  twice: as the resolved `assets` path, and as its own identity (`assets_identity`, above), so a
+  re-conversion or an added mod at the same path is refused rather than scored as the same workload.
+  The identity is a file identity, not a content hash: copying the same data set to another folder
+  keeps the sizes but changes the last-write time, so the copy is refused too, which is the safe
+  direction; rerun the baseline there to compare. A `baseline.json` written before its windows
+  carried `assets_identity` is refused by that check rather than compared against; rerun the
+  baseline once to write a new one. A different **commit**
+  is expected and allowed — comparing a branch against the baseline
+  it was measured from is the point of the command. `-Out` defaults to `target/phase2-baseline`, so
+  a rerun compares with the previous baseline by default; each window's report bundle stays under
+  `-Out/runs/`, and `baseline.json`'s `run_directory` says which campaign's bundles belong to it.
+- **CI.** Nothing here runs in CI: the `performance` job is converter-side and has no GPU, and only
+  the manual self-hosted runner can run even the synthetic scene. A baseline is a local,
+  same-machine measurement.
+
 ## Interpretation
 
-Compare identical scenario, resolution, release profile and hardware. Start with frame P95/P99,
-then inspect the top CPU spans, GPU passes and streaming timeline in the same run. A missing GPU
-counter means unsupported instrumentation, not a zero value. Real-asset and target-hardware sign-off
-remains an execution result, not something the repository can pre-certify.
+Compare the run fingerprints first: two runs whose `fingerprint` objects differ in anything but the
+commit (different adapter, resolution, graphics settings or world-database schema) are not
+comparable, and the fingerprint is written precisely so that difference is visible. A different
+commit is not a difference in what was measured: it is the change a baseline comparison is meant to
+detect, and `phase2-baseline.ps1` refuses to compare only when the machine, the build or the
+workload differs. Then, with the scenario inputs, resolution, build profile and hardware the same,
+start with frame P95/P99 and inspect the top CPU spans, GPU passes and streaming timeline in the
+same run. A missing GPU counter means unsupported instrumentation, not a zero value. Real-asset and
+target-hardware sign-off remains an execution result, not something the repository can pre-certify.
 
 ## Load speed defaults: models per frame and IO threads
 
