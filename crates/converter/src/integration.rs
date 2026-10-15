@@ -32,6 +32,9 @@ pub struct IntegrationReport {
     pub invalid_model_count: u64,
     pub unavailable_model_source_count: u64,
     pub unbounded_model_count: u64,
+    /// Interior room graph counters (db-schema.md section 15); all zero without room data.
+    #[serde(default)]
+    pub room_graph: crate::esm::rooms::RoomGraphReport,
     pub missing_texture_count: u64,
     pub unavailable_texture_source_count: u64,
     pub issues: Vec<String>,
@@ -125,6 +128,9 @@ pub fn finalize_world_database_with_sources(
         }
     }
     transaction.commit()?;
+    // Room membership by model bounds needs the bounds just written.
+    crate::esm::rooms::add_overlap_rows(&mut connection)?;
+    report.room_graph = crate::esm::rooms::RoomGraphReport::read(&connection)?;
 
     let diffuse_paths = {
         let mut statement = connection.prepare(
@@ -427,5 +433,199 @@ mod tests {
         assert!(!report.passed);
         assert_eq!(report.missing_model_count, 1);
         assert_eq!(report.unavailable_model_source_count, 0);
+    }
+
+    fn write_box_glb(path: &Path, min: [f32; 3], max: [f32; 3]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut json = format!(
+            r#"{{
+            "asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
+            "nodes":[{{"mesh":0}}],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+            "accessors":[{{"min":{min:?},"max":{max:?}}}]
+        }}"#
+        )
+        .into_bytes();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((20 + json.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        fs::write(path, glb).unwrap();
+    }
+
+    /// Objects whose pivot is outside a room but whose model reaches into it get a
+    /// `contained = 0` row. The GLB bounds are glTF-axis (Y-up) numbers in Creation units:
+    /// this model is 100 long along Creation X, 20 along Creation Y and 10 along Creation Z.
+    #[test]
+    fn adds_overlap_rows_from_model_bounds_in_creation_axes_and_units() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO statics(id,model_path,flags) VALUES(0x500,'architecture/wall.nif',0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z)
+                 VALUES(0x1001,0x100,0,0,0,0,0,0,100,100,100)",
+                [],
+            )
+            .unwrap();
+        let place = |id: u32, position: [f32; 3], rot_z: f32, scale: f32| {
+            connection
+                .execute(
+                    "INSERT INTO \"references\"(id,cell_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
+                     VALUES(?1,0x100,0x500,0,?2,?3,?4,0,0,?5,?6)",
+                    rusqlite::params![id, position[0], position[1], position[2], rot_z, scale],
+                )
+                .unwrap();
+        };
+        let quarter_turn = std::f32::consts::FRAC_PI_2;
+        // Pivot inside: a pivot row, never also an overlap row.
+        place(0x2001, [10.0, 0.0, 0.0], 0.0, 1.0);
+        connection
+            .execute(
+                "INSERT INTO reference_rooms(reference_id,room_ref,contained) VALUES(0x2001,0x1001,1)",
+                [],
+            )
+            .unwrap();
+        // Pivot outside on X; the 100-long side reaches in (x 90..190).
+        place(0x2002, [140.0, 0.0, 0.0], 0.0, 1.0);
+        // Far away.
+        place(0x2003, [300.0, 0.0, 0.0], 0.0, 1.0);
+        // A quarter turn about Z puts the long side along Y: x only spans 130..150.
+        place(0x2004, [140.0, 0.0, 0.0], quarter_turn, 1.0);
+        // The same turn at y = 140: the long side now reaches y 90..190.
+        place(0x2005, [0.0, 140.0, 0.0], quarter_turn, 1.0);
+        // Scale 0.1 shrinks the reach to 135..145.
+        place(0x2006, [140.0, 0.0, 0.0], 0.0, 0.1);
+        // Creation Z extent is +-5 (runtime Y), so z = 108 reaches only 103..113. Reading the
+        // glTF Y axis as Creation Y would make it +-5 in y and +-10 in z, and overlap.
+        place(0x2007, [0.0, 0.0, 108.0], 0.0, 1.0);
+        // Creation Y extent is +-10 (runtime Z): y = 108 reaches 98..118 and overlaps.
+        place(0x2008, [0.0, 108.0, 0.0], 0.0, 1.0);
+        drop(connection);
+        write_box_glb(
+            &directory.path().join("meshes/architecture/wall.glb"),
+            [-50.0, -5.0, -10.0],
+            [50.0, 5.0, 10.0],
+        );
+        empty_cache(directory.path());
+
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+        assert!(report.passed);
+        let connection = Connection::open(database).unwrap();
+        let rows: Vec<(u32, i64)> = connection
+            .prepare("SELECT reference_id,contained FROM reference_rooms ORDER BY reference_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(0x2001, 1), (0x2002, 0), (0x2005, 0), (0x2008, 0),]
+        );
+        assert_eq!(report.room_graph.overlap_rows, 3);
+        // Running the stage again replaces the overlap rows rather than duplicating them.
+        let mut connection = connection;
+        assert_eq!(
+            crate::esm::rooms::add_overlap_rows(&mut connection).unwrap(),
+            3
+        );
+    }
+
+    /// A room turned 0.6 rad with an asymmetric box, and a model turned with it: an object placed
+    /// along the room's long axis overlaps, its mirror image across the X axis does not. The
+    /// forward matrix, or the opposite turn, would swap the two.
+    #[test]
+    fn overlap_rows_follow_a_rotated_room_and_rotated_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO statics(id,model_path,flags) VALUES(0x500,'architecture/wall.nif',0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z)
+                 VALUES(0x1001,0x100,0,0,0,0,0,0.6,200,20,50)",
+                [],
+            )
+            .unwrap();
+        let (sin, cos) = 0.6f32.sin_cos();
+        // 240 along the room's long axis (local +X is (cos, -sin) in world), turned with it, so
+        // the model's 100-long side lies along the axis and spans 190..290, past the end at 200.
+        for (id, y_sign) in [(0x2001u32, -1.0f32), (0x2002, 1.0)] {
+            connection
+                .execute(
+                    "INSERT INTO \"references\"(id,cell_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
+                     VALUES(?1,0x100,0x500,0,?2,?3,0,0,0,0.6,1)",
+                    rusqlite::params![id, 240.0 * cos, y_sign * 240.0 * sin],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        write_box_glb(
+            &directory.path().join("meshes/architecture/wall.glb"),
+            [-50.0, -5.0, -10.0],
+            [50.0, 5.0, 10.0],
+        );
+        empty_cache(directory.path());
+        finalize_world_database(directory.path()).unwrap().unwrap();
+        let connection = Connection::open(database).unwrap();
+        let rows: Vec<(u32, i64)> = connection
+            .prepare("SELECT reference_id,contained FROM reference_rooms ORDER BY reference_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(0x2001, 0)]);
+    }
+
+    /// A reused older database whose `statics` has no bounds columns finalises, and the overlap
+    /// pass leaves it alone even when it holds rooms.
+    #[test]
+    fn finalises_a_legacy_database_without_bounds_columns() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE statics;
+                 CREATE TABLE statics(id INTEGER PRIMARY KEY, editor_id TEXT, model_path TEXT, flags INTEGER NOT NULL);",
+            )
+            .unwrap();
+        drop(connection);
+        empty_cache(directory.path());
+        assert!(finalize_world_database(directory.path()).unwrap().is_some());
+
+        let mut connection = Connection::open(&database).unwrap();
+        connection
+            .execute(
+                "INSERT INTO room_bounds(ref_id,cell_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,half_x,half_y,half_z)
+                 VALUES(1,1,0,0,0,0,0,0,1,1,1)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            crate::esm::rooms::add_overlap_rows(&mut connection).unwrap(),
+            0
+        );
     }
 }
