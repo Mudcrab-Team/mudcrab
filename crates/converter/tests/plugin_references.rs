@@ -1348,10 +1348,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             ),
         ),
     );
+    // Checked filler masters deliberately separate plugin-local master indices from full slots.
     let list = dir.path().join("plugins.txt");
     fs::write(
         &list,
-        "Skyrim.esm\nFiller.esm\nFiller2.esm\n*Light.esl\n*Links.esp\n*Override.esp\n",
+        "Skyrim.esm\n*Filler.esm\n*Filler2.esm\n*Light.esl\n*Links.esp\n*Override.esp\n",
     )
     .unwrap();
     let output = dir.path().join("modern");

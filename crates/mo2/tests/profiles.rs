@@ -11,6 +11,18 @@ fn write(root: &Path, path: &str, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+/// Requires one bounded contextual notice for a particular recovered profile-list problem.
+fn assert_notice(resolved: &mo2::Resolved, detail: &str) {
+    let notices = resolved
+        .notices
+        .iter()
+        .filter(|notice| notice.contains(detail))
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1, "{detail}: {:?}", resolved.notices);
+    assert!(notices[0].contains("MO2 profile Default"), "{notices:?}");
+    assert!(!notices[0].contains(['\r', '\n']), "{notices:?}");
+}
+
 /// Creates an MO2 instance fixture with profiles, enabled and disabled mods, and ordered plugins.
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -57,6 +69,7 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     let (_dir, root) = fixture();
     // Bundled masters may be absent from MO2's plugins.txt even though they are active.
     write(&root, "Data/ccBGSSSE001-Fish.esm", "bundled creation");
+    write(&root, "Skyrim.ccc", "ccBGSSSE001-Fish.esm\n");
     write(
         &root,
         "profiles/Default/loadorder.txt",
@@ -98,6 +111,78 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
         fs::read_to_string(&resolved.files["textures/priority.dds"]).unwrap(),
         "low"
     );
+}
+
+/// Windows-1252 profile spellings select an installed plugin with different accented case.
+#[test]
+fn unicode_profile_names_match_installed_plugins_and_loadorder() {
+    let (_dir, root) = fixture();
+    write(&root, "mods/High/CAFÉ.esp", "accented plugin");
+    fs::write(root.join("profiles/Default/plugins.txt"), b"*caf\xe9.esp\n").unwrap();
+    fs::write(
+        root.join("profiles/Default/loadorder.txt"),
+        b"Skyrim.esm\nCAF\xc9.esp\n",
+    )
+    .unwrap();
+    let resolved = Instance::open(&root)
+        .unwrap()
+        .resolve(&root.join("Data"), "Default")
+        .unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm", "café.esp"]);
+    assert_eq!(
+        resolved.files["café.esp"],
+        fs::canonicalize(root.join("mods/High/CAFÉ.esp")).unwrap()
+    );
+    assert!(
+        !resolved.notices.iter().any(|notice| {
+            notice.contains("café.esp")
+                && (notice.contains("not installed") || notice.contains("absent from loadorder"))
+        }),
+        "{:?}",
+        resolved.notices
+    );
+}
+
+/// Accented plugin keys collapse across Data, enabled mods and overwrite in priority order.
+#[test]
+fn unicode_plugin_index_preserves_only_the_winning_overlay_path() {
+    let (_dir, root) = fixture();
+    write(&root, "Data/CAFÉ.esp", "base loser");
+    write(&root, "mods/Low/CAFÉ.esp", "low loser");
+    write(&root, "mods/High/café.esp", "high winner");
+    fs::write(root.join("profiles/Default/plugins.txt"), b"*caf\xe9.esp\n").unwrap();
+    fs::write(
+        root.join("profiles/Default/loadorder.txt"),
+        b"Skyrim.esm\ncaf\xe9.esp\n",
+    )
+    .unwrap();
+    let instance = Instance::open(&root).unwrap();
+    let resolved = instance.resolve(&root.join("Data"), "Default").unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm", "café.esp"]);
+    assert_eq!(
+        resolved
+            .files
+            .keys()
+            .filter(|key| key.starts_with("caf") && key.ends_with(".esp"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["café.esp"]
+    );
+    assert_eq!(
+        fs::read_to_string(&resolved.files["café.esp"]).unwrap(),
+        "high winner"
+    );
+    write(&root, "overwrite/CAFÉ.esp", "overwrite winner");
+    let resolved = instance.resolve(&root.join("Data"), "Default").unwrap();
+    assert_eq!(
+        resolved.files["café.esp"],
+        fs::canonicalize(root.join("overwrite/CAFÉ.esp")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(&resolved.files["café.esp"]).unwrap(),
+        "overwrite winner"
+    );
+    assert!(!resolved.files.contains_key("cafÉ.esp"));
 }
 
 #[test]
@@ -186,30 +271,51 @@ fn se_and_vr_bare_plugins_remain_inactive() {
     }
 }
 
+/// Classic Skyrim keeps bare-name activation while recovering individual bad list entries.
 #[test]
-fn classic_skyrim_bare_plugins_preserve_validation() {
+fn classic_skyrim_bare_plugins_recover_bad_list_entries() {
     let (_dir, root) = fixture();
     write(&root, "ModOrganizer.ini", "[General]\ngameName=Skyrim\n");
     let instance = Instance::open(&root).unwrap();
-    for (plugins, order, error) in [
+    for (plugins, order, expected, warning) in [
         (
             "Patch.esp\nPATCH.ESP\n",
             "Patch.esp\n",
-            "duplicate active plugin",
+            &["skyrim.esm", "patch.esp"][..],
+            "duplicate plugins.txt",
         ),
-        ("../escape.esp\n", "Patch.esp\n", "unsafe"),
-        ("Missing.esp\n", "Missing.esp\n", "active plugin missing"),
-        ("Patch.esp\n", "Mod.esm\n", "absent from loadorder"),
+        (
+            "../escape.esp\n",
+            "Patch.esp\n",
+            &["skyrim.esm"][..],
+            "invalid plugins.txt plugin entry",
+        ),
+        (
+            "Missing.esp\n",
+            "Missing.esp\n",
+            &["skyrim.esm"][..],
+            "plugin missing.esp is not installed",
+        ),
+        (
+            "Patch.esp\n",
+            "Mod.esm\n",
+            &["skyrim.esm", "patch.esp"][..],
+            "absent from loadorder",
+        ),
         (
             "Patch.esp\n",
             "Patch.esp\nPATCH.ESP\n",
-            "duplicate loadorder plugin",
+            &["skyrim.esm", "patch.esp"][..],
+            "duplicate loadorder.txt",
         ),
     ] {
         write(&root, "profiles/Default/plugins.txt", plugins);
         write(&root, "profiles/Default/loadorder.txt", order);
-        let result = instance.resolve(&root.join("Data"), "Default").unwrap_err();
-        assert!(format!("{result:#}").contains(error), "{result:#}");
+        let result = instance.resolve(&root.join("Data"), "Default");
+        assert!(result.is_ok(), "recoverable {warning}: {result:?}");
+        let resolved = result.unwrap();
+        assert_eq!(resolved.plugins, expected, "{warning}");
+        assert_notice(&resolved, warning);
     }
 }
 
@@ -424,9 +530,9 @@ fn validates_instance_and_configured_directories() {
     assert!(Instance::open(&root).is_err());
 }
 
-/// Verifies resolution rejects missing sources, unsafe names, and incomplete plugin load order.
+/// Structural source paths remain strict while bad plugin entries recover within the profile.
 #[test]
-fn rejects_missing_mods_plugins_unsafe_paths_and_incomplete_order() {
+fn rejects_missing_mods_and_unsafe_paths_but_recovers_plugin_lists() {
     let (_dir, root) = fixture();
     let instance = Instance::open(&root).unwrap();
     write(&root, "profiles/Default/modlist.txt", "+Missing\n");
@@ -436,24 +542,34 @@ fn rejects_missing_mods_plugins_unsafe_paths_and_incomplete_order() {
     assert!(instance.resolve(&root.join("Data"), "Default").is_err());
     write(&root, "profiles/Default/modlist.txt", "+High\n+Low\n");
     fs::remove_file(root.join("mods/High/Patch.esp")).unwrap();
+    let result = instance.resolve(&root.join("Data"), "Default");
     assert!(
-        format!(
-            "{:#}",
-            instance.resolve(&root.join("Data"), "Default").unwrap_err()
-        )
-        .contains("active plugin missing")
+        result.is_ok(),
+        "missing plugin should be skipped: {result:?}"
     );
+    let resolved = result.unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm", "mod.esm"]);
+    assert_notice(&resolved, "plugin patch.esp is not installed");
     write(&root, "mods/High/Patch.esp", "patch");
     write(&root, "profiles/Default/loadorder.txt", "Mod.esm\n");
+    let result = instance.resolve(&root.join("Data"), "Default");
     assert!(
-        format!(
-            "{:#}",
-            instance.resolve(&root.join("Data"), "Default").unwrap_err()
-        )
-        .contains("absent from loadorder")
+        result.is_ok(),
+        "missing order entry should append: {result:?}"
+    );
+    let resolved = result.unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm", "mod.esm", "patch.esp"]);
+    assert_notice(
+        &resolved,
+        "active plugin patch.esp is absent from loadorder",
     );
     write(&root, "profiles/Default/plugins.txt", "*../escape.esp\n");
-    assert!(instance.resolve(&root.join("Data"), "Default").is_err());
+    let result = instance.resolve(&root.join("Data"), "Default");
+    assert!(result.is_ok(), "unsafe entry should be omitted: {result:?}");
+    let resolved = result.unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm"]);
+    assert_notice(&resolved, "invalid plugins.txt plugin entry");
+    assert!(!resolved.files.contains_key("../escape.esp"));
     assert!(instance.profile_dir("../Default").is_err());
 }
 
@@ -475,4 +591,36 @@ fn cancellation_and_optional_loadorder() {
             .plugins,
         ["skyrim.esm", "patch.esp", "mod.esm"]
     );
+}
+
+/// A wholly empty selection fails clearly instead of claiming an empty profile is usable.
+#[test]
+fn no_usable_plugins_has_a_clear_profile_error() {
+    let (_dir, root) = fixture();
+    fs::create_dir(root.join("EmptyData")).unwrap();
+    write(&root, "profiles/Default/modlist.txt", "-High\n-Low\n");
+    write(&root, "profiles/Default/plugins.txt", "*Missing.esp\n");
+    let instance = Instance::open(&root).unwrap();
+    let result = instance.resolve(&root.join("EmptyData"), "Default");
+    assert!(result.is_err(), "empty selection must fail: {result:?}");
+    let message = format!("{:#}", result.unwrap_err());
+    assert!(message.contains("MO2 profile Default"), "{message}");
+    assert!(message.contains("no usable active plugins"), "{message}");
+}
+
+/// An unreadable required plugin list fails with its profile and input filename identified.
+#[test]
+fn unreadable_plugins_list_has_profile_context() {
+    let (_dir, root) = fixture();
+    fs::create_dir_all(root.join("profiles/Unreadable/plugins.txt")).unwrap();
+    write(&root, "profiles/Unreadable/modlist.txt", "+High\n+Low\n");
+    let instance = Instance::open(&root).unwrap();
+    let result = instance.resolve(&root.join("Data"), "Unreadable");
+    assert!(
+        result.is_err(),
+        "required list must be readable: {result:?}"
+    );
+    let message = format!("{:#}", result.unwrap_err());
+    assert!(message.contains("MO2 profile Unreadable"), "{message}");
+    assert!(message.contains("plugins.txt"), "{message}");
 }

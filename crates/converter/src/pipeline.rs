@@ -12,7 +12,7 @@ use crate::{
         cell_cache::write_cell_cache,
         exporter::validate_database,
         lodsettings::{LodSettings, sidecar_path},
-        read_plugins_txt,
+        plugins_txt::read_with_selection_diagnostics,
     },
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use shared::{
     asset_lock::{AssetLock, AssetLockMode, resolve_asset_path},
     lod::LodOrigin,
+    plugin_selection::CreationFallbackWarning,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -84,13 +85,27 @@ pub struct PipelineReport {
     /// advisory messages that do not affect completeness
     #[serde(default)]
     pub notices: Vec<String>,
+    /// Original plugin filenames omitted by selection recovery, once each in selection order.
+    /// Full exclusions stay available without expanding the bounded user-facing warning summaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_plugins: Vec<String>,
+    /// Surviving original plugin filenames in the slot order published in the database.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_order: Vec<String>,
+    /// Input-policy warnings, distinct from failed asset conversions in `warnings`.
+    /// A Creation fallback is visible to the user without making usable output incomplete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selection_warnings: Vec<CreationFallbackWarning>,
     pub artifacts: Vec<PathBuf>,
     pub inputs_by_kind: BTreeMap<String, u64>,
     pub elapsed_ms: u128,
     pub integration: Option<IntegrationReport>,
 }
 
-/// A run is complete when nothing was skipped and nothing warned. Pruned dangling
+/// A run is complete when no asset conversion was skipped and no conversion warnings remain.
+/// Recoverable plugin-selection exclusions are advisory notices and `skipped_plugins` entries.
+/// Creation fallback warnings describe input policy; they do not indicate failed conversions.
+/// Pruned dangling
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
@@ -435,6 +450,7 @@ impl AssetPipeline {
         };
         let mut resolved_files = BTreeMap::new();
         let mut mo2_plugins = None;
+        let mut mo2_candidates = Vec::new();
         if let Some(selection) = &config.mo2 {
             let instance = mo2::Instance::open(&selection.instance_path)?;
             let data = config.data_dir.clone();
@@ -447,6 +463,11 @@ impl AssetPipeline {
             .wrap_err("MO2 resolver worker panicked")?;
             interrupt(cancellation)?;
             let resolved = resolved?;
+            report.notices.extend(resolved.notices);
+            report
+                .selection_warnings
+                .extend(resolved.selection_warnings);
+            mo2_candidates = resolved.plugin_candidates;
             // Rebuild archive-derived inputs on resume; loose assets are read directly from
             // their winning source paths. Remove legacy copied inputs from older runs too.
             for root in [staging.join(".mo2-input")] {
@@ -475,6 +496,27 @@ impl AssetPipeline {
             .collect();
         let plugins = match mo2_plugins {
             Some(plugins) => {
+                let profile = &config.mo2.as_ref().unwrap().profile;
+                let mut recovery_notices = Vec::new();
+                let plugins = crate::esm::plugins_txt::recover_with_diagnostics(
+                    plugins,
+                    &mut recovery_notices,
+                    &mut report.skipped_plugins,
+                )?;
+                crate::esm::plugins_txt::record_recovery_skips(
+                    &mo2_candidates,
+                    &plugins,
+                    &mut report.skipped_plugins,
+                );
+                report.notices.extend(
+                    recovery_notices
+                        .into_iter()
+                        .map(|notice| format!("MO2 profile {profile}: {notice}")),
+                );
+                ensure!(
+                    !plugins.is_empty(),
+                    "MO2 profile {profile}: no usable active plugins remain"
+                );
                 crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
                     format!(
                         "MO2 profile {}: invalid plugin/master order",
@@ -483,17 +525,48 @@ impl AssetPipeline {
                 })?;
                 plugins
             }
-            None => plugin_paths(config, &files, &mut report.notices)?,
+            None => plugin_paths_with_diagnostics(
+                config,
+                &files,
+                &mut report.notices,
+                &mut report.skipped_plugins,
+                &mut report.selection_warnings,
+            )?,
         };
+        report.load_order = plugins
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
         // prints them without splicing into its status line and the launcher shows them in its
         // notice pane. They stay in `report.notices` for the summary and the JSON report.
+        // Automatic discovery with no usable plugins can only carry the subfolder note; once a
+        // plugin is selected, every selection notice reports a recovery and is a warning.
+        let selection_warns =
+            config.plugins_file.is_some() || config.mo2.is_some() || !plugins.is_empty();
         for notice in &report.notices {
             send_notice(
                 progress_tx,
                 ProgressStage::Discovering,
                 None,
-                &format!("note: {notice}"),
+                &format!(
+                    "{}: {notice}",
+                    if selection_warns { "warning" } else { "note" }
+                ),
+            )
+            .await;
+        }
+        for warning in &report.selection_warnings {
+            send_notice(
+                progress_tx,
+                ProgressStage::Discovering,
+                None,
+                &format!("warning: {warning}"),
             )
             .await;
         }
@@ -506,10 +579,22 @@ impl AssetPipeline {
             .filter(|path| extension(path, &["bsa", "ba2"]))
             .cloned()
             .collect();
+        let archive_owners = if config.mo2.is_some() {
+            mo2_installed_archive_owners(&resolved_files, &plugins)
+        } else {
+            installed_archive_owners(&config.data_dir, &files, &plugins)
+        };
         let mut enabled_archives: Vec<_> = archives
             .into_iter()
             .filter(|archive| !extension(archive, &["ba2"]) || config.enable_ba2)
-            .filter(|archive| config.mo2.is_none() || mo2_archive_is_active(archive, &plugins))
+            .filter(|archive| {
+                if config.mo2.is_some() {
+                    mo2_archive_is_active(archive, &plugins)
+                        && non_mo2_archive_is_active(archive, &archive_owners)
+                } else {
+                    non_mo2_archive_is_active(archive, &archive_owners)
+                }
+            })
             .collect();
         sort_archives_by_load_order(&mut enabled_archives, &plugins);
         if !enabled_archives.is_empty() {
@@ -2211,8 +2296,40 @@ pub(crate) fn plugin_paths(
     files: &[PathBuf],
     notices: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    let mut selection_warnings = Vec::new();
+    let result = plugin_paths_with_diagnostics(
+        config,
+        files,
+        notices,
+        &mut Vec::new(),
+        &mut selection_warnings,
+    );
+    notices.extend(
+        selection_warnings
+            .into_iter()
+            .map(|warning| warning.to_string()),
+    );
+    result
+}
+
+/// Select surviving plugin paths before hashes, archive priorities, merging and publication.
+fn plugin_paths_with_diagnostics(
+    config: &PipelineConfig,
+    files: &[PathBuf],
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+    selection_warnings: &mut Vec<CreationFallbackWarning>,
+) -> Result<Vec<PathBuf>> {
     if let Some(path) = &config.plugins_file {
-        return read_plugins_txt(path, &config.data_dir);
+        return read_with_selection_diagnostics(
+            path,
+            &config.data_dir,
+            config.skyrim_ccc_file.as_deref(),
+            config.skyrim_ini_file.as_deref(),
+            notices,
+            skipped_plugins,
+            selection_warnings,
+        );
     }
     let discovered: Vec<_> = files
         .iter()
@@ -2242,22 +2359,26 @@ pub(crate) fn plugin_paths(
         ));
     }
     plugins.sort_by_key(|path| {
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let rank = match name.as_str() {
-            "skyrim.esm" => 0,
-            "update.esm" => 1,
-            "dawnguard.esm" => 2,
-            "hearthfires.esm" => 3,
-            "dragonborn.esm" => 4,
-            _ => 10,
-        };
-        (rank, name)
+        let name = shared::plugin_selection::normalize_plugin_name(
+            &path.file_name().unwrap_or_default().to_string_lossy(),
+        );
+        let rank = crate::esm::OFFICIAL_MASTERS
+            .iter()
+            .position(|official| official.eq_ignore_ascii_case(&name))
+            .unwrap_or(10);
+        (rank, name, path.file_name().unwrap_or_default().to_owned())
     });
-    crate::esm::load_order::order_discovered_plugins(plugins)
+    let had_plugins = !plugins.is_empty();
+    let plugins = crate::esm::plugins_txt::recover_discovered(plugins, notices, skipped_plugins)?;
+    ensure!(
+        !had_plugins || !plugins.is_empty(),
+        "no usable plugins remain after automatic master/dependency/slot recovery: {}",
+        notices
+            .last()
+            .map(String::as_str)
+            .unwrap_or("empty selection"),
+    );
+    Ok(plugins)
 }
 
 /// Materializes winning loose LOD inputs for the compiler's filesystem-based VFS reads.
@@ -2327,26 +2448,103 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
     Ok(())
 }
 
+/// Record installed direct-Data archive owners, including disabled and recovered-away plugins.
+/// Plugins sharing a stem can share companions; any surviving plugin with that stem activates them.
+pub(crate) fn installed_archive_owners(
+    data_dir: &Path,
+    files: &[PathBuf],
+    plugins: &[PathBuf],
+) -> BTreeMap<String, bool> {
+    let active_stems: BTreeSet<_> = plugins
+        .iter()
+        .filter_map(|path| path.file_stem())
+        .map(|stem| shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy()))
+        .collect();
+    files
+        .iter()
+        .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .filter(|path| {
+            path.strip_prefix(data_dir)
+                .is_ok_and(|relative| relative.components().count() == 1)
+        })
+        .filter_map(|path| path.file_stem())
+        .map(|stem| {
+            let stem = shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy());
+            let active = active_stems.contains(&stem);
+            (stem, active)
+        })
+        .collect()
+}
+
+/// Keep all root plugin identities in the winning MO2 VFS, including unchecked and rejected owners.
+/// Physical sources can live outside Data; recovered winning source paths determine active status.
+pub(crate) fn mo2_installed_archive_owners(
+    files: &BTreeMap<String, PathBuf>,
+    plugins: &[PathBuf],
+) -> BTreeMap<String, bool> {
+    let active_sources: BTreeSet<_> = plugins.iter().cloned().collect();
+    let mut owners = BTreeMap::<String, bool>::new();
+    for (relative, source) in files {
+        let relative = Path::new(relative);
+        if relative.components().count() != 1 || !extension(relative, &["esm", "esp", "esl"]) {
+            continue;
+        }
+        let Some(stem) = relative.file_stem() else {
+            continue;
+        };
+        let stem = shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy());
+        let active = active_sources.contains(source);
+        // Distinct extensions can share a companion stem. An unchecked peer must not erase
+        // the activation contributed by a surviving plugin with that stem.
+        owners
+            .entry(stem)
+            .and_modify(|survives| *survives |= active)
+            .or_insert(active);
+    }
+    owners
+}
+
+/// Apply selection to owned companions while retaining unowned standalone and base archives.
+/// The longest matching installed stem owns the archive, so an active prefix cannot activate
+/// a more specifically named disabled or recovered-away plugin's companion.
+pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String, bool>) -> bool {
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
+    owners
+        .iter()
+        .filter(|(owner, _)| archive_stem_matches_plugin(&stem, owner))
+        .max_by_key(|(owner, _)| owner.len())
+        .is_none_or(|(_, active)| *active)
+}
+
+/// Match an exact normalized stem or an owner followed by a space, dash or underscore.
+/// Ownership, MO2 activity and priority share this companion-name boundary.
+fn archive_stem_matches_plugin(stem: &str, plugin: &str) -> bool {
+    stem == plugin
+        || stem
+            .strip_prefix(plugin)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
+}
+
 /// Checks whether an archive stem matches an active plugin, including suffixed companion archives.
 pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool {
-    let stem = archive
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
     plugins
         .iter()
         .filter_map(|path| path.file_stem())
         .any(|plugin| {
-            let plugin = plugin.to_string_lossy().to_ascii_lowercase();
-            stem == plugin
-                || stem
-                    .strip_prefix(&plugin)
-                    .is_some_and(|suffix| suffix.starts_with(" - "))
+            let plugin = shared::plugin_selection::normalize_plugin_name(&plugin.to_string_lossy());
+            archive_stem_matches_plugin(&stem, &plugin)
         })
 }
 
-/// Sorts archives by plugin load order, then lowercase stem, placing unmatched archives last.
+/// Sort archives by their longest matching active stem's load order, then lowercase stem.
+/// Priority retains the legacy space/dash/underscore suffixes; unmatched archives sort last
+/// and same-stem plugins retain the first owner's priority.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     archives.sort_by_cached_key(|archive| {
         (
@@ -2360,29 +2558,22 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
     });
 }
 
+/// Resolve the most specific active owner, retaining the first slot when owner stems are equal.
 pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -> Option<usize> {
     let plugin_stems = plugins
         .iter()
         .filter_map(|path| path.file_stem())
-        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .map(|stem| shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy()))
         .collect::<Vec<_>>();
-    let stem = archive
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
     plugin_stems
         .iter()
         .enumerate()
-        .filter(|(_, plugin)| {
-            stem == plugin.as_str()
-                || stem
-                    .strip_prefix(plugin.as_str())
-                    .and_then(|suffix| suffix.chars().next())
-                    .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
-        })
+        .filter(|(_, plugin)| archive_stem_matches_plugin(&stem, plugin))
+        .max_by_key(|(index, plugin)| (plugin.len(), std::cmp::Reverse(*index)))
         .map(|(index, _)| index)
-        .next()
 }
 
 fn extension(path: &Path, expected: &[&str]) -> bool {
@@ -3646,6 +3837,35 @@ mod tests {
         assert!(report.lod_warnings.is_empty());
         assert_eq!(report.lod_elapsed_ms, 0);
         assert_eq!(report.publication_elapsed_ms, 0);
+        assert!(report.skipped_plugins.is_empty());
+        assert!(report.load_order.is_empty());
+        assert!(report.selection_warnings.is_empty());
+        let serialized = serde_json::to_value(report).unwrap();
+        for field in ["skipped_plugins", "load_order", "selection_warnings"] {
+            assert!(
+                serialized.get(field).is_none(),
+                "empty {field} must stay optional"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_report_round_trips_original_names_and_typed_warning() {
+        let report = PipelineReport {
+            skipped_plugins: vec!["K.esp".into(), "\u{212a}.esp".into()],
+            load_order: vec!["Skyrim.esm".into(), "Good.esp".into()],
+            selection_warnings: vec![CreationFallbackWarning {
+                ccc_path: PathBuf::from("Game/Skyrim.ccc"),
+                reason: "file missing".into(),
+            }],
+            ..Default::default()
+        };
+        let decoded: PipelineReport =
+            serde_json::from_value(serde_json::to_value(&report).unwrap()).unwrap();
+        assert_eq!(decoded.skipped_plugins, report.skipped_plugins);
+        assert_eq!(decoded.load_order, report.load_order);
+        assert_eq!(decoded.selection_warnings, report.selection_warnings);
+        assert!(conversion_is_complete(&decoded));
     }
 
     use super::*;
@@ -4615,23 +4835,22 @@ mod tests {
         assert_eq!(fs::read(&previous_blob).unwrap(), b"archive bytes");
     }
 
+    /// MO2 activity accepts the same exact/space/dash/underscore boundary as installed ownership.
     #[test]
-    fn mo2_archives_require_exact_stem_or_spaced_dash_suffix() {
+    fn mo2_archives_use_shared_owner_separator_rule() {
         let plugins = vec![PathBuf::from("Example.esp")];
         for name in [
             "EXAMPLE.bsa",
             "Example - Textures.bsa",
             "Example - Meshes.ba2",
-        ] {
-            assert!(mo2_archive_is_active(Path::new(name), &plugins), "{name}");
-        }
-        for name in [
             "Example Other.bsa",
             "Example-Other.bsa",
             "Example_Other.bsa",
             "Example -Other.bsa",
-            "Example2.bsa",
         ] {
+            assert!(mo2_archive_is_active(Path::new(name), &plugins), "{name}");
+        }
+        for name in ["Example2.bsa", "ExampleOther.bsa", "Other.bsa"] {
             assert!(!mo2_archive_is_active(Path::new(name), &plugins), "{name}");
         }
     }
@@ -4658,6 +4877,64 @@ mod tests {
                 PathBuf::from("Update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
             ]
+        );
+    }
+
+    /// Unicode-normalized owner names agree across ownership, activity and priority for every separator.
+    #[test]
+    fn unicode_plugin_archive_names_match_activation_and_priority() {
+        let plugins = [PathBuf::from("Skyrim.esm"), PathBuf::from("CAF\u{c9}.esp")];
+        let owners = BTreeMap::from([("caf\u{e9}".to_owned(), true)]);
+        for suffix in [" Textures", "-Textures", "_Textures", " - Textures"] {
+            let archive = PathBuf::from(format!("caf\u{e9}{suffix}.bsa"));
+            assert!(mo2_archive_is_active(&archive, &plugins));
+            assert!(non_mo2_archive_is_active(&archive, &owners));
+            assert_eq!(archive_load_order_priority(&archive, &plugins), Some(1));
+        }
+        assert!(!mo2_archive_is_active(
+            Path::new("caf\u{e9}Other.bsa"),
+            &plugins
+        ));
+    }
+
+    /// Expanded companion separators still defer to the longest installed owner and unowned policy.
+    #[test]
+    fn shared_archive_matcher_preserves_longest_owner_and_unowned_policies() {
+        let plugins = [PathBuf::from("Mod.esp")];
+        let owners = BTreeMap::from([
+            ("mod".to_owned(), true),
+            ("mod - expansion".to_owned(), false),
+        ]);
+        for suffix in [" Textures", "-Textures", "_Textures", " - Textures"] {
+            let archive = PathBuf::from(format!("Mod - Expansion{suffix}.bsa"));
+            assert!(!non_mo2_archive_is_active(&archive, &owners));
+        }
+        let standalone = Path::new("Standalone.bsa");
+        assert!(non_mo2_archive_is_active(standalone, &owners));
+        assert!(!mo2_archive_is_active(standalone, &plugins));
+        assert_eq!(archive_load_order_priority(standalone, &plugins), None);
+    }
+
+    /// Overlapping active names use the longest owner, while equal stems keep their first slot.
+    #[test]
+    fn archive_priority_preserves_specific_owner_and_same_stem_first_slot() {
+        let plugins = [
+            PathBuf::from("Good.esp"),
+            PathBuf::from("Middle.esp"),
+            PathBuf::from("Good - Expansion.esp"),
+            PathBuf::from("Good.esl"),
+        ];
+        assert_eq!(
+            archive_load_order_priority(Path::new("Good.bsa"), &plugins),
+            Some(0)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Good - Expansion - Textures.bsa"), &plugins),
+            Some(2)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Standalone.bsa"), &plugins),
+            None
         );
     }
 

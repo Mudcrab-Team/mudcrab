@@ -11,7 +11,8 @@ use crate::{
     integration::finalize_world_database_with_sources,
     mesh::MeshConverter,
     pipeline::{
-        collect_texture_semantics, mo2_archive_is_active, plugin_paths,
+        collect_texture_semantics, installed_archive_owners, mo2_archive_is_active,
+        mo2_installed_archive_owners, non_mo2_archive_is_active, plugin_paths,
         publish_srgb_texture_aliases, sort_archives_by_load_order, source_texture_key,
         validate_artifact,
     },
@@ -189,14 +190,27 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         failures: BTreeMap::new(),
     };
 
+    let mut selection_notices = Vec::new();
     let (resolved, plugins) = if let Some(selection) = &config.mo2 {
         let resolved = mo2::Instance::open(&selection.instance_path)?
             .resolve(&config.data_dir, &selection.profile)?;
+        selection_notices.extend(resolved.notices);
+        selection_notices.extend(
+            resolved
+                .selection_warnings
+                .into_iter()
+                .map(|warning| warning.to_string()),
+        );
         let plugins = resolved
             .plugins
             .iter()
             .map(|key| resolved.files[key].clone())
             .collect();
+        let plugins = crate::esm::plugins_txt::recover_with_diagnostics(
+            plugins,
+            &mut selection_notices,
+            &mut Vec::new(),
+        )?;
         (resolved.files, plugins)
     } else {
         let mut resolved = BTreeMap::new();
@@ -216,14 +230,30 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             }
         }
         let files = resolved.values().cloned().collect::<Vec<_>>();
-        let plugins = plugin_paths(config, &files, &mut Vec::new())?;
+        let plugins = plugin_paths(config, &files, &mut selection_notices)?;
         (resolved, plugins)
+    };
+    for notice in selection_notices {
+        eprintln!("Repair input: {notice}");
+    }
+    // Repair uses the same installed-root ownership and recovered selection as conversion.
+    // Retain omitted owners so a shorter active stem cannot supply their companion bytes.
+    let archive_owners = if config.mo2.is_some() {
+        mo2_installed_archive_owners(&resolved, &plugins)
+    } else {
+        let files = resolved.values().cloned().collect::<Vec<_>>();
+        installed_archive_owners(&config.data_dir, &files, &plugins)
     };
     let mut archives: Vec<_> = resolved
         .iter()
         .filter(|(key, path)| {
             (key.ends_with(".bsa") || (config.enable_ba2 && key.ends_with(".ba2")))
-                && (config.mo2.is_none() || mo2_archive_is_active(path, &plugins))
+                && if config.mo2.is_some() {
+                    mo2_archive_is_active(path, &plugins)
+                        && non_mo2_archive_is_active(path, &archive_owners)
+                } else {
+                    non_mo2_archive_is_active(path, &archive_owners)
+                }
         })
         .map(|(_, path)| path.clone())
         .collect();

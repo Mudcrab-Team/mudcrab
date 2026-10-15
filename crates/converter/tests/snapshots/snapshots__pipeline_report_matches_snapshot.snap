@@ -71,6 +71,9 @@ expression: report
     "unbounded_model_count": 0,
     "waters_with_flow_normal": 0
   },
+  "load_order": [
+    "Skyrim.esm"
+  ],
   "lod_chunks": 6,
   "lod_elapsed_ms": "[lod_elapsed_ms]",
   "lod_warnings": [],

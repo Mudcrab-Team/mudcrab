@@ -1,5 +1,8 @@
 //! MO2 selection through the real converter, including cache and resume boundaries.
-use converter::{AssetPipeline, PipelineConfig, cache::configuration_hash, pipeline::Cancellation};
+use converter::{
+    AssetPipeline, PipelineConfig, cache::configuration_hash, esm::exporter::validate_database,
+    pipeline::Cancellation,
+};
 use dummy_content::layout;
 use rusqlite::Connection;
 use std::{
@@ -34,6 +37,11 @@ fn record(tag: &[u8; 4], id: u32, flags: u32, payload: Vec<u8>) -> Vec<u8> {
 
 /// Writes a synthetic plugin with a master dependency and a jump-height game setting.
 fn plugin(path: &Path, master: &str, value: f32) {
+    plugin_setting(path, master, "fJumpHeightMin", value);
+}
+
+/// Writes a synthetic plugin with a distinguishable setting and a native local identifier.
+fn plugin_setting(path: &Path, master: &str, editor: &str, value: f32) {
     let header = [
         sub(b"MAST", format!("{master}\0").as_bytes()),
         sub(b"DATA", &[0; 8]),
@@ -45,7 +53,7 @@ fn plugin(path: &Path, master: &str, value: f32) {
         0x01000800,
         0,
         [
-            sub(b"EDID", b"fJumpHeightMin\0"),
+            sub(b"EDID", format!("{editor}\0").as_bytes()),
             sub(b"DATA", &value.to_le_bytes()),
         ]
         .concat(),
@@ -123,6 +131,18 @@ async fn run(
     result
 }
 
+/// Requires a recoverable profile to complete the real conversion and publication path.
+async fn publish(config: &PipelineConfig) -> converter::PipelineReport {
+    let result = run(config.clone(), Cancellation::new()).await;
+    assert!(
+        result.is_ok(),
+        "recoverable MO2 profile must publish: {result:?}"
+    );
+    let report = result.unwrap();
+    assert!(report.complete, "{report:?}");
+    report
+}
+
 /// Reads the winning jump-height game setting from the converted world database.
 fn value(config: &PipelineConfig) -> f64 {
     Connection::open(config.output_dir.join("skyrim_world.db"))
@@ -133,6 +153,94 @@ fn value(config: &PipelineConfig) -> f64 {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+/// Checks published plugin provenance, database validity, and surviving converted assets.
+fn assert_publication(config: &PipelineConfig, expected: &[&str], jump_height: f64) {
+    let conn = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    validate_database(&conn).unwrap();
+    let names = conn
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|name| name.unwrap().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected);
+    assert_eq!(value(config), jump_height);
+    assert!(config.output_dir.join("conversion-manifest.json").is_file());
+    assert!(config.output_dir.join("meshes/generated.glb").is_file());
+}
+
+/// Reads synthetic GMST editors, values and winning priorities from published generic records.
+fn published_settings(config: &PipelineConfig) -> Vec<(String, f32, u32)> {
+    let conn = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let mut query = conn
+        .prepare("SELECT data, load_order FROM records WHERE record_type='GMST'")
+        .unwrap();
+    query
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u32>(1)?))
+        })
+        .unwrap()
+        .map(|row| {
+            let (blob, priority) = row.unwrap();
+            let data = rkyv::from_bytes::<
+                converter::esm::types::ArchivedRecordData,
+                rkyv::rancor::Error,
+            >(&blob)
+            .unwrap();
+            let editor = &data
+                .subrecords
+                .iter()
+                .find(|sub| &sub.tag == b"EDID")
+                .unwrap()
+                .data;
+            let value = &data
+                .subrecords
+                .iter()
+                .find(|sub| &sub.tag == b"DATA")
+                .unwrap()
+                .data;
+            (
+                String::from_utf8(editor.strip_suffix(&[0]).unwrap_or(editor).to_vec()).unwrap(),
+                f32::from_le_bytes(value.as_slice().try_into().unwrap()),
+                priority,
+            )
+        })
+        .collect()
+}
+
+/// Checks a retained generic setting's independent value and winning-plugin priority.
+fn assert_setting(config: &PipelineConfig, editor: &str, expected: f64, priority: u32) {
+    let settings = published_settings(config);
+    let actual: Vec<_> = settings
+        .iter()
+        .filter(|(name, _, _)| name == editor)
+        .collect();
+    assert_eq!(actual.len(), 1, "{editor}: {actual:?}");
+    assert_eq!(
+        (f64::from(actual[0].1), actual[0].2),
+        (expected, priority),
+        "{editor}"
+    );
+}
+
+/// Checks one bounded profile notice contains all identifying details for a recovered input.
+fn assert_notice(report: &converter::PipelineReport, details: &[&str]) {
+    let matches = report
+        .notices
+        .iter()
+        .filter(|notice| {
+            let lower = notice.to_ascii_lowercase();
+            details
+                .iter()
+                .all(|detail| lower.contains(&detail.to_ascii_lowercase()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(matches.len(), 1, "{details:?}: {:?}", report.notices);
+    assert!(matches[0].contains("MO2 profile Default"), "{matches:?}");
+    assert!(!matches[0].contains(['\r', '\n']), "{matches:?}");
 }
 
 /// Verifies plugin order, overwrite precedence, cache reuse, and changes to enabled mods.
@@ -318,17 +426,396 @@ async fn reads_sources_without_materializing_mo2_inputs() {
     );
 }
 
-/// Verifies missing-master errors identify the MO2 profile and the plugin requiring that master.
+/// Game-folder CCC entries beyond the formerly fixed Creations publish without profile entries.
 #[tokio::test]
-async fn missing_master_has_profile_and_plugin_context() {
+async fn extra_ccc_creation_and_profile_neighbors_publish() {
     let (_dir, config, instance) = fixture();
-    plugin(&instance.join("overwrite/PATCH.esp"), "Missing.esm", 1.0);
-    let error = run(config, Cancellation::new()).await.unwrap_err();
-    let text = format!("{:#}", error.error);
-    assert!(text.contains("MO2 profile Default"), "{text}");
+    plugin_setting(
+        &instance.join("mods/Low/ExtraCreation.esl"),
+        "Skyrim.esm",
+        "fExtraCreation",
+        87.0,
+    );
+    fs::write(
+        config.data_dir.parent().unwrap().join("Skyrim.ccc"),
+        "ExtraCreation.esl\n",
+    )
+    .unwrap();
+    let _report = publish(&config).await;
+    assert_publication(
+        &config,
+        &["skyrim.esm", "extracreation.esl", "middle.esp", "patch.esp"],
+        444.0,
+    );
+    assert_setting(&config, "fExtraCreation", 87.0, 1);
+}
+
+/// Both profile lists decode Windows-1252 names and retain the distinct setting's owner.
+#[tokio::test]
+async fn windows_1252_profile_lists_and_neighbors_publish() {
+    let (_dir, config, instance) = fixture();
+    plugin_setting(
+        &instance.join("mods/Low/Café.esp"),
+        "Skyrim.esm",
+        "fAccentSetting",
+        63.0,
+    );
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        b"*Caf\xe9.esp\n*Patch.esp\n*Middle.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        b"Skyrim.esm\nMiddle.esp\nCaf\xe9.esp\nPatch.esp\n",
+    );
+    let _report = publish(&config).await;
+    assert_publication(
+        &config,
+        &["skyrim.esm", "middle.esp", "café.esp", "patch.esp"],
+        444.0,
+    );
+    assert_setting(&config, "fAccentSetting", 63.0, 2);
+}
+
+/// Last duplicate checkboxes and loadorder positions win while usable records publish.
+#[tokio::test]
+async fn duplicate_profile_entries_keep_last_state_and_position_and_publish() {
+    let (_dir, config, instance) = fixture();
+    plugin_setting(
+        &instance.join("mods/Low/Neighbor.esp"),
+        "Skyrim.esm",
+        "fDuplicateNeighbor",
+        73.0,
+    );
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "*Patch.esp\nMiddle.esp\n*Neighbor.esp\n*Middle.esp\nPatch.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        "Skyrim.esm\nMiddle.esp\nNeighbor.esp\nMiddle.esp\nPatch.esp\n",
+    );
+    let report = publish(&config).await;
+    assert_publication(
+        &config,
+        &["skyrim.esm", "neighbor.esp", "middle.esp"],
+        100.0,
+    );
+    assert_setting(&config, "fDuplicateNeighbor", 73.0, 1);
+    assert_notice(&report, &["duplicate plugins.txt", "patch.esp"]);
+    assert_notice(&report, &["duplicate plugins.txt", "middle.esp"]);
+    assert_notice(&report, &["duplicate loadorder.txt", "middle.esp"]);
+}
+
+/// A listed active plugin missing from merged Data is omitted while its neighbors publish.
+#[tokio::test]
+async fn active_plugin_missing_from_data_preserves_publication() {
+    let (_dir, config, instance) = fixture();
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "*Patch.esp\n*NotInstalled.esp\n*Middle.esp\nInactive.esm\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        "Skyrim.esm\nMiddle.esp\nNotInstalled.esp\nPatch.esp\nInactive.esm\n",
+    );
+    let report = publish(&config).await;
+    assert_publication(&config, &["skyrim.esm", "middle.esp", "patch.esp"], 444.0);
+    assert_notice(&report, &["notinstalled.esp", "not installed"]);
+}
+
+/// Active entries absent from loadorder append in profile order after all ordered plugins.
+#[tokio::test]
+async fn absent_loadorder_entries_append_in_profile_order_and_publish() {
+    let (_dir, config, instance) = fixture();
+    for (name, editor, value) in [
+        ("SecondFallback.esp", "fSecondFallback", 53.0),
+        ("FirstFallback.esp", "fFirstFallback", 59.0),
+    ] {
+        plugin_setting(
+            &instance.join("mods/Low").join(name),
+            "Skyrim.esm",
+            editor,
+            value,
+        );
+    }
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "*SecondFallback.esp\n*Patch.esp\n*FirstFallback.esp\n*Middle.esp\nInactive.esm\n",
+    );
+    let report = publish(&config).await;
+    assert_publication(
+        &config,
+        &[
+            "skyrim.esm",
+            "middle.esp",
+            "patch.esp",
+            "secondfallback.esp",
+            "firstfallback.esp",
+        ],
+        444.0,
+    );
+    assert_setting(&config, "fSecondFallback", 53.0, 3);
+    assert_setting(&config, "fFirstFallback", 59.0, 4);
+    for name in ["secondfallback.esp", "firstfallback.esp"] {
+        assert_notice(&report, &[name, "absent from loadorder.txt"]);
+    }
+}
+
+/// Missing and disabled master closures warn with profile context and preserve published neighbors.
+#[tokio::test]
+async fn missing_and_disabled_master_closures_preserve_profile_publication() {
+    let (_dir, config, instance) = fixture();
+    for (relative, master, editor) in [
+        ("overwrite/PATCH.esp", "Missing.esm", "fBrokenPatch"),
+        ("mods/Low/Child.esp", "Patch.esp", "fBrokenChild"),
+        ("mods/Low/Disabled.esm", "Skyrim.esm", "fDisabledMaster"),
+        (
+            "mods/Low/DisabledChild.esp",
+            "Disabled.esm",
+            "fDisabledChild",
+        ),
+        (
+            "mods/Low/Grandchild.esp",
+            "DisabledChild.esp",
+            "fDisabledGrandchild",
+        ),
+    ] {
+        plugin_setting(&instance.join(relative), master, editor, 17.0);
+    }
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "*Patch.esp\n*Child.esp\nDisabled.esm\n*DisabledChild.esp\n*Grandchild.esp\n*Middle.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        "Skyrim.esm\nPatch.esp\nChild.esp\nDisabled.esm\nDisabledChild.esp\nGrandchild.esp\nMiddle.esp\n",
+    );
+    let report = publish(&config).await;
+    assert_publication(&config, &["skyrim.esm", "middle.esp"], 100.0);
+    assert_setting(&config, "fJumpHeightMin", 100.0, 1);
+    for (name, missing) in [
+        ("patch.esp", "Missing.esm"),
+        ("child.esp", "Missing.esm"),
+        ("disabledchild.esp", "Disabled.esm"),
+        ("grandchild.esp", "Disabled.esm"),
+    ] {
+        assert_notice(&report, &[&format!("skipping {name}:"), missing]);
+    }
+    let settings = published_settings(&config);
+    let bad = settings
+        .iter()
+        .filter(|(editor, _, _)| {
+            [
+                "fBrokenPatch",
+                "fBrokenChild",
+                "fDisabledMaster",
+                "fDisabledChild",
+                "fDisabledGrandchild",
+            ]
+            .contains(&editor.as_str())
+        })
+        .count();
+    assert_eq!(bad, 0);
+}
+
+/// Unicode profile keys and a differently cased TES4 master resolve the same winning owner.
+#[tokio::test]
+async fn final_unicode_profile_master_override_publishes() {
+    let (_dir, config, instance) = fixture();
+    plugin(&instance.join("mods/Low/CAF\u{c9}.esp"), "Skyrim.esm", 67.0);
+    let header = [sub(b"MAST", b"cAf\xe9.ESP\0"), sub(b"DATA", &[0; 8])].concat();
+    let bytes = [
+        record(b"TES4", 0, 0, header),
+        record(
+            b"GMST",
+            0x800,
+            0,
+            [
+                sub(b"EDID", b"fJumpHeightMin\0"),
+                sub(b"DATA", &93.0f32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+    ]
+    .concat();
+    write(&instance, "overwrite/PATCH.esp", bytes);
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        b"*Middle.esp\n*caf\xe9.esp\n*Patch.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        b"Skyrim.esm\nMiddle.esp\ncaf\xe9.esp\nPatch.esp\n",
+    );
+    let report = publish(&config).await;
+    let conn = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    validate_database(&conn).unwrap();
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        names,
+        ["Skyrim.esm", "Middle.esp", "CAF\u{c9}.esp", "PATCH.esp"]
+    );
+    assert_eq!(value(&config), 93.0);
+    let winning: Vec<(u32, u32)> = conn
+        .prepare("SELECT form_id, load_order FROM records WHERE record_type='GMST'")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // GMST retains the first owner's identity despite overrides from both later plugins.
+    assert!(winning.contains(&(0x0100_0800, 3)), "{winning:?}");
     assert!(
-        text.contains("patch.esp") && text.contains("Missing.esm"),
-        "{text}"
+        report
+            .notices
+            .iter()
+            .all(|notice| !notice.contains("required master")),
+        "{:?}",
+        report.notices
+    );
+    assert!(config.output_dir.join("conversion-manifest.json").is_file());
+    assert!(config.output_dir.join("meshes/generated.glb").is_file());
+}
+
+/// Cyclic profile plugins and their transitive dependents are omitted while neighbors publish.
+#[tokio::test]
+async fn final_cycle_closure_preserves_profile_publication() {
+    let (_dir, config, instance) = fixture();
+    for (name, master, editor) in [
+        ("CycleA.esp", "CycleC.esp", "fProfileCycleA"),
+        ("CycleB.esp", "CycleA.esp", "fProfileCycleB"),
+        ("CycleC.esp", "CycleB.esp", "fProfileCycleC"),
+        ("Child.esp", "CycleB.esp", "fProfileCycleChild"),
+        ("Grandchild.esp", "Child.esp", "fProfileCycleGrandchild"),
+    ] {
+        plugin_setting(&instance.join("mods/Low").join(name), master, editor, 17.0);
+    }
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "*CycleA.esp\n*CycleB.esp\n*CycleC.esp\n*Child.esp\n*Grandchild.esp\n*Middle.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        "Skyrim.esm\nCycleA.esp\nCycleB.esp\nCycleC.esp\nChild.esp\nGrandchild.esp\nMiddle.esp\n",
+    );
+    let report = publish(&config).await;
+    assert_publication(&config, &["skyrim.esm", "middle.esp"], 100.0);
+    assert!(
+        !published_settings(&config)
+            .iter()
+            .any(|(editor, _, _)| editor.starts_with("fProfileCycle"))
+    );
+    let summaries: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("cyclic plugin dependencies"))
+        .collect();
+    assert_eq!(summaries.len(), 1, "{:?}", report.notices);
+    assert!(summaries[0].contains("MO2 profile Default"));
+    assert_eq!(
+        report.skipped_plugins,
+        [
+            "CycleA.esp",
+            "CycleB.esp",
+            "CycleC.esp",
+            "Child.esp",
+            "Grandchild.esp"
+        ]
+    );
+}
+
+/// A 256-full-plugin MO2 profile keeps its first 254 and publishes usable neighboring records.
+#[tokio::test]
+async fn final_full_slot_overflow_preserves_profile_publication() {
+    let (_dir, config, instance) = fixture();
+    let mut entries = String::new();
+    let mut order = String::from("Skyrim.esm\n");
+    for index in 0..255 {
+        let name = format!("Full{index:03}.esp");
+        let editor = if index == 0 {
+            "fJumpHeightMin".to_owned()
+        } else {
+            format!("fProfileFull{index:03}")
+        };
+        plugin_setting(
+            &instance.join("mods/Low").join(&name),
+            "Skyrim.esm",
+            &editor,
+            73.0,
+        );
+        entries.push_str(&format!("*{name}\n"));
+        order.push_str(&format!("{name}\n"));
+    }
+    plugin_setting(
+        &instance.join("mods/Low/Dependent.esp"),
+        "Full254.esp",
+        "fProfileOverflowDependent",
+        19.0,
+    );
+    let path = instance.join("mods/Low/Dependent.esp");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[8..12].copy_from_slice(&0x200u32.to_le_bytes());
+    fs::write(path, bytes).unwrap();
+    entries.push_str("*Dependent.esp\n");
+    order.push_str("Dependent.esp\n");
+    write(&instance, "profiles/Default/plugins.txt", entries);
+    write(&instance, "profiles/Default/loadorder.txt", order);
+    let report = publish(&config).await;
+    let expected: Vec<_> = std::iter::once("skyrim.esm".to_owned())
+        .chain((0..253).map(|index| format!("full{index:03}.esp")))
+        .collect();
+    assert_publication(
+        &config,
+        &expected.iter().map(String::as_str).collect::<Vec<_>>(),
+        73.0,
+    );
+    let settings = published_settings(&config);
+    assert!(
+        settings
+            .iter()
+            .any(|(editor, _, priority)| editor == "fProfileFull252" && *priority == 253)
+    );
+    assert!(!settings.iter().any(|(editor, _, _)| {
+        [
+            "fProfileFull253",
+            "fProfileFull254",
+            "fProfileOverflowDependent",
+        ]
+        .contains(&editor.as_str())
+    }));
+    let summaries: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("full plugin slot overflow"))
+        .collect();
+    assert_eq!(summaries.len(), 1, "{:?}", report.notices);
+    assert!(
+        summaries[0].contains('2') && summaries[0].contains("Full253.esp"),
+        "{summaries:?}"
+    );
+    assert_eq!(
+        report.skipped_plugins,
+        ["Full253.esp", "Full254.esp", "Dependent.esp"]
     );
 }
 

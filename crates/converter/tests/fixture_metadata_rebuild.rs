@@ -604,6 +604,123 @@ async fn metadata_rebuild_resolves_current_packed_settings_and_omits_stale_paylo
     assert_eq!(indexed, report.lod_chunks);
 }
 
+/// Package-matched selection must not admit a recovered-away longer owner's LOD settings.
+#[tokio::test]
+async fn metadata_rebuild_excludes_recovered_longer_archive_owner() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    fs::remove_file(data.join("lodsettings/GeneratedWorld.lod")).unwrap();
+
+    // This is a usable plugin header with a missing dependency, not undecodable bytes.
+    let missing_master = b"Missing.esm\0";
+    let header = [
+        b"MAST".as_slice(),
+        &(missing_master.len() as u16).to_le_bytes(),
+        missing_master,
+        b"DATA".as_slice(),
+        &8u16.to_le_bytes(),
+        &[0; 8],
+    ]
+    .concat();
+    fs::write(
+        data.join("Skyrim - ZBroken.esp"),
+        [
+            b"TES4".as_slice(),
+            &(header.len() as u32).to_le_bytes(),
+            &[0; 16],
+            &header,
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let mut excluded_settings = PACKED_SETTINGS;
+    excluded_settings[..2].copy_from_slice(&(-8i16).to_le_bytes());
+    excluded_settings[2..4].copy_from_slice(&(-8i16).to_le_bytes());
+    fs::write(
+        data.join("Skyrim - ZBroken.bsa"),
+        bsa::v105(
+            &[Entry::new(
+                "LODSettings/GeneratedWorld.LOD",
+                &excluded_settings,
+            )],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let converted = convert(&data, &source).await;
+    assert!(
+        converted
+            .notices
+            .iter()
+            .any(|warning| warning.contains("Missing.esm"))
+    );
+    let source_manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let source_database_hash = hash_file(&source.join("skyrim_world.db")).unwrap();
+    let manifest = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    {
+        let connection = Connection::open(source.join("skyrim_world.db")).unwrap();
+        converter::esm::exporter::validate_database(&connection).unwrap();
+        let names: Vec<String> = connection
+            .prepare("SELECT name FROM plugins ORDER BY priority")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, ["Skyrim.esm"]);
+        let origin: (i32, i32) = connection
+            .query_row(
+                "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(origin, (-4, -4));
+    }
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete && report.lod_chunks > 0);
+    assert_eq!(report.converted, 0);
+    for entry in manifest.entries.values() {
+        assert_eq!(
+            hash_file(&output.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+        assert_eq!(
+            hash_file(&source.join(&entry.output)).unwrap(),
+            entry.output_hash
+        );
+    }
+    let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+    converter::esm::exporter::validate_database(&connection).unwrap();
+    let version: u32 = connection
+        .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, shared::WORLD_DATABASE_SCHEMA_VERSION);
+    let origin: (i32, i32) = connection
+        .query_row(
+            "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(origin, (-4, -4));
+    drop(connection);
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        source_manifest_hash
+    );
+    assert_eq!(
+        hash_file(&source.join("skyrim_world.db")).unwrap(),
+        source_database_hash
+    );
+}
+
 /// Verified reuse preserves the repaired URI and bytes despite changed current Data assets.
 #[tokio::test]
 async fn metadata_rebuild_preserves_repaired_volcanic_normal_uri() {

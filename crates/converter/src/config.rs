@@ -32,10 +32,17 @@ pub struct PipelineConfig {
     /// alongside the output directory; the runtime pack no longer contains it.
     #[serde(skip)]
     pub cache_dir: Option<PathBuf>,
+    /// Explicit player selection; absent uses MO2 when configured, else automatic discovery.
     pub plugins_file: Option<PathBuf>,
     /// Resolve this MO2 profile over physical Data; incompatible with plugins_file.
     #[serde(default)]
     pub mo2: Option<mo2::Selection>,
+    /// Explicit Creation list; absent uses Skyrim.ccc beside Data for player lists.
+    #[serde(default)]
+    pub skyrim_ccc_file: Option<PathBuf>,
+    /// Explicit General sTestFile settings; no ambient profile is read.
+    #[serde(default)]
+    pub skyrim_ini_file: Option<PathBuf>,
     /// Explicit per-worldspace LOD origins for custom worlds, keyed by
     /// worldspace editor id: `[grid_x, grid_y]`. Installed worlds read
     /// `lodsettings/<WorldspaceEDID>.lod` instead; a world with neither gets
@@ -80,6 +87,8 @@ impl PipelineConfig {
             cache_dir: None,
             plugins_file: None,
             mo2: None,
+            skyrim_ccc_file: None,
+            skyrim_ini_file: None,
             lod_origins: BTreeMap::new(),
             no_lod: false,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
@@ -372,6 +381,7 @@ fn parent_or_cwd(path: &Path) -> &Path {
 mod tests {
     use super::*;
 
+    /// Older serialized configs keep default selection inputs and explicit LOD origins.
     #[test]
     fn config_v90_accepts_legacy_configs_without_inventing_lod_origins() {
         let mut legacy = serde_json::json!({
@@ -390,6 +400,8 @@ mod tests {
             "script_abi_version": 1
         });
         let config: PipelineConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(config.skyrim_ccc_file.is_none());
+        assert!(config.skyrim_ini_file.is_none());
         assert!(config.lod_origins.is_empty());
         assert!(!config.no_lod);
         assert_eq!(config.texture_encoder, TextureEncoder::Cpu);

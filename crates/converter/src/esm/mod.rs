@@ -18,9 +18,13 @@ pub mod extractors;
 pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
+pub mod plugins_txt;
 pub mod records;
 pub mod rooms;
 pub mod types;
+pub use plugins_txt::{
+    OFFICIAL_MASTERS, read_plugins_txt, read_plugins_txt_with_options, read_skyrim_ccc,
+};
 
 pub struct EsmParser;
 
@@ -249,53 +253,6 @@ impl GameSettingIdentities {
     }
 }
 
-/// Read selected plugins from `data_dir`, normalizing master priority before merging.
-pub fn read_plugins_txt(path: &Path, data_dir: &Path) -> Result<Vec<PathBuf>> {
-    let contents = std::fs::read_to_string(path)?;
-    let mut plugins = Vec::new();
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        let enabled = line.starts_with('*');
-        let name = line.strip_prefix('*').unwrap_or(line).trim();
-        if !matches!(
-            Path::new(name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_ascii_lowercase())
-                .as_deref(),
-            Some("esm" | "esp" | "esl")
-        ) {
-            continue;
-        }
-        if !enabled && !name.to_ascii_lowercase().ends_with(".esm") {
-            continue;
-        }
-        let exact = data_dir.join(name);
-        if exact.is_file() {
-            plugins.push(exact);
-            continue;
-        }
-        if let Some(found) = std::fs::read_dir(data_dir)?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|candidate| {
-                candidate
-                    .file_name()
-                    .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
-            })
-        {
-            plugins.push(found);
-        } else {
-            color_eyre::eyre::bail!("active plugin not found: {name}");
-        }
-    }
-    // Normalize master priority before consumers assign slots or merge overrides (#108).
-    load_order::order_explicit_plugins(plugins)
-}
-
 /// Determines whether a subrecord within a given parent record type represents
 /// a 32-bit FormID that requires load-order remapping.
 ///
@@ -443,7 +400,7 @@ fn remap_record_form_ids(
             warnings.out_of_range(plugin_name, form_id, record_type);
         }
         let owner = if local_index < masters.len() {
-            masters[local_index].to_ascii_lowercase()
+            shared::plugin_selection::normalize_plugin_name(&masters[local_index])
         } else {
             plugin_name.to_owned()
         };

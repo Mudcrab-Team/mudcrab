@@ -65,7 +65,12 @@ impl RunReport {
             converted: report.converted,
             cache_hits: report.cache_hits,
             skipped: report.skipped,
-            warnings: report.warnings.clone(),
+            warnings: report
+                .warnings
+                .iter()
+                .cloned()
+                .chain(report.selection_warnings.iter().map(ToString::to_string))
+                .collect(),
             lod_chunks: report.lod_chunks,
             lod_warnings: report.lod_warnings.clone(),
             artifacts: report.artifacts.len(),
@@ -1349,6 +1354,9 @@ mod tests {
             skipped: 3,
             warnings: vec!["a.nif".into()],
             notices: Vec::new(),
+            skipped_plugins: Vec::new(),
+            load_order: Vec::new(),
+            selection_warnings: Vec::new(),
             artifacts: vec![PathBuf::from("a.glb"), PathBuf::from("b.ktx2")],
             inputs_by_kind: Default::default(),
             pruned_texture_references: 0,
@@ -1385,5 +1393,23 @@ mod tests {
             report.lod_line(),
             "No terrain LOD generated; 0 worldspace warning(s)."
         );
+    }
+
+    #[test]
+    fn creation_fallback_is_displayed_as_a_warning_without_an_asset_failure() {
+        let warning = shared::plugin_selection::CreationFallbackWarning {
+            ccc_path: PathBuf::from("Game/Skyrim.ccc"),
+            reason: "file missing".into(),
+        };
+        let pipeline = PipelineReport {
+            complete: true,
+            selection_warnings: vec![warning.clone()],
+            ..Default::default()
+        };
+        let report = RunReport::from_pipeline(&pipeline);
+        assert_eq!(report.warnings, vec![warning.to_string()]);
+        assert_eq!(report.skipped, 0);
+        assert!(report.headline().contains("Conversion complete"));
+        assert!(report.lines().contains(&format!("Warning: {warning}")));
     }
 }

@@ -24,11 +24,13 @@ pub struct PluginMetadata {
     pub flags: u32,
 }
 
+/// Read TES4 flags and Windows-1252 master filenames for slot assignment.
 pub fn parse_plugin_metadata(path: &Path) -> Result<PluginMetadata> {
     parse_plugin_metadata_inner(path)
         .wrap_err_with(|| format!("failed to read plugin header {}", path.display()))
 }
 
+/// Bound TES4 decoding before extracting the master dependency list.
 fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
@@ -55,7 +57,7 @@ fn parse_plugin_metadata_inner(path: &Path) -> Result<PluginMetadata> {
         .into_iter()
         .filter_map(|(tag, data)| {
             (tag == b"MAST").then(|| {
-                String::from_utf8_lossy(&data)
+                shared::plugin_selection::decode_windows_1252(&data)
                     .trim_end_matches('\0')
                     .to_string()
             })

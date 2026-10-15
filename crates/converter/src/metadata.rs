@@ -17,8 +17,9 @@ use crate::{
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
     pipeline::{
-        archive_load_order_priority, compile_lod_chunks, discover, overlay_loose_assets,
-        publish_new_directory, sort_archives_by_load_order, staging_path, validate_artifacts,
+        archive_load_order_priority, compile_lod_chunks, discover, installed_archive_owners,
+        non_mo2_archive_is_active, overlay_loose_assets, publish_new_directory,
+        sort_archives_by_load_order, staging_path, validate_artifacts,
     },
 };
 use color_eyre::{
@@ -248,6 +249,15 @@ async fn rebuild_into(
         replay_verified_pruned_assets,
     };
     let mut report = PipelineReport {
+        load_order: plugins
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect(),
         cache_hits: retained.len() as u64,
         pruned_texture_references: manifest
             .pruned_texture_references
@@ -264,6 +274,9 @@ async fn rebuild_into(
     )
     .await;
     let files = discover(&config.data_dir)?;
+    // Keep the checksum-matched source package's plugin order authoritative. Current installed
+    // identities prevent a surviving prefix from reactivating a more specific omitted owner.
+    let archive_owners = installed_archive_owners(&config.data_dir, &files, plugins);
     let mut archives: Vec<_> = files
         .iter()
         .filter(|path| {
@@ -275,7 +288,13 @@ async fn rebuild_into(
         .cloned()
         .collect();
     archives.retain(|archive| {
-        if archive_load_order_priority(archive, plugins).is_some() {
+        if !non_mo2_archive_is_active(archive, &archive_owners) {
+            report.lod_warnings.push(format!(
+                "LOD extraction omitted archive {}: installed owner is absent from source-package plugin order",
+                archive.display()
+            ));
+            false
+        } else if archive_load_order_priority(archive, plugins).is_some() {
             true
         } else {
             report.lod_warnings.push(format!(
