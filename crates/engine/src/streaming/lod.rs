@@ -1,9 +1,11 @@
 use super::{
-    RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage, TerrainSurfaceReady,
+    MergedTerrainCoverage, RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage,
+    TerrainSurfaceReady,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
+    swap_bridge::SwapWaiting,
     world::{
         components::{CELL_SIZE, StreamingCamera},
         database::{LodChunkMetadata, LodChunkQuery, WorldDatabase},
@@ -648,6 +650,13 @@ pub(super) fn track_lod_readiness(
     profiler.record_elapsed("lod/readiness", started);
 }
 
+/// A merged terrain cell the render world has confirmed drawn.
+type DrawnMergedTerrain = (
+    With<super::TerrainPatch>,
+    With<TerrainSurfaceReady>,
+    Without<SwapWaiting>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_terrain_lod_visibility(
     config: Res<EngineConfig>,
@@ -655,8 +664,15 @@ pub(super) fn update_terrain_lod_visibility(
     camera: Query<&Transform, With<StreamingCamera>>,
     mut removed_coverage: RemovedComponents<TerrainCoverage>,
     mut removed_readiness: RemovedComponents<TerrainSurfaceReady>,
+    mut removed_merged: RemovedComponents<MergedTerrainCoverage>,
+    mut drawn_swaps: RemovedComponents<SwapWaiting>,
     mut streaming: ParamSet<(Res<LodStreaming>, ResMut<LodStreaming>)>,
     full_detail: Query<&TerrainCoverage, (With<super::TerrainPatch>, With<TerrainSurfaceReady>)>,
+    // A merged cell covers its grid once it is surface-ready *and* the render world has confirmed
+    // it drawn (the swap bridge removed its `SwapWaiting`): its arrays are validated
+    // before any cell commits, so it is surface-ready the frame it spawns, and hiding the tiles on
+    // that alone left the grid with neither drawn until the merged mesh reached the GPU.
+    merged_full_detail: Query<&MergedTerrainCoverage, DrawnMergedTerrain>,
     mut lod_patches: Query<
         (
             &TerrainCoverage,
@@ -675,11 +691,21 @@ pub(super) fn update_terrain_lod_visibility(
     let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     let coverage_removed = removed_coverage.read().count() != 0;
     let readiness_removed = removed_readiness.read().count() != 0;
+    let merged_removed = removed_merged.read().count() != 0;
+    // Every surface the bridge confirms drawn leaves the waiting set; only a merged cell's
+    // completion changes what this pass decides. Read in full, so no event is left for next frame.
+    let merged_drawn = drawn_swaps
+        .read()
+        .filter(|entity| merged_full_detail.contains(*entity))
+        .count()
+        != 0;
     let refresh = {
         let state = streaming.p0();
         state.visibility_dirty
             || coverage_removed
             || readiness_removed
+            || merged_removed
+            || merged_drawn
             || state.visibility_camera_grid != Some(camera_grid)
             || state.visibility_stream_radius != Some(config.stream_radius)
     };
@@ -693,9 +719,15 @@ pub(super) fn update_terrain_lod_visibility(
         state.visibility_stream_radius = Some(config.stream_radius);
     }
 
+    // A merged cell's one mesh covers all four of its quadrants.
     let full_ready: HashSet<_> = full_detail
         .iter()
         .map(|coverage| (coverage.grid, coverage.quadrant))
+        .chain(
+            merged_full_detail
+                .iter()
+                .flat_map(|coverage| (0..4u8).map(move |quadrant| (coverage.grid, quadrant))),
+        )
         .collect();
     let mut available = HashMap::<(IVec2, u8), HashSet<LodTier>>::new();
     let mut ready_patches = 0usize;

@@ -4,6 +4,7 @@ use color_eyre::{
 };
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
+    config::TerrainDefaultTexture,
     pipeline::{Cancellation, Interrupted, PipelineFailure},
     progress::{ProgressRenderer, format_bytes, format_elapsed},
 };
@@ -36,6 +37,10 @@ struct Cli {
     invalidate_cache: bool,
     verify_cache: bool,
     no_lod: bool,
+    merged_terrain: bool,
+    terrain_default_texture: TerrainDefaultTexture,
+    terrain_ini: Option<PathBuf>,
+    terrain_allow_downscale: bool,
     verbose: bool,
 }
 
@@ -48,6 +53,10 @@ impl Cli {
         config.invalidate_cache = self.invalidate_cache;
         config.verify_cache = self.verify_cache;
         config.no_lod = self.no_lod;
+        config.merged_terrain = self.merged_terrain;
+        config.terrain_default_texture = self.terrain_default_texture;
+        config.terrain_ini = self.terrain_ini.clone();
+        config.terrain_allow_downscale = self.terrain_allow_downscale;
         config.texture_encoder = self.texture_encoder;
         if let Some(value) = self.texture_fallback_quality {
             config.texture_fallback_quality = value;
@@ -76,9 +85,10 @@ struct CheckCli {
 
 #[derive(Debug)]
 enum Command {
-    Convert(Cli),
+    // Boxed: a conversion's options are an order of magnitude larger than a check's.
+    Convert(Box<Cli>),
     Check(CheckCli),
-    Repair(Cli, bool),
+    Repair(Box<Cli>, bool),
 }
 
 /// Problem lines printed before "and N more".
@@ -184,9 +194,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let command = parse_command(args)?;
-    if let Command::Convert(cli) | Command::Repair(cli, _) = &command
-        && let Some(selection) = &cli.mo2
-    {
+    let mo2 = match &command {
+        Command::Convert(cli) => cli.mo2.as_ref(),
+        Command::Repair(cli, _) => cli.mo2.as_ref(),
+        Command::Check(_) => None,
+    };
+    if let Some(selection) = mo2 {
         eprintln!(
             "MO2 profile: {:?} (instance: {})",
             selection.profile,
@@ -194,7 +207,7 @@ async fn main() -> Result<()> {
         );
     }
     let cli = match command {
-        Command::Convert(cli) => cli,
+        Command::Convert(cli) => *cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
         Command::Repair(cli, apply) => {
             let config = cli.pipeline_config();
@@ -516,6 +529,22 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
+    // A resumed run must build the same generated outputs: the terrain stage is rebuilt from
+    // the records on every run, so dropping the option would publish without it, and an option
+    // the stage reads must not be switched silently.
+    if cli.merged_terrain {
+        command.push_str(" --merged-terrain");
+        command.push_str(match cli.terrain_default_texture {
+            TerrainDefaultTexture::White => " --terrain-default-texture white",
+            TerrainDefaultTexture::SkyrimIni => " --terrain-default-texture skyrim-ini",
+        });
+        if let Some(ini) = &cli.terrain_ini {
+            command.push_str(&format!(" --terrain-ini \"{}\"", ini.display()));
+        }
+        if cli.terrain_allow_downscale {
+            command.push_str(" --terrain-allow-downscale");
+        }
+    }
     command
 }
 
@@ -714,9 +743,9 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
                 "repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only"
             );
         }
-        return Ok(Command::Repair(cli, apply));
+        return Ok(Command::Repair(Box::new(cli), apply));
     }
-    parse_cli(args).map(Command::Convert)
+    parse_cli(args).map(|cli| Command::Convert(Box::new(cli)))
 }
 
 fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
@@ -759,6 +788,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut invalidate_cache = false;
     let mut verify_cache = true;
     let mut no_lod = false;
+    let mut merged_terrain = false;
+    let mut terrain_default_texture = TerrainDefaultTexture::default();
+    let mut terrain_ini = None;
+    let mut terrain_allow_downscale = false;
     let mut verbose = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
@@ -834,6 +867,19 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
             Some("--no-lod") => no_lod = true,
+            Some("--merged-terrain") => merged_terrain = true,
+            Some("--terrain-default-texture") => {
+                let value = next_value(&mut args, "--terrain-default-texture")?;
+                terrain_default_texture = match value.to_str() {
+                    Some("white") => TerrainDefaultTexture::White,
+                    Some("skyrim-ini") => TerrainDefaultTexture::SkyrimIni,
+                    _ => bail!("--terrain-default-texture must be white or skyrim-ini"),
+                };
+            }
+            Some("--terrain-ini") => {
+                terrain_ini = Some(PathBuf::from(next_value(&mut args, "--terrain-ini")?))
+            }
+            Some("--terrain-allow-downscale") => terrain_allow_downscale = true,
             Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
@@ -895,6 +941,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         invalidate_cache,
         verify_cache,
         no_lod,
+        merged_terrain,
+        terrain_default_texture,
+        terrain_ini,
+        terrain_allow_downscale,
         verbose,
     })
 }
@@ -947,6 +997,8 @@ fn usage() -> &'static str {
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
                  [--mo2-instance DIR] [--mo2-profile NAME]
+                 [--merged-terrain] [--terrain-default-texture white|skyrim-ini]
+                 [--terrain-ini FILE] [--terrain-allow-downscale]
        converter check <output directory> [--full]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
                  [--mo2-profile NAME] [--no-lod] [--apply]
@@ -968,6 +1020,17 @@ MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are no
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
+
+--merged-terrain builds the merged terrain of #215 after the world database and the land
+textures: the land texture arrays, one merged mesh per exterior cell and the terrain chunk
+files. It is off by default; the engine uses them when present.
+--terrain-default-texture picks what a cell quadrant with no BTXT blends: the generated
+white texture (default), or the game's own [Landscape] default.
+--terrain-ini names the Skyrim.ini that default is read from; without it the built-in
+textures/landscape/Dirt02.dds and Dirt02_N.dds stand in, as they do for a key the ini does
+not name. A default that cannot be converted leaves the white texture, and the report says so.
+--terrain-allow-downscale downscales a land texture larger than the largest array size class
+into it instead of stopping the merged-terrain build; the report lists every one downscaled.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -1435,6 +1498,10 @@ mod tests {
             invalidate_cache: false,
             verify_cache: true,
             no_lod: false,
+            merged_terrain: false,
+            terrain_default_texture: TerrainDefaultTexture::White,
+            terrain_ini: None,
+            terrain_allow_downscale: false,
             verbose: false,
         };
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
@@ -1452,6 +1519,68 @@ mod tests {
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
         assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        // Merged terrain is off unless asked for, and a resume keeps it on with its default
+        // texture selection.
+        let terrain = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        assert!(terrain.merged_terrain);
+        assert_eq!(
+            terrain.terrain_default_texture,
+            TerrainDefaultTexture::White
+        );
+        let terrain = parse_cli(vec![
+            "Data".into(),
+            "--merged-terrain".into(),
+            "--terrain-default-texture".into(),
+            "skyrim-ini".into(),
+        ])
+        .unwrap();
+        assert!(terrain.merged_terrain);
+        assert_eq!(
+            terrain.terrain_default_texture,
+            TerrainDefaultTexture::SkyrimIni
+        );
+        assert!(
+            resume_command("converter", &terrain, staging)
+                .ends_with(" --merged-terrain --terrain-default-texture skyrim-ini")
+        );
+        // The default texture is named even when it is the default, and the ini and the
+        // downscale allowance travel with the resume: none of them may switch silently.
+        let white = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        assert!(
+            resume_command("converter", &white, staging)
+                .ends_with(" --merged-terrain --terrain-default-texture white")
+        );
+        let terrain = parse_cli(vec![
+            "Data".into(),
+            "--merged-terrain".into(),
+            "--terrain-default-texture".into(),
+            "skyrim-ini".into(),
+            "--terrain-ini".into(),
+            "C:/Games/Skyrim/Skyrim.ini".into(),
+            "--terrain-allow-downscale".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            terrain.terrain_ini,
+            Some(PathBuf::from("C:/Games/Skyrim/Skyrim.ini"))
+        );
+        assert!(terrain.terrain_allow_downscale);
+        assert!(resume_command("converter", &terrain, staging).ends_with(
+            " --merged-terrain --terrain-default-texture skyrim-ini --terrain-ini \
+                 \"C:/Games/Skyrim/Skyrim.ini\" --terrain-allow-downscale"
+        ));
+        assert!(
+            parse_cli(vec!["Data".into(), "--terrain-ini".into()]).is_err(),
+            "--terrain-ini needs a path"
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--terrain-default-texture".into(),
+                "dirt".into()
+            ])
+            .is_err()
+        );
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {

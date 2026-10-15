@@ -9,7 +9,7 @@ use crate::{
     config::{PipelineConfig, TextureEncoder},
     esm::{
         EsmParser,
-        cell_cache::write_cell_cache,
+        cell_cache::write_cell_cache_with,
         exporter::validate_database,
         lodsettings::{LodSettings, sidecar_path},
         read_plugins_txt,
@@ -29,7 +29,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail, ensure},
+    eyre::{WrapErr, bail, ensure, eyre},
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,18 @@ pub struct PipelineReport {
     pub publication_elapsed_ms: u128,
     #[serde(default)]
     pub lod_warnings: Vec<String>,
+    /// The merged terrain (#215) this run built, when `merged_terrain` is on: the land texture
+    /// arrays, one merged mesh per exterior cell, the chunk files, and every cell or texture
+    /// left out with its reason. `None` when the option is off or no world database was built.
+    #[serde(default)]
+    pub terrain: Option<crate::terrain_pipeline::TerrainReport>,
+    /// Wall time spent building merged terrain, excluding other conversion stages.
+    #[serde(default)]
+    pub terrain_elapsed_ms: u128,
+    /// Merged-terrain omissions. Like `lod_warnings`, these do not make the run incomplete: a
+    /// skipped land texture or cell falls back at runtime, and the full list is in `terrain`.
+    #[serde(default)]
+    pub terrain_warnings: Vec<String>,
     pub warnings: Vec<String>,
     /// advisory messages that do not affect completeness
     #[serde(default)]
@@ -678,6 +690,7 @@ impl AssetPipeline {
         }
         interrupt(cancellation)?;
 
+        let mut merged_terrain_records = None;
         if !plugins.is_empty() {
             send(
                 progress_tx,
@@ -696,11 +709,27 @@ impl AssetPipeline {
             }
             let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
             validate_database(&Connection::open(&db_path)?)?;
-            write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            write_cell_cache_with(
+                &merged,
+                &staging.join("cell_cache.rkyv"),
+                config.merged_terrain,
+            )?;
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
             ]);
+            // The merged terrain stage keys every cell from LAND, LTEX, TXST, CELL and WRLD
+            // records, so only those are kept from here on: the whole merge is not held through
+            // the texture, mesh, script and LOD stages. With the option off the run drops the map
+            // here as before.
+            if config.merged_terrain {
+                // One LAND per cell, chosen by load order: check it here, before the texture,
+                // mesh and LOD stages run, so a bad load order fails in minutes instead of
+                // after LOD. The same warning lines surface from `write_cell_cache` above; the
+                // terrain stage reports them again when it builds.
+                crate::esm::cell_cache::land_per_cell(&merged, true)?;
+                merged_terrain_records = Some(crate::terrain_pipeline::terrain_records(merged));
+            }
         }
 
         let vfs_root = staging.join("vfs");
@@ -996,6 +1025,22 @@ impl AssetPipeline {
         .await?;
         report.lod_elapsed_ms = lod_started.elapsed().as_millis();
         interrupt(cancellation)?;
+        let terrain_started = Instant::now();
+        // Merged terrain (#215): the arrays, one mesh per exterior cell and the chunk files,
+        // once the world database and every converted texture are in staging. Off by default
+        // until the engine half that reads these outputs lands.
+        if config.merged_terrain {
+            crate::terrain_pipeline::run_merged_terrain_stage(
+                staging,
+                merged_terrain_records.take(),
+                &plugins,
+                &crate::terrain_pipeline::TerrainOptions::from_config(config),
+                progress_tx,
+                &mut report,
+            )
+            .await?;
+        }
+        report.terrain_elapsed_ms = terrain_started.elapsed().as_millis();
         let integration_sources = source_paths
             .iter()
             .map(|(path, source)| {
@@ -2118,6 +2163,38 @@ pub(crate) fn validate_artifact(
 ) -> Result<()> {
     let path = staging.join(relative);
     match path.extension().and_then(|extension| extension.to_str()) {
+        // Land texture arrays (#215) are not converted source textures: they are KTX2 texture
+        // arrays whose class (usage, block format, size) the land texture table records, and
+        // their transfer function (sRGB diffuse, linear normal) is a property of that class, not
+        // of any source texture semantics. The stage that built them checked every layer and
+        // level against the class; here the file's own shape is checked.
+        Some("ktx2") if relative.starts_with("terrain") => {
+            // A class can be many gigabytes and validation runs on every CPU job at once, so only
+            // the header and the first level's index entry are read, never the pixel data.
+            let mut file = fs::File::open(&path)?;
+            let file_len = file.metadata()?.len();
+            let mut prefix = [0u8; 104];
+            std::io::Read::read_exact(&mut file, &mut prefix)
+                .map_err(|error| eyre!("invalid KTX2 array {}: {error}", path.display()))?;
+            let header_bytes: [u8; ktx2::Header::LENGTH] = prefix[..ktx2::Header::LENGTH]
+                .try_into()
+                .expect("the prefix is longer than the header");
+            let header = ktx2::Header::from_bytes(&header_bytes)
+                .map_err(|error| eyre!("invalid KTX2 array {}: {error:?}", path.display()))?;
+            let level_offset = u64::from_le_bytes(prefix[80..88].try_into().expect("eight bytes"));
+            let level_length = u64::from_le_bytes(prefix[88..96].try_into().expect("eight bytes"));
+            ensure!(
+                header.layer_count >= 2
+                    && header.level_count > 0
+                    && header.format.is_some()
+                    && level_length > 0
+                    && level_offset
+                        .checked_add(level_length)
+                        .is_some_and(|end| end <= file_len),
+                "invalid KTX2 array {}",
+                path.display()
+            );
+        }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
             let key = source_texture_key(&canonical_asset_path(
@@ -2455,6 +2532,13 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
     let lod_dir = staging.join("lod");
     if lod_dir.exists() {
         fs::remove_dir_all(&lod_dir)?;
+    }
+    // The merged terrain (#215) lives entirely under `terrain`: the arrays, the table and the
+    // chunk files. It is rebuilt from the current records, so a resume with the option off
+    // publishes an output without it rather than carrying a stale one.
+    let terrain_dir = staging.join("terrain");
+    if terrain_dir.exists() {
+        fs::remove_dir_all(&terrain_dir)?;
     }
     Ok(())
 }
@@ -3649,6 +3733,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::esm::cell_cache::write_cell_cache;
 
     #[test]
     fn discovery_rejects_missing_roots() {

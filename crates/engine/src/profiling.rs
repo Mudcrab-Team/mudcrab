@@ -225,6 +225,7 @@ fn sample_scene_inventory(
     mut frames: Local<u64>,
     meshes: Query<(), With<Mesh3d>>,
     terrain: Query<&ViewVisibility, With<crate::world::components::TerrainPatch>>,
+    merged_terrain: Query<&ViewVisibility, With<crate::streaming::MergedTerrainCell>>,
     water: Query<(), With<crate::world::components::WaterSurface>>,
     bounds: Query<(), With<crate::world::components::InstanceBounds>>,
     mesh_assets: Res<Assets<Mesh>>,
@@ -240,6 +241,13 @@ fn sample_scene_inventory(
     profiler.set_gauge(
         "scene/visible_terrain_patches",
         terrain.iter().filter(|visible| visible.get()).count() as f64,
+    );
+    // A terrain patch is one drawn terrain mesh: one per merged cell, four per quadrant-path cell.
+    let merged_cells = merged_terrain.iter().count();
+    profiler.set_gauge("scene/terrain_merged_cells", merged_cells as f64);
+    profiler.set_gauge(
+        "scene/terrain_quadrant_patches",
+        (terrain.iter().count() - merged_cells) as f64,
     );
     profiler.set_gauge("scene/water_surfaces", water.iter().count() as f64);
     profiler.set_gauge("scene/bounded_instances", bounds.iter().count() as f64);

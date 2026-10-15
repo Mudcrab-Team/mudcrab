@@ -20,6 +20,8 @@ pub mod shots;
 pub mod sky;
 pub mod skyrim_ini;
 pub mod streaming;
+pub mod swap_bridge;
+pub mod terrain_merge;
 pub mod world;
 
 pub use app::run;

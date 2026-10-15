@@ -17,6 +17,7 @@ crossbeam-channel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+ktx2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
@@ -25,4 +26,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 tempfile = "3.20"
 converter = { path = "../converter" }
 ddsfile = "0.5"
-ktx2.workspace = true
+# Compiles the terrain shaders in tests; the version Bevy 0.19's shader cache already builds.
+# No default features: the "glsl" one makes naga_oil write every imported header in GLSL as well,
+# which panics on Bevy's bindless material headers. Bevy turns on what it needs.
+naga_oil = { version = "0.22", default-features = false }

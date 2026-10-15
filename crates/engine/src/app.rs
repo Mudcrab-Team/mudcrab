@@ -122,6 +122,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             InitialCameraGroundHeight(ground_height),
         ))
     };
+    // The streamed world's merged terrain (#215): the land texture table of this conversion, if it
+    // has one. Opening it reads one small file; the arrays and chunks load as they are needed.
+    let terrain_merge = runtime_data
+        .is_some()
+        .then(|| crate::terrain_merge::TerrainMerge::open(&config.assets_dir));
     let movement_tuning = (interactive_world_physics
         && runtime_data.is_some()
         && !config.streaming_fixture)
@@ -210,10 +215,20 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ConsolePlugin,
             crate::nif_material::NifMaterialPlugin,
         ))
+        // The render→main "prepared and drawable" bridge. Registered for every
+        // run: it is what publishes the render world's own answer to "is this surface drawn?" into
+        // the main world, and it changes nothing else about the frame.
+        .add_plugins(crate::swap_bridge::SwapBridgePlugin)
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
-        .add_plugins(crate::lights::LightsPlugin);
+        .add_plugins(crate::lights::LightsPlugin)
+        .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
+            terrain_merge.as_ref(),
+        ));
     add_camera_and_capture_systems(&mut app);
+    if let Some(terrain_merge) = terrain_merge {
+        app.insert_resource(terrain_merge);
+    }
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
             .insert_resource(catalog)

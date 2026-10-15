@@ -78,5 +78,8 @@ expression: report
   "pruned_texture_references": 0,
   "publication_elapsed_ms": "[publication_elapsed_ms]",
   "skipped": 0,
+  "terrain": null,
+  "terrain_elapsed_ms": 0,
+  "terrain_warnings": [],
   "warnings": []
 }

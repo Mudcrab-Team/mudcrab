@@ -1358,6 +1358,9 @@ mod tests {
             lod_warnings: vec!["Solstheim terrain skipped".into()],
             elapsed_ms: 18_450_000,
             integration: None,
+            terrain: None,
+            terrain_elapsed_ms: 0,
+            terrain_warnings: Vec::new(),
         };
         let report = RunReport::from_pipeline(&pipeline);
         assert_eq!(report.artifacts, 2);

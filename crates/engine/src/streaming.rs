@@ -6,6 +6,10 @@ use crate::{
         PLACED_OBJECT_RENDER_LAYERS, QUADRANT_WEIGHT_SAMPLES, TerrainExtension, TerrainMaterial,
         WATER_LAYER, WaterExtension, WaterMaterial, WaterReflectionTexture,
     },
+    swap_bridge::{SwapSurface, SwapWaiting},
+    terrain_merge::{
+        CellLookup, TerrainMerge, classes::TerrainClasses, material::MergedTerrainMaterial,
+    },
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{
@@ -20,6 +24,7 @@ use bevy::{
     app::{Propagate, SceneSpawnerSystems},
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
     camera::{primitives::MeshAabb, visibility::RenderLayers},
+    ecs::system::SystemParam,
     gltf::{GltfExtras, GltfMaterialName, GltfSceneExtras},
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
@@ -31,11 +36,15 @@ use bevy_rapier3d::prelude::{Collider, ColliderDisabled, RigidBody, WriteRapierC
 use serde::{Deserialize, Serialize};
 use shared::collision::{COLLISION_ASSET_VERSION, CollisionAsset, CollisionShape};
 use shared::lod::LodTier;
+use shared::terrain_mesh::TerrainCellMesh;
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(crate) mod lod;
+#[cfg(test)]
+mod merged_tests;
 
 // Wall-clock spans can include a short OS scheduler preemption. Keep the raw maximum in metrics,
 // but require a material overrun before classifying the frame as a commit-budget violation.
@@ -61,6 +70,43 @@ struct TerrainCoverage {
 
 #[derive(Component)]
 struct TerrainSurfaceReady;
+
+/// The full-detail terrain of one exterior cell drawn as a single merged mesh (#215). It covers
+/// all four quadrants of `grid`, so the LOD hand-off treats each of them as ready when this
+/// entity is.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MergedTerrainCoverage {
+    pub(crate) grid: IVec2,
+}
+
+/// A merged terrain mesh that has been spawned and waits for the readiness pass.
+#[derive(Component)]
+struct PendingMergedTerrain;
+
+/// Marks the merged terrain mesh entity of a cell, for the scene gauges.
+#[derive(Component)]
+pub(crate) struct MergedTerrainCell;
+
+/// The resources `collect_cells` fills a cell's entities from. Grouped because the system would
+/// otherwise pass Bevy's limit of sixteen parameters.
+#[derive(SystemParam)]
+struct CellAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    terrain_materials: ResMut<'w, Assets<TerrainMaterial>>,
+    water_materials: ResMut<'w, Assets<WaterMaterial>>,
+    /// Present when the run installed the merged terrain plugin.
+    merge: Option<ResMut<'w, TerrainMerge>>,
+}
+
+/// The merged data a cell is drawn from, once it has passed every check and been welded.
+struct MergedSpawn {
+    cell: Box<TerrainCellMesh>,
+    classes: Arc<TerrainClasses>,
+    material: Handle<MergedTerrainMaterial>,
+    /// Every image `material` binds ([`TerrainMerge::material_images`]): the cell's declaration to
+    /// the swap bridge.
+    images: Arc<[AssetId<Image>]>,
+}
 
 /// A fixed placement's collision provenance.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +140,7 @@ impl Plugin for StreamingPlugin {
                     finish_streaming_commit_budget,
                     track_asset_readiness,
                     track_surface_readiness,
+                    track_merged_surface_readiness,
                     lod::track_lod_readiness,
                     lod::update_terrain_lod_visibility,
                     update_render_origin,
@@ -134,6 +181,10 @@ pub struct StreamingWorld {
     /// first whatever order the queries iterate in.
     next_model_sequence: u64,
     cells: HashMap<CellKey, CellStatus>,
+    /// Responses for exterior cells with terrain that arrived while the merged terrain arrays were
+    /// still loading, in arrival order. They are replayed, ahead of new responses, once the merged
+    /// path is ready or refused; every other cell is committed without waiting.
+    held_responses: std::collections::VecDeque<crate::world::database::DatabaseResponse>,
 }
 
 impl StreamingWorld {
@@ -304,6 +355,20 @@ pub struct StreamingMetrics {
     pub diagnostic_fallbacks: u64,
     pub canonical_fixture_validated: bool,
     pub terrain_patches_validated: u64,
+    /// Exterior cells drawn as one merged mesh with the shared terrain material (#215).
+    pub terrain_cells_merged: u64,
+    /// Terrain cells drawn by the four-quadrant path: every cell when the merged path is absent
+    /// or refused, and the cells the merged data could not serve otherwise.
+    pub terrain_cells_fallback: u64,
+    /// The subset of [`Self::terrain_cells_fallback`] where merged data was expected: the chunk
+    /// file or the cell's entry is missing, or the entry failed validation.
+    pub terrain_cells_fallback_expected_merged: u64,
+    /// The subset of those whose merged data exists but failed validation, which is the one worth
+    /// a look.
+    pub terrain_cells_merged_invalid: u64,
+    /// Where the merged terrain path stands: absent, awaiting device, loading arrays, ready or
+    /// refused with its reason.
+    pub terrain_merge_state: String,
     pub terrain_seams_validated: u64,
     /// Edge points of an arriving cell whose height had to move onto a resident neighbour's shared
     /// edge, so the two terrains meet exactly instead of the cell being rejected (see
@@ -776,15 +841,21 @@ fn collect_cells(
     asset_server: Res<AssetServer>,
     catalog: Res<AssetCatalog>,
     reflection: Res<WaterReflectionTexture>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
-    mut water_materials: ResMut<Assets<WaterMaterial>>,
+    mut assets: CellAssets,
     mut streaming: ResMut<StreamingWorld>,
     mut commit_budget: ResMut<StreamingCommitBudget>,
     mut continuity: ResMut<TerrainContinuity>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
+    // Merged terrain decides cell by cell between its own mesh and the quadrant path, so an
+    // exterior cell with terrain is not committed until the arrays it depends on are ready or
+    // refused (the setup is bounded by `terrain_merge::SETUP_TIMEOUT`). Interiors and cells with
+    // no LAND never wait.
+    let holding = assets
+        .merge
+        .as_deref()
+        .is_some_and(TerrainMerge::holds_cells);
     let frame_commit_started = Instant::now();
     commit_budget.frame_started = frame_commit_started;
     let response_scan_limit = config.max_cell_commits_per_frame.saturating_mul(8).max(8);
@@ -792,32 +863,49 @@ fn collect_cells(
         if commit_budget.remaining_for_cells() == 0 {
             break;
         }
-        let Some(response) = database.try_response() else {
+        // Held responses were counted when they first arrived.
+        let replayed = if holding {
+            None
+        } else {
+            streaming.held_responses.pop_front()
+        };
+        let counted = replayed.is_some();
+        let Some(response) = replayed.or_else(|| database.try_response()) else {
             break;
         };
-        metrics.responses_received += 1;
-        metrics.total_query_micros = metrics
-            .total_query_micros
-            .saturating_add(response.query_micros);
-        metrics.max_query_micros = metrics.max_query_micros.max(response.query_micros);
-        metrics.total_queue_wait_micros = metrics
-            .total_queue_wait_micros
-            .saturating_add(response.queue_wait_micros);
-        metrics.max_queue_wait_micros = metrics
-            .max_queue_wait_micros
-            .max(response.queue_wait_micros);
-        metrics.total_request_micros = metrics
-            .total_request_micros
-            .saturating_add(response.total_request_micros);
-        metrics.max_request_micros = metrics
-            .max_request_micros
-            .max(response.total_request_micros);
-        metrics.total_rows_loaded = metrics
-            .total_rows_loaded
-            .saturating_add(response.row_count as u64);
-        profiler.record_micros("streaming/db_queue_wait", response.queue_wait_micros);
-        profiler.record_micros("streaming/db_query", response.query_micros);
-        profiler.record_micros("streaming/db_request_total", response.total_request_micros);
+        if !counted {
+            metrics.responses_received += 1;
+            metrics.total_query_micros = metrics
+                .total_query_micros
+                .saturating_add(response.query_micros);
+            metrics.max_query_micros = metrics.max_query_micros.max(response.query_micros);
+            metrics.total_queue_wait_micros = metrics
+                .total_queue_wait_micros
+                .saturating_add(response.queue_wait_micros);
+            metrics.max_queue_wait_micros = metrics
+                .max_queue_wait_micros
+                .max(response.queue_wait_micros);
+            metrics.total_request_micros = metrics
+                .total_request_micros
+                .saturating_add(response.total_request_micros);
+            metrics.max_request_micros = metrics
+                .max_request_micros
+                .max(response.total_request_micros);
+            metrics.total_rows_loaded = metrics
+                .total_rows_loaded
+                .saturating_add(response.row_count as u64);
+            profiler.record_micros("streaming/db_queue_wait", response.queue_wait_micros);
+            profiler.record_micros("streaming/db_query", response.query_micros);
+            profiler.record_micros("streaming/db_request_total", response.total_request_micros);
+            if holding
+                && let Some(merge) = assets.merge.as_deref_mut()
+                && should_hold_response(merge, &response.result, |id| cache.has_terrain(id))
+            {
+                profiler.increment("terrain/cells_held", 1);
+                streaming.held_responses.push_back(response);
+                continue;
+            }
+        }
         let Some(CellStatus::Loading { generation }) = streaming.cells.get(&response.key) else {
             metrics.stale_responses += 1;
             profiler.event(format!("{:?}", response.key), "stale_discarded", None);
@@ -834,21 +922,29 @@ fn collect_cells(
         match response.result {
             Ok(payload) => {
                 let mut terrain = cache.terrain(payload.cell_id);
+                // A cell with a snapshot is drawn from merged data when the merged path is ready
+                // and the cell's own data passes every check; otherwise by quadrant, counted.
+                let mut merged = terrain.as_ref().and_then(|_| {
+                    choose_merged_terrain(
+                        assets.merge.as_deref_mut(),
+                        payload.key,
+                        payload.cell_id,
+                        &mut metrics,
+                        &mut profiler,
+                    )
+                });
                 if let Some(terrain) = &mut terrain {
-                    let validation_started = Instant::now();
-                    let validation = validate_terrain_snapshot(terrain, &catalog);
-                    profiler.record_elapsed("streaming/terrain_validation", validation_started);
-                    let validation = validation.and_then(|()| {
-                        let weld_started = Instant::now();
-                        let welded = validate_and_register_terrain_edges(
-                            payload.key,
-                            terrain,
-                            &mut continuity,
-                            &mut metrics,
-                        );
-                        profiler.record_elapsed("streaming/terrain_seam_weld", weld_started);
-                        welded
-                    });
+                    let validation = settle_cell_terrain(
+                        payload.key,
+                        payload.cell_id,
+                        merged.take(),
+                        terrain,
+                        &catalog,
+                        &mut continuity,
+                        &mut metrics,
+                        &mut profiler,
+                    );
+                    let validation = validation.map(|settled| merged = settled);
                     if let Err(reason) = validation {
                         error!(cell = format_args!("{:08X}", payload.cell_id), %reason, "LAND failed strict validation");
                         metrics.failed_cells = metrics.failed_cells.saturating_add(1);
@@ -867,24 +963,31 @@ fn collect_cells(
                     }
                 }
                 let cell_id = payload.cell_id;
+                let drawn_merged = merged.is_some();
                 let root = spawn_cell(
                     &mut commands,
                     &asset_server,
                     &catalog,
                     &reflection,
-                    &mut meshes,
-                    &mut terrain_materials,
-                    &mut water_materials,
+                    &mut assets.meshes,
+                    &mut assets.terrain_materials,
+                    &mut assets.water_materials,
                     origin.0,
                     config.lights,
                     config.interactive_world_physics(),
                     payload,
                     terrain,
+                    merged,
                     &mut streaming.next_model_sequence,
                     &mut profiler,
                 );
                 match root {
                     Ok(root) => {
+                        if drawn_merged {
+                            metrics.terrain_cells_merged =
+                                metrics.terrain_cells_merged.saturating_add(1);
+                            profiler.increment("terrain/cells_merged", 1);
+                        }
                         streaming
                             .cells
                             .insert(response.key, CellStatus::Resident { root });
@@ -1006,6 +1109,7 @@ fn spawn_cell(
     terrain_physics: bool,
     payload: CellPayload,
     terrain: Option<TerrainSnapshot>,
+    merged: Option<MergedSpawn>,
     model_sequence: &mut u64,
     profiler: &mut ProfilingState,
 ) -> Result<Entity, String> {
@@ -1017,7 +1121,20 @@ fn spawn_cell(
         CellKey::Exterior { grid_x, grid_y, .. } => Some(IVec2::new(grid_x, grid_y)),
         CellKey::Interior(_) => None,
     };
-    let terrain_quadrants = if let Some(terrain) = &terrain {
+    // The merged cell's one mesh and its one collider, built from the same buffers.
+    let merged_cell = merged
+        .map(|spawn| {
+            let mesh = crate::terrain_merge::mesh::build_merged_mesh(
+                &spawn.cell,
+                &spawn.classes.ids_by_form_id,
+            )?;
+            let collider = terrain_physics
+                .then(|| terrain_collider_from_mesh(&mesh))
+                .transpose()?;
+            Ok::<_, String>((mesh, collider, spawn.material, spawn.images))
+        })
+        .transpose()?;
+    let terrain_quadrants = if let (Some(terrain), None) = (&terrain, &merged_cell) {
         (0..4)
             .map(|quadrant| {
                 let mesh = build_terrain_quadrant_mesh(terrain, quadrant)?;
@@ -1048,6 +1165,37 @@ fn spawn_cell(
     let root = root_commands.id();
     commands.entity(root).with_children(|parent| {
         if let Some(terrain) = terrain {
+            if let Some((mesh, collider, material, images)) = merged_cell {
+                // Waiting for the render world from birth, like a quadrant: the grid's LOD tiles
+                // stay drawn until the bridge confirms the merged mesh drawn
+                // (`lod::update_terrain_lod_visibility`). The cell declares the shared material and
+                // every land texture array it binds.
+                let surface = SwapSurface::new(material.id().untyped(), images.iter().copied());
+                let mut patch = parent.spawn((
+                    Name::new("Terrain cell"),
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material),
+                    Transform::default(),
+                    TerrainPatch,
+                    MergedTerrainCell,
+                    Visibility::Hidden,
+                    PendingMergedTerrain,
+                    SwapWaiting,
+                    surface,
+                ));
+                if let Some(grid) = terrain_grid {
+                    patch.insert(MergedTerrainCoverage { grid });
+                }
+                if let Some(collider) = collider {
+                    patch.insert((
+                        TerrainCollider,
+                        RigidBody::Fixed,
+                        collider,
+                        ColliderDisabled,
+                        crate::physics::world_collision_groups(),
+                    ));
+                }
+            }
             for (quadrant, mesh, collider) in terrain_quadrants {
                 let (extension, images) =
                     TerrainExtension::from_quadrant(&terrain, quadrant, catalog, asset_server)
@@ -1062,6 +1210,18 @@ fn spawn_cell(
                     },
                     extension,
                 });
+                // The quadrant declares what its draw needs, for the render→main swap bridge
+                // (`crate::swap_bridge`): the material it draws with and every image that material
+                // binds. The images are the ones the readiness pass validates below, and the
+                // declaration is re-made there if a normal map has to be dropped.
+                let surface = SwapSurface::new(
+                    material.id().untyped(),
+                    images
+                        .color
+                        .iter()
+                        .chain(images.normal.iter())
+                        .map(|handle| handle.id()),
+                );
                 let mut patch = parent.spawn((
                     Name::new(format!("Terrain quadrant {quadrant}")),
                     Mesh3d(meshes.add(mesh)),
@@ -1075,6 +1235,11 @@ fn spawn_cell(
                         images: images.color,
                         normals: images.normal,
                     },
+                    // Waiting for the render world from birth: the bridge removes the marker once
+                    // the render world has drawn the quadrant. Nothing in this change reads the
+                    // marker; the quadrant is still revealed by `track_surface_readiness`.
+                    SwapWaiting,
+                    surface,
                 ));
                 if let Some(grid) = terrain_grid {
                     patch.insert(TerrainCoverage {
@@ -1266,7 +1431,8 @@ fn spawn_cell(
     Ok(root)
 }
 
-/// Rapier consumes the exact vertex and triangle buffers rendered by this quadrant.
+/// Rapier consumes the exact vertex and triangle buffers rendered by this quadrant, or by this
+/// whole cell when its terrain is merged.
 fn terrain_collider_from_mesh(mesh: &Mesh) -> Result<Collider, String> {
     let Some(VertexAttributeValues::Float32x3(positions)) =
         mesh.attribute(Mesh::ATTRIBUTE_POSITION)
@@ -2054,6 +2220,210 @@ fn note_static_proxy_skip(metrics: &mut StreamingMetrics, profiler: &mut Profili
     metrics.static_colliders_skipped = metrics.static_colliders_skipped.saturating_add(1);
     profiler.increment("physics/static_proxy_skipped", 1);
 }
+/// Opens the merged data of an exterior cell for drawing, or counts why the cell takes the
+/// quadrant path. Every cell with terrain ends in exactly one of the two counters.
+fn choose_merged_terrain(
+    merge: Option<&mut TerrainMerge>,
+    key: CellKey,
+    cell_id: u32,
+    metrics: &mut StreamingMetrics,
+    profiler: &mut ProfilingState,
+) -> Option<MergedSpawn> {
+    let lookup = match merge {
+        Some(merge) => match merge.lookup(key, cell_id) {
+            CellLookup::Found(cell) => match merged_geometry_check(&cell) {
+                Ok(()) => match (
+                    merge.classes().cloned(),
+                    merge.material().cloned(),
+                    merge.material_images().cloned(),
+                ) {
+                    (Some(classes), Some(material), Some(images)) => {
+                        return Some(MergedSpawn {
+                            cell,
+                            classes,
+                            material,
+                            images,
+                        });
+                    }
+                    _ => CellLookup::Unavailable,
+                },
+                Err(reason) => CellLookup::Invalid(reason),
+            },
+            other => other,
+        },
+        None => CellLookup::Unavailable,
+    };
+    count_merged_fallback(metrics, profiler, cell_id, lookup);
+    None
+}
+
+/// Counts one terrain cell drawn by the quadrant path and says why, once.
+fn count_merged_fallback(
+    metrics: &mut StreamingMetrics,
+    profiler: &mut ProfilingState,
+    cell_id: u32,
+    lookup: CellLookup,
+) {
+    metrics.terrain_cells_fallback = metrics.terrain_cells_fallback.saturating_add(1);
+    profiler.increment("terrain/cells_fallback", 1);
+    match lookup {
+        CellLookup::NoData => {
+            metrics.terrain_cells_fallback_expected_merged = metrics
+                .terrain_cells_fallback_expected_merged
+                .saturating_add(1);
+            // One line per cell would flood the log for a worldspace the converter never merged;
+            // the counter above is what reports it.
+            debug!(
+                cell = format_args!("{cell_id:08X}"),
+                "no merged terrain data for this cell; drawn by quadrant"
+            );
+        }
+        CellLookup::Invalid(reason) => {
+            metrics.terrain_cells_fallback_expected_merged = metrics
+                .terrain_cells_fallback_expected_merged
+                .saturating_add(1);
+            metrics.terrain_cells_merged_invalid =
+                metrics.terrain_cells_merged_invalid.saturating_add(1);
+            warn!(
+                cell = format_args!("{cell_id:08X}"),
+                %reason,
+                "merged terrain data failed validation; drawn by quadrant"
+            );
+        }
+        CellLookup::Unavailable | CellLookup::Found(_) => {
+            debug!(
+                cell = format_args!("{cell_id:08X}"),
+                "merged terrain is not in use; drawn by quadrant"
+            );
+        }
+    }
+}
+
+/// What the merged path needs beyond [`TerrainCellMesh::validate`]: seam duplicates that agree,
+/// so the cell has one height field, and no zero normal, which today's validation refuses.
+fn merged_geometry_check(cell: &TerrainCellMesh) -> Result<(), String> {
+    crate::terrain_merge::mesh::cell_to_grid(cell)?;
+    if crate::terrain_merge::mesh::has_zero_normal(cell) {
+        return Err("terrain contains a zero-length packed normal".to_owned());
+    }
+    Ok(())
+}
+
+/// Whether a database response waits for the merged terrain setup: only a loaded exterior cell
+/// that has terrain, and only while the setup is in progress. Logs the first hold.
+fn should_hold_response(
+    merge: &mut TerrainMerge,
+    result: &Result<CellPayload, String>,
+    has_terrain: impl FnOnce(u32) -> bool,
+) -> bool {
+    let Ok(payload) = result else {
+        return false;
+    };
+    if !merge.holds_cell(payload.key, has_terrain(payload.cell_id)) {
+        return false;
+    }
+    if merge.note_hold() {
+        info!(
+            state = %merge.state.label(),
+            "holding exterior terrain cells until the land texture arrays are ready"
+        );
+    }
+    true
+}
+
+/// Welds a cell's terrain onto its resident neighbours and validates it, choosing its path.
+///
+/// A merged cell is welded with [`weld_merged_cell`]. If that fails, the cell is not a failed
+/// cell: the quadrant path gets the same chance to draw it, and the cell is counted as a fallback
+/// with the reason. A cell with no merged data validates and welds as the quadrant path always has.
+/// The settled merged data, if the cell keeps it, is returned.
+#[allow(clippy::too_many_arguments)]
+fn settle_cell_terrain(
+    key: CellKey,
+    cell_id: u32,
+    merged: Option<MergedSpawn>,
+    terrain: &mut TerrainSnapshot,
+    catalog: &AssetCatalog,
+    continuity: &mut TerrainContinuity,
+    metrics: &mut StreamingMetrics,
+    profiler: &mut ProfilingState,
+) -> Result<Option<MergedSpawn>, String> {
+    let mut merged = merged;
+    if let Some(spawn) = &mut merged {
+        let weld_started = Instant::now();
+        let welded = weld_merged_cell(key, &mut spawn.cell, continuity, metrics);
+        profiler.record_elapsed("streaming/terrain_seam_weld", weld_started);
+        if let Err(reason) = welded {
+            merged = None;
+            count_merged_fallback(
+                metrics,
+                profiler,
+                cell_id,
+                CellLookup::Invalid(format!("weld failed: {reason}")),
+            );
+        }
+    }
+    if merged.is_none() {
+        let validation_started = Instant::now();
+        let validation = validate_terrain_snapshot(terrain, catalog);
+        profiler.record_elapsed("streaming/terrain_validation", validation_started);
+        validation?;
+        let weld_started = Instant::now();
+        let welded = validate_and_register_terrain_edges(key, terrain, continuity, metrics);
+        profiler.record_elapsed("streaming/terrain_seam_weld", weld_started);
+        welded?;
+    }
+    Ok(merged)
+}
+
+/// Welds a merged cell's edges onto its resident neighbours with the same code the quadrant path
+/// uses. The cell's 33 x 33 height and normal grid goes through
+/// [`validate_and_register_terrain_edges`] unchanged, and the welded grid is written back to every
+/// vertex, seam duplicates included, so the two paths agree sample for sample and either can be
+/// the neighbour of the other.
+fn weld_merged_cell(
+    key: CellKey,
+    cell: &mut TerrainCellMesh,
+    continuity: &mut TerrainContinuity,
+    metrics: &mut StreamingMetrics,
+) -> Result<(), String> {
+    let (heights, normals) = crate::terrain_merge::mesh::cell_to_grid(cell)?;
+    let mut grid = TerrainSnapshot {
+        cell_id: cell.cell_id,
+        width: shared::LAND_SIDE,
+        height: shared::LAND_SIDE,
+        heights,
+        normals,
+        vertex_colors: Vec::new(),
+        layers: Vec::new(),
+        water_height: None,
+        water_type_form_id: None,
+    };
+    validate_and_register_terrain_edges(key, &mut grid, continuity, metrics)?;
+    crate::terrain_merge::mesh::write_grid(cell, &grid.heights, &grid.normals);
+    Ok(())
+}
+
+/// Makes a spawned merged terrain mesh visible and its collider live. Its arrays were validated
+/// before any cell was committed, so there is nothing left to wait for.
+fn track_merged_surface_readiness(
+    mut commands: Commands,
+    pending: Query<Entity, With<PendingMergedTerrain>>,
+    mut lod_streaming: ResMut<lod::LodStreaming>,
+    mut metrics: ResMut<StreamingMetrics>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    for entity in &pending {
+        metrics.terrain_patches_validated = metrics.terrain_patches_validated.saturating_add(1);
+        profiler.increment("terrain/patches_validated", 1);
+        commands
+            .entity(entity)
+            .insert((Visibility::Inherited, TerrainSurfaceReady))
+            .remove::<(ColliderDisabled, PendingMergedTerrain)>();
+        lod_streaming.visibility_dirty = true;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn track_surface_readiness(
     mut commands: Commands,
@@ -2101,6 +2471,16 @@ fn track_surface_readiness(
                         {
                             material.extension.drop_normal_maps();
                         }
+                        // The swap bridge waits on the images the material binds, so the failed
+                        // normal maps leave the quadrant's declaration with them: an image that
+                        // will never reach the render world is one the surface could never stop
+                        // waiting for, and a later change could fail a settle loudly.
+                        let bound: Vec<_> =
+                            pending.images.iter().map(|handle| handle.id()).collect();
+                        commands
+                            .entity(entity)
+                            .entry::<SwapSurface>()
+                            .and_modify(move |mut surface| surface.set_images(bound));
                         profiler.increment("terrain/normal_map_fallbacks", 1);
                         normals_dropped = true;
                         SurfaceDependencyState::Ready
@@ -5477,6 +5857,7 @@ mod tests {
                 }],
             },
             Some(terrain),
+            None,
             &mut 0,
             &mut profiler,
         )
@@ -6337,6 +6718,7 @@ mod tests {
                     cell_id: 99,
                     references: queued.0.clone(),
                 },
+                None,
                 None,
                 &mut 0,
                 &mut profiler,
