@@ -10,6 +10,7 @@ use crate::{
         WaterReflectionTexture, terrain_layer_sampler,
     },
     renderer_init::RendererInitPlugin,
+    route::{RouteGround, RoutePlan, RouteRunner, drive_route},
     shots::{ShotsFile, ShotsPlugin, ShotsRun, default_output_dir},
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
@@ -64,6 +65,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
+    let route = prepare_route(&mut config)?;
     configure_io_task_pool(config.io_threads)?;
     let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
@@ -94,6 +96,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else {
         None
     };
+    // The terrain heights along a route are read here, before the window opens, so that following
+    // the ground costs nothing while the run is measured.
+    let mut route_ground = None;
     let runtime_data = if config.streaming_fixture {
         let database_path = config.assets_dir.join("skyrim_world.db");
         Some((
@@ -115,6 +120,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         let database_path = config.assets_dir.join("skyrim_world.db");
         let cache = CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?;
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache)?;
+        if let Some(plan) = &route {
+            route_ground = Some(RouteGround::load(
+                plan,
+                config.worldspace_id,
+                &database_path,
+                &cache,
+            )?);
+        }
         Some((
             WorldDatabase::open(&database_path)?,
             AssetCatalog::open(&database_path)?,
@@ -170,6 +183,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
+    // The run fingerprint is measurement data: an ordinary play session neither builds one nor
+    // pays for the startup system that reads it.
+    let records_measurements = crate::fingerprint::records_measurements(&config);
     app.insert_resource(config)
         .insert_resource(origin)
         .insert_resource(render_asset_budget)
@@ -215,12 +231,29 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::lights::LightsPlugin)
         .add_systems(PostUpdate, keep_windows_hidden);
     add_camera_and_capture_systems(&mut app);
+    if records_measurements {
+        app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
+    }
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
             .insert_resource(catalog)
             .insert_resource(cache)
             .insert_resource(ground_height)
             .add_plugins(StreamingPlugin);
+        if let (Some(plan), Some(ground)) = (route, route_ground) {
+            info!(
+                route = %plan.source,
+                waypoints = plan.waypoints.len(),
+                length = plan.length(),
+                speed = plan.speed,
+                ground_cells = ground.cell_count(),
+                "following a route"
+            );
+            app.insert_resource(RouteRunner::new(plan, ground))
+                // Before `Update`, so the streaming planner of the same frame sees the camera
+                // where the route put it.
+                .add_systems(PreUpdate, drive_route);
+        }
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
             app.add_plugins(WorldPlayerPlugin);
@@ -335,6 +368,7 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
         || config.benchmark_duration_secs.is_some()
         || config.acceptance_screenshot.is_some()
         || config.auto_fly_speed > 0.0
+        || config.route.is_some()
         || config.material_fixture
         || config.terrain_water_fixture
         || config.transform_bounds_fixture
@@ -344,7 +378,7 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
     color_eyre::eyre::ensure!(
         !other_mode,
         "--shots renders the converted world on its own: it cannot be combined with a benchmark, \
-         an acceptance screenshot, --auto-fly-speed or a fixture"
+         an acceptance screenshot, --auto-fly-speed, --route or a fixture"
     );
     if config.headless {
         // The logger is not installed yet, so a `warn!` here would never be seen.
@@ -362,6 +396,39 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
         .clone()
         .unwrap_or_else(|| default_output_dir(&path));
     Ok(Some(ShotsRun::new(file, output_dir, config.worldspace_id)))
+}
+
+/// Reads the `--route` file, if one was given, and starts the run where the route starts: the
+/// file's worldspace, and the grid square of its first waypoint. A route needs the converted world to
+/// walk in, and owns the camera, so it cannot be combined with another mode that does.
+fn prepare_route(config: &mut EngineConfig) -> Result<Option<RoutePlan>> {
+    let Some(path) = config.route.clone() else {
+        return Ok(None);
+    };
+    let other_mode = config.benchmark_only
+        || config.acceptance_screenshot.is_some()
+        || config.auto_fly_speed > 0.0
+        || config.material_fixture
+        || config.terrain_water_fixture
+        || config.transform_bounds_fixture
+        || config.renderer_fixture
+        || config.streaming_fixture
+        || config.physics_fixture;
+    color_eyre::eyre::ensure!(
+        !other_mode,
+        "--route walks the converted world: it cannot be combined with --benchmark-only, \
+         an acceptance screenshot, --auto-fly-speed or a fixture"
+    );
+    if !config.is_benchmark_run() {
+        // The logger is not installed yet, so a `warn!` here would never be seen.
+        eprintln!(
+            "warning: --route without --benchmark-frames or --benchmark-duration moves the camera but writes no report"
+        );
+    }
+    let plan = RoutePlan::load(&path)?;
+    config.worldspace_id = plan.worldspace;
+    config.start_grid = plan.start_grid();
+    Ok(Some(plan))
 }
 
 fn validate_fixture_selection(config: &EngineConfig) -> Result<()> {
@@ -2151,7 +2218,12 @@ fn fly_camera(
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
-    if config.physics_fixture || config.interactive_world_physics() || config.shots.is_some() {
+    // A route owns the camera as well.
+    if config.physics_fixture
+        || config.interactive_world_physics()
+        || config.shots.is_some()
+        || config.route.is_some()
+    {
         return;
     }
     let started = std::time::Instant::now();

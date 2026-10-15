@@ -32,12 +32,33 @@ Run the complete target-hardware campaign:
   -Assets D:\SkyrimConverted `
   -Worldspace 0x3c `
   -RuralGridX 0 -RuralGridY 0 `
-  -DenseGridX 18 -DenseGridY -5 `
+  -DenseGridX 3 -DenseGridY -12 `
   -WaterGridX 7 -WaterGridY -2 `
   -Repetitions 3 `
   -RequireVisualSignoff `
   -VisualReview D:\Evidence\visual-review.json
 ```
+
+The standard places (Tamriel, `0x3c`), with the references within two cells of each (measured from
+the converted world database):
+
+| Scene | Grid | References | Notes |
+| --- | --- | --- | --- |
+| `rural` | 0,0 | about 1,050 | the walk, and the centre of the `stress` flight |
+| `dense` | 3,-12 | about 2,900 | Riverwood, the densest cell neighbourhood in Tamriel |
+| `water` | 7,-2 | about 1,580 | |
+| `dense-legacy` | 18,-5 | about 1,530 | the old `dense` place; kept for one release, then removed |
+
+`dense-legacy` is accepted by the scripts but is not in the default scene sets. Baselines and
+`profiling-baseline.json` results made before this change are not comparable for `dense`, which is
+now a different, about twice as dense place. The scripts do not map an old `dense` entry to
+`dense-legacy`: compare an old `dense` median with a new `dense-legacy` median by hand.
+
+Pass `-IncludeDenseLegacy` to also run `dense-legacy`.
+
+The example passes water's coordinates explicitly: the scenario's own default is grid 0,0, the place
+the rural scenario already measures, so a campaign that does not pass `-WaterGridX 7 -WaterGridY -2`
+does not run the `water` place above.
 
 Defaults are 2 minutes synthetic, 5 minutes per representative world area, 10 minutes streaming
 stress and 30 minutes stability. Each scenario is run three times and evaluated by its median.
@@ -54,9 +75,14 @@ bundle-output and missing-assets rejection paths.
 The scenario matrix covers synthetic 250k instances, rural, dense, water, fast streaming stress and
 stability. Required thresholds default to average FPS >= 60, frame P95 <= 16.67 ms, memory growth <=
 0.5 GiB and zero streaming failures. Against `acceptance-baseline.json`, a material regression above
-5% is a warning and above 10% is a failure. To keep an identical build from failing on scheduler and
-sampling jitter, the comparison first applies fixed absolute noise floors: 5 FPS, 1.5 ms for frame
-latency and 0.05 GiB for memory. The report retains both the raw percentage and absolute delta.
+5% is a warning and above 10% is a failure. `-UpdateBaseline` stores each scenario's `place` (its
+worldspace and grid, or `synthetic`) beside its medians, and a stored entry with no place or one
+measured in another place — `dense` moved from 18,-5 to Riverwood — is skipped with a warning naming
+the scenario and the reason rather than scored, so the campaign is never failed over a comparison
+whose two runs measured different scenes; re-run once with `-UpdateBaseline` to record places. To
+keep an identical build from failing on scheduler and sampling jitter, the comparison first applies
+fixed absolute noise floors: 5 FPS, 1.5 ms for frame latency and 0.05 GiB for memory. The report
+retains both the raw percentage and absolute delta.
 The runner and its child engine use Windows `AboveNormal` process priority so unrelated desktop
 work cannot preempt enough frames to create a false regression; real-time priority is never used.
 

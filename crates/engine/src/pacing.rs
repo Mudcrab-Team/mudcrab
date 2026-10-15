@@ -261,6 +261,12 @@ impl PacingTracker {
         false
     }
 
+    /// Whether the world has been ready (the predicate held on two consecutive frames) at least
+    /// once. A route run starts its walk on the frame after this turns true.
+    pub fn world_ready_reached(&self) -> bool {
+        self.first_ready.latched.is_some()
+    }
+
     /// Records a model that finished loading `distance` units (horizontally) from the camera.
     pub fn record_model_ready(&mut self, distance: f32) {
         self.ready_models_total = self.ready_models_total.saturating_add(1);
@@ -298,7 +304,7 @@ impl PacingTracker {
             jump_issued: self.jump.is_some(),
             time_to_world_ready_after_jump_ms: after_jump.map(|mark| mark.millis),
             frames_to_world_ready_after_jump: after_jump.map(|mark| mark.frames),
-            fly_lag: (config.auto_fly_speed > 0.0).then(|| {
+            fly_lag: config.flies().then(|| {
                 FlyLag::new(
                     &self.ready_distances,
                     self.ready_models_total,

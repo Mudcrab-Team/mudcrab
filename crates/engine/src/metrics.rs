@@ -1,9 +1,15 @@
 use crate::{
     config::EngineConfig,
+    fingerprint::{RunFingerprint, records_measurements},
+    frame_budget::{FrameBudgetReport, FrameSides, ScoredFrame, attribute},
     pacing::{PacingReport, PacingTracker},
-    profiling::{MetricSummary, ProfilingState, SystemMetadata, summarize},
+    profiling::{
+        CpuReport, GpuPassReport, MemoryReport, MetricSummary, ProfilingState,
+        RenderMeasurementProbe, SceneReport, SystemMetadata, cpu_asset_bytes, summarize,
+    },
     render::RendererMetrics,
     render_timing::{PipelineActivity, RenderTimingPlugin, RenderTimings},
+    route::{RouteReport, RouteRunner},
     streaming::StreamingMetrics,
 };
 use bevy::{
@@ -12,6 +18,15 @@ use bevy::{
         SystemInformationDiagnosticsPlugin,
     },
     prelude::*,
+    render::{
+        ExtractSchedule, RenderApp,
+        diagnostic::{
+            ErasedRenderAssetDiagnosticPlugin, MeshAllocatorDiagnosticPlugin,
+            RenderAssetDiagnosticPlugin,
+        },
+        mesh::RenderMesh,
+        texture::GpuImage,
+    },
 };
 use serde::Serialize;
 use std::{
@@ -32,14 +47,59 @@ impl Plugin for AcceptanceMetricsPlugin {
             ))
             .add_systems(
                 Last,
-                collect_and_finish.after(crate::render_timing::end_main_world),
+                (record_frame_ledger, collect_and_finish)
+                    .chain()
+                    .after(crate::render_timing::end_main_world),
             );
         let measures_pacing = app
             .world()
             .get_resource::<EngineConfig>()
             .map(EngineConfig::measures_pacing);
         install_schedule_timing(app, measures_pacing);
+        let records_measurements = app
+            .world()
+            .get_resource::<EngineConfig>()
+            .map(records_measurements);
+        install_gpu_memory_diagnostics(app, records_measurements);
     }
+}
+
+/// Adds Bevy's GPU-memory diagnostics — the mesh allocator's counters and the live GPU-asset
+/// counts — only when the run records measurements.
+///
+/// Each of these runs a system every frame, in the main world and in the render world, so an
+/// ordinary play session installs none of them. Materials are counted through the erased
+/// render-asset diagnostic: every material type prepares into the same `PreparedMaterial` map, so
+/// the one count covers all of them (see `profiling::gpu_asset_diagnostics`).
+///
+/// The probe is what tells the report those counters are real. Bevy's plugins add a main-world
+/// `PreUpdate` system that publishes their atomics from the first frame, and the atomics are zero
+/// until the render world's `ExtractSchedule` writes them, so the stored value alone cannot say
+/// whether the render world has measured anything. The probe is the same shape as the plugins' own
+/// handoff: one `Arc<AtomicBool>` in both worlds, set by an extract system and read by the report.
+fn install_gpu_memory_diagnostics(app: &mut App, records_measurements: Option<bool>) {
+    if records_measurements != Some(true) {
+        return;
+    }
+    app.add_plugins((
+        MeshAllocatorDiagnosticPlugin,
+        RenderAssetDiagnosticPlugin::<RenderMesh>::new(" meshes"),
+        RenderAssetDiagnosticPlugin::<GpuImage>::new(" images"),
+        ErasedRenderAssetDiagnosticPlugin::<MeshMaterial3d<StandardMaterial>>::new(" materials"),
+    ));
+    let probe = RenderMeasurementProbe::default();
+    app.insert_resource(probe.clone());
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app
+            .insert_resource(probe)
+            .add_systems(ExtractSchedule, mark_render_world_measured);
+    }
+}
+
+/// Marks the run's [`RenderMeasurementProbe`] from the render world, in the schedule whose systems
+/// fill Bevy's GPU-memory counters.
+fn mark_render_world_measured(probe: Res<RenderMeasurementProbe>) {
+    probe.mark_measured();
 }
 
 /// Adds the schedule-timing plugin (which also counts asset arrivals) only when the run measures
@@ -62,6 +122,43 @@ struct BenchmarkSamples {
     measurement_complete: bool,
     screenshot_wait_started: Option<std::time::Instant>,
     finished: bool,
+    /// The frame-time distribution against the budget, scored frame by frame.
+    ledger: FrameLedger,
+    /// The route reached its last waypoint: the measured window ends with this frame.
+    route_finished: bool,
+}
+
+/// What the frame-budget section of the report is built from: every scored frame with its owner.
+///
+/// It keeps its own frame count, which advances in step with `BenchmarkSamples::frames_seen`
+/// (both count the frames of a benchmark run from the first, and stop together), so the same frames
+/// are warm-up for both.
+#[derive(Default)]
+struct FrameLedger {
+    frames_seen: u32,
+    /// The streaming commit counters as of the previous frame, to find what this frame added.
+    last_commit: Option<(u64, u64)>,
+    /// The commit time of the previous frame's cycle, which is the cycle the current frame time
+    /// measures.
+    previous_upload_ms: Option<f64>,
+    scored: Vec<ScoredFrame>,
+}
+
+impl FrameLedger {
+    /// The streaming commit time of the frame that just ran, in milliseconds: zero on a frame that
+    /// committed nothing. The counters only grow, so the first frame, which has nothing to compare
+    /// with, counts as zero.
+    fn commit_ms(&mut self, metrics: &StreamingMetrics) -> f64 {
+        let now = (metrics.commit_frames, metrics.total_frame_commit_micros);
+        let added = match self.last_commit {
+            Some((frames, micros)) if now.0 > frames => {
+                now.1.saturating_sub(micros) as f64 / 1000.0
+            }
+            _ => 0.0,
+        };
+        self.last_commit = Some(now);
+        added
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +193,26 @@ struct BenchmarkReport {
     /// sit at the top level of the report and are absent for a run with no streaming.
     #[serde(flatten)]
     pacing: Option<PacingReport>,
+    /// The frame-time distribution against `--frame-budget-ms` (6.25 ms unless given), the frames
+    /// over it, and who owned them (see `frame_budget`). Present in every benchmark report. The
+    /// frames scored are the measured window's, or, for a route run, the route's.
+    frame_budget: FrameBudgetReport,
+    /// What the `--route` run was and how far it got (see `route`); `null` without a route.
+    route: Option<RouteReport>,
+    /// What the run ran on: machine, renderer, world data, and the settings it rendered with (see
+    /// `fingerprint`). `null` only for a run that recorded measurements without installing the
+    /// fingerprint.
+    fingerprint: Option<RunFingerprint>,
+    /// Per-pass GPU time over the measured frames (see [`GpuPassReport`]).
+    gpu_passes: GpuPassReport,
+    /// What the run's scene contained: entity and mesh counts, and the per-pass
+    /// pipeline-statistics counters the backend can report (see [`SceneReport`]).
+    scene: SceneReport,
+    /// Where the run's CPU time went: Bevy's main schedules and the engine's own spans (see
+    /// [`CpuReport`]).
+    cpu: CpuReport,
+    /// Where the run's memory was: Bevy's CPU-side asset data and the GPU-side counters.
+    memory: MemoryReport,
     thresholds: Thresholds,
     passed: bool,
 }
@@ -123,7 +240,9 @@ struct Thresholds {
 
 #[allow(clippy::too_many_arguments)]
 fn collect_and_finish(
-    time: Res<Time>,
+    // Real wall-clock deltas: Bevy's virtual `Time` clamps a frame to 250 ms (`Time<Virtual>`'s
+    // default max delta), so a 340 ms hitch would be recorded as 250 ms.
+    time: Res<Time<Real>>,
     config: Res<EngineConfig>,
     diagnostics: Res<DiagnosticsStore>,
     system: Option<Res<SystemInfo>>,
@@ -131,6 +250,10 @@ fn collect_and_finish(
     renderer: Res<RendererMetrics>,
     render_timings: Res<RenderTimings>,
     pacing: Option<Res<PacingTracker>>,
+    fingerprint: Option<Res<RunFingerprint>>,
+    render_measurement_probe: Option<Res<RenderMeasurementProbe>>,
+    route: Option<Res<RouteRunner>>,
+    (meshes, images): (Res<Assets<Mesh>>, Res<Assets<Image>>),
     mut samples: ResMut<BenchmarkSamples>,
     mut profiler: ResMut<ProfilingState>,
     mut exit: MessageWriter<AppExit>,
@@ -144,8 +267,19 @@ fn collect_and_finish(
             &diagnostics,
             &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
         );
-        profiler.sample_frame(&diagnostics, process_memory);
-        if samples.frames_seen > config.benchmark_warmup_frames {
+        // The profiler samples every frame — its process-memory timeline is whole-run — but only
+        // keeps the GPU diagnostics of the measured frames, and the GPU-memory counters only once
+        // the render world has measured them (see `ProfilingState::sample_frame`).
+        let measured = samples.frames_seen > config.benchmark_warmup_frames;
+        profiler.sample_frame(
+            &diagnostics,
+            process_memory,
+            measured,
+            render_measurement_probe
+                .as_deref()
+                .is_some_and(RenderMeasurementProbe::measured),
+        );
+        if measured {
             render_timings.set_recording(true);
             let milliseconds = time.delta_secs_f64() * 1000.0;
             if milliseconds.is_finite() && milliseconds > 0.0 {
@@ -168,7 +302,9 @@ fn collect_and_finish(
         let duration_reached = config
             .benchmark_duration_secs
             .is_some_and(|limit| samples.frame_ms.iter().sum::<f64>() / 1000.0 >= limit);
-        if !frame_limit_reached && !duration_reached {
+        // A route ends the window when it reaches its last waypoint, so the report covers the route
+        // and not the standing around after it.
+        if !frame_limit_reached && !duration_reached && !samples.route_finished {
             return;
         }
         samples.measurement_complete = true;
@@ -249,6 +385,23 @@ fn collect_and_finish(
         && streaming_lifecycle_validated
         && renderer_path_active
         && screenshot_captured;
+    // Whether the device can time GPU work is the device's own answer, recorded in the fingerprint
+    // at startup. The GPU sections take the fingerprint whole, so a run with no renderer says so
+    // rather than blaming a backend it never had.
+    let renderer_fingerprint = fingerprint
+        .as_deref()
+        .and_then(|value| value.renderer.as_ref());
+    let gpu_passes = profiler.gpu_passes(renderer_fingerprint);
+    let memory = MemoryReport {
+        cpu: cpu_asset_bytes(&meshes, &images),
+        gpu: profiler.gpu_memory(renderer_fingerprint),
+    };
+    // Both sections report what the run measured, so a count that was never sampled stays `null`
+    // with a reason rather than becoming a zero (see `profiling::SceneReport`).
+    let entity_count = diagnostic_value(&diagnostics, &EntityCountDiagnosticsPlugin::ENTITY_COUNT)
+        .map(|value| value as u64);
+    let scene = profiler.scene_report(entity_count, renderer_fingerprint);
+    let cpu = profiler.cpu_report();
     let system_snapshot = system.map(|value| SystemSnapshot {
         os: value.os.clone(),
         kernel: value.kernel.clone(),
@@ -256,8 +409,17 @@ fn collect_and_finish(
         core_count: value.core_count.clone(),
         memory: value.memory.clone(),
     });
+    let frame_budget = FrameBudgetReport::from_frames(
+        config.frame_budget_ms,
+        if route.is_some() {
+            "route window: the frames from the first full frame on the route to the end of the measured window"
+        } else {
+            "measured window: every frame after the warm-up"
+        },
+        &samples.ledger.scored,
+    );
     let report = BenchmarkReport {
-        format_version: 8,
+        format_version: 11,
         generated_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_millis()),
@@ -297,14 +459,20 @@ fn collect_and_finish(
         peak_process_memory_gib: (samples.peak_process_memory_gib > 0.0)
             .then_some(samples.peak_process_memory_gib),
         process_memory_growth_gib: memory_growth_gib,
-        entity_count: diagnostic_value(&diagnostics, &EntityCountDiagnosticsPlugin::ENTITY_COUNT)
-            .map(|value| value as u64),
+        entity_count,
         system: system_snapshot.clone(),
         streaming: streaming.as_ref().map(|value| (*value).clone()),
         renderer: renderer.clone(),
         render_world,
         render_pipelines,
         pacing: pacing_report,
+        frame_budget,
+        route: route.as_deref().map(RouteRunner::report),
+        fingerprint: fingerprint.as_deref().cloned(),
+        gpu_passes,
+        scene,
+        cpu,
+        memory,
         thresholds: Thresholds {
             minimum_average_fps: config.accept_min_fps,
             maximum_p95_frame_ms: config.accept_p95_ms,
@@ -350,6 +518,7 @@ fn collect_and_finish(
         streaming.as_deref(),
         &renderer,
         bundle_system,
+        fingerprint.as_deref(),
     ) {
         error!(%error, "failed to write profiling bundle");
         exit.write(AppExit::error());
@@ -383,6 +552,69 @@ fn collect_and_finish(
     } else {
         AppExit::error()
     });
+}
+
+/// Scores the frame that just ended: its real-clock duration and the side that owned it (see
+/// `frame_budget`). Runs just before [`collect_and_finish`] and follows it frame for frame, so the
+/// frames scored are the frames the report measures; for a route run only the frames on the route
+/// count, and the route's arrival is passed on as the end of the window.
+///
+/// The duration is the time from the start of the previous main frame to the start of this one, so
+/// the sides that explain it are the previous cycle's: its main schedule and commit time, and the
+/// render and extract time that ran in it (`RenderTimings::take_previous_cycle`).
+fn record_frame_ledger(
+    config: Res<EngineConfig>,
+    real_time: Res<Time<Real>>,
+    render_timings: Res<RenderTimings>,
+    streaming: Option<Res<StreamingMetrics>>,
+    route: Option<Res<RouteRunner>>,
+    mut samples: ResMut<BenchmarkSamples>,
+) {
+    if samples.finished || samples.measurement_complete || !config.is_benchmark_run() {
+        return;
+    }
+    let samples = &mut *samples;
+    if route.as_deref().is_some_and(RouteRunner::finished) {
+        samples.route_finished = true;
+    }
+    let ledger = &mut samples.ledger;
+    ledger.frames_seen = ledger.frames_seen.saturating_add(1);
+    let commit_ms = streaming
+        .as_deref()
+        .map(|metrics| ledger.commit_ms(metrics));
+    // Taken on every frame, warm-up included, so the records of frames nobody scores do not pile up.
+    let cycle = render_timings.take_previous_cycle();
+    let scored = frame_is_scored(
+        ledger.frames_seen,
+        config.benchmark_warmup_frames,
+        route.as_deref().map(RouteRunner::scoring),
+    );
+    let milliseconds = real_time.delta_secs_f64() * 1000.0;
+    if scored && milliseconds.is_finite() && milliseconds > 0.0 {
+        let cycle = cycle.unwrap_or_default();
+        let sides = FrameSides::from_samples(
+            cycle.main_ms,
+            cycle.extract_ms,
+            cycle.render_ms,
+            cycle.acquire_ms,
+            ledger.previous_upload_ms,
+        );
+        ledger.scored.push(ScoredFrame {
+            ms: milliseconds,
+            owner: attribute(milliseconds, &sides),
+            wait_ms: cycle.wait_ms,
+        });
+    }
+    ledger.previous_upload_ms = commit_ms;
+}
+
+/// Whether a frame belongs to the frame budget's window. A run with no route scores the frames
+/// after the warm-up, as the rest of the report does. A route run scores the route's own frames
+/// and nothing else: the route's start (waiting for the world, or none at all) is what opens the
+/// window, so the warm-up frames are not trimmed on top of it, which would drop the first frames
+/// of a route that starts at once.
+fn frame_is_scored(frames_seen: u32, warmup_frames: u32, on_route: Option<bool>) -> bool {
+    on_route.unwrap_or(frames_seen > warmup_frames)
 }
 
 fn memory_settle_seconds(config: &EngineConfig) -> f64 {
@@ -544,6 +776,86 @@ mod tests {
         assert!(!installed(None), "no config means no measured run");
     }
 
+    /// The GPU-memory diagnostics are measurement data: an ordinary play session installs none of
+    /// them, and a benchmark or profile run installs all of them.
+    #[test]
+    fn gpu_memory_diagnostics_are_installed_only_for_measured_runs() {
+        let installed = |config: EngineConfig| {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+            app.insert_resource(config);
+            app.add_plugins(AcceptanceMetricsPlugin);
+            (
+                app.is_plugin_added::<MeshAllocatorDiagnosticPlugin>(),
+                app.is_plugin_added::<RenderAssetDiagnosticPlugin<RenderMesh>>(),
+                app.is_plugin_added::<RenderAssetDiagnosticPlugin<GpuImage>>(),
+                app.is_plugin_added::<ErasedRenderAssetDiagnosticPlugin<
+                    MeshMaterial3d<StandardMaterial>,
+                >>(),
+            )
+        };
+        assert_eq!(
+            installed(EngineConfig::default()),
+            (false, false, false, false),
+            "a play session must install none of the GPU-memory diagnostics"
+        );
+        assert_eq!(
+            installed(EngineConfig {
+                benchmark_frames: Some(60),
+                ..EngineConfig::default()
+            }),
+            (true, true, true, true)
+        );
+        assert_eq!(
+            installed(EngineConfig {
+                profile_output_dir: Some("profiles/run-1".into()),
+                ..EngineConfig::default()
+            }),
+            (true, true, true, true)
+        );
+    }
+
+    /// A run with no render world never measures the GPU-memory counters, and the report must not
+    /// turn the zeros Bevy's plugins publish into counts.
+    ///
+    /// This drives the real install: Bevy's own main-world `PreUpdate` systems run every frame even
+    /// with no render app and publish their atomics at their initial zero, which is why a stored
+    /// `Some(0.0)` cannot be read as a measurement.
+    #[test]
+    fn gpu_memory_counters_are_not_measured_without_a_render_world() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        install_gpu_memory_diagnostics(&mut app, Some(true));
+        app.update();
+
+        let probe = app.world().resource::<RenderMeasurementProbe>();
+        assert!(
+            !probe.measured(),
+            "with no render app there is no extraction to mark the probe"
+        );
+        let diagnostics = app.world().resource::<DiagnosticsStore>();
+        assert_eq!(
+            diagnostics
+                .get(MeshAllocatorDiagnosticPlugin::slabs_diagnostic_path())
+                .and_then(|diagnostic| diagnostic.value()),
+            Some(0.0),
+            "Bevy publishes the counter's initial zero whether or not anything measured it"
+        );
+
+        let mut profiler = ProfilingState::default();
+        profiler.sample_frame(diagnostics, None, true, probe.measured());
+        let gpu = profiler.gpu_memory(None);
+        assert_eq!(
+            gpu.mesh_allocator_slabs, None,
+            "a zero the render world never produced is not a count"
+        );
+        assert_eq!(gpu.measured_frames, 0);
+        assert_eq!(
+            gpu.unavailable["mesh_allocator_slabs"],
+            "no renderer in this run"
+        );
+    }
+
     #[test]
     fn frame_times_are_written_in_measured_order() {
         assert_eq!(
@@ -620,6 +932,21 @@ mod tests {
         .unwrap();
         assert_eq!(value["world_ready_reached"], serde_json::json!(true));
         assert_eq!(value["frames"], serde_json::json!(3));
+    }
+
+    /// A route run scores from the route's start, with no warm-up trimmed: a route that starts on
+    /// the first frame loses none of its frames. Without a route the warm-up is dropped.
+    #[test]
+    fn route_runs_score_from_the_route_start_without_a_warmup_trim() {
+        // No route: frames 1..=60 are warm-up, 61 is the first scored.
+        assert!(!frame_is_scored(60, 60, None));
+        assert!(frame_is_scored(61, 60, None));
+        // A route that has not started, or is on its first frame, scores nothing, whatever the
+        // frame number.
+        assert!(!frame_is_scored(500, 60, Some(false)));
+        // A route scoring on frame 3 (it started on frame 2) is scored inside the warm-up.
+        assert!(frame_is_scored(3, 60, Some(true)));
+        assert!(frame_is_scored(500, 60, Some(true)));
     }
 
     #[test]
@@ -813,6 +1140,10 @@ mod tests {
             })
             .init_resource::<RenderTimings>()
             .init_resource::<DiagnosticsStore>()
+            // The report counts the CPU-side mesh and image data, so `collect_and_finish` needs
+            // both asset stores even when nothing was loaded.
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
             .insert_resource(ProfilingState::default())
             .add_systems(Update, collect_and_finish);
         app

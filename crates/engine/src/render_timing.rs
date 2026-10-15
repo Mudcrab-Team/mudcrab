@@ -23,6 +23,14 @@
 //!
 //! Samples are kept only while the benchmark records (after warmup). Phases are distributions,
 //! not a per-frame series: a render frame runs one frame behind the main frame that fed it.
+//!
+//! * Cycles: a benchmark run also keeps one small record per main-thread frame ("cycle"), holding
+//!   the main schedule, the extract, the render schedule and the swapchain wait that ran in that
+//!   cycle, so `frame_budget` can say which side owned a frame that went over its budget. A cycle is
+//!   the time from the start of one main frame to the start of the next, which is what a frame time
+//!   measures. With pipelined rendering the render schedule that follows the extract of main frame
+//!   `n` runs during cycle `n + 1` (alongside main frame `n + 1`), so it is filed under `n + 1`;
+//!   without it the render schedule runs inside cycle `n`. See [`CycleSides`].
 
 use bevy::{
     app::{First, Last},
@@ -64,6 +72,13 @@ impl Plugin for RenderTimingPlugin {
     // the render app to its thread in `cleanup`, so they are wrapped here, in between.
     fn finish(&self, app: &mut App) {
         let timings = app.world().resource::<RenderTimings>().clone();
+        // The per-cycle records only feed the benchmark report's frame budget, so an ordinary play
+        // session keeps none.
+        let benchmark = app
+            .world()
+            .get_resource::<crate::config::EngineConfig>()
+            .is_some_and(crate::config::EngineConfig::is_benchmark_run);
+        timings.set_cycle_tracking(benchmark, app.get_sub_app(RenderExtractApp).is_some());
         // Counting the pipeline cache only feeds the pacing report, so an ordinary play session
         // does not run it every render frame.
         let samples_pipelines = app
@@ -156,6 +171,35 @@ struct State {
     /// Pipeline counts for the render frame in progress, set just before it ends.
     pipelines: Option<PipelineFrame>,
     frames: Vec<RenderFrame>,
+    /// Whether the cycle records below are kept (a benchmark run only).
+    track_cycles: bool,
+    /// Whether rendering is pipelined (the render world runs on its own thread).
+    pipelined: bool,
+    /// The main frame in progress, counted from one.
+    cycle: u64,
+    /// The main frame whose extract the render world last received.
+    last_extract_cycle: Option<u64>,
+    /// The cycle the render frame in progress belongs to.
+    render_cycle: Option<u64>,
+    cycles: BTreeMap<u64, CycleSides>,
+}
+
+/// What ran in one main-thread cycle, in milliseconds; `None` is "not measured in this cycle".
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CycleSides {
+    /// The main schedule, `First` to `Last`.
+    pub main_ms: Option<f64>,
+    /// The extract step on the main thread.
+    pub extract_ms: Option<f64>,
+    /// The render schedule that ran in this cycle (the one fed by the previous extract when
+    /// rendering is pipelined).
+    pub render_ms: Option<f64>,
+    /// The part of that render schedule spent waiting for a swapchain image.
+    pub acquire_ms: Option<f64>,
+    /// How long the main thread waited for the render thread to hand the render world back before
+    /// it could extract (pipelined rendering only). A diagnostic: it says whether the main thread
+    /// was blocked on the render thread in this cycle, and is not a side of its own.
+    pub wait_ms: Option<f64>,
 }
 
 /// Pipelines (render and compute) in one render frame. Bevy's `PipelineCache` holds both, so these
@@ -270,6 +314,36 @@ impl RenderTimings {
         self.state().pipelines = Some(frame);
     }
 
+    /// Keeps a [`CycleSides`] record per main-thread frame from now on (`track`), and says whether
+    /// rendering is pipelined, which decides which cycle a render frame is filed under.
+    pub fn set_cycle_tracking(&self, track: bool, pipelined: bool) {
+        let mut state = self.state();
+        state.track_cycles = track;
+        state.pipelined = pipelined;
+    }
+
+    /// The record of the cycle before the one in progress, which is the cycle the frame time just
+    /// measured belongs to: the duration that ends at the start of the current main frame is the
+    /// previous cycle's. Taking it also drops anything older. `None` when nothing was recorded.
+    pub fn take_previous_cycle(&self) -> Option<CycleSides> {
+        let mut state = self.state();
+        let current = state.cycle;
+        let previous = current.checked_sub(1)?;
+        let sides = state.cycles.remove(&previous);
+        let newer = state.cycles.split_off(&current);
+        state.cycles = newer;
+        sides
+    }
+
+    /// Writes into the record of `cycle`, when cycles are tracked and the cycle is known.
+    fn write_cycle(state: &mut State, cycle: Option<u64>, write: impl FnOnce(&mut CycleSides)) {
+        if state.track_cycles
+            && let Some(cycle) = cycle
+        {
+            write(state.cycles.entry(cycle).or_default());
+        }
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -287,6 +361,11 @@ impl RenderTimings {
     fn extracted(&self, elapsed: Duration) {
         let mut state = self.state();
         state.last_extract = Some(elapsed);
+        let cycle = state.cycle;
+        state.last_extract_cycle = Some(cycle);
+        Self::write_cycle(&mut state, Some(cycle), |sides| {
+            sides.extract_ms = Some(elapsed.as_secs_f64() * 1000.0);
+        });
         self.record(&mut state, EXTRACT, elapsed);
     }
 
@@ -294,22 +373,30 @@ impl RenderTimings {
     fn handed_over(&self, elapsed: Duration) {
         let mut state = self.state();
         if let Some(extract) = state.last_extract.take() {
-            self.record(
-                &mut state,
-                WAIT_FOR_RENDER_THREAD,
-                elapsed.saturating_sub(extract),
-            );
+            let wait = elapsed.saturating_sub(extract);
+            let cycle = state.cycle;
+            Self::write_cycle(&mut state, Some(cycle), |sides| {
+                sides.wait_ms = Some(wait.as_secs_f64() * 1000.0);
+            });
+            self.record(&mut state, WAIT_FOR_RENDER_THREAD, wait);
         }
     }
 
     fn start_main(&self) {
-        self.state().main_started = Some(Instant::now());
+        let mut state = self.state();
+        state.main_started = Some(Instant::now());
+        state.cycle += 1;
     }
 
     fn end_main(&self) {
         let mut state = self.state();
         if let Some(started) = state.main_started.take() {
-            self.record(&mut state, MAIN_WORLD, started.elapsed());
+            let elapsed = started.elapsed();
+            let cycle = state.cycle;
+            Self::write_cycle(&mut state, Some(cycle), |sides| {
+                sides.main_ms = Some(elapsed.as_secs_f64() * 1000.0);
+            });
+            self.record(&mut state, MAIN_WORLD, elapsed);
         }
     }
 
@@ -318,6 +405,12 @@ impl RenderTimings {
         let mut state = self.state();
         state.render_started = Some(now);
         state.render_mark = Some(now);
+        // The render world renders what the last extract gave it. With pipelining that happens
+        // during the next cycle, without it inside the same one.
+        let pipelined = state.pipelined;
+        state.render_cycle = state
+            .last_extract_cycle
+            .map(|cycle| if pipelined { cycle + 1 } else { cycle });
     }
 
     fn lap(&self, name: &'static str) {
@@ -332,7 +425,12 @@ impl RenderTimings {
         let mut state = self.state();
         state.render_mark = None;
         let pipelines = state.pipelines.take();
+        let render_cycle = state.render_cycle.take();
         if let Some(started) = state.render_started.take() {
+            let elapsed = started.elapsed();
+            Self::write_cycle(&mut state, render_cycle, |sides| {
+                sides.render_ms = Some(elapsed.as_secs_f64() * 1000.0);
+            });
             self.record(&mut state, RENDER_THREAD, started.elapsed());
             if self.0.recording.load(Ordering::Relaxed)
                 && let Some(pipelines) = pipelines
@@ -352,6 +450,11 @@ impl RenderTimings {
     fn end_acquire(&self) {
         let mut state = self.state();
         if let Some(started) = state.acquire_started.take() {
+            let elapsed = started.elapsed();
+            let render_cycle = state.render_cycle;
+            Self::write_cycle(&mut state, render_cycle, |sides| {
+                sides.acquire_ms = Some(elapsed.as_secs_f64() * 1000.0);
+            });
             self.record(&mut state, SWAPCHAIN_ACQUIRE, started.elapsed());
         }
     }
@@ -549,6 +652,95 @@ mod tests {
         let activity = timings.take_pipeline_activity().unwrap();
         assert_eq!(activity.frames, 1);
         assert_eq!(activity.pipelines_created, 2);
+    }
+
+    /// A frame time is the duration of the previous cycle, so that is the record asked for, and a
+    /// pipelined render frame belongs to the cycle after the extract that fed it.
+    #[test]
+    fn cycles_file_a_render_frame_under_the_cycle_it_ran_in() {
+        for pipelined in [true, false] {
+            let timings = RenderTimings::default();
+            timings.set_cycle_tracking(true, pipelined);
+            assert_eq!(timings.take_previous_cycle(), None, "no frame yet");
+            // Main frame 1, its extract, and the render frame that extract fed.
+            timings.start_main();
+            timings.end_main();
+            timings.extracted(Duration::from_millis(1));
+            timings.start_render();
+            timings.start_acquire();
+            timings.end_acquire();
+            timings.end_render();
+            // Main frame 2 starts: the frame time it measures is cycle 1's.
+            timings.start_main();
+            let first = timings.take_previous_cycle().expect("cycle 1");
+            assert!(first.main_ms.is_some());
+            assert_eq!(first.extract_ms, Some(1.0));
+            assert_eq!(
+                (first.render_ms.is_some(), first.acquire_ms.is_some()),
+                (!pipelined, !pipelined),
+                "pipelined: the render frame is in cycle 2; otherwise it ran inside cycle 1"
+            );
+            // Frame 2 runs, extracts, and frame 3 starts: cycle 2 is the previous one.
+            timings.end_main();
+            timings.extracted(Duration::from_millis(2));
+            timings.start_main();
+            let second = timings.take_previous_cycle().expect("cycle 2");
+            assert_eq!(second.extract_ms, Some(2.0));
+            assert_eq!(
+                (second.render_ms.is_some(), second.acquire_ms.is_some()),
+                (pipelined, pipelined),
+                "the render frame of extract 1 ran during cycle 2 when pipelined"
+            );
+            assert_eq!(timings.take_previous_cycle(), None, "taken once");
+        }
+    }
+
+    /// The hand-over wait is filed under the main frame that waited, beside its extract.
+    #[test]
+    fn cycles_keep_the_main_threads_wait_for_the_render_thread() {
+        let timings = RenderTimings::default();
+        timings.set_cycle_tracking(true, true);
+        timings.start_main();
+        timings.end_main();
+        timings.extracted(Duration::from_millis(3));
+        timings.handed_over(Duration::from_millis(10));
+        timings.start_main();
+        let cycle = timings.take_previous_cycle().expect("cycle 1");
+        assert_eq!(cycle.extract_ms, Some(3.0));
+        assert_eq!(cycle.wait_ms, Some(7.0));
+        // A hand-over without a new extract has nothing to attribute.
+        timings.end_main();
+        timings.handed_over(Duration::from_millis(10));
+        timings.start_main();
+        let next = timings.take_previous_cycle().expect("cycle 2");
+        assert!(next.main_ms.is_some());
+        assert_eq!(next.wait_ms, None);
+    }
+
+    #[test]
+    fn cycles_are_kept_only_for_a_run_that_tracks_them() {
+        let timings = RenderTimings::default();
+        timings.start_main();
+        timings.end_main();
+        timings.extracted(Duration::from_millis(1));
+        timings.start_main();
+        assert_eq!(timings.take_previous_cycle(), None);
+    }
+
+    #[test]
+    fn taking_a_cycle_drops_the_older_ones() {
+        let timings = RenderTimings::default();
+        timings.set_cycle_tracking(true, false);
+        for _ in 0..5 {
+            timings.start_main();
+            timings.end_main();
+        }
+        timings.start_main();
+        assert!(timings.take_previous_cycle().is_some());
+        assert!(
+            timings.state().cycles.is_empty(),
+            "cycles 1 to 4 were older than the one taken"
+        );
     }
 
     #[test]

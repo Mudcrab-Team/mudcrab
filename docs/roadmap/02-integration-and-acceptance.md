@@ -50,7 +50,7 @@ Run the full synthetic suite plus real rural, dense, and streaming-stress scenar
   -Assets D:\ConvertedSkyrim `
   -Worldspace 0x3c `
   -RuralGridX 0 -RuralGridY 0 `
-  -DenseGridX 18 -DenseGridY -5
+  -DenseGridX 3 -DenseGridY -12
 ```
 
 The coordinates must be selected from the user's converted load order. The full defaults are 120

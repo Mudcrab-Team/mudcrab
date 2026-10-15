@@ -112,6 +112,12 @@ pub struct EngineConfig {
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
     pub auto_fly_speed: f32,
+    /// `--route <file>`: the camera follows a route file's waypoints at its speed (see
+    /// [`crate::route`]). It owns the camera, like `--auto-fly-speed`.
+    pub route: Option<PathBuf>,
+    /// `--frame-budget-ms <ms>`: the frame time the report counts frames over (see
+    /// [`crate::frame_budget`]). The default is 6.25, 160 frames per second.
+    pub frame_budget_ms: f64,
     pub allow_incomplete_assets: bool,
     pub synthetic_instances: usize,
     pub profile_output_dir: Option<PathBuf>,
@@ -182,6 +188,8 @@ impl Default for EngineConfig {
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
             auto_fly_speed: 0.0,
+            route: None,
+            frame_budget_ms: crate::frame_budget::DEFAULT_FRAME_BUDGET_MS,
             allow_incomplete_assets: false,
             synthetic_instances: 250_000,
             profile_output_dir: None,
@@ -238,6 +246,7 @@ Streaming:
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
+  --route <file>                        follow a route file's waypoints at its speed (a JSON file; see scripts/routes)
 
 Benchmark and profiling:
   --benchmark-only                      run the synthetic benchmark; opens no world database
@@ -246,6 +255,7 @@ Benchmark and profiling:
   --benchmark-warmup-frames <count>     frames discarded before measuring (default: 60)
   --benchmark-jump <x,y>                after the world first loads, jump to this grid cell and time the reload
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
+  --frame-budget-ms <ms>                frame time the report counts frames over (default: 6.25, 160 fps)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
   --run-label [<text>]                  name the run in the window title
   --synthetic-instances <count>         instances in the synthetic benchmark (default: 250000)
@@ -414,6 +424,7 @@ impl EngineConfig {
             && self.acceptance_screenshot.is_none()
             && self.shots.is_none()
             && self.auto_fly_speed <= 0.0
+            && self.route.is_none()
             && !self.material_fixture
             && !self.terrain_water_fixture
             && !self.transform_bounds_fixture
@@ -441,10 +452,15 @@ impl EngineConfig {
         self.is_benchmark_run() || self.benchmark_jump.is_some()
     }
 
+    /// Whether the run moves the camera on its own: `--auto-fly-speed` or `--route`.
+    pub fn flies(&self) -> bool {
+        self.auto_fly_speed > 0.0 || self.route.is_some()
+    }
+
     /// Whether the readiness scan records how far behind the flying camera each model finishes
     /// loading. Only the pacing report reads it, so a plain `--auto-fly-speed` run records nothing.
     pub fn records_fly_lag(&self) -> bool {
-        self.auto_fly_speed > 0.0 && self.measures_pacing()
+        self.flies() && self.measures_pacing()
     }
 
     /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
@@ -688,6 +704,17 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--route" => {
+                    config.route = Some(take_value("--route", "a route file path", args.next())?);
+                }
+                "--frame-budget-ms" => {
+                    config.frame_budget_ms = take_number(
+                        "--frame-budget-ms",
+                        "a positive number of milliseconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
                 "--allow-incomplete-assets" => config.allow_incomplete_assets = true,
                 "--synthetic-instances" => {
                     config.synthetic_instances =
@@ -796,6 +823,8 @@ impl EngineConfig {
             Some(fixture)
         } else if self.auto_fly_speed > 0.0 {
             Some("--auto-fly-speed keeps driving the camera")
+        } else if self.route.is_some() {
+            Some("--route keeps driving the camera")
         } else if self.acceptance_screenshot.is_some() {
             Some("--acceptance-screenshot anchors streaming on the start cell")
         } else if self.streaming_fixture {
@@ -1327,6 +1356,74 @@ mod tests {
             .records_fly_lag(),
             "a benchmark that does not fly has no fly lag"
         );
+        let routed = EngineConfig {
+            route: Some("travel.json".into()),
+            benchmark_duration_secs: Some(60.0),
+            ..EngineConfig::default()
+        };
+        assert!(routed.flies());
+        assert!(routed.records_fly_lag(), "a route moves the camera too");
+    }
+
+    #[test]
+    fn parses_the_route_and_the_frame_budget() {
+        let config = EngineConfig::run_from_args(
+            [
+                "--route",
+                "scripts/routes/travel.json",
+                "--frame-budget-ms",
+                "8.33",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert_eq!(
+            config.route.as_deref(),
+            Some(std::path::Path::new("scripts/routes/travel.json"))
+        );
+        assert_eq!(config.frame_budget_ms, 8.33);
+        let defaults = EngineConfig::default();
+        assert_eq!(defaults.route, None);
+        assert_eq!(defaults.frame_budget_ms, 6.25);
+        for bad in [
+            ["--frame-budget-ms", "0"],
+            ["--frame-budget-ms", "-3"],
+            ["--frame-budget-ms", "fast"],
+            ["--frame-budget-ms", "--headless"],
+            ["--route", "--headless"],
+        ] {
+            assert!(
+                EngineConfig::from_args(bad.map(str::to_owned)).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+        assert!(EngineConfig::from_args(["--route".to_owned()]).is_err());
+    }
+
+    /// A route owns the camera as auto-fly does: it is never an interactive play session, and a
+    /// jump it would undo is dropped.
+    #[test]
+    fn a_route_owns_the_camera() {
+        assert!(EngineConfig::default().interactive_world_physics());
+        let routed = EngineConfig::run_from_args(
+            [
+                "--route",
+                "travel.json",
+                "--benchmark-jump",
+                "3,4",
+                "--benchmark-duration",
+                "30",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert!(!routed.interactive_world_physics());
+        assert_eq!(routed.benchmark_jump, None, "the route would overwrite it");
+        let without_report = EngineConfig {
+            route: Some("travel.json".into()),
+            ..EngineConfig::default()
+        };
+        assert!(!without_report.interactive_world_physics());
     }
 
     #[test]
