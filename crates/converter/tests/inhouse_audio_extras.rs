@@ -1,4 +1,6 @@
 //! Typed audio layouts, repeated children and corrupt-mod publication regressions.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -330,7 +332,7 @@ async fn corrupt_compressed_overrides_for_every_family_preserve_real_publication
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
     for (index, tag) in audio::SIGNATURES.iter().enumerate() {
         let id = 0x0200_5900 + index as u32;

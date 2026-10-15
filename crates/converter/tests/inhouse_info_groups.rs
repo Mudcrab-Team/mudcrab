@@ -1,5 +1,7 @@
 //! Native INFO topic-group provenance, slot mapping, and bounded owner recovery.
 //! Metadata assertions use serialized keys so the pre-extension API still compiles.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -471,7 +473,7 @@ async fn grouped_info_metadata_exports_and_broken_owners_still_publish_neighbors
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [
         0x0100_4600u32,

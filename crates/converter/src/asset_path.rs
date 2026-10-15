@@ -328,9 +328,20 @@ mod tests {
                 .starts_with(modded)
         );
 
-        if !cfg!(windows) {
-            fs::write(base.join("Landscape/ROCK.dds"), b"collision").unwrap();
-            assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
+        let collision = base.join("Landscape/ROCK.dds");
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&collision)
+        {
+            Ok(_) => {
+                fs::write(collision, b"collision").unwrap();
+                assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_ok());
+            }
+            Err(error) => panic!("create case-collision fixture: {error}"),
         }
     }
 

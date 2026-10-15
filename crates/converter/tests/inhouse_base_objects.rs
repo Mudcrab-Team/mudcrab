@@ -1,4 +1,6 @@
 //! Native base-object fields, asymmetric identities, and local publication recovery.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -489,7 +491,7 @@ async fn asymmetric_base_overrides_and_malformed_neighbors_publish_exact_bytes()
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (id, canonical, source, priority) in expected_records {
         let (published,raw,load_order):(Vec<u8>,Vec<u8>,u32) = database.query_row(

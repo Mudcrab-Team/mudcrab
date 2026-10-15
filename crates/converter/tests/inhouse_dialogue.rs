@@ -1,4 +1,6 @@
 //! Native quests/dialogue, repeated contextual roles, and publication recovery.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -743,7 +745,7 @@ async fn broken_dialogue_mod_publishes_all_family_neighbors_and_omits_unsafe_fie
     fs::write(&plugins, "*Skyrim.esm\n*DamagedDialogue.esp\n").unwrap();
     let output = temp.path().join("pack");
     let report = convert(&data, &output, plugins).await;
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (index, _) in native::SIGNATURES.iter().enumerate() {
         let id = native::FIRST_ID + index as u32;

@@ -1,4 +1,6 @@
 //! R3 native values stay independent of reference-tool integer and ratio views.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -238,7 +240,7 @@ async fn malformed_global_value_preserves_neighbors_through_publication() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (id, expected_payload) in expected_neighbors {
         let (load_order, payload): (i64, Vec<u8>) = database

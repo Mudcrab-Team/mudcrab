@@ -4,6 +4,8 @@
 //! and ARMO MOD2/MOD4 as its male/female world models. MOD3/MOD5 below are
 //! deliberate synthetic decoys, not valid ARMO world-model fields.
 
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -110,7 +112,7 @@ impl Fixture {
     }
 
     /// Run the public converter through final publication with an explicit order and no LOD.
-    async fn publish(&self, reader: RecordReader) -> PathBuf {
+    async fn publish(&self, reader: RecordReader, reader_warnings: bool) -> PathBuf {
         let order: String = self
             .plugins
             .iter()
@@ -130,7 +132,11 @@ impl Fixture {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = AssetPipeline::run_async(config, tx).await.unwrap();
         drain.await.unwrap();
-        assert!(report.complete, "{reader:?}: {report:?}");
+        if reader_warnings {
+            common::assert_reader_warning_publication(&report, &output);
+        } else {
+            assert!(report.complete, "{reader:?}: {report:?}");
+        }
         for artifact in [
             "skyrim_world.db",
             "conversion-manifest.json",
@@ -249,7 +255,7 @@ async fn rv_c_txst_all_physical_slots_publish_identically_from_both_readers() {
     let fixture = texture_fixture();
     let mut published = Vec::new();
     for reader in [RecordReader::Inhouse, RecordReader::Legacy] {
-        let output = fixture.publish(reader).await;
+        let output = fixture.publish(reader, false).await;
         let database = Connection::open(output.join("skyrim_world.db")).unwrap();
         let rows = [
             texture_row(&database, 0x0200_08D1),
@@ -283,8 +289,8 @@ async fn rv_c_reader_slot_projection_keeps_runtime_asset_bytes_identical() {
         );
     }
     // No expected SQL assertion gates this separate baseline/after-fix byte control.
-    let inhouse = fixture.publish(RecordReader::Inhouse).await;
-    let legacy = fixture.publish(RecordReader::Legacy).await;
+    let inhouse = fixture.publish(RecordReader::Inhouse, false).await;
+    let legacy = fixture.publish(RecordReader::Legacy, false).await;
     for paths in [FULL_SLOT_PATHS, LIGHT_SLOT_PATHS] {
         for path in paths {
             let runtime = Path::new(path).with_extension("ktx2");
@@ -388,7 +394,9 @@ async fn rv_c_armo_world_model_slots_publish_identically_from_both_readers() {
     ];
     let mut published = Vec::new();
     for reader in [RecordReader::Inhouse, RecordReader::Legacy] {
-        let output = fixture.publish(reader).await;
+        let output = fixture
+            .publish(reader, reader == RecordReader::Inhouse)
+            .await;
         let database = Connection::open(output.join("skyrim_world.db")).unwrap();
         let rows = [0x0200_0911, 0x0200_0912, 0x0200_0913, 0x0200_0914].map(|id| {
             database
@@ -437,7 +445,9 @@ async fn rv_c_damaged_optional_txst_flags_preserve_neighbors_and_publish() {
     let original = fs::read(fixture.data.join("DamagedSlots.esp")).unwrap();
     let mut published = Vec::new();
     for reader in [RecordReader::Inhouse, RecordReader::Legacy] {
-        let output = fixture.publish(reader).await;
+        let output = fixture
+            .publish(reader, reader == RecordReader::Inhouse)
+            .await;
         let database = Connection::open(output.join("skyrim_world.db")).unwrap();
         let mut rows = Vec::new();
         for (id, editor_id) in [

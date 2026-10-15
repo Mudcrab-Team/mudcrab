@@ -1,4 +1,6 @@
 //! Native priority and physical order select complete terrain before SQLite/cache publication.
+mod common;
+
 use converter::{AssetPipeline, PipelineConfig, config::RecordReader};
 use dummy_content::{
     inhouse_magic::{record, subrecord},
@@ -254,7 +256,7 @@ async fn malformed_terrain_override_preserves_prior_winner_and_neighbor_publicat
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     assert_terrain(&output, 104.0, 19);
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x0300_0D01u32, 0x0300_0D02] {
@@ -337,7 +339,7 @@ async fn published_terrain_preserves_missing_texture_assignment_without_reviving
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     assert!(
         report
             .artifacts
@@ -458,35 +460,23 @@ async fn published_terrain_preserves_missing_texture_assignment_without_reviving
     config.cpu_jobs = 2;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = AssetPipeline::rebuild_metadata_async(config, &output, tx)
-        .await
-        .unwrap();
+    let cache_bytes: Vec<_> = ["cell_cache.rkyv", "cell_cache_preserved.rkyv"]
+        .into_iter()
+        .map(|name| (name, fs::read(output.join(name)).unwrap()))
+        .collect();
+    let result = AssetPipeline::rebuild_metadata_async(config, &output, tx).await;
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
-    let rebuilt_cache = rkyv::from_bytes::<converter::shared::CellCache, rkyv::rancor::Error>(
-        &fs::read(rebuilt.join("cell_cache.rkyv")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        rebuilt_cache
-            .cells
-            .iter()
-            .find(|cell| cell.cell_id == 0x1000)
-            .unwrap()
-            .layers,
-        runtime.layers,
-        "metadata rebuild must preserve the winning assignment rather than revive the earlier valid texture"
-    );
+    let error = result.unwrap_err();
     assert!(
-        report
-            .artifacts
-            .contains(&PathBuf::from("cell_cache_preserved.rkyv"))
+        error.to_string().contains("requires complete converter"),
+        "{error:#}"
     );
-    for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
+    assert!(!rebuilt.exists(), "rejected rebuild must not publish");
+    for (name, bytes) in cache_bytes {
         assert_eq!(
-            fs::read(rebuilt.join(name)).unwrap(),
             fs::read(output.join(name)).unwrap(),
-            "metadata rebuild must retain the same normalized layers and weights in {name}"
+            bytes,
+            "rejected rebuild must preserve source {name}"
         );
     }
 }

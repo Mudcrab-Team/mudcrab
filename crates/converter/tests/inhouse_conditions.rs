@@ -1,4 +1,6 @@
 //! Shared condition native layouts and real publication recovery with asymmetric slots.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -548,7 +550,7 @@ async fn malformed_conditions_and_optional_refs_complete_real_publication() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x0200_2D40, 0x0200_2D41, 0x0200_2D42] {
         assert!(!published_record(&database, id).subrecords.is_empty());
@@ -641,7 +643,7 @@ async fn rejected_condition_drops_only_its_strings_in_real_publication() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x0100_2E40, 0x0100_2E42] {
         assert!(!published_record(&database, id).subrecords.is_empty());
@@ -728,7 +730,7 @@ async fn malformed_info_response_header_preserves_response_ownership_in_publicat
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();

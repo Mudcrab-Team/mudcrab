@@ -1,4 +1,6 @@
 //! Independent native fixtures exercise RV-A recovery through complete publication.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -162,7 +164,7 @@ impl Fixture {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = AssetPipeline::run_async(config, tx).await.unwrap();
         drain.await.unwrap();
-        assert!(report.complete, "{:?}", report.warnings);
+        common::assert_reader_warning_publication(&report, &output);
         output
     }
 

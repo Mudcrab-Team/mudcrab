@@ -1,4 +1,6 @@
 //! Native magic layouts, contextual alternatives and local corruption recovery.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -362,7 +364,7 @@ async fn broken_magic_mod_publishes_usable_neighbors_and_bounded_diagnostics() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [magic::FIRST_ID, 0x19B1] {
         let count: i64 = database
@@ -466,7 +468,7 @@ async fn all_magic_families_publish_prior_winners_and_neighbors_after_bad_compre
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (index, _) in magic::SIGNATURES.iter().enumerate() {
         let id = magic::FIRST_ID + u32::try_from(index).unwrap();

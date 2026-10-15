@@ -1,4 +1,6 @@
 //! Native AI unions, contextual repeat groups and broken-mod publication recovery.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -593,7 +595,7 @@ async fn ai_families_publish_prior_winners_and_neighbors_after_bad_compression()
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for index in 0..4 {
         let id = ai::FIRST_ID + index;

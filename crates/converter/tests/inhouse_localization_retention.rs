@@ -1,4 +1,6 @@
 //! Original localized IDs survive publication separately from safe runtime text.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -545,7 +547,7 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (rid, raw, priority, key, text, status) in [
         (0x0100_3500, 0x0100_3500, 5, 17, None, "missing"),
@@ -991,6 +993,11 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "scripts",
             "script_properties",
             "script_property_values",
+            "room_bounds",
+            "room_portals",
+            "room_links",
+            "reference_rooms",
+            "room_graph_stats",
         ];
         for (name, rows) in &full_tables {
             if deferred.contains(&name.as_str()) {
@@ -1178,17 +1185,17 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
     }
 }
 
-/// A public export failure after scope creation leaves an explicit incomplete archive.
+/// Selection skips an inverted dependency before publishing the surviving archive.
 #[test]
-fn failed_archive_does_not_publish_a_completed_scope_or_reader_identity() {
+fn inverted_dependency_archive_publishes_only_surviving_plugins() {
     use converter::esm::inhouse::RecordBundleMode;
     let temp = tempfile::tempdir().unwrap();
     let retained = temp.path();
     let data = retained.join("original-data");
     fs::create_dir(&data).unwrap();
     let generated = world();
-    // Missing masters now fail selection before scope creation; use a present,
-    // inverted regular-plugin dependency to exercise failure after scope creation.
+    // Both plugins exist, but Dependent.esp names a master that loads after it.
+    // Selection excludes that dependent while preserving the usable owner.
     let owner = native::plugin(&generated, &[], 0, &[]);
     let dependent = native::plugin(&generated, &["Owner.esp"], 0, &[]);
     fs::write(data.join("Owner.esp"), &owner).unwrap();
@@ -1205,14 +1212,28 @@ fn failed_archive_does_not_publish_a_completed_scope_or_reader_identity() {
         None,
         RecordBundleMode::RecordArchiveOnly,
     );
-    let error = result.unwrap_err();
-    assert!(error.to_string().contains("must precede"), "{error:#}");
+    assert_eq!(result.unwrap(), 0);
     let scope: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("record-bundle-scope.json")).unwrap())
             .unwrap();
-    assert_eq!(scope["status"], "INCOMPLETE");
+    assert_eq!(
+        scope["status"],
+        "COMPLETE_DIAGNOSTIC_ARCHIVE_RUNTIME_VIEWS_DEFERRED"
+    );
     assert_eq!(scope["runtime_ready"], false);
-    assert!(!output.join("record-reader.json").exists());
+    let identity: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
+    assert_eq!(identity["bundle_mode"], "record_archive_only");
+    assert_eq!(identity["runtime_ready"], false);
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let plugins: Vec<String> = database
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(plugins, ["Owner.esp"]);
     assert_eq!(fs::read(data.join("Owner.esp")).unwrap(), owner);
     assert_eq!(fs::read(data.join("Dependent.esp")).unwrap(), dependent);
     assert_eq!(fs::read_to_string(order).unwrap(), order_text);

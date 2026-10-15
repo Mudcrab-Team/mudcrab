@@ -1,4 +1,6 @@
 //! World/navigation values, modded identities and actual malformed-mod publication.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -482,7 +484,7 @@ async fn broken_world_mod_publishes_prior_winners_neighbors_and_link_recovery() 
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     for index in 0..world::SIGNATURES.len() {
         let id = world::FIRST_ID + index as u32;

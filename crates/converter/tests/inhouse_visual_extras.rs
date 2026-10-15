@@ -1,4 +1,6 @@
 //! Native visual-family variants and actual publication with corrupt mod data.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -312,7 +314,7 @@ async fn broken_visual_mod_publishes_neighbors_prior_winners_and_safe_fields() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     let malformed_blob: Vec<u8> = db
         .query_row(

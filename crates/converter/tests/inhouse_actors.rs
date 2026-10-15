@@ -1,6 +1,8 @@
 //! Independent native actor fixtures exercised through the public reader.
 //! Format facts: pinned TES5 ACBS24, PLVD12, CRVA optional tails, RACE
 //! gender/repeat sections, and common CNTO/COED owner-dependent values.
+mod common;
+
 use converter::{
     esm::load_order::LoadOrder,
     records::{DecodedField, DecodedRecord, ReadResult, Value, read_plugins},
@@ -779,7 +781,7 @@ async fn actor_corruption_is_local_through_real_pack_publication() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x0100_3400u32, 0x0100_3402] {
         assert_eq!(
@@ -875,7 +877,7 @@ async fn all_actor_types_recover_bad_compressed_overrides_during_publication() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
     for (index, tag) in tags.iter().enumerate() {
         let id = 0x2400 + index as u32;

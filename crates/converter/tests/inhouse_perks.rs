@@ -1,4 +1,6 @@
 //! Complete PERK alternatives, isolated dependency groups, and real publication recovery.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -650,7 +652,7 @@ async fn damaged_perks_publish_neighbors_and_prior_winners_with_bounded_diagnost
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [perks::FIRST_ID, perks::FIRST_ID + 1] {
         let (load_order,payload):(i64,Vec<u8>) = database.query_row(

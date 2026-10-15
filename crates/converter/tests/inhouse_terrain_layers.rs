@@ -1,5 +1,7 @@
 //! Full terrain preservation and the existing six-layer runtime policy through publication.
 
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -118,7 +120,7 @@ impl Fixture {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = AssetPipeline::run_async(config, tx).await.unwrap();
         drain.await.unwrap();
-        assert!(report.complete, "{:?}", report.warnings);
+        common::assert_reader_warning_publication(&report, &output);
         for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
             assert!(report.artifacts.contains(&PathBuf::from(name)));
         }
@@ -406,9 +408,9 @@ fn assert_source_and_canonical(output: &Path, fields: &[(Vec<u8>, Vec<u8>)]) {
     }
 }
 
-/// Archive preservation grows while the current runtime selection and metadata replay stay exact.
+/// Archive preservation retains over-capacity layers without certifying missing texture links.
 #[tokio::test]
-async fn over_capacity_layers_survive_full_publication_and_metadata_rebuild() {
+async fn over_capacity_layers_publish_but_reader_loss_blocks_metadata_rebuild() {
     let fixture = Fixture::new();
     let output = fixture.publish(&[]).await;
     assert_published_layers(&output);
@@ -449,20 +451,27 @@ async fn over_capacity_layers_survive_full_publication_and_metadata_rebuild() {
     config.cpu_jobs = 2;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = AssetPipeline::rebuild_metadata_async(config, &output, tx)
-        .await
-        .unwrap();
+    let cache_bytes: Vec<_> = ["cell_cache.rkyv", "cell_cache_preserved.rkyv"]
+        .into_iter()
+        .map(|name| (name, fs::read(output.join(name)).unwrap()))
+        .collect();
+    let result = AssetPipeline::rebuild_metadata_async(config, &output, tx).await;
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
-    for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("requires complete converter"),
+        "{error:#}"
+    );
+    assert!(!rebuilt.exists(), "rejected rebuild must not publish");
+    for (name, bytes) in cache_bytes {
         assert_eq!(
-            fs::read(rebuilt.join(name)).unwrap(),
             fs::read(output.join(name)).unwrap(),
-            "metadata replay must retain the same runtime/full projection in {name}"
+            bytes,
+            "rejected rebuild must preserve source {name}"
         );
     }
-    assert_published_layers(&rebuilt);
-    assert_source_and_canonical(&rebuilt, &fixture.fields);
+    assert_published_layers(&output);
+    assert_source_and_canonical(&output, &fixture.fields);
 }
 
 /// Malformed fields and compressed overrides stay local, preserving accepted layers and neighbors.

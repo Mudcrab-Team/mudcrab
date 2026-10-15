@@ -1,4 +1,6 @@
 //! Shared family assembly and deferred diagnostics preserve their authored contracts.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     config::RecordReader,
@@ -142,7 +144,7 @@ async fn deferred_npc_ownership_counts_source_issues_once_through_publication() 
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x19C0, 0x19D0, 0x19D1, 0x19D2] {
         let count: i64 = database

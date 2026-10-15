@@ -81,6 +81,11 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "scripts",
     "script_properties",
     "script_property_values",
+    "room_bounds",
+    "room_portals",
+    "room_links",
+    "reference_rooms",
+    "room_graph_stats",
 ];
 
 /// Identity binds decoder behavior and schema bytes so stale output cannot prove reuse.

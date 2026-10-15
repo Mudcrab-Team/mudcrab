@@ -1,4 +1,6 @@
 //! Native VMAD layout, bounded-corruption and publication regressions.
+mod common;
+
 use converter::records::{Value, vmad};
 use dummy_content::inhouse_vmad as fixture;
 
@@ -643,7 +645,7 @@ async fn malformed_script_fields_publish_neighbors_and_preserve_source_bytes() {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in 0x01004300u32..=0x01004303 {
         let blob: Vec<u8> = db

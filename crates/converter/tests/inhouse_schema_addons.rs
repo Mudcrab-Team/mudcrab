@@ -1,4 +1,6 @@
 //! Runtime schema extensions and opaque preservation through public pack publication.
+mod common;
+
 use converter::records::{DecodedRecord, Value};
 use converter::{AssetPipeline, PipelineConfig, config::RecordReader};
 use dummy_content::layout;
@@ -56,7 +58,7 @@ async fn publish(data: &Path, output: &Path) -> converter::PipelineReport {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, output);
     report
 }
 
@@ -181,7 +183,7 @@ async fn localized_union_definitions_publish_selected_banks_and_valid_neighbors(
         .concat();
         fs::write(directory.join(format!("BankProbe_english.{bank}")), table).unwrap();
     }
-    publish_config(mod_config(&data, &output, &[&addon])).await;
+    publish_config(mod_config(&data, &output, &[&addon]), true).await;
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (id, tail) in [(0x0100_1810, 0x5927u16), (0x0100_1812, 0x82A6u16)] {
         let fields = canonical_fields(&output, id);
@@ -508,6 +510,16 @@ fn addon_bytes() -> Vec<u8> {
     .unwrap()
 }
 
+/// Metadata rebuild sources must type every authored field to remain complete.
+fn metadata_addon_bytes() -> Vec<u8> {
+    let mut addon: serde_json::Value = serde_json::from_slice(&addon_bytes()).unwrap();
+    addon["records"][0]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"signature": "XEND", "name": "extra_bytes", "kind": "bytes"}));
+    serde_json::to_vec_pretty(&addon).unwrap()
+}
+
 /// Frame a TES4 master list without equating native master positions with global slots.
 fn header(masters: &[&str]) -> Vec<u8> {
     let mut fields = vec![(
@@ -539,18 +551,18 @@ fn custom_fields(editor_id: &str, link: Vec<u8>) -> Vec<([u8; 4], Vec<u8>)> {
 /// Build a sparse master list that resolves native index zero into global slot two.
 fn generate_mod(data: &Path, broken: bool) {
     generate(data);
-    write_mod_plugins(data, broken);
+    write_mod_plugins(data, broken, true);
 }
 
 /// Exercise metadata and schema publication with plugins and no input assets to convert.
-fn generate_minimal_mod(data: &Path) {
+fn generate_minimal_mod(data: &Path, extend_keyword: bool) {
     fs::create_dir_all(data).unwrap();
     fs::write(data.join("Skyrim.esm"), header(&[])).unwrap();
-    write_mod_plugins(data, false);
+    write_mod_plugins(data, false, extend_keyword);
 }
 
 /// Author synthetic masters, full and light plugins independently of reader preparation.
-fn write_mod_plugins(data: &Path, broken: bool) {
+fn write_mod_plugins(data: &Path, broken: bool, extend_keyword: bool) {
     fs::write(data.join("Spacer.esm"), header(&["Skyrim.esm"])).unwrap();
     let mut owner = header(&["Skyrim.esm"]);
     owner.extend(record(
@@ -568,15 +580,17 @@ fn write_mod_plugins(data: &Path, broken: bool) {
         0x0100_1820,
         &custom_fields("CustomBefore", 0x1801u32.to_le_bytes().to_vec()),
     ));
-    patch.extend(record(
-        b"KYWD",
-        0x0100_1821,
-        &[
-            (*b"EDID", b"ExtendedKeyword\0".to_vec()),
-            (*b"CNAM", vec![0x74, 0x52, 0x19, 0]),
-            (*b"XLNK", 0x1801u32.to_le_bytes().to_vec()),
-        ],
-    ));
+    if extend_keyword {
+        patch.extend(record(
+            b"KYWD",
+            0x0100_1821,
+            &[
+                (*b"EDID", b"ExtendedKeyword\0".to_vec()),
+                (*b"CNAM", vec![0x74, 0x52, 0x19, 0]),
+                (*b"XLNK", 0x1801u32.to_le_bytes().to_vec()),
+            ],
+        ));
+    }
     if broken {
         patch.extend(record(
             b"ZNW1",
@@ -637,10 +651,15 @@ async fn run_config(
     result
 }
 
-/// Require a completed publication before reading its database or pack provenance.
-async fn publish_config(config: PipelineConfig) {
+/// Require the fixture's expected completeness before inspecting published provenance.
+async fn publish_config(config: PipelineConfig, reader_warnings: bool) {
+    let output = config.output_dir.clone();
     let report = run_config(config).await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    if reader_warnings {
+        common::assert_reader_warning_publication(&report, &output);
+    } else {
+        assert!(report.complete, "{report:?}");
+    }
 }
 
 /// History replay must reconstruct the winner using the pack's producing schema.
@@ -675,7 +694,7 @@ async fn addons_type_new_records_and_extend_known_fields_with_asymmetric_remappi
     let data = temp.path().join("Data");
     generate_mod(&data, false);
     let opaque = temp.path().join("opaque");
-    publish_config(mod_config(&data, &opaque, &[])).await;
+    publish_config(mod_config(&data, &opaque, &[]), true).await;
     let original = custom_fields("CustomBefore", 0x1801u32.to_le_bytes().to_vec());
     assert_eq!(canonical_fields(&opaque, 0x0300_1820), original);
     let unknown = history_record(&opaque, 0x0300_1820);
@@ -702,7 +721,7 @@ async fn addons_type_new_records_and_extend_known_fields_with_asymmetric_remappi
     let addon = temp.path().join("schema.json");
     fs::write(&addon, addon_bytes()).unwrap();
     let typed = temp.path().join("typed");
-    publish_config(mod_config(&data, &typed, &[&addon])).await;
+    publish_config(mod_config(&data, &typed, &[&addon]), true).await;
     let mut remapped = original;
     remapped[2].1 = 0x0200_1801u32.to_le_bytes().to_vec();
     assert_eq!(canonical_fields(&typed, 0x0300_1820), remapped);
@@ -736,7 +755,7 @@ async fn addons_type_new_records_and_extend_known_fields_with_asymmetric_remappi
 async fn extension_before_builtin_fields_preserves_opaque_condition_tags() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
-    generate_minimal_mod(&data);
+    generate_minimal_mod(&data, true);
     let fields = vec![
         (*b"XLNK", 0x1801u32.to_le_bytes().to_vec()),
         (*b"CTDA", vec![0x31, 0x87, 0xD2]),
@@ -771,7 +790,7 @@ async fn extension_before_builtin_fields_preserves_opaque_condition_tags() {
     let addon = temp.path().join("schema.json");
     fs::write(&addon, addon_bytes()).unwrap();
     let output = temp.path().join("pack");
-    publish_config(mod_config(&data, &output, &[&addon])).await;
+    publish_config(mod_config(&data, &output, &[&addon]), true).await;
     let mut expected = fields;
     expected[0].1 = 0x0200_1801u32.to_le_bytes().to_vec();
     assert_eq!(canonical_fields(&output, 0x0300_1830), expected);
@@ -792,7 +811,7 @@ async fn extension_before_builtin_fields_preserves_opaque_condition_tags() {
 async fn repeated_extensions_validate_each_occurrence_without_rewinding_builtin_fields() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
-    generate_minimal_mod(&data);
+    generate_minimal_mod(&data, true);
     let fields = vec![
         (*b"XLNK", 0x1801u32.to_le_bytes().to_vec()),
         (*b"EDID", b"RepeatedExtension\0".to_vec()),
@@ -810,7 +829,7 @@ async fn repeated_extensions_validate_each_occurrence_without_rewinding_builtin_
         let addon = temp.path().join(format!("repeat-{repeat}.json"));
         fs::write(&addon, serde_json::to_vec(&schema).unwrap()).unwrap();
         let output = temp.path().join(format!("pack-{repeat}"));
-        publish_config(mod_config(&data, &output, &[&addon])).await;
+        publish_config(mod_config(&data, &output, &[&addon]), true).await;
         let mut expected = fields.clone();
         expected[0].1 = 0x0200_1801u32.to_le_bytes().to_vec();
         if repeat {
@@ -832,7 +851,7 @@ async fn addon_manifest_and_history_replay_use_stored_hashed_json() {
     let authored = addon_bytes();
     fs::write(&addon, &authored).unwrap();
     let output = temp.path().join("pack");
-    publish_config(mod_config(&data, &output, &[&addon])).await;
+    publish_config(mod_config(&data, &output, &[&addon]), true).await;
     let sha256 = converter::cache::hash_bytes(&authored);
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
@@ -865,7 +884,7 @@ async fn malformed_addon_fields_preserve_valid_neighbors_through_publication() {
     let addon = temp.path().join("schema.json");
     fs::write(&addon, addon_bytes()).unwrap();
     let output = temp.path().join("pack");
-    publish_config(mod_config(&data, &output, &[&addon])).await;
+    publish_config(mod_config(&data, &output, &[&addon]), true).await;
     for id in [0x0300_1820, 0x0300_1825] {
         assert_eq!(
             field_value(&history_record(&output, id), b"XLNK"),
@@ -920,7 +939,7 @@ async fn malformed_addon_fields_preserve_valid_neighbors_through_publication() {
 async fn mandatory_extension_error_keeps_predecessor_and_publishes_neighbors() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
-    generate_minimal_mod(&data);
+    generate_minimal_mod(&data, true);
     append(
         &data.join("Patch.esp"),
         &record(
@@ -950,7 +969,7 @@ async fn mandatory_extension_error_keeps_predecessor_and_publishes_neighbors() {
     let addon = temp.path().join("mandatory.json");
     fs::write(&addon, serde_json::to_vec(&schema).unwrap()).unwrap();
     let output = temp.path().join("pack");
-    publish_config(mod_config(&data, &output, &[&addon])).await;
+    publish_config(mod_config(&data, &output, &[&addon]), true).await;
     let chain = converter::records::history::read_history(&output, None, 0x0200_1801).unwrap();
     assert_eq!(chain.versions.len(), 2);
     let winner = chain
@@ -985,7 +1004,7 @@ async fn invalid_addon_preflight_preserves_existing_pack_and_creates_no_staging(
     let data = temp.path().join("Data");
     generate_mod(&data, false);
     let output = temp.path().join("pack");
-    publish_config(mod_config(&data, &output, &[])).await;
+    publish_config(mod_config(&data, &output, &[]), true).await;
     let original_manifest = fs::read(output.join("conversion-manifest.json")).unwrap();
     let original_database = fs::read(output.join("skyrim_world.db")).unwrap();
     let before = fs::read_dir(temp.path())
@@ -1095,7 +1114,8 @@ fn json_artifact(output: &Path, name: &str) -> serde_json::Value {
 }
 
 /// Rebuild from recorded plugin order and retain the original verified producer assets.
-async fn rebuild_config(mut config: PipelineConfig, source: &Path) {
+async fn rebuild_config(mut config: PipelineConfig, source: &Path, reader_warnings: bool) {
+    let output = config.output_dir.clone();
     config.plugins_file = None;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1103,7 +1123,11 @@ async fn rebuild_config(mut config: PipelineConfig, source: &Path) {
         .await
         .unwrap();
     drain.await.unwrap();
-    assert!(report.complete, "{:?}", report.warnings);
+    if reader_warnings {
+        common::assert_reader_warning_publication(&report, &output);
+    } else {
+        assert!(report.complete, "{report:?}");
+    }
 }
 
 /// Repeated adapter-10 migrations retain original source documents and verified script bytes.
@@ -1113,13 +1137,15 @@ async fn adapter10_metadata_rebuild_preserves_original_assets_and_saved_addons_a
 {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
-    generate_minimal_mod(&data);
+    // Rebuilds without output add-ons keep unknown record types opaque; a known
+    // KYWD with an unrecognized extension would instead make the first rebuild incomplete.
+    generate_minimal_mod(&data, false);
     let addon = temp.path().join("original.json");
-    let original_bytes = addon_bytes();
+    let original_bytes = metadata_addon_bytes();
     fs::write(&addon, &original_bytes).unwrap();
     let source = temp.path().join("adapter10-source");
     let original_config = mod_config(&data, &source, &[&addon]);
-    publish_config(original_config.clone()).await;
+    publish_config(original_config.clone(), false).await;
     let mut identity = json_artifact(&source, "record-reader.json");
     identity["adapter_version"] = json!(10);
     let historical_settings = json!({
@@ -1158,9 +1184,9 @@ async fn adapter10_metadata_rebuild_preserves_original_assets_and_saved_addons_a
     .unwrap();
 
     let first = temp.path().join("adapter12-first");
-    rebuild_config(mod_config(&data, &first, &[]), &source).await;
+    rebuild_config(mod_config(&data, &first, &[]), &source, false).await;
     let second = temp.path().join("adapter12-second");
-    rebuild_config(mod_config(&data, &second, &[]), &first).await;
+    rebuild_config(mod_config(&data, &second, &[]), &first, false).await;
     for output in [&first, &second] {
         let reader = json_artifact(output, "record-reader.json");
         assert_eq!(reader["adapter_version"], 12);
@@ -1221,12 +1247,12 @@ async fn adapter10_metadata_rebuild_preserves_original_assets_and_saved_addons_a
 async fn metadata_rebuilds_replay_saved_addons_and_preserve_original_asset_producer() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
-    generate_minimal_mod(&data);
+    generate_minimal_mod(&data, true);
     let original_addon = temp.path().join("original.json");
-    let original_bytes = addon_bytes();
+    let original_bytes = metadata_addon_bytes();
     fs::write(&original_addon, &original_bytes).unwrap();
     let original = temp.path().join("original-pack");
-    publish_config(mod_config(&data, &original, &[&original_addon])).await;
+    publish_config(mod_config(&data, &original, &[&original_addon]), false).await;
     let original_manifest = json_artifact(&original, "conversion-manifest.json");
     assert!(original_manifest["entries"].as_object().unwrap().is_empty());
     let original_reader = json_artifact(&original, "record-reader.json");
@@ -1241,7 +1267,8 @@ async fn metadata_rebuilds_replay_saved_addons_and_preserve_original_asset_produ
         b"the original configured add-on is now invalid",
     )
     .unwrap();
-    let mut replacement: serde_json::Value = serde_json::from_slice(&addon_bytes()).unwrap();
+    let mut replacement: serde_json::Value =
+        serde_json::from_slice(&metadata_addon_bytes()).unwrap();
     replacement["name"] = json!("synthetic-mod-links-signed");
     replacement["records"][0]["fields"][1]["kind"] = json!("i16");
     let replacement_bytes = serde_json::to_vec(&replacement).unwrap();
@@ -1251,6 +1278,7 @@ async fn metadata_rebuilds_replay_saved_addons_and_preserve_original_asset_produ
     rebuild_config(
         mod_config(&data, &changed, &[&replacement_addon]),
         &original,
+        false,
     )
     .await;
     let signed = history_record(&changed, 0x0300_1820);
@@ -1267,7 +1295,7 @@ async fn metadata_rebuilds_replay_saved_addons_and_preserve_original_asset_produ
     );
 
     let opaque = temp.path().join("opaque-pack");
-    rebuild_config(mod_config(&data, &opaque, &[]), &changed).await;
+    rebuild_config(mod_config(&data, &opaque, &[]), &changed, true).await;
     let unknown = history_record(&opaque, 0x0300_1820);
     assert!(!unknown.supported);
     assert_eq!(
@@ -1336,7 +1364,7 @@ async fn metadata_rebuilds_replay_saved_addons_and_preserve_original_asset_produ
 async fn addon_preflight_freezes_publication_bytes_before_discovery_progress() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
-    generate_minimal_mod(&data);
+    generate_minimal_mod(&data, true);
     let addon = temp.path().join("schema.json");
     let original_bytes = addon_bytes();
     fs::write(&addon, &original_bytes).unwrap();
@@ -1360,7 +1388,7 @@ async fn addon_preflight_freezes_publication_bytes_before_discovery_progress() {
         drain.await.unwrap(),
         "the fixture never observed discovery progress"
     );
-    assert!(report.complete, "{:?}", report.warnings);
+    common::assert_reader_warning_publication(&report, &output);
     assert_eq!(
         fs::read(&addon).unwrap(),
         b"invalid JSON written after preflight"
