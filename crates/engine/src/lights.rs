@@ -267,9 +267,43 @@ struct LightBudget {
 /// Add it after [`StreamingPlugin`](crate::streaming::StreamingPlugin).
 pub struct LightsPlugin;
 
+/// Converted light data retained on an unlit reference, so enabling lights works in resident cells.
+#[derive(Component)]
+pub(crate) struct DeferredPointLight {
+    pub light: PointLight,
+    pub marker: SkyrimLight,
+}
+
+fn activate_deferred_lights(
+    config: Option<Res<crate::config::EngineConfig>>,
+    references: Query<(Entity, &DeferredPointLight, Option<&Visibility>)>,
+    mut commands: Commands,
+) {
+    if !config.is_some_and(|config| config.lights) {
+        return;
+    }
+    for (entity, deferred, visibility) in &references {
+        let mut reference = commands.entity(entity);
+        if visibility.is_none() {
+            reference.insert(Visibility::Inherited);
+        }
+        reference.remove::<DeferredPointLight>();
+        reference.with_child((
+            Name::new(format!("Light {:08X}", deferred.marker.form_id)),
+            deferred.light,
+            deferred.marker,
+            crate::render::light_render_layers(),
+        ));
+    }
+}
+
 impl Plugin for LightsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LightBudget>()
+            .add_systems(
+                Update,
+                activate_deferred_lights.after(crate::settings_ui::SettingsUiSet),
+            )
             .add_systems(PostUpdate, budget_lights.after(TransformSystems::Propagate));
     }
 }
@@ -289,8 +323,33 @@ impl Plugin for LightsPlugin {
 fn budget_lights(
     mut budget: ResMut<LightBudget>,
     camera: Query<&GlobalTransform, With<StreamingCamera>>,
-    mut lights: Query<(Entity, &GlobalTransform, &PointLight, &mut Visibility), With<SkyrimLight>>,
+    mut lights: Query<
+        (Entity, &GlobalTransform, &mut PointLight, &mut Visibility),
+        With<SkyrimLight>,
+    >,
+    config: Option<Res<crate::config::EngineConfig>>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
+    if config.is_some_and(|config| !config.lights) {
+        for (_, _, _, mut visibility) in &mut lights {
+            visibility.set_if_neq(Visibility::Hidden);
+        }
+        budget.chosen_at = None;
+        return;
+    }
+    if settings
+        .as_ref()
+        .is_some_and(|settings| settings.is_changed())
+    {
+        budget.chosen_at = None;
+    }
+    if let Some(settings) = settings.as_deref() {
+        for (_, _, mut light, _) in &mut lights {
+            if light.shadow_maps_enabled != settings.point_light_shadows {
+                light.shadow_maps_enabled = settings.point_light_shadows;
+            }
+        }
+    }
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -328,7 +387,11 @@ fn budget_lights(
     sort_by_distance(&mut ranked);
     let enabled: HashSet<Entity> = ranked
         .iter()
-        .take(ENABLED_LIGHT_BUDGET)
+        .take(
+            settings
+                .as_deref()
+                .map_or(ENABLED_LIGHT_BUDGET, |settings| settings.point_light_budget),
+        )
         .map(|(entity, _)| *entity)
         .collect();
 
@@ -370,6 +433,55 @@ fn sort_by_distance(ranked: &mut [(Entity, f32)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resident_deferred_lights_enable_disable_and_reenable_without_reloading() {
+        let mut app = budget_app(Vec3::ZERO, []);
+        app.insert_resource(crate::config::EngineConfig::default())
+            .add_systems(Update, activate_deferred_lights);
+        let reference = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(100.0, 0.0, 0.0),
+                DeferredPointLight {
+                    light: point_light(&light_row(512.0, 0), None).unwrap(),
+                    marker: SkyrimLight {
+                        form_id: 1,
+                        cell_id: 2,
+                    },
+                },
+            ))
+            .id();
+        app.update();
+        assert!(app.world().get::<Children>(reference).is_none());
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .lights = true;
+        app.update();
+        let light = app.world().get::<Children>(reference).unwrap()[0];
+        assert_eq!(
+            *app.world().get::<Visibility>(light).unwrap(),
+            Visibility::Inherited
+        );
+        assert!(app.world().get::<DeferredPointLight>(reference).is_none());
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .lights = false;
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(light).unwrap(),
+            Visibility::Hidden
+        );
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .lights = true;
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(light).unwrap(),
+            Visibility::Inherited
+        );
+        assert_eq!(app.world().get::<Children>(reference).unwrap().len(), 1);
+    }
     use crate::world::components::CELL_SIZE;
     use bevy::{
         asset::AssetPlugin, camera::visibility::VisibilityPlugin, transform::TransformPlugin,

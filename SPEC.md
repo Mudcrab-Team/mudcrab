@@ -48,9 +48,9 @@ P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passe
 - cmd: `--physics-fixture` → interactive primitive hill/wall arena, WALK/NOCLIP toggle, auto-spawned debug tankards; no Skyrim asset install required.
 - runtime: P1+ interactive exterior → first-person NOCLIP at start-cell view; fixture supports both modes from P1. P2 enables WALK over streamed terrain.
 - key: NOCLIP `W/A/S/D` fly relative to view; `Space` rise; `Ctrl` descend; `Shift` accelerate.
-- input: mouse look; click viewport captures pointer; `Escape` or focus loss releases pointer; uncaptured pointer → no movement/look.
-- debug: `NOCLIP: ON  [V]` or `NOCLIP: OFF  [V]`; `[V]` identifies toggle key, no player glyph; blocked WALK entry shows reason.
-- debug: interactive Riverwood `[F3]` toggles Rapier collision outlines; status reports ON/OFF.
+- input: mouse look; click viewport captures pointer; `F3` or focus loss releases pointer; `Escape` opens/closes settings; uncaptured pointer → no movement/look.
+- debug: `NOCLIP: ON` or `NOCLIP: OFF`, no player glyph; blocked WALK entry shows reason. Controls are listed in the Escape settings menu.
+- debug: interactive Riverwood Graphics settings or `tcg` toggles Rapier collision outlines; status reports ON/OFF.
 - key: `V` → toggle NOCLIP ↔ WALK once per press; NOCLIP default ON on interactive start.
 - key: WALK `W/A/S/D` move relative to yaw; mouse look; `Space` jump; `Shift` walk slowly; `Alt` press while moving toggles sprint; no movement input, focus loss, or NOCLIP switch clears sprint. No stamina cost.
 - key: P2+ `T` → spawn one debug tankard ahead of camera only when local terrain collider ready; bounded live count; fixture auto-spawns several in P1.
@@ -116,7 +116,7 @@ V3: P3 ∀ eligible fixed placements → collider follows full instance/node tra
 V4: P3 player blocks at rock/wall, passes doorway/opening & excluded visual; tankard hits same rock/wall without tunneling, falls through opening as geometry permits; unload/reload leaves no stale collider; P2 gate remains green.
 V5: P1 interactive exterior → one streaming camera, NOCLIP ON, walking collider/gravity disabled; camera crosses fixture/world geometry; noninteractive paths unchanged.
 V6: P1 mouse yaw/pitch controls view, pitch bounded; uncaptured/unfocused input cannot move or look; focus loss clears held keys; render-origin rebase preserves position & view.
-V7: P1 debug overlay reports actual mode every frame with adjacent `[V]` key hint; overlay never obscures center view or screenshot path.
+V7: P1 debug overlay reports actual mode every frame; key bindings and control instructions live in the Escape settings menu. Overlay never obscures center view or screenshot path.
 V8: P1 `V` press toggles once; NOCLIP→WALK at any height when capsule fits; failed overlap search leaves NOCLIP ON with visible reason; WALK→NOCLIP removes collision/gravity immediately.
 V9: P1 WALK capsule upright independent of camera pitch; camera follows body at eye offset; yaw moves body, pitch moves view. P2+ render-origin rebase shifts Rapier body poses & Bevy transforms together; body/camera/tankards/world colliders stay aligned without added velocity.
 V10: P1 WALK input normalized & camera-relative; acceleration/deceleration bounded; WALK < RUN < SPRINT; velocity frame-rate independent. Initial guesses: walk 160, run 300 Creation units/s, sprint 1.5× directional run; horizontal acceleration 1800 units/s².
@@ -143,7 +143,7 @@ V30: Historical converter schema 12–15 → 16 migration invalidated GLBs while
 V31: Packaged Riverwood 5×5 and wider grid `x=-1..11,y=-18..-6` audits → zero unsupported fixed `STAT`/`TREE` models; bridge, stairs, lumbermill, pine solid & clover passable.
 V32: P3 authored multi-shape placement → each mesh/primitive attached as child collider to one fixed body; ⊥ nested Rapier compounds; all child colliders use world groups and answer contact queries without panic.
 V33: P3 placed `FURN` with supported authored NIF collision → fixed streamed collider; authored absence → passable; `FURN` gets no render proxy. MillLogPile contact blocks WALK and tankards. `MISC`/`FLOR` remain outside fixed path.
-V34: Interactive Riverwood `F3` → toggle actual Rapier collider outlines; startup OFF, status matches toggle; entirely behind-camera collider bounds hidden, bounds crossing view plane shown; noninteractive camera paths retain prior behavior.
+V34: Interactive Riverwood Graphics settings or `tcg` → toggle actual Rapier collider outlines; startup OFF, status matches toggle; entirely behind-camera collider bounds hidden, bounds crossing view plane shown; noninteractive camera paths retain prior behavior.
 V35: Q0 source manifest ! master/plugin files and hashes, load order, winning Player `NPC_` FormID, linked `RACE` FormID, explicitly selected `MOVT` FormID and absent race links, selected `GMST` names and values. No runtime sampler required for Q0–Q2.
 V36: Q0 field map distinguishes CommonLib header field, ESM subrecord, value type, source unit, conversion factor, resulting Creation unit, and Q2 consumer. Only mapped fields enter tuning.
 V37: Q0 walk/run steady-state target for flat unobstructed motion = resolved effective `MOVT` speed in Creation units/s × elapsed seconds. Acceleration phase and contacts evaluated separately; header layout alone does not establish conversion factor or update formula.
@@ -233,7 +233,7 @@ V174: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; by
 id|status|task|cites
 T1|x|P1 add Rapier fixed-step setup, `--physics-fixture` primitive slope/wall arena, debug tankard mesh + compound dynamic collider; capture existing camera regression baseline|V5,V15,V17,R1,R8,R9
 T2|x|P1 add upright WALK capsule, camera follow, movement/jump/slope settings, & collision-safe toggle against fixture geometry|V8,V9,V10,V11,V12,V13,V14,V18
-T3|x|P1 add mouse-look NOCLIP, `V` toggle, `NOCLIP: ON/OFF  [V]` overlay, cursor lifecycle; preserve noninteractive camera paths|V5,V6,V7,V8
+T3|x|P1 add mouse-look NOCLIP, `V` toggle, `NOCLIP: ON/OFF` overlay, cursor lifecycle; preserve noninteractive camera paths|V5,V6,V7,V8
 T4|x|P1 test controller + tankards on primitive hill/wall, toggle/focus/rebase, 30/60/120 render fps, & camera regressions; record gate evidence|V5,V6,V7,V8,V9,V10,V11,V12,V14,V15,V16,V18,V19
 T5|~|P2 attach validated terrain trimesh to quadrant lifetime; handle failures & missing-ground transition|V1,V2,V13,R4
 T6|~|P2 enable bounded `T` tankard spawn; rebase Rapier poses with world; test player + tankards on real hill, seams, stream unload/reload; record gate evidence|V1,V2,V9,V13,V15,V16,V18
@@ -244,8 +244,8 @@ T10|.|P3 rerun P1/P2 gates, interactive playtest, screenshot/benchmark regressio
 T11|x|P2 mount controller in Riverwood, fix WALK pitch, add `E` tankard pickup/drop; preserve noninteractive camera paths|V5,V6,V9,V20,V21
 T12|x|Package Fiji launcher with display discovery; verify from shell with display vars unset|V22
 T13|~|Extract NIF Havok collision into GLB, use it for fixed `STAT`/`TREE`, audit Riverwood coverage, package Fiji build and run WALK/tankard gate|V3,V4,V16,V27,V28,V29,V30,V31,V32
-T14|x|Load authored furniture collision, shrink player height, add F3 collision view, package Fiji and test mill log pile|V12,V33,V34
-T15|~|Cull F3 outlines fully behind camera, keep crossing bounds, package Fiji and check debug frame rate|V34
+T14|x|Load authored furniture collision, shrink player height, add collision view, package Fiji and test mill log pile|V12,V33,V34
+T15|~|Cull collision outlines fully behind camera, keep crossing bounds, package Fiji and check debug frame rate|V34
 T16|x|Q0 inspect winning Player `NPC_`, linked `RACE`, selected walk/run `MOVT`, and candidate jump/gravity `GMST`; record FormIDs, absent links, overrides, field types and values|V35,V36,R15,R16,R18
 T17|x|Q0 document speed/acceleration/jump units, conversion factors and project formulas; mark unknown GMST mapping rather than inventing it|V36,V37,V38,R14,R16,R21
 T18|x|Q1 reuse NPC race link; validate winning `RACE`, optional `WKMV`/`RNMV`, and explicit retail absence before selected profile|V39,V40,V41,R15,R18

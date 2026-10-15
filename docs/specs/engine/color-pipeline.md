@@ -469,3 +469,10 @@ B32|2026-10-03|Emission migration prose retained latest-only launcher requiremen
 
 Camera-mod research and remaining native calibration gates are recorded in [Skyrim camera comparison](skyrim-camera-comparison.md).
 
+## Settings menu
+
+The native settings integration uses this approved shader and retains every
+capture/console correction from #257. See [settings-ui.md](settings-ui.md#approved-grading-integration)
+for mode domains, persistence, launch precedence and automated-capture isolation.
+Interactive controls provide an optional tuning resource; absent that resource,
+mode/preset resolution is identical to this branch's capture baseline.

@@ -107,6 +107,9 @@ struct AssetDirectoryReadLock {
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
     let start_camera = prepare_start_camera(&mut config)?;
+    let preferences = config
+        .interactive_world_physics()
+        .then(|| crate::settings::prepare_settings(&mut config));
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
     configure_io_task_pool(config.io_threads)?;
@@ -201,6 +204,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    if let Some((settings, file)) = preferences {
+        app.insert_resource(settings)
+            .insert_resource(file)
+            .init_resource::<crate::color_pipeline::SceneGradeTuning>();
+    }
     if let Some(pose) = start_camera {
         app.insert_resource(pose);
     }
@@ -267,8 +275,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
-        .add_plugins(crate::lights::LightsPlugin)
-        .add_systems(PostUpdate, keep_windows_hidden);
+        .add_plugins(crate::lights::LightsPlugin);
+    if interactive_world_physics {
+        app.add_plugins(crate::settings_ui::SettingsPlugin);
+    }
+    app.add_systems(PostUpdate, keep_windows_hidden);
     add_camera_and_capture_systems(&mut app);
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
         app.insert_resource(database)
@@ -2003,7 +2014,7 @@ const SUN_SHADOW_MAX_GRID_CELLS: i32 = 256;
 ///
 /// [sqrt(2)]: std::f32::consts::SQRT_2
 /// [`maximum_distance`]: CascadeShadowConfigBuilder::maximum_distance
-fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
+pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
     // Cells draw out to `unload_radius`, one ring past the requested `stream_radius`, and the
     // `+ 1` is the camera's own cell: the grid is `unload_radius` cells around that cell rather
     // than around the camera, which may stand at the far edge of its own. The radius is clamped
@@ -2102,6 +2113,7 @@ fn setup_world(
         Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
+        IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
         // The sky draws a dome around this camera and clears it to the weather's fog colour.
@@ -2160,31 +2172,82 @@ fn initial_camera_ground_height(
     database_path: &std::path::Path,
     cache: &CellCache,
 ) -> Result<f32> {
+    Ok(cell_centre_ground_height(
+        config.worldspace_id,
+        config.start_grid,
+        database_path,
+        cache,
+    )?
+    .unwrap_or(0.0))
+}
+
+/// The terrain height at the middle of one exterior cell, or `None` when the cell has no terrain
+/// (or the cache has no height there).
+fn cell_centre_ground_height(
+    worldspace_id: u32,
+    grid: (i32, i32),
+    database_path: &std::path::Path,
+    cache: &CellCache,
+) -> Result<Option<f32>> {
     let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", database_path.display()))?;
     let cell_id = connection
         .query_row(
             crate::world::database::EXTERIOR_CELL_ID_SQL,
-            params![
-                config.worldspace_id,
-                config.start_grid.0,
-                config.start_grid.1
-            ],
+            params![worldspace_id, grid.0, grid.1],
             |row| row.get::<_, u32>(0),
         )
         .optional()?;
     let Some(terrain) = cell_id.and_then(|cell_id| cache.terrain(cell_id)) else {
-        return Ok(0.0);
+        return Ok(None);
     };
     let width = usize::from(terrain.width);
     let height = usize::from(terrain.height);
     let center = (height / 2)
         .checked_mul(width)
         .and_then(|row| row.checked_add(width / 2));
-    Ok(center
-        .and_then(|index| terrain.heights.get(index))
-        .copied()
-        .unwrap_or(0.0))
+    Ok(center.and_then(|index| terrain.heights.get(index)).copied())
+}
+
+/// Where `--benchmark-jump` puts the camera: the middle of exterior cell `grid`, at that cell's
+/// ground height plus the same height offset `setup_world` gives the start position, in the
+/// coordinates of the current render `origin`.
+pub(crate) fn benchmark_jump_position(
+    config: &EngineConfig,
+    cache: &CellCache,
+    origin: IVec2,
+    grid: (i32, i32),
+) -> Vec3 {
+    let database_path = config.assets_dir.join("skyrim_world.db");
+    let ground_height =
+        match cell_centre_ground_height(config.worldspace_id, grid, &database_path, cache) {
+            Ok(Some(height)) => height,
+            // A jump target with no terrain is legitimate (a cell past the map edge the run may
+            // still want to view), but a silent 0 puts the camera at the wrong height, so say so.
+            Ok(None) => {
+                warn!(
+                    grid_x = grid.0,
+                    grid_y = grid.1,
+                    "benchmark jump: no terrain at the target cell, using ground height 0"
+                );
+                0.0
+            }
+            Err(error) => {
+                warn!(%error, "benchmark jump: ground height unavailable, using 0");
+                0.0
+            }
+        };
+    jump_camera_position(grid, origin, ground_height + camera_offset(config).y)
+}
+
+/// The middle of grid square `grid` at height `y`, in the render space around `origin`: +x is east,
+/// +grid_y runs towards -z.
+fn jump_camera_position(grid: (i32, i32), origin: IVec2, y: f32) -> Vec3 {
+    Vec3::new(
+        ((grid.0 - origin.x) as f32 + 0.5) * crate::world::components::CELL_SIZE,
+        y,
+        -((grid.1 - origin.y) as f32 + 0.5) * crate::world::components::CELL_SIZE,
+    )
 }
 
 const CELL_SIZE_HALF: f32 = crate::world::components::CELL_SIZE * 0.5;
@@ -2395,6 +2458,29 @@ mod tests {
     use bevy::window::{PrimaryWindow, Window};
     use bevy::world_serialization::WorldSerializationPlugin;
     use std::time::Duration;
+
+    /// The origin cell's centre is (2048, y, -2048), the start position's convention, and +grid_y
+    /// runs towards -z, so the sign and the half-cell offset are pinned per axis.
+    #[test]
+    fn jump_position_is_the_target_cells_centre_around_the_origin() {
+        for (grid, origin, expected) in [
+            ((0, 0), IVec2::ZERO, Vec3::new(2048.0, 9.0, -2048.0)),
+            ((1, 0), IVec2::ZERO, Vec3::new(6144.0, 9.0, -2048.0)),
+            ((0, 1), IVec2::ZERO, Vec3::new(2048.0, 9.0, -6144.0)),
+            ((-1, -1), IVec2::ZERO, Vec3::new(-2048.0, 9.0, 2048.0)),
+            (
+                (4, -21),
+                IVec2::new(4, -12),
+                Vec3::new(2048.0, 9.0, 34816.0),
+            ),
+        ] {
+            assert_eq!(
+                jump_camera_position(grid, origin, 9.0),
+                expected,
+                "grid {grid:?} origin {origin:?}"
+            );
+        }
+    }
 
     /// A capture window remains hidden if an update system tries to show it.
     #[test]

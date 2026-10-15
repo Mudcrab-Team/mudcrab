@@ -43,8 +43,8 @@ width to traverse each rise, so live stair traversal remains a manual gate.
 
 The mill's visible log pile is a separate `FURN` placement, `MillLogPile.nif`,
 with authored collision. Its collider is loaded with the mill cell. In
-interactive Riverwood, `F3` toggles Rapier collision outlines; the status
-overlay reports whether they are on. The overlay draws actual physics shapes
+interactive Riverwood, toggle Rapier collision outlines through Graphics settings
+or `tcg`. The status overlay reports whether they are on. The overlay draws actual physics shapes
 that intersect the camera's forward half-space. Look toward a model before
 using the outline to judge whether it has an active collider.
 

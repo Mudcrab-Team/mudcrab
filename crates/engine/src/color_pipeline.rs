@@ -58,6 +58,26 @@ impl SceneGradeMode {
         }
     }
 
+    pub fn index(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Saturation => 1,
+            Self::Full => 2,
+            Self::SnapshotSrgb => 3,
+            Self::SnapshotLinear => 4,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Off,
+            1 => Self::Saturation,
+            2 => Self::Full,
+            4 => Self::SnapshotLinear,
+            _ => Self::SnapshotSrgb,
+        }
+    }
+
     /// Resolve the screenshot's grade independently of the selected sky preset.
     pub fn grade(self, preset: SceneVisualPreset) -> SkyrimCinematicGrade {
         match self {
@@ -95,6 +115,23 @@ impl SceneGradeMode {
 
 pub const SCENE_GRADE_VALUES: &str = "off, saturation, full, snapshot-srgb or snapshot-linear";
 const SCENE_GRADE_USAGE: &str = "SceneGrade [off|saturation|full|snapshot-srgb|snapshot-linear]";
+
+/// Interactive overrides only. Capture runs leave this resource absent and use the
+/// exact mode/preset resolution recorded by the capture receipts.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct SceneGradeTuning {
+    pub grade: SkyrimCinematicGrade,
+    pub pivot: f32,
+}
+
+impl Default for SceneGradeTuning {
+    fn default() -> Self {
+        Self {
+            grade: SceneGradeMode::SnapshotSrgb.grade(SceneVisualPreset::CoolGray),
+            pivot: CINEMATIC_PIVOT,
+        }
+    }
+}
 
 /// Identifies shared scene cameras without treating reflections as graded views.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +191,23 @@ impl SceneVisualPreset {
     }
 }
 
+fn sync_console_grade(world: &mut World) {
+    let mode = *world.resource::<SceneGradeMode>();
+    let preset = *world.resource::<SceneVisualPreset>();
+    let resolved = mode.grade(preset);
+    if let Some(mut tuning) = world.get_resource_mut::<SceneGradeTuning>() {
+        *tuning = SceneGradeTuning {
+            grade: resolved,
+            pivot: CINEMATIC_PIVOT,
+        };
+    }
+    if let Some(mut settings) = world.get_resource_mut::<crate::settings::RenderingSettings>() {
+        settings.color_grade = mode.index();
+        settings.visual_preset = usize::from(preset == SceneVisualPreset::CoolGray);
+        settings.set_grade(resolved);
+    }
+}
+
 fn scene_preset_command() -> ConsoleCommand {
     ConsoleCommand {
         name: "ScenePreset",
@@ -180,6 +234,9 @@ fn scene_preset_command() -> ConsoleCommand {
                     *palette = next.sky_palette();
                 }
             }
+            if next.is_some() {
+                sync_console_grade(world);
+            }
             Ok(format!(
                 "scene preset: {} (grade: {})",
                 world.resource::<SceneVisualPreset>().name(),
@@ -202,6 +259,7 @@ fn scene_grade_command() -> ConsoleCommand {
                     let mode = SceneGradeMode::parse(value)
                         .ok_or_else(|| format!("usage: {SCENE_GRADE_USAGE}"))?;
                     *world.resource_mut::<SceneGradeMode>() = mode;
+                    sync_console_grade(world);
                 }
                 _ => return Err(format!("usage: {SCENE_GRADE_USAGE}")),
             }
@@ -213,9 +271,10 @@ fn scene_grade_command() -> ConsoleCommand {
     }
 }
 
-fn apply_scene_grade_mode(
+pub(crate) fn apply_scene_grade_mode(
     mode: Res<SceneGradeMode>,
     preset: Res<SceneVisualPreset>,
+    tuning: Option<Res<SceneGradeTuning>>,
     mut cameras: Query<(
         Ref<SceneGradeTarget>,
         &mut ColorGrading,
@@ -224,12 +283,38 @@ fn apply_scene_grade_mode(
 ) {
     for (target, mut grading, mut post) in &mut cameras {
         if *target == SceneGradeTarget::Reflection
-            || !(mode.is_changed() || preset.is_changed() || target.is_added())
+            || !(mode.is_changed()
+                || preset.is_changed()
+                || tuning.as_ref().is_some_and(|t| t.is_changed())
+                || target.is_added())
         {
             continue;
         }
         grading.global.post_saturation = mode.bevy_saturation(*preset);
         *post = mode.post(*preset);
+        if let Some(tuning) = tuning.as_ref() {
+            let mut tuned_post = tuning.grade.post();
+            tuned_post.pivot = tuning.pivot;
+            match *mode {
+                SceneGradeMode::Off => {
+                    tuned_post.enabled = 0.0;
+                    grading.global.post_saturation = 1.0;
+                }
+                SceneGradeMode::Saturation => {
+                    tuned_post.enabled = 0.0;
+                    grading.global.post_saturation = tuning.grade.saturation;
+                }
+                SceneGradeMode::Full => {
+                    grading.global.post_saturation = tuning.grade.saturation;
+                }
+                SceneGradeMode::SnapshotSrgb | SceneGradeMode::SnapshotLinear => {
+                    grading.global.post_saturation = 1.0;
+                    tuned_post.saturation = tuning.grade.saturation;
+                    tuned_post.linear_domain = u32::from(*mode == SceneGradeMode::SnapshotLinear);
+                }
+            }
+            *post = tuned_post;
+        }
     }
 }
 
@@ -489,6 +574,94 @@ pub(crate) fn assert_scene_camera_output(world: &mut World, expected_count: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_console_sync_preserves_approved_default_and_excludes_reflections() {
+        use crate::settings::{RenderingSettings, apply_render_settings};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(crate::config::EngineConfig::default())
+            .init_resource::<RenderingSettings>()
+            .insert_resource(SceneGradeMode::SnapshotSrgb)
+            .insert_resource(SceneVisualPreset::CoolGray)
+            .insert_resource(SceneVisualPreset::CoolGray.sky_palette())
+            .init_resource::<SceneGradeTuning>()
+            .init_resource::<crate::console::ConsoleState>()
+            .add_console_command(scene_grade_command())
+            .add_console_command(scene_preset_command())
+            .add_systems(Update, apply_render_settings)
+            .add_systems(PostUpdate, apply_scene_grade_mode);
+        let scene = app.world_mut().spawn(SceneColorPipeline::default()).id();
+        let reflection = app.world_mut().spawn(SceneColorPipeline::reflection()).id();
+        app.update();
+        let approved = SceneGradeMode::SnapshotSrgb.post(SceneVisualPreset::CoolGray);
+        assert_eq!(
+            *app.world().get::<SkyrimCinematicPost>(scene).unwrap(),
+            approved
+        );
+        for mode in [
+            SceneGradeMode::Off,
+            SceneGradeMode::Saturation,
+            SceneGradeMode::Full,
+            SceneGradeMode::SnapshotSrgb,
+            SceneGradeMode::SnapshotLinear,
+        ] {
+            crate::console::execute_line(app.world_mut(), &format!("SceneGrade {}", mode.name()));
+            app.update();
+            assert_eq!(
+                app.world().resource::<RenderingSettings>().color_grade,
+                mode.index()
+            );
+            assert_eq!(*app.world().resource::<SceneGradeMode>(), mode);
+            assert_eq!(
+                *app.world().get::<SkyrimCinematicPost>(scene).unwrap(),
+                mode.post(SceneVisualPreset::CoolGray),
+            );
+            assert_eq!(
+                *app.world().get::<SkyrimCinematicPost>(reflection).unwrap(),
+                SkyrimCinematicPost::default(),
+            );
+        }
+        crate::console::execute_line(app.world_mut(), "SceneGrade invalid");
+        app.update();
+        assert_eq!(
+            *app.world().resource::<SceneGradeMode>(),
+            SceneGradeMode::SnapshotLinear
+        );
+        crate::console::execute_line(app.world_mut(), "ScenePreset vivid");
+        crate::console::execute_line(app.world_mut(), "SceneGrade full");
+        app.update();
+        assert_eq!(
+            *app.world().get::<SkyrimCinematicPost>(scene).unwrap(),
+            SceneGradeMode::Full.post(SceneVisualPreset::Vivid),
+        );
+        *app.world_mut().resource_mut::<RenderingSettings>() = RenderingSettings::default();
+        app.update();
+        assert_eq!(
+            *app.world().get::<SkyrimCinematicPost>(scene).unwrap(),
+            approved
+        );
+        assert_eq!(
+            *app.world().resource::<SkyPalette>(),
+            SceneVisualPreset::CoolGray.sky_palette()
+        );
+        let later = app.world_mut().spawn(SceneColorPipeline::reflection()).id();
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .grade_brightness = 1.7;
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<SkyrimCinematicPost>(scene)
+                .unwrap()
+                .brightness,
+            1.7
+        );
+        assert_eq!(
+            *app.world().get::<SkyrimCinematicPost>(later).unwrap(),
+            SkyrimCinematicPost::default()
+        );
+    }
 
     #[test]
     fn snapshot_modes_grade_once_restore_presets_and_leave_sky_and_reflections_alone() {

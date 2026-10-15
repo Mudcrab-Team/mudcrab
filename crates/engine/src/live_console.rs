@@ -198,4 +198,3 @@ mod tests {
         assert_eq!(app.world().resource::<ConsoleState>().scrollback.len(), 34);
     }
 }
-
