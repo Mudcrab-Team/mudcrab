@@ -208,6 +208,7 @@ async fn reconverts_a_staged_output_written_under_a_different_configuration() {
 #[tokio::test]
 async fn reconverts_a_staged_output_with_matching_legacy_full_configuration() {
     let mut fixture = Fixture::new();
+    fixture.config.record_reader = converter::config::RecordReader::Legacy;
     fixture.config.no_lod = true;
     fixture.write_source("One");
     fixture.stage_marker();

@@ -350,9 +350,10 @@ fn compatibility_cli(
         .arg("--no-lod")
         .arg("--report-json")
         .arg(report_path);
-    if reader == RecordReader::Inhouse {
-        command.arg("--record-reader").arg("inhouse");
-    }
+    command.arg("--record-reader").arg(match reader {
+        RecordReader::Legacy => "legacy",
+        RecordReader::Inhouse => "inhouse",
+    });
     if let Some(source) = source {
         command.arg("--reuse-assets").arg(source);
     }
@@ -492,7 +493,7 @@ async fn clean_legacy_and_inhouse_reports_remain_complete() {
     }
 }
 
-/// The default CLI publishes usable data and writes an incomplete report with exit code one.
+/// The legacy CLI publishes usable data and writes an incomplete report with exit code one.
 #[test]
 fn legacy_cli_report_json_marks_published_warning_pack_incomplete() {
     let directory = tempfile::tempdir().unwrap();
@@ -503,6 +504,8 @@ fn legacy_cli_report_json_marks_published_warning_pack_incomplete() {
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
+        .arg("--record-reader")
+        .arg("legacy")
         .arg("--no-lod")
         .arg("--report-json")
         .arg(&report_path)

@@ -536,6 +536,7 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
 #[test]
 fn reader_identity_separates_configuration_proofs() {
     let mut config = PipelineConfig::new("Data", "output");
+    config.record_reader = RecordReader::Legacy;
     let legacy = converter::cache::configuration_hash(&config).unwrap();
     assert_eq!(config.record_reader, RecordReader::Legacy);
     let texture_settings = converter::cache::asset_configuration_hash_for_schema(

@@ -18,7 +18,8 @@ fn producer_24_mesh_compatibility_does_not_follow_a_future_producer() {
 /// Every asset kind ignores the full reader identity while metadata retains it.
 #[test]
 fn asset_settings_are_independent_of_reader_metadata() {
-    let legacy = PipelineConfig::new("synthetic-data", "synthetic-output");
+    let mut legacy = PipelineConfig::new("synthetic-data", "synthetic-output");
+    legacy.record_reader = RecordReader::Legacy;
     let mut inhouse = legacy.clone();
     inhouse.record_reader = RecordReader::Inhouse;
     assert_ne!(
@@ -48,7 +49,8 @@ fn mo2_profile_and_reader_bind_metadata_without_changing_asset_settings() {
         "[General]\ngameName=Skyrim Special Edition\n",
     )
     .unwrap();
-    let original = PipelineConfig::new(&data, root.path().join("output"));
+    let mut original = PipelineConfig::new(&data, root.path().join("output"));
+    original.record_reader = RecordReader::Legacy;
     let mut mo2_config = original.clone();
     mo2_config.mo2 = Some(mo2::Selection {
         instance_path: instance,
@@ -73,7 +75,8 @@ fn mo2_profile_and_reader_bind_metadata_without_changing_asset_settings() {
 /// New legacy projections have distinct metadata proof without changing asset settings.
 #[test]
 fn legacy_projection_identity_separates_current_and_historical_full_hashes() {
-    let legacy = PipelineConfig::new("synthetic-data", "synthetic-output");
+    let mut legacy = PipelineConfig::new("synthetic-data", "synthetic-output");
+    legacy.record_reader = RecordReader::Legacy;
     let historical = configuration_hash_for_schema(&legacy, 26).unwrap();
     let identity = crate::esm::inhouse::reader_identity(RecordReader::Legacy);
     assert_eq!(
@@ -117,7 +120,8 @@ fn legacy_projection_identity_separates_current_and_historical_full_hashes() {
 /// A recorded projection contract must match its own full settings proof.
 #[test]
 fn retained_legacy_hash_validation_does_not_upgrade_old_reader_provenance() {
-    let config = PipelineConfig::new("synthetic-data", "synthetic-output");
+    let mut config = PipelineConfig::new("synthetic-data", "synthetic-output");
+    config.record_reader = RecordReader::Legacy;
     let old_identity = serde_json::json!({"mode": "legacy"});
     let current_identity = crate::esm::inhouse::reader_identity(RecordReader::Legacy);
     let v1_identity = serde_json::json!({"mode": "legacy", "projection_version": 1});

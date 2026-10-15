@@ -113,6 +113,78 @@ fn resolves_priority_enabled_mods_hidden_files_and_active_order() {
     );
 }
 
+/// Windows-1252 profile spellings select an installed plugin with different accented case.
+#[test]
+fn unicode_profile_names_match_installed_plugins_and_loadorder() {
+    let (_dir, root) = fixture();
+    write(&root, "mods/High/CAFÉ.esp", "accented plugin");
+    fs::write(root.join("profiles/Default/plugins.txt"), b"*caf\xe9.esp\n").unwrap();
+    fs::write(
+        root.join("profiles/Default/loadorder.txt"),
+        b"Skyrim.esm\nCAF\xc9.esp\n",
+    )
+    .unwrap();
+    let resolved = Instance::open(&root)
+        .unwrap()
+        .resolve(&root.join("Data"), "Default")
+        .unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm", "café.esp"]);
+    assert_eq!(
+        resolved.files["café.esp"],
+        fs::canonicalize(root.join("mods/High/CAFÉ.esp")).unwrap()
+    );
+    assert!(
+        !resolved.notices.iter().any(|notice| {
+            notice.contains("café.esp")
+                && (notice.contains("not installed") || notice.contains("absent from loadorder"))
+        }),
+        "{:?}",
+        resolved.notices
+    );
+}
+
+/// Accented plugin keys collapse across Data, enabled mods and overwrite in priority order.
+#[test]
+fn unicode_plugin_index_preserves_only_the_winning_overlay_path() {
+    let (_dir, root) = fixture();
+    write(&root, "Data/CAFÉ.esp", "base loser");
+    write(&root, "mods/Low/CAFÉ.esp", "low loser");
+    write(&root, "mods/High/café.esp", "high winner");
+    fs::write(root.join("profiles/Default/plugins.txt"), b"*caf\xe9.esp\n").unwrap();
+    fs::write(
+        root.join("profiles/Default/loadorder.txt"),
+        b"Skyrim.esm\ncaf\xe9.esp\n",
+    )
+    .unwrap();
+    let instance = Instance::open(&root).unwrap();
+    let resolved = instance.resolve(&root.join("Data"), "Default").unwrap();
+    assert_eq!(resolved.plugins, ["skyrim.esm", "café.esp"]);
+    assert_eq!(
+        resolved
+            .files
+            .keys()
+            .filter(|key| key.starts_with("caf") && key.ends_with(".esp"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["café.esp"]
+    );
+    assert_eq!(
+        fs::read_to_string(&resolved.files["café.esp"]).unwrap(),
+        "high winner"
+    );
+    write(&root, "overwrite/CAFÉ.esp", "overwrite winner");
+    let resolved = instance.resolve(&root.join("Data"), "Default").unwrap();
+    assert_eq!(
+        resolved.files["café.esp"],
+        fs::canonicalize(root.join("overwrite/CAFÉ.esp")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(&resolved.files["café.esp"]).unwrap(),
+        "overwrite winner"
+    );
+    assert!(!resolved.files.contains_key("cafÉ.esp"));
+}
+
 #[test]
 fn classic_skyrim_bare_plugins_are_active_with_and_without_loadorder() {
     for game in ["Skyrim", "skyrim"] {

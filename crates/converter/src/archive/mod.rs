@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::Write,
+    io::{ErrorKind, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -267,7 +267,7 @@ fn extract_selected_reporting(
                     let bytes_written = data.len() as u64;
                     let sha256 = hash_bytes(&data);
 
-                    atomic_write(&destination, &data)
+                    write_new(&destination, &data)
                         .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
                     if let Some(reporter) = &reporter {
                         reporter.advance(stored_bytes);
@@ -318,7 +318,7 @@ fn extract_selected_reporting(
                     let bytes_written = data.len() as u64;
                     let sha256 = hash_bytes(&data);
 
-                    atomic_write(&destination, &data)
+                    write_new(&destination, &data)
                         .wrap_err_with(|| format!("failed to extract {}", destination.display()))?;
                     if let Some(reporter) = &reporter {
                         reporter.advance(bytes_written);
@@ -458,23 +458,36 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Atomically writes data to a file, ensuring the destination is replaced atomically.
-fn atomic_write(destination: &Path, data: &[u8]) -> Result<()> {
-    let file_name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let temporary =
-        destination.with_file_name(format!(".{file_name}.{}.partial", std::process::id()));
-    let mut file = File::create(&temporary)?;
-    file.write_all(data)?;
-    file.sync_all()?;
-    drop(file);
-    if destination.exists() {
-        fs::remove_file(destination)?;
+/// Writes a new file, replacing an existing one.
+fn write_new(destination: &Path, data: &[u8]) -> Result<()> {
+    let result = File::options()
+        .write(true)
+        .create_new(true)
+        .open(destination);
+
+    match result {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(data) {
+                drop(file);
+                fs::remove_file(destination).wrap_err_with(|| {
+                    format!(
+                        "failed to remove incomplete {} after {error}",
+                        destination.display()
+                    )
+                })?;
+                return Err(error.into());
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            let parent = destination.parent().unwrap_or(Path::new("."));
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+            temporary.write_all(data)?;
+            temporary.persist(destination)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
     }
-    fs::rename(&temporary, destination)?;
-    Ok(())
 }
 
 /// Converts an archive-relative path to a safe, relative path, ensuring it does not contain
@@ -710,6 +723,43 @@ mod tests {
         let first = output.join("textures/first.dds");
         let second = output.join("textures/second.dds");
         assert_one_file(&[&blob, &first, &second]);
+    }
+
+    #[test]
+    fn a_later_archive_replaces_a_linked_vfs_file_without_changing_its_blob() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("vfs");
+        let cache = directory.path().join(".ingestion-cache");
+        let mut extracted = Vec::new();
+        for (name, bytes) in [("base.ba2", b"base"), ("override.ba2", b"over")] {
+            let archive = directory.path().join(name);
+            fs::write(
+                &archive,
+                dummy_content::ba2::general(
+                    &[dummy_content::Entry::new("textures/rock.dds", bytes)],
+                    dummy_content::ba2::Compression::None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            extracted.push(
+                ArchiveExtractor::extract_cached(
+                    &archive,
+                    &output,
+                    Path::new("unused"),
+                    &cache,
+                    None,
+                    true,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
+        }
+
+        assert_eq!(fs::read(output.join("textures/rock.dds")).unwrap(), b"over");
+        let base_blob = blob_path(&cache, &extracted[0].files[0].sha256).unwrap();
+        assert_eq!(fs::read(base_blob).unwrap(), b"base");
     }
 
     #[test]

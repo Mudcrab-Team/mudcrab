@@ -633,7 +633,20 @@ async fn inhouse_mo2_localized_banks_follow_loose_winners_and_preserve_neighbors
         "profiles/Default/loadorder.txt",
         b"Skyrim.esm\nMiddle.esp\nCAF\xc9.esp\nBrokenNames.esp\nPatch.esp\n",
     );
-    let _report = publish(&config).await;
+    // The deliberately broken winning bank loses a description, so usable output
+    // publishes with a bounded data-loss warning and an incomplete manifest.
+    let report = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(!report.complete, "{report:?}");
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("brokennames.esp"));
+    assert!(report.warnings[0].contains("local decode/lookup issues"));
+    assert!(report.warnings[0].contains("missing localized ID 17"));
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(config.output_dir.join("conversion-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["complete"], false);
     assert_publication(
         &config,
         &[
@@ -902,6 +915,197 @@ async fn missing_and_disabled_master_closures_preserve_profile_publication() {
         })
         .count();
     assert_eq!(bad, 0);
+}
+
+/// Unicode profile keys and a differently cased TES4 master resolve the same winning owner.
+#[tokio::test]
+async fn final_unicode_profile_master_override_publishes() {
+    let (_dir, config, instance) = fixture();
+    plugin(&instance.join("mods/Low/CAF\u{c9}.esp"), "Skyrim.esm", 67.0);
+    let header = [sub(b"MAST", b"cAf\xe9.ESP\0"), sub(b"DATA", &[0; 8])].concat();
+    let bytes = [
+        record(b"TES4", 0, 0, header),
+        record(
+            b"GMST",
+            0x800,
+            0,
+            [
+                sub(b"EDID", b"fJumpHeightMin\0"),
+                sub(b"DATA", &93.0f32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+    ]
+    .concat();
+    write(&instance, "overwrite/PATCH.esp", bytes);
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        b"*Middle.esp\n*caf\xe9.esp\n*Patch.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        b"Skyrim.esm\nMiddle.esp\ncaf\xe9.esp\nPatch.esp\n",
+    );
+    let report = publish(&config).await;
+    let conn = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    validate_database(&conn).unwrap();
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        names,
+        ["Skyrim.esm", "Middle.esp", "CAF\u{c9}.esp", "PATCH.esp"]
+    );
+    assert_eq!(value(&config), 93.0);
+    let winning: Vec<(u32, u32)> = conn
+        .prepare("SELECT form_id, load_order FROM records WHERE record_type='GMST'")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // GMST retains the first owner's identity despite overrides from both later plugins.
+    assert!(winning.contains(&(0x0100_0800, 3)), "{winning:?}");
+    assert!(
+        report
+            .notices
+            .iter()
+            .all(|notice| !notice.contains("required master")),
+        "{:?}",
+        report.notices
+    );
+    assert!(config.output_dir.join("conversion-manifest.json").is_file());
+    assert!(config.output_dir.join("meshes/generated.glb").is_file());
+}
+
+/// Cyclic profile plugins and their transitive dependents are omitted while neighbors publish.
+#[tokio::test]
+async fn final_cycle_closure_preserves_profile_publication() {
+    let (_dir, config, instance) = fixture();
+    for (name, master, editor) in [
+        ("CycleA.esp", "CycleC.esp", "fProfileCycleA"),
+        ("CycleB.esp", "CycleA.esp", "fProfileCycleB"),
+        ("CycleC.esp", "CycleB.esp", "fProfileCycleC"),
+        ("Child.esp", "CycleB.esp", "fProfileCycleChild"),
+        ("Grandchild.esp", "Child.esp", "fProfileCycleGrandchild"),
+    ] {
+        plugin_setting(&instance.join("mods/Low").join(name), master, editor, 17.0);
+    }
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        "*CycleA.esp\n*CycleB.esp\n*CycleC.esp\n*Child.esp\n*Grandchild.esp\n*Middle.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        "Skyrim.esm\nCycleA.esp\nCycleB.esp\nCycleC.esp\nChild.esp\nGrandchild.esp\nMiddle.esp\n",
+    );
+    let report = publish(&config).await;
+    assert_publication(&config, &["skyrim.esm", "middle.esp"], 100.0);
+    assert!(
+        !published_settings(&config)
+            .iter()
+            .any(|(editor, _, _)| editor.starts_with("fProfileCycle"))
+    );
+    let summaries: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("cyclic plugin dependencies"))
+        .collect();
+    assert_eq!(summaries.len(), 1, "{:?}", report.notices);
+    assert!(summaries[0].contains("MO2 profile Default"));
+    assert_eq!(
+        report.skipped_plugins,
+        [
+            "CycleA.esp",
+            "CycleB.esp",
+            "CycleC.esp",
+            "Child.esp",
+            "Grandchild.esp"
+        ]
+    );
+}
+
+/// A 256-full-plugin MO2 profile keeps its first 254 and publishes usable neighboring records.
+#[tokio::test]
+async fn final_full_slot_overflow_preserves_profile_publication() {
+    let (_dir, config, instance) = fixture();
+    let mut entries = String::new();
+    let mut order = String::from("Skyrim.esm\n");
+    for index in 0..255 {
+        let name = format!("Full{index:03}.esp");
+        let editor = if index == 0 {
+            "fJumpHeightMin".to_owned()
+        } else {
+            format!("fProfileFull{index:03}")
+        };
+        plugin_setting(
+            &instance.join("mods/Low").join(&name),
+            "Skyrim.esm",
+            &editor,
+            73.0,
+        );
+        entries.push_str(&format!("*{name}\n"));
+        order.push_str(&format!("{name}\n"));
+    }
+    plugin_setting(
+        &instance.join("mods/Low/Dependent.esp"),
+        "Full254.esp",
+        "fProfileOverflowDependent",
+        19.0,
+    );
+    let path = instance.join("mods/Low/Dependent.esp");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[8..12].copy_from_slice(&0x200u32.to_le_bytes());
+    fs::write(path, bytes).unwrap();
+    entries.push_str("*Dependent.esp\n");
+    order.push_str("Dependent.esp\n");
+    write(&instance, "profiles/Default/plugins.txt", entries);
+    write(&instance, "profiles/Default/loadorder.txt", order);
+    let report = publish(&config).await;
+    let expected: Vec<_> = std::iter::once("skyrim.esm".to_owned())
+        .chain((0..253).map(|index| format!("full{index:03}.esp")))
+        .collect();
+    assert_publication(
+        &config,
+        &expected.iter().map(String::as_str).collect::<Vec<_>>(),
+        73.0,
+    );
+    let settings = published_settings(&config);
+    assert!(
+        settings
+            .iter()
+            .any(|(editor, _, priority)| editor == "fProfileFull252" && *priority == 253)
+    );
+    assert!(!settings.iter().any(|(editor, _, _)| {
+        [
+            "fProfileFull253",
+            "fProfileFull254",
+            "fProfileOverflowDependent",
+        ]
+        .contains(&editor.as_str())
+    }));
+    let summaries: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("full plugin slot overflow"))
+        .collect();
+    assert_eq!(summaries.len(), 1, "{:?}", report.notices);
+    assert!(
+        summaries[0].contains('2') && summaries[0].contains("Full253.esp"),
+        "{summaries:?}"
+    );
+    assert_eq!(
+        report.skipped_plugins,
+        ["Full253.esp", "Full254.esp", "Dependent.esp"]
+    );
 }
 
 /// Verifies resume discards stale staged inputs and outputs after the MO2 profile changes.

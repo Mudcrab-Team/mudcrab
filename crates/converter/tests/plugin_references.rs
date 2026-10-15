@@ -920,6 +920,10 @@ fn every_covered_reference_and_cell_field_is_remapped_at_its_offsets() {
         (b"CELL", b"XCAS", 4, &[0]),
         (b"CELL", b"XCCM", 4, &[0]),
         (b"CELL", b"XCLR", 12, &[0, 4, 8]),
+        (b"REFR", b"XPOD", 8, &[0, 4]),
+        (b"REFR", b"XLRM", 4, &[0]),
+        (b"REFR", b"LNAM", 4, &[0]),
+        (b"REFR", b"INAM", 4, &[0]),
     ];
     for &(record_type, tag, len, offsets) in fields {
         let label = format!(
@@ -954,6 +958,58 @@ fn every_covered_reference_and_cell_field_is_remapped_at_its_offsets() {
             expected[offset..offset + 4].copy_from_slice(&(0x0200_0900 + i as u32).to_le_bytes());
         }
         assert_eq!(data, &expected, "{label}");
+    }
+}
+
+/// `LNAM` and `INAM` are FormIDs only on room marker references. On other record types the
+/// same tags keep their old handling: `NPC_` `INAM` was always a FormID, and the room marker
+/// layouts must not touch `ACHR` or `CELL` fields.
+#[test]
+fn room_marker_tags_on_other_record_types_keep_their_handling() {
+    let cases: &[(&[u8; 4], &[u8; 4], bool)] = &[
+        (b"NPC_", b"INAM", true),
+        (b"ACHR", b"LNAM", false),
+        (b"ACHR", b"INAM", false),
+        (b"ACHR", b"XLRM", false),
+        (b"CELL", b"LNAM", false),
+        (b"CELL", b"INAM", false),
+        (b"CELL", b"XLRM", false),
+    ];
+    for &(record_type, tag, remapped) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+        let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+        let patch = plugin(
+            dir.path(),
+            "Patch.esm",
+            &["Base.esm"],
+            1,
+            record(
+                record_type,
+                0x0100_0800,
+                0,
+                sub(tag, &0x0100_0900u32.to_le_bytes()),
+            ),
+        );
+        let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
+        let data = &merged[&0x0200_0800]
+            .subrecords
+            .iter()
+            .find(|(name, _)| name.as_slice() == tag)
+            .unwrap()
+            .1;
+        let expected = if remapped {
+            0x0200_0900u32
+        } else {
+            0x0100_0900
+        };
+        assert_eq!(
+            u32::from_le_bytes(data[..4].try_into().unwrap()),
+            expected,
+            "{} {}",
+            String::from_utf8_lossy(record_type),
+            String::from_utf8_lossy(tag)
+        );
     }
 }
 
@@ -1167,6 +1223,22 @@ fn database_field(conn: &rusqlite::Connection, table: &str, id: u32, tag: &[u8; 
 /// Rerunning replaces stale database blobs and old textures, retaining proven meshes/scripts.
 #[tokio::test]
 async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
+    pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(None).await;
+}
+
+/// Explicit legacy conversion preserves the same valid links while reporting malformed fields.
+#[tokio::test]
+async fn legacy_pipeline_publishes_and_rebuilds_reference_and_cell_links() {
+    pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(Some(
+        converter::config::RecordReader::Legacy,
+    ))
+    .await;
+}
+
+/// Exercise publication and cache replacement with real link targets and deliberate bad fields.
+async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
+    reader: Option<converter::config::RecordReader>,
+) {
     use converter::{AssetPipeline, PipelineConfig};
     use rusqlite::Connection;
     let dir = tempfile::tempdir().unwrap();
@@ -1180,7 +1252,18 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     .unwrap();
     plugin(&data, "Filler.esm", &["Skyrim.esm"], 1, Vec::new());
     plugin(&data, "Filler2.esm", &["Skyrim.esm"], 1, Vec::new());
-    plugin(&data, "Light.esl", &["Skyrim.esm"], 0x201, Vec::new());
+    plugin(
+        &data,
+        "Light.esl",
+        &["Skyrim.esm"],
+        0x201,
+        record(
+            b"REFR",
+            0x0100_0802,
+            0,
+            sub(b"NAME", &0x0000_0003u32.to_le_bytes()),
+        ),
+    );
     let mut xtel = 0x0200_0801u32.to_le_bytes().to_vec();
     xtel.extend([0xAB; 28]);
     let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0x94, 0x27, 0xE1]].concat();
@@ -1193,6 +1276,12 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         &["Light.esl", "Skyrim.esm"],
         0,
         [
+            record(
+                b"LGTM",
+                0x0200_0901,
+                0,
+                sub(b"EDID", b"SyntheticLinkLighting\0"),
+            ),
             record(
                 b"CELL",
                 cell,
@@ -1211,6 +1300,24 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                     9,
                     cell,
                     [
+                        record(
+                            b"REFR",
+                            0x0200_0803,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0804,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0805,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
                         record(
                             b"REFR",
                             0x0200_0800,
@@ -1316,13 +1423,31 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     let output = dir.path().join("modern");
     let mut config = PipelineConfig::new(&data, &output);
     config.plugins_file = Some(list);
+    if let Some(reader) = reader {
+        config.record_reader = reader;
+    }
     let mut expected_texture_rebuilds = 0;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
         drain.await.unwrap();
-        assert!(report.complete, "{:?}", report.warnings);
+        assert!(!report.complete, "malformed fields must remain visible");
+        assert_eq!(report.skipped, 0, "usable assets and records still publish");
+        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+        for plugin in ["links.esp", "override.esp"] {
+            let warnings: Vec<_> = report
+                .warnings
+                .iter()
+                .filter(|warning| warning.to_ascii_lowercase().contains(plugin))
+                .collect();
+            assert_eq!(warnings.len(), 1, "{:?}", report.warnings);
+            assert!(warnings[0].contains("first:"), "{}", warnings[0]);
+        }
+        let published: converter::cache::ConversionManifest =
+            serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                .unwrap();
+        assert!(!published.complete, "manifest must retain reader warnings");
         if pass == 1 {
             assert_eq!(report.converted, expected_texture_rebuilds);
             assert!(report.cache_hits > 0);
@@ -1436,5 +1561,306 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             conn.execute("UPDATE schema_info SET version=7", [])
                 .unwrap();
         }
+    }
+}
+
+/// The load-order export writes the room graph, with the marker FormIDs in load-order
+/// numbering: the plugin's own records sit in slot 2 here, its masters only name Base.esm.
+#[test]
+fn load_order_export_writes_the_room_graph_with_remapped_marker_ids() {
+    use rusqlite::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+    let floats =
+        |values: [f32; 6]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let xprm = |half: [f32; 3], shape: u32| -> Vec<u8> {
+        let mut bytes: Vec<u8> = half.iter().flat_map(|v| v.to_le_bytes()).collect();
+        bytes.extend([0u8; 12]);
+        bytes.extend(0.2f32.to_le_bytes());
+        bytes.extend(shape.to_le_bytes());
+        bytes
+    };
+    let word = |value: u32| value.to_le_bytes().to_vec();
+    let marker = |id: u32, base: u32, position: [f32; 3], extra: Vec<u8>| {
+        record(
+            b"REFR",
+            id,
+            0,
+            [
+                sub(b"NAME", &word(base)),
+                sub(
+                    b"DATA",
+                    &floats([position[0], position[1], position[2], 0.0, 0.0, 0.0]),
+                ),
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    let cell = 0x0100_0900;
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        [
+            // No XCLC and no worldspace: an interior cell.
+            record(b"CELL", cell, 0, sub(b"DATA", &[1, 0])),
+            group(
+                6,
+                cell,
+                group(
+                    9,
+                    cell,
+                    [
+                        marker(
+                            0x0100_0801,
+                            0x1F,
+                            [0.0; 3],
+                            sub(b"XPRM", &xprm([100.0; 3], 1)),
+                        ),
+                        marker(
+                            0x0100_0802,
+                            0x1F,
+                            [500.0, 0.0, 0.0],
+                            [
+                                sub(b"XPRM", &xprm([100.0; 3], 1)),
+                                sub(b"LNAM", &word(0x0100_0A00)),
+                                sub(b"INAM", &word(0x0100_0A01)),
+                                sub(b"XLRM", &word(0x0100_0801)),
+                            ]
+                            .concat(),
+                        ),
+                        marker(
+                            0x0100_0803,
+                            0x20,
+                            [250.0, 0.0, 0.0],
+                            [
+                                sub(b"XPRM", &xprm([40.0, 1.0, 60.0], 3)),
+                                sub(b"XPOD", &[word(0x0100_0801), word(0x0100_0802)].concat()),
+                            ]
+                            .concat(),
+                        ),
+                        marker(0x0100_0804, 0x99, [10.0, 20.0, 30.0], Vec::new()),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat(),
+    );
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&[base, filler, patch], &db).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    let ids = |sql: &str| -> Vec<(u32, u32)> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        ids("SELECT ref_id, cell_id FROM room_bounds ORDER BY ref_id"),
+        vec![(0x0200_0801, 0x0200_0900), (0x0200_0802, 0x0200_0900)]
+    );
+    assert_eq!(
+        ids("SELECT lighting_template_id, image_space_id FROM room_bounds WHERE ref_id=0x02000802"),
+        vec![(0x0200_0A00, 0x0200_0A01)]
+    );
+    assert_eq!(
+        ids("SELECT room_a, room_b FROM room_portals"),
+        vec![(0x0200_0801, 0x0200_0802)]
+    );
+    assert_eq!(
+        ids("SELECT room_ref, linked_ref FROM room_links"),
+        vec![(0x0200_0802, 0x0200_0801)]
+    );
+    assert_eq!(
+        ids("SELECT reference_id, room_ref FROM reference_rooms WHERE contained=1"),
+        vec![(0x0200_0804, 0x0200_0801)]
+    );
+}
+
+/// `XPOD` is an array of (origin, destination) pairs (xEdit 4.1.5f defs): a mod's portal with
+/// two pairs has all four FormIDs remapped from a non-first plugin.
+#[test]
+fn a_two_pair_xpod_is_remapped_in_every_pair() {
+    let word = |value: u32| value.to_le_bytes().to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+    let payload = [
+        word(0x0100_0801),
+        word(0x0100_0802),
+        word(0x0100_0803),
+        word(0x0100_0804),
+    ]
+    .concat();
+    assert_eq!(payload.len(), 16);
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload)),
+    );
+    let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
+    let data = &merged[&0x0200_0900]
+        .subrecords
+        .iter()
+        .find(|(name, _)| name.as_slice() == b"XPOD")
+        .expect("XPOD kept")
+        .1;
+    let expected = [
+        word(0x0200_0801),
+        word(0x0200_0802),
+        word(0x0200_0803),
+        word(0x0200_0804),
+    ]
+    .concat();
+    assert_eq!(data, &expected);
+
+    // A 12-byte XPOD (a pair and a half) is a whole number of FormIDs: kept, all three remapped.
+    // The old fixed 8-byte layout dropped it.
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload[..12])),
+    );
+    let merged = EsmParser::merge_plugins(&[base, filler, patch]).unwrap();
+    let data = &merged[&0x0200_0900]
+        .subrecords
+        .iter()
+        .find(|(name, _)| name.as_slice() == b"XPOD")
+        .expect("12-byte XPOD kept")
+        .1;
+    assert_eq!(
+        data,
+        &[word(0x0200_0801), word(0x0200_0802), word(0x0200_0803)].concat()
+    );
+
+    // A length that is not a multiple of four is dropped, like any other array.
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        record(b"REFR", 0x0100_0900, 0, sub(b"XPOD", &payload[..14])),
+    );
+    let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
+    assert!(
+        merged[&0x0100_0900]
+            .subrecords
+            .iter()
+            .all(|(name, _)| name.as_slice() != b"XPOD")
+    );
+}
+
+/// Exterior cells are told apart in the real export by a grid position or a worldspace; markers
+/// in them write no room rows.
+#[test]
+fn load_order_export_ignores_markers_in_exterior_cells() {
+    use rusqlite::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
+    let filler = plugin(dir.path(), "Filler.esm", &["Base.esm"], 1, Vec::new());
+    let word = |value: u32| value.to_le_bytes().to_vec();
+    let xprm = |half: [f32; 3], shape: u32| -> Vec<u8> {
+        let mut bytes: Vec<u8> = half.iter().flat_map(|v| v.to_le_bytes()).collect();
+        bytes.extend([0u8; 12]);
+        bytes.extend(0.2f32.to_le_bytes());
+        bytes.extend(shape.to_le_bytes());
+        bytes
+    };
+    let marker = |id: u32, base: u32, extra: Vec<u8>| {
+        record(
+            b"REFR",
+            id,
+            0,
+            [sub(b"NAME", &word(base)), sub(b"DATA", &[0u8; 24]), extra].concat(),
+        )
+    };
+    // A cell with its children: one room marker, one portal marker and one object.
+    let cell_with_markers = |cell: u32, first: u32, cell_subs: Vec<u8>| {
+        [
+            record(b"CELL", cell, 0, cell_subs),
+            group(
+                6,
+                cell,
+                group(
+                    9,
+                    cell,
+                    [
+                        marker(first, 0x1F, sub(b"XPRM", &xprm([100.0; 3], 1))),
+                        marker(
+                            first + 1,
+                            0x20,
+                            [
+                                sub(b"XPRM", &xprm([40.0, 1.0, 60.0], 3)),
+                                sub(b"XPOD", &[word(first), word(first)].concat()),
+                            ]
+                            .concat(),
+                        ),
+                        marker(first + 2, 0x99, Vec::new()),
+                    ]
+                    .concat(),
+                ),
+            ),
+        ]
+        .concat()
+    };
+    let grid = sub(b"XCLC", &[0u8; 8]);
+    let patch = plugin(
+        dir.path(),
+        "Patch.esm",
+        &["Base.esm"],
+        1,
+        [
+            // A grid position, with no worldspace group.
+            cell_with_markers(0x0100_0900, 0x0100_0800, grid.clone()),
+            // A worldspace's persistent cell (a worldspace, no grid), and a gridded one.
+            record(b"WRLD", 0x0100_0A00, 0, Vec::new()),
+            group(
+                1,
+                0x0100_0A00,
+                [
+                    cell_with_markers(0x0100_0910, 0x0100_0810, Vec::new()),
+                    cell_with_markers(0x0100_0920, 0x0100_0820, grid),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&[base, filler, patch], &db).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).unwrap() };
+    // The markers were parsed as references of those cells...
+    assert_eq!(
+        count("SELECT count(*) FROM \"references\" WHERE base_form_id IN (31, 32)"),
+        6
+    );
+    // ...and none of them became room data.
+    for table in [
+        "room_bounds",
+        "room_portals",
+        "room_links",
+        "reference_rooms",
+    ] {
+        assert_eq!(
+            count(&format!("SELECT count(*) FROM {table}")),
+            0,
+            "{table}"
+        );
     }
 }

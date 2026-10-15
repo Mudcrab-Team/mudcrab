@@ -501,8 +501,8 @@ pub fn asset_configuration_hash_for_schema(
 /// impossible otherwise, so a cross-volume or linkless filesystem falls back to a copy.
 ///
 /// Linking is safe because nothing writes a shared file in place: extraction and the loose-asset
-/// overlay replace the path (unlink, then write or copy over the new, unshared file) and no cache
-/// blob is ever written in place. An existing `to` is removed rather than written through, and is
+/// overlay replace the path with a new, unshared file (extraction renames it over the path, the
+/// overlay unlinks the path and copies) and no cache blob is ever written in place. An existing `to` is removed rather than written through, and is
 /// left alone when it already names `from`. The destination's parent directory must exist.
 pub(crate) fn link_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     link_or_copy_with(from, to, |from, to| fs::hard_link(from, to))
@@ -784,9 +784,11 @@ mod tests {
         }
     }
 
+    /// Historical schema-15 hashes retain their explicit legacy reader and original settings.
     #[test]
     fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
-        let config = crate::config::PipelineConfig::new("Data", "output");
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Legacy;
         // Exact configuration hash in the protected original schema-15
         // manifest and its metadata rebuild's retained producer provenance.
         let recorded = "b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435";

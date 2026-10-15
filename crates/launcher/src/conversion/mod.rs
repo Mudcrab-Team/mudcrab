@@ -755,6 +755,10 @@ pub(crate) mod tests {
         assert_eq!(config.data_dir, data);
         assert_eq!(config.output_dir, output);
         assert_eq!(
+            config.record_reader,
+            converter::config::RecordReader::Inhouse
+        );
+        assert_eq!(
             app.world().resource::<ConversionStatus>().overall_percent(),
             0.0,
             "a run that has not reported anything shows an empty bar"

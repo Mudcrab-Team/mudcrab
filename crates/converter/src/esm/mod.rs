@@ -25,6 +25,7 @@ pub mod lodsettings;
 pub mod mmap_reader;
 pub mod plugins_txt;
 pub mod records;
+pub mod rooms;
 pub mod types;
 pub use plugins_txt::{
     OFFICIAL_MASTERS, read_plugins_txt, read_plugins_txt_with_options, read_skyrim_ccc,
@@ -527,6 +528,15 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // Image space, music, acoustic space, and the region a cell takes its sky and weather
         // from (`XCCM` names a REGN, not a climate).
         b"XCIM" | b"XCMO" | b"XCAS" | b"XCCM" if record_type == b"CELL" => Fixed(SINGLE),
+        // Room marker references (REFR only; `LNAM` and `INAM` mean other things on other
+        // record types): the rooms a portal joins, links between rooms, and a room's own
+        // lighting template and image space. `XPOD` is an array of (origin, destination)
+        // FormID pairs (xEdit 4.1.5f defs: `wbArray(XPOD, 'Portal Data', wbStruct('References',
+        // [wbFormIDCk('Origin'), wbFormIDCk('Destination')]))`), so every u32 is a FormID.
+        // The official masters only ever store one pair (8 bytes). Like every `Array`, a
+        // length that is not a multiple of the stride is dropped and reported.
+        b"XPOD" if record_type == b"REFR" => Array { stride: 4 },
+        b"XLRM" | b"LNAM" | b"INAM" if record_type == b"REFR" => Fixed(SINGLE),
         // Regions.
         b"XCLR" if record_type == b"CELL" => Array { stride: 4 },
         _ => return None,
@@ -569,9 +579,9 @@ fn remap_record_form_ids(
             warnings.out_of_range(plugin_name, form_id, record_type);
         }
         let owner = if local_index < masters.len() {
-            load_order::normalize_plugin_name(&masters[local_index])
+            shared::plugin_selection::normalize_plugin_name(&masters[local_index])
         } else {
-            load_order::normalize_plugin_name(plugin_name)
+            shared::plugin_selection::normalize_plugin_name(plugin_name)
         };
         if let Some(index) = light_indices.get(&owner) {
             if form_id & 0x00ff_ffff > 0xfff {

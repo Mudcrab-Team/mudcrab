@@ -9,10 +9,10 @@ use std::{
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordReader {
-    /// Existing hand-written record reader.
-    #[default]
+    /// Hand-written record reader, available through an explicit choice.
     Legacy,
-    /// MudCrab's schema-driven Rust decoder.
+    /// MudCrab's default schema-driven Rust decoder.
+    #[default]
     Inhouse,
 }
 
@@ -48,7 +48,7 @@ pub struct PipelineConfig {
     /// Resolve this MO2 profile over physical Data; incompatible with plugins_file.
     #[serde(default)]
     pub mo2: Option<mo2::Selection>,
-    /// Defaults to legacy for older serialized configurations.
+    /// Defaults to the in-house reader when older serialized configurations omit it.
     #[serde(default)]
     pub record_reader: RecordReader,
     /// Ordered schema JSON add-ons for the in-house reader.
@@ -57,7 +57,7 @@ pub struct PipelineConfig {
     /// A run freezes schema bytes before creating or recovering output.
     #[serde(skip)]
     pub(crate) runtime_schemas: Option<std::sync::Arc<crate::records::addons::RuntimeSchemas>>,
-    /// Explicit Creation list; absent uses Skyrim.ccc beside Data for player lists.
+    /// Explicit Creation list; absent uses Skyrim.ccc beside Data with the built-in fallback.
     #[serde(default)]
     pub skyrim_ccc_file: Option<PathBuf>,
     /// Explicit General sTestFile settings; no ambient profile is read.
@@ -129,7 +129,7 @@ impl PipelineConfig {
             cache_dir: None,
             plugins_file: None,
             mo2: None,
-            record_reader: RecordReader::Legacy,
+            record_reader: RecordReader::default(),
             schema_addons: Vec::new(),
             runtime_schemas: None,
             skyrim_ccc_file: None,
@@ -430,6 +430,23 @@ fn parent_or_cwd(path: &Path) -> &Path {
 mod tests {
     use super::*;
 
+    /// New and older unstamped configurations use in-house while explicit legacy stays selected.
+    #[test]
+    fn record_reader_defaults_to_inhouse_and_preserves_serialized_choices() {
+        let config = PipelineConfig::new("Data", "pack");
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert_eq!(RecordReader::default(), RecordReader::Inhouse);
+
+        let mut serialized = serde_json::to_value(&config).unwrap();
+        serialized.as_object_mut().unwrap().remove("record_reader");
+        let unstamped: PipelineConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(unstamped.record_reader, RecordReader::Inhouse);
+
+        serialized["record_reader"] = serde_json::json!("legacy");
+        let legacy: PipelineConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(legacy.record_reader, RecordReader::Legacy);
+    }
+
     /// Older serialized configs keep default selection inputs and explicit LOD origins.
     #[test]
     fn config_v90_accepts_legacy_configs_without_inventing_lod_origins() {
@@ -452,7 +469,7 @@ mod tests {
         assert!(config.skyrim_ccc_file.is_none());
         assert!(config.skyrim_ini_file.is_none());
         assert!(config.mo2.is_none());
-        assert_eq!(config.record_reader, RecordReader::Legacy);
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
         assert!(config.schema_addons.is_empty());
         assert!(config.lod_origins.is_empty());
         assert!(!config.no_lod);

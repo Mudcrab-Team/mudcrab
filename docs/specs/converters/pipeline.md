@@ -2,8 +2,9 @@
 
 This document outlines the conversion pipeline to ingest legacy Skyrim formats (`.bsa`, `.dds`, `.nif`, `.hkx`, `.esm`) and output modern asset standards suitable for modern web & native runtimes (Bevy Engine, glTF 2.0, KTX2, WebGPU).
 
-The converter accepts `--record-reader legacy|inhouse`, with `legacy` as the
-default. Both routes use the same plugin ordering, runtime tables and terrain
+The converter uses the in-house reader by default. `--record-reader legacy`
+selects the hand-written reader; `--record-reader inhouse` selects the default
+explicitly. Both routes use the same plugin ordering, runtime tables and terrain
 cache writer. The in-house route scans memory-mapped records and decodes authored
 schema entries before building canonical projection inputs; it does not run the
 legacy record decoder for supported records. Unknown record types remain opaque.
@@ -14,7 +15,7 @@ usable winner. Legacy decoding recovers at checked record boundaries or the end
 of the current bounded group, and never searches corrupt payload bytes for a
 replacement header. Malformed optional native links are cleared or their
 occurrences omitted; malformed required links omit only their record candidate.
-With an explicit player list or MO2 profile, unusable TES4/MAST headers and their dependency closures warn and skip while usable neighbors continue; an empty usable selection fails clearly. Unusable selection authority, final invalid order and cycles remain conversion errors. Automatic discovery retains its strict missing-master/header policy.
+Player lists, MO2 profiles and automatic discovery omit unusable TES4/MAST headers and their dependency closures while usable neighbors continue; a nonempty selection reduced to no usable plugins fails clearly. Selection recovery also omits dependency cycles, remaining dependency inversions and slot overflow with their dependents, as described below. Unusable selection authority remains a conversion error.
 Real deletions still apply. LAND with rejected authored heights
 or incomplete framing is skipped; genuinely heightless texture/color records
 retain the existing default-height cache behavior.
@@ -187,7 +188,21 @@ regenerate both caches and the layer table.
 
 Explicit player selection is available through `--plugins-file FILE`. Optional `--skyrim-ccc-file FILE` overrides the game-folder Creation list, and `--skyrim-ini-file FILE` supplies General test-file settings without reading ambient profiles. These options also exist as `PipelineConfig.plugins_file`, `skyrim_ccc_file` and `skyrim_ini_file`. Selection rules and recoverable missing-master behavior are documented in [the database specification](db-schema.md). Automatic discovery remains the default.
 
-MO2 profiles use the same official/Creation activation, Windows-1252 decoding, last-duplicate selection and missing-master recovery. `--mo2-instance` and `--mo2-profile` retain the profile's file overlay and `loadorder.txt` order after implicitly active plugins. An active plugin omitted from `loadorder.txt` appends after ordered plugins, in `plugins.txt` order, with a warning. Missing Data entries and missing/disabled-master closures warn and skip while usable neighbors publish. `Skyrim.ccc` comes from the game folder beside physical Data; unreadable or missing CCC warns and continues. MO2 selection and `--plugins-file` are mutually exclusive. In-house localized fields use the effective winning loose English string banks from the MO2 Data overlay before archive banks; malformed winning banks remain unresolved with counted diagnostics, without reverting to a losing bank. Metadata rebuild via `--reuse-assets` requires authenticated physical Data and recorded plugin order; it rejects MO2 profile selection before source/output work. Use normal conversion for an MO2 profile.
+MO2 profiles use the same official/Creation activation, Windows-1252 decoding, last-duplicate selection and missing-master recovery. `--mo2-instance` and `--mo2-profile` retain the profile's file overlay and `loadorder.txt` order after implicitly active plugins. An active plugin omitted from `loadorder.txt` appends after ordered plugins, in `plugins.txt` order, with a warning. Missing Data entries and missing/disabled-master closures warn and skip while usable neighbors publish. `Skyrim.ccc` comes from the game folder beside physical Data. When it is missing or unreadable, player and MO2 selection activate the installed subset of `ccBGSSSE001-Fish.esm`, `ccQDRSSE001-SurvivalMode.esl`, `ccBGSSSE037-Curios.esl`, `ccBGSSSE025-AdvDSGS.esm` and `_ResourcePack.esl`, in that order after the five official masters. A readable CCC, including an empty file, remains authoritative. MO2 selection and `--plugins-file` are mutually exclusive. In-house localized fields use the effective winning loose English string banks from the MO2 Data overlay before archive banks; malformed winning banks remain unresolved with counted diagnostics, without reverting to a losing bank. Metadata rebuild via `--reuse-assets` requires authenticated physical Data and recorded plugin order; it rejects MO2 profile selection before source/output work. Use normal conversion for an MO2 profile.
+
+All plugin-name keys share Unicode lowercase normalization, including TES4 master lookup, direct MO2 plugin overlays and plugin-to-archive matching. Player, MO2 and automatic discovery omit unusable headers, missing-master closures, dependency cycles and their transitive dependents. Player and MO2 orders also omit a plugin still placed before one of its masters, with its dependents, instead of moving it. After each path establishes its order, it keeps the first 254 full and 4,096 light plugins and omits overflow plus its dependents without backfilling. Bounded notices reach progress and the conversion report. `skipped_plugins` lists every original filename removed by recovery, once each in pre-recovery selection order, including every file in an attempted ambiguous identity; deliberately unchecked plugins are not recovery exclusions. `load_order` lists surviving original filenames in published database slot order. Surviving paths determine slots and all subsequent conversion work.
+
+Player selection and automatic discovery reject all installed files sharing a normalized filename, with one bounded notice per ambiguous identity. MO2 similarly rejects ambiguous direct plugin identities within the winning overlay layer; a higher layer's unique plugin still replaces the lower layer normally. Other asset collisions retain the resolver's existing validation. Header validation and master recovery use only the remaining files, so dependents of an ambiguous name are also omitted while usable neighbors continue.
+
+One shared matcher defines archive ownership, MO2 admission and priority: the normalized archive stem equals a plugin stem or follows it with a space, `-` or `_`, such as ` - Textures`, `-Textures` or `_Textures`. The longest matching installed stem determines ownership. A companion is extracted only when a plugin with that owner stem survives selection; disabled and recovered-away companions cannot override surviving assets. Archives without an installed direct-Data owner retain standalone/base admission outside MO2, including archive-only conversions. Ignored nested plugins do not claim ownership.
+
+MO2 also checks the longest installed owner, using all root plugin identities in the resolved virtual filesystem before recovery. This inventory includes unchecked and recovered-away plugins whose physical source files live in enabled mods or overwrite rather than Data. A shorter surviving prefix cannot activate a more specific rejected owner's companion. Plugins with different extensions may share a stem; any surviving same-stem plugin keeps its companions active. Active plugins' `_` and `-` companions are admitted in MO2 under the shared matcher. MO2 retains its active-companion requirement and rejects unowned archives. Both paths retain plugin load-order sorting and loose-file priority. Each full conversion reconstructs archive inputs and publishes only current assets, so recovery also removes formerly published rejected companions on a warm conversion.
+
+Metadata rebuilds use the source package's checksum-matched plugin order for archive priority. The longest installed direct-Data owner must appear in that order before an archive supplies current LOD settings or terrain diffuse inputs. Verified source assets remain retained.
+
+Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
+
+Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The `warnings` field describes conversion failures and reader data loss; successful compatibility remaps remain `notices`. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
 
 ---
 
@@ -258,8 +273,9 @@ MO2 profiles use the same official/Creation activation, Windows-1252 decoding, l
   aborts the transactional publication when any required texture fails.
 - Asset paths use one lowercase canonical key. Archive overlays follow plugin load order, loose
   files have highest priority, and normalized collisions inside one source layer are fatal.
-  An archive's full filename attaches to the last selected plugin whose stem is followed by
-  ` - ` or `.`. Archives with the same owner use lowercase filename order; unattached archives
+  The shared matcher attaches an archive to its longest matching active plugin stem, using
+  exact matches or a following space, dash or underscore and retaining the first slot for
+  equal stems. Archives with the same owner use ASCII-lowercase stem order; unattached archives
   follow attached ones. This deterministic tie policy has not been established as equivalent
   to every mod manager's archive insertion order. BSA header file-type categories are advisory;
   unknown category bits do not relax layout, count, offset or compression validation.
@@ -406,7 +422,7 @@ are not the same directory.
    - All Bethesda ESM multi-byte numeric primitives (integers, floats, FormIDs, and subrecord payloads such as `ACHR` `PDTO`) are parsed as little-endian bytes (`from_le_bytes`).
 4. **One File per Extracted Entry (`link_or_copy`):**
    - In the staging workspace, every extracted archive entry is stored twice, as `vfs/<path>` and as the content-addressed blob in `.ingestion-cache/sha256/<xx>/<hash>`, and on a fresh install and on a cache hit alike those two names are a hard link on one file rather than two copies (a cross-volume or linkless filesystem falls back to a copy). Neither ships in the published runtime pack (§5).
-   - Every writer into `vfs/` or the cache replaces the path (unlink, then write or copy) instead of writing through it, so a write under one name never changes the other.
+   - Every writer into `vfs/` or the cache replaces the path with a new file (renamed over it, or unlink, then copy) instead of writing through it, so a write under one name never changes the other.
    - The exception is a loose-asset override: `overlay_loose_assets` replaces the `vfs` entry with the loose file's own bytes, so that path is no longer a link to the archive entry's blob.
    - Resume and re-conversion writers follow the same replace-not-write rule: pack publication links staging files into the output, so a resumed run must unlink before rewriting any staged artifact it shares with a previous pack.
 

@@ -368,6 +368,9 @@ fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
     for notice in &report.notices {
         println!("  note: {notice}");
     }
+    for warning in &report.selection_warnings {
+        println!("  warning: {warning}");
+    }
     let (bytes, files) = artifact_size(&cli.output, &report.artifacts);
     println!(
         "  output: {} in {} artifacts ({})",
@@ -537,9 +540,10 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
-    if cli.record_reader == RecordReader::Inhouse {
-        command.push_str(" --record-reader inhouse");
-    }
+    command.push_str(match cli.record_reader {
+        RecordReader::Legacy => " --record-reader legacy",
+        RecordReader::Inhouse => " --record-reader inhouse",
+    });
     for path in &cli.schema_addons {
         command.push_str(&format!(" --schema-addon \"{}\"", path.display()));
     }
@@ -783,7 +787,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
-    let mut record_reader = RecordReader::Legacy;
+    let mut record_reader = RecordReader::default();
     let mut schema_addons = Vec::new();
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
@@ -1049,6 +1053,7 @@ Use the original conversion's reader/schema identity and encoding settings. --te
 --texture-fallback-quality; it does not select ETC1S encoding.
 
 Converts a Skyrim Data directory into runtime assets.
+The in-house record reader is the default; --record-reader legacy selects the hand-written reader.
 Reader recovery preserves usable neighboring records and reports bounded data-loss warnings.
 Warnings mark the report and manifest incomplete and make conversion exit 1 even when the
 usable output was published. --report-json and the launcher show these warnings; metadata
@@ -1061,15 +1066,25 @@ or the first sorted profile if that selection is absent or stale.
 MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are not supported.
 
 --plugins-file reads Windows-1252 player selection. Installed official masters and
-Skyrim.ccc Creations are always active. --skyrim-ccc-file overrides the game-folder
-CCC path. --skyrim-ini-file explicitly supplies General sTestFile settings; no
-ambient profile is read.
+readable Skyrim.ccc Creations are always active. Missing or unreadable CCC activates
+installed Fish, Survival Mode, Rare Curios, Saints and Seducers and _ResourcePack,
+in that order, with a report warning. Readable CCC, including an empty file, wins.
+--skyrim-ccc-file overrides the game-folder CCC path. --skyrim-ini-file explicitly
+supplies General sTestFile settings; no ambient profile is read. Without
+--plugins-file or MO2 selection, automatic discovery orders plugins by dependency and skips unusable
+or ambiguously named plugins with bounded notices.
+The JSON report lists every recovery exclusion in skipped_plugins and surviving filenames
+in load_order; selection_warnings contains Creation fallback warnings separately from
+failed asset conversions. Archive companions match an exact plugin stem or a following
+space, dash or underscore. The longest installed owner must survive selection; unowned
+archives are admitted outside MO2 and excluded in MO2.
 
 MO2 and --plugins-file selections cannot be combined. Automatic discovery applies
 when neither selection is supplied.
 
---schema-addon <JSON> may be repeated with --record-reader inhouse to add record types
-and explicitly extend fields. The full batch is checked before conversion starts.
+--schema-addon <JSON> may be repeated to add in-house record types and explicitly
+extend fields. The full batch is checked before conversion starts. Schema add-ons
+cannot be combined with --record-reader legacy.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1097,6 +1112,39 @@ conversion with --mo2-instance. It cannot resume or cooperatively cancel."
 
 #[cfg(test)]
 mod tests {
+    /// Default conversion routes use in-house and explicit legacy survives configuration and resume.
+    #[test]
+    fn cli_defaults_to_inhouse_and_preserves_explicit_legacy() {
+        let conversion = parse_cli(args(&["Data", "pack"])).unwrap();
+        assert_eq!(conversion.record_reader, RecordReader::Inhouse);
+        assert_eq!(
+            conversion.pipeline_config().record_reader,
+            RecordReader::Inhouse
+        );
+
+        let metadata = parse_cli(args(&["Data", "pack", "--reuse-assets", "source"])).unwrap();
+        assert_eq!(
+            metadata.pipeline_config().record_reader,
+            RecordReader::Inhouse
+        );
+        let Command::Repair(repair, _) =
+            parse_command(args(&["repair-failed", "Data", "pack"])).unwrap()
+        else {
+            panic!("expected repair");
+        };
+        assert_eq!(
+            repair.pipeline_config().record_reader,
+            RecordReader::Inhouse
+        );
+
+        let legacy = parse_cli(args(&["Data", "pack", "--record-reader", "legacy"])).unwrap();
+        assert_eq!(legacy.pipeline_config().record_reader, RecordReader::Legacy);
+        assert!(
+            resume_command("converter", &legacy, Path::new("staging"))
+                .contains(" --record-reader legacy")
+        );
+    }
+
     /// Repeated schema paths preserve input order through parsing and resume commands.
     #[test]
     fn schema_addon_cli_preserves_order_and_resume_flags() {
@@ -1189,7 +1237,7 @@ mod tests {
         .unwrap();
         let resume = resume_command("converter", &cli, Path::new("out.staging-1-2"));
         assert!(resume.contains("--mo2-instance"));
-        assert!(resume.ends_with("--mo2-profile \"Zed\""));
+        assert!(resume.ends_with("--mo2-profile \"Zed\" --record-reader inhouse"));
         assert!(parse_cli(args(&["Data", "--mo2-profile", "Zed"])).is_err());
         assert!(
             parse_cli(args(&[
@@ -1695,7 +1743,7 @@ mod tests {
         );
     }
 
-    /// The resume command repeats the paths, quotes them, and keeps the GPU encoder flags.
+    /// The resume command quotes paths and preserves the reader and GPU encoder options.
     #[test]
     fn names_the_exact_command_that_resumes_a_kept_staging_folder() {
         let cli = Cli {
@@ -1725,18 +1773,21 @@ mod tests {
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
             resume_command("converter.exe", &cli, staging),
-            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --record-reader legacy"
         );
         // A renamed binary is named as it is, quoted when its name has a space.
         assert_eq!(
             resume_command("mudcrab converter", &cli, staging),
-            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --record-reader legacy"
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
-        assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        assert!(
+            resume_command("converter", &no_lod, staging)
+                .ends_with(" --no-lod --record-reader inhouse")
+        );
         let inhouse = parse_cli(vec![
             "Data".into(),
             "--record-reader".into(),
@@ -1764,10 +1815,9 @@ mod tests {
             },
             ..cli
         };
-        assert!(
-            resume_command("converter.exe", &gpu, staging)
-                .ends_with(" --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256")
-        );
+        assert!(resume_command("converter.exe", &gpu, staging).ends_with(
+            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --record-reader legacy"
+        ));
     }
 
     /// Integration failures count as failures without skipped inputs and point to the

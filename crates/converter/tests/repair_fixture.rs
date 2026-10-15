@@ -61,6 +61,7 @@ async fn repaired_archive_respects_per_kind_reuse_and_later_failure_drops_old_as
     fs::write(&archive, b"broken BSA before repair").unwrap();
     let output = root.path().join("modern");
     let mut config = PipelineConfig::new(&data, &output);
+    config.record_reader = converter::config::RecordReader::Legacy;
     config.no_lod = true;
     config.cpu_jobs = 2;
     let first = run_fixture(&config).await;

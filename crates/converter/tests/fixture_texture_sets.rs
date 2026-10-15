@@ -142,7 +142,8 @@ fn manifest(output: &Path) -> ConversionManifest {
 
 /// Reproduces the old physical-slot projection, encoding bytes and honest cache proofs.
 fn legacy_pack(data: &Path, output: &Path, schema: u32) -> ConversionManifest {
-    let config = PipelineConfig::new(data, output);
+    let mut config = PipelineConfig::new(data, output);
+    config.record_reader = converter::config::RecordReader::Legacy;
     let mut legacy = manifest(output);
     legacy.schema_version = schema;
     if schema != CONVERTER_SCHEMA_VERSION {
