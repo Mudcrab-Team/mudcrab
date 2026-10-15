@@ -223,7 +223,12 @@ async fn main() -> Result<()> {
                 report.failures.len(),
                 report.directory.display()
             );
-            if !report.failures.is_empty() {
+            if !report.record_data_complete {
+                eprintln!(
+                    "Record data remains incomplete or unverified. Run normal conversion to recheck plugin data and rebuild world metadata."
+                );
+            }
+            if !report.failures.is_empty() || !report.record_data_complete {
                 std::process::exit(1);
             }
             return Ok(());
@@ -1049,6 +1054,9 @@ repair-failed stages only manifest failures and missing dependencies in a repair
 It preserves the record projection and cell cache, and finalizes asset references in the staged database.
 --apply validates the pack's existing hashes, publishes validated repairs with backups,
 and updates the manifest last.
+Asset repair does not rebuild records. Unresolved record loss or missing historical
+record-completeness proof keeps the pack incomplete and makes repair exit 1 even
+when corrected assets were published. Normal conversion rechecks record data.
 Use the original conversion's reader/schema identity and encoding settings. --texture-etc1s-quality is an alias for
 --texture-fallback-quality; it does not select ETC1S encoding.
 

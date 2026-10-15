@@ -125,5 +125,6 @@ expression: manifest
     "pex": 2
   },
   "pruned_texture_references": {},
+  "record_data_complete": true,
   "schema_version": 26
 }

@@ -420,6 +420,9 @@ impl AssetPipeline {
             retained_mesh_schema_version: None,
             retained_asset_configuration_hash: None,
             complete: false,
+            // A fresh run has no record losses when there are no selected plugins.
+            // The authoritative reader replaces this proof when plugins are converted.
+            record_data_complete: Some(true),
             configuration_hash: expected_configuration.clone(),
             schema_addons: config.schemas()?.identities().to_vec(),
             asset_configuration_hashes: ["nif", "dds", "pex"]
@@ -790,6 +793,7 @@ impl AssetPipeline {
                     string_sources,
                     Some(config.schemas()?.as_ref()),
                 )?;
+            manifest.record_data_complete = Some(conversion.warnings.is_empty());
             report.warnings.extend(conversion.warnings);
             report.notices.extend(conversion.notices);
             let merged = conversion.records;

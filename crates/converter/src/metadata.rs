@@ -518,6 +518,8 @@ async fn rebuild_into(
         &vfs,
         Some(config.schemas()?.as_ref()),
     )?;
+    // This fresh read owns record completeness independently of the retained assets.
+    manifest.record_data_complete = Some(conversion.warnings.is_empty());
     report.warnings.extend(conversion.warnings);
     report.notices.extend(conversion.notices);
     let merged = conversion.records;

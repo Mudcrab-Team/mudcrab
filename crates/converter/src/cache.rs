@@ -193,6 +193,10 @@ pub struct ConversionManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_asset_configuration_hash: Option<String>,
     pub complete: bool,
+    /// Whether the last authoritative record conversion had no data-loss warnings.
+    /// Missing historical proof stays unknown; asset repair cannot establish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_data_complete: Option<bool>,
     #[serde(default)]
     pub configuration_hash: String,
     /// Ordered identities of the runtime schema add-ons used by this pack.
@@ -693,6 +697,22 @@ pub fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Historical absence stays unknown while known loss and success round-trip distinctly.
+    #[test]
+    fn record_completeness_preserves_unknown_false_and_true() {
+        let original = serde_json::to_value(ConversionManifest::default()).unwrap();
+        assert!(original.get("record_data_complete").is_none());
+        let historical: ConversionManifest = serde_json::from_value(original.clone()).unwrap();
+        assert_eq!(historical.record_data_complete, None);
+        for complete in [false, true] {
+            let mut json = original.clone();
+            json["record_data_complete"] = serde_json::json!(complete);
+            let manifest: ConversionManifest = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(manifest.record_data_complete, Some(complete));
+            assert_eq!(serde_json::to_value(manifest).unwrap(), json);
+        }
+    }
 
     /// Known prior adapter proofs retain asset bytes without accepting unknown readers.
     #[test]

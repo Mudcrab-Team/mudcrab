@@ -266,6 +266,7 @@ fn incomplete(report: &PipelineReport, output: &Path, warning_count: usize) {
         manifest["complete"], false,
         "manifest and report completeness must agree"
     );
+    assert_eq!(manifest["record_data_complete"], false);
     assert!(
         output.join("cell_cache.rkyv").is_file(),
         "usable pack must publish"
@@ -317,6 +318,7 @@ fn complete_notice_pack(report: &PipelineReport, output: &Path, reader: RecordRe
         serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
             .unwrap();
     assert_eq!(manifest["complete"], true);
+    assert_eq!(manifest["record_data_complete"], true);
     assert!(output.join("cell_cache.rkyv").is_file());
 }
 

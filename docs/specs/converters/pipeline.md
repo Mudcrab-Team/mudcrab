@@ -364,6 +364,14 @@ the output locks, verifies existing outputs, updates the manifest and database,
 and publishes transactionally with recovery of the last good output after an
 interrupted swap. Missing winning sources remain failures; known authoring resources and geometryless overlay templates are recorded as excluded.
 Repaired outputs retain per-kind asset settings and source/integrity proofs.
+The manifest records record-data completeness separately from asset failures.
+Only normal conversion or a metadata rebuild can establish that proof from a
+fresh record read. Asset repair preserves unresolved record loss and missing
+historical proof: corrected assets may publish, but the pack remains incomplete
+and the repair CLI warns and exits `1`. Run normal conversion to recheck record
+data; verified assets remain eligible for reuse. A healthy record source with
+only asset failures can become complete after repair. Preview remains separate
+from publication and succeeds when its assets and recorded record proof are valid.
 Archive extraction candidates stay independent of converted-asset eligibility;
 old failed entries cannot override current repaired or excluded decisions.
 
