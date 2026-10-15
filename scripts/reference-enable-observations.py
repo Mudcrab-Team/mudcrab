@@ -6,6 +6,7 @@ neither generation nor verification observes Skyrim or Mudcrab running.
 """
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import math
@@ -198,7 +199,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         validate_destination(args.database, args.output, args.verify)
-        with sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro", uri=True) as database:
+        with closing(sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro", uri=True)) as database, database:
             database.row_factory = sqlite3.Row
             deadline = time.monotonic() + 120
             database.set_progress_handler(lambda: time.monotonic() > deadline, 10000)

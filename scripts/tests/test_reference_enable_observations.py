@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -24,7 +25,7 @@ class ManifestSafetyTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.database = self.root / "source.db"
-        with sqlite3.connect(self.database) as database:
+        with contextlib.closing(sqlite3.connect(self.database)) as database, database:
             database.executescript('''
                 CREATE TABLE schema_info(version INTEGER);
                 INSERT INTO schema_info VALUES(7);
@@ -56,6 +57,17 @@ class ManifestSafetyTests(unittest.TestCase):
         self.assertEqual(self.database.read_bytes(), self.original_database)
         self.assertFalse(list(self.root.glob(".*.tmp")))
 
+    def create_symlink(self, link, target):
+        try:
+            link.symlink_to(target)
+        except NotImplementedError as error:
+            self.skipTest(f"symlink creation is unavailable: {error}")
+        except OSError as error:
+            if (error.errno in {errno.EPERM, errno.EACCES, errno.ENOSYS, errno.ENOTSUP}
+                    or getattr(error, "winerror", None) == 1314):
+                self.skipTest(f"symlink creation is unavailable: {error}")
+            raise
+
     def rejected_before_query(self, destination_flag, destination):
         error = io.StringIO()
         with mock.patch.object(TOOL.sqlite3, "connect") as connect:
@@ -75,16 +87,19 @@ class ManifestSafetyTests(unittest.TestCase):
                 self.assertIn("must differ from the database", run.stderr)
                 self.assert_preserved()
 
-    def test_symlink_and_hardlink_database_outputs_are_rejected_before_query(self):
+    def test_symlink_database_output_is_rejected_before_query(self):
         symlink = self.root / "symlink.db"
-        symlink.symlink_to(self.database)
+        self.create_symlink(symlink, self.database)
+        self.assertIn("must differ from the database",
+                      self.rejected_before_query("--output", symlink))
+        self.assertEqual(symlink.read_bytes(), self.original_database)
+
+    def test_hardlink_database_output_is_rejected_before_query(self):
         hardlink = self.root / "hardlink.db"
         os.link(self.database, hardlink)
-        for output in [symlink, hardlink]:
-            with self.subTest(output=output.name):
-                self.assertIn("must differ from the database",
-                              self.rejected_before_query("--output", output))
-                self.assertEqual(output.read_bytes(), self.original_database)
+        self.assertIn("must differ from the database",
+                      self.rejected_before_query("--output", hardlink))
+        self.assertEqual(hardlink.read_bytes(), self.original_database)
 
     def test_verification_cannot_name_the_database_or_a_hardlink(self):
         hardlink = self.root / "verify.db"
@@ -103,7 +118,7 @@ class ManifestSafetyTests(unittest.TestCase):
     def test_dangling_output_symlink_is_not_replaced(self):
         output = self.root / "manifest.json"
         target = self.root / "absent.json"
-        output.symlink_to(target)
+        self.create_symlink(output, target)
         self.assertIn("already exists", self.rejected_before_query("--output", output))
         self.assertTrue(output.is_symlink())
         self.assertFalse(target.exists())
@@ -130,6 +145,37 @@ class ManifestSafetyTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr)
         self.assertEqual(output.read_bytes(), original_manifest)
         self.assert_preserved()
+
+    def test_read_connection_closes_after_success_or_build_failure(self):
+        build = TOOL.build
+        for failure in [None, sqlite3.OperationalError("injected query failure"), KeyboardInterrupt()]:
+            with self.subTest(failure=type(failure).__name__):
+                output = self.root / f"connection-{type(failure).__name__}.json"
+                connections = []
+
+                def observed_build(database, path):
+                    connections.append(database)
+                    self.addCleanup(database.close)
+                    self.assertTrue(database.in_transaction)
+                    if failure is not None:
+                        raise failure
+                    return build(database, path)
+
+                with mock.patch.object(TOOL, "build", side_effect=observed_build):
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        if failure is None:
+                            TOOL.main([str(self.database), "--output", str(output)])
+                        else:
+                            expected = SystemExit if isinstance(failure, sqlite3.Error) else type(failure)
+                            with self.assertRaises(expected) as raised:
+                                TOOL.main([str(self.database), "--output", str(output)])
+                            if expected is SystemExit:
+                                self.assertEqual(raised.exception.code, 1)
+                self.assertEqual(len(connections), 1)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[0].execute("SELECT 1")
+                self.assertEqual(output.exists(), failure is None)
+                self.assert_preserved()
 
     def test_changed_verification_manifest_is_rejected_without_modifying_it(self):
         output = self.root / "manifest.json"
