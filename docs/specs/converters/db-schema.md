@@ -2,13 +2,23 @@
 
 This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](../../../crates/converter/src/esm/exporter.rs).
 
+The in-house reader is the default; `--record-reader legacy` selects the
+hand-written frontend. Both record frontends use the same runtime column contract and TXST slot
+interpretation: diffuse TX00, normal TX01, mask TX02, glow
+TX03, height TX04, environment TX05, detail TX06, and specular TX07. The existing
+`detail_path` column carries TX06 multilayer data; TX03 is the source's
+glow/detail-map slot and TX07 its backlight-mask/specular slot. These role names
+retain the runtime approximation and do not imply complete shader support.
+ARMO model projection uses MOD2 with MOD4 as the female world-model fallback
+for both frontends. MOD3 is an ARMA model slot, not an ARMO world-model path.
+
 ---
 
 ## 1. Schema Overview
 
-`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). With `PipelineConfig.plugins_file` (CLI `--plugins-file`), the converter reads Windows-1252 selection, keeps the last duplicate entry's position and checkbox, and matches installed filenames case-insensitively. Installed Skyrim, Update, Dawnguard, HearthFires and Dragonborn masters are always active in that fixed order, followed by installed entries of `Skyrim.ccc`. `skyrim_ccc_file` (`--skyrim-ccc-file`) overrides the default file beside Data. Only checked player entries load, including mod masters; official and Creation entries keep their implicit positions. An explicit `skyrim_ini_file` (`--skyrim-ini-file`) supplies General `sTestFile1` through `sTestFile10`: listed plugins retain their listed positions even if unchecked, while unlisted entries append by ascending file modification time (filename breaks ties). No ambient user profile is read. Missing entries and optional CCC/INI read errors warn and continue. Plugins with missing, disabled or unusable masters and their transitive dependents are omitted with bounded notices; an empty usable selection gives a clear error.
+`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). With `PipelineConfig.plugins_file` (CLI `--plugins-file`), the converter reads Windows-1252 selection, keeps the last duplicate entry's position and checkbox, and matches installed filenames case-insensitively. Installed Skyrim, Update, Dawnguard, HearthFires and Dragonborn masters are always active in that fixed order, followed by installed entries of readable `Skyrim.ccc`. `skyrim_ccc_file` (`--skyrim-ccc-file`) overrides the default file beside Data. Only checked player entries load, including mod masters; official and Creation entries keep their implicit positions. An explicit `skyrim_ini_file` (`--skyrim-ini-file`) supplies General `sTestFile1` through `sTestFile10`: listed plugins retain their listed positions even if unchecked, while unlisted entries append by ascending file modification time (filename breaks ties). No ambient user profile is read. Missing entries and optional CCC/INI read errors warn and continue. Plugins with missing, disabled or unusable masters and their transitive dependents are omitted with bounded notices; an empty usable selection gives a clear error.
 
-MO2 profiles reuse the shared selection rules and the converter's header/missing-master closure recovery over winning overlay paths. Installed official masters and game-folder CCC entries remain implicitly active; other selected plugins follow `loadorder.txt`. Missing ordered entries append in last-occurrence `plugins.txt` order, with a warning. Both profile lists use Windows-1252 and retain only the last duplicate. Missing files and unusable dependency closures skip with profile-context notices, preserving usable neighbors. Classic Skyrim still activates bare profile entries. Plugin filename and TES4 master keys use the shared Unicode `normalize_plugin_name` function (`to_lowercase`), including MO2's direct plugin overlay keys. Record signatures, EditorIDs and other asset keys retain their existing rules. MO2 preserves its existing final order validation rather than applying player-list priority normalization.
+MO2 profiles reuse the shared selection rules and the converter's header/missing-master closure recovery over winning overlay paths. Installed official masters and game-folder CCC entries remain implicitly active; other selected plugins follow `loadorder.txt`. Missing ordered entries append in last-occurrence `plugins.txt` order, with a warning. Both profile lists use Windows-1252 and retain only the last duplicate. Missing files and unusable dependency closures skip with profile-context notices, preserving usable neighbors. Classic Skyrim still activates bare profile entries. Plugin-name keys use the shared Unicode `normalize_plugin_name` function (`to_lowercase`) across player lists, MO2 lists, merged Data lookup, master matching and identity maps. Windows-1252 `CAFÉ.esp` and `café.esp` therefore match; Unicode normalization and full Unicode case folding are not implemented. Record signatures, EditorIDs and other asset keys retain their existing rules. MO2 preserves its existing final order validation rather than applying player-list priority normalization.
 
 The existing explicit-order normalization gives ESM-flagged plugins and `.esm`/`.esl` files priority, preserving listed order within each category except that regular dependencies are moved ahead of master files that need them. Cyclic plugins and all their dependents are omitted before normalization. The established final order admits at most 254 full and 4,096 light plugins; overflow and its transitive dependents are omitted without backfilling later entries or changing survivor order. One bounded warning summarizes each recovery cause; the conversion report's `skipped_plugins` retains every original filename removed by selection recovery, once each in pre-recovery selection order, including attempted ambiguous filenames, unusable headers and missing-master closures. Unchecked plugins are not skips. `load_order` records surviving original filenames in the same order as the published `plugins` table. Both vectors default to empty when absent from older reports. A plugin the normalized order still places before one of its masters is omitted with its dependents rather than moved. Surviving paths feed slot assignment, archive priority, database merging and terrain caches. An ESL-flagged `.esp` takes a light slot but stays among regular plugins.
 
@@ -18,15 +28,39 @@ Archive ownership and load-order priority share the same exact-or-space/dash/und
 
 Without `plugins_file` or an MO2 profile, only plugins directly in Data are selected and dependencies precede dependents. Among ready plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and Unicode-normalized filename order. Unusable headers and missing-master closures are omitted with bounded notices, as in player selection, and this path shares cycle and slot-overflow recovery. A nonempty plugin selection reduced to no usable plugins fails clearly, while asset-only inputs retain their existing behavior. Automatic discovery cannot infer override priorities between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
 
-The database stamps its version in `schema_info`; the current version is **7**
+The database stamps its version in `schema_info`; the current version is **9**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`). Schema 4 added lights and
 `references.radius_override`. Schema 5 adds grass data in #152;
 the combined producer exports grass and LOD tables. Schema 6 adds LOD origins, chunk metadata,
-its spatial index, and a build identity. The engine, `world-inspect` and
-launcher accept world schemas **3 through 7**, using
+its spatial index, and a build identity. Schema 9 combines the corrected texture-set slot
+projection: `mask_path` comes from TX02, `glow_path` from TX03, `height_path`
+from TX04 and `environment_path` from TX05. TX00 and TX01 provide diffuse and
+normal paths. Both frontends project TX06 into `detail_path` and TX07 into
+`specular_path`, as documented above. Schema 9 also
+projects only XESP byte 4 into `enable_parent_flags`. Separate candidate fixes
+used producer 25/world 8 for different contracts; combined output uses 26/9.
+The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 24**. Legacy worlds render full detail without
+support schemas **15 through 26**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
+
+Converter producer 26 also corrects the texture encodings chosen from those
+columns. Normal conversion rebuilds every older KTX2, the database, cell cache
+and derived LOD outputs. Verified producer-24 GLBs, unchanged scripts and
+archive ingestion remain reusable with matching source/dependency,
+configuration and output-byte proof; producers 12-23 still rebuild GLBs.
+Metadata-only rebuilds preserve the original retained producer/configuration
+and texture bytes. Run normal conversion to repair those retained encodings.
+
+The legacy TX06/TX07 alignment changes the SQL role assignment while retaining
+the current texture-byte encoding: multilayer/detail and specular/backlight are
+both color uses in `TextureEncoding::from_semantics`. Exchanging those roles
+leaves the selected encoding unchanged, including normal/data precedence for
+textures with several uses. ARMO model-path alignment also changes the SQL
+projection; mesh conversion discovers NIF inputs independently of that column.
+These projection changes require rebuilding metadata. Any subsequent change to
+converted mesh or texture bytes must invalidate the affected asset cache key;
+metadata retention preserves the producer identity of the retained bytes.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -68,7 +102,18 @@ CREATE TABLE IF NOT EXISTS plugins (
 
 ### 2. Primary Record Database (`records`)
 
-Stores unparsed raw subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character record type codes.
+Stores subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character
+record type codes, encoded as rkyv `ArchivedRecordData`. Both frontends resolve
+known embedded links to load-order numbering. The in-house frontend projects
+validated decoded fields into this existing encoding. Its auxiliary experimental
+`inhouse_source_records(form_id, source_form_id, load_order, record_type, flags,
+payload)` table holds original
+decompressed source bytes, including file-relative IDs and unused framing. Those
+source bytes are provenance, not decoded runtime fields. `load_order` names the
+winning source plugin through `plugins.id`. Required movement and terrain
+semantics are validated before winner selection; rejected candidates leave an
+earlier usable winner intact and are counted in per-plugin diagnostics. The pack's
+`record-reader.json` identifies the frontend and schema.
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
@@ -83,6 +128,147 @@ CREATE INDEX IF NOT EXISTS idx_records_type ON records(record_type);
 ```
 
 ---
+
+### Draft: optional in-house override history (`record_overrides`)
+
+The prototype in-house producer adds a tooling table containing each physically
+framed source record, including singletons, deleted versions and rejected
+candidates. Runtime readers continue to query the existing winning-record
+tables. No losing payload or decoded field set is retained for history during
+conversion. Singletons are explicit: this makes complete physical-header audits
+and lazy version lookup uniform without a second implicit representation.
+
+`record_overrides` has a physical primary key `(plugin_id, source_record_offset)`
+and a `(form_id, chain_position)` lookup index. Columns are canonical `form_id`,
+zero-based `chain_position`, `plugin_id` naming `plugins.id`, native
+`source_form_id`, `deleted`, `record_type`, `flags`, `source_record_offset`,
+`source_record_size`, `status`, `reason`, native enclosing cell/world/topic IDs
+and topic-group offset. The preservation extension also stores proven
+`original_owner`, unmasked `full_local`, `source_identity_state`, exclusive
+`source_group_end`, `frame_complete`, and exact four-byte `record_signature`
+BLOB. A source lookup index covers `(original_owner,full_local,plugin_id,
+source_record_offset)`. The record signature does not create a separate source
+identity namespace; changing kinds at one owner/local remains a type conflict.
+`source_record_offset` points at the 24-byte native
+header; size is the declared on-disk payload length, including the compressed
+size word when present and excluding the header. Unmappable identities are NULL
+and remain identifiable by plugin, offset and native FormID. Positions follow
+load order, then physical source offset; duplicate physical IDs stay distinct.
+
+`accepted` versions participate in the existing winner/deletion policy;
+`skipped` versions retain a reason and do not displace usable predecessors.
+The last accepted version is the source winner unless it deletes the record.
+The existing torn-override rule skips an incomplete payload that would replace
+an earlier complete version; its physical history row retains that reason.
+GMST history uses the reader's canonical EditorID aliases, including an already
+decoded EditorID when a later mandatory field rejects that version. Broken
+EditorID framing retains the raw numeric alias; history does not guess an ID.
+Each TES4 row uses a NULL canonical identity
+and status `header`, and stores source path and the authored schema hash.
+`inhouse_plugin_masters(plugin_id,master_index,master_name)` stores original MAST
+order as scalar rows with contiguous zero-based indices; a header with no child
+rows has no masters. New snapshots have no `plugin_masters` JSON column.
+The history loader still accepts that column in retained packs when the child
+table is absent. These small metadata rows allow replay to reconstruct
+original full/light mapping without reading another missing or changed plugin.
+They are excluded from ordinary record-chain counts. Their deterministic positions
+in the NULL-identity group are header ordering, not a semantic record chain.
+
+`inhouse-records history <pack> <hex FormID> [--data DIR] [--json]` opens the
+database read-only and verifies each source against `plugins.checksum` before
+decoding the requested offset with the producing schema. Changed, missing,
+oversized or undecodable versions remain local diagnostics; other versions
+continue. The text view aligns authored field names and occurrences and marks
+differences. This is decoded source provenance, not a merge or patch format;
+partial decoding and unsupported semantic roles retain their existing limits.
+Retained 18-column history layouts remain queryable. If any of the three
+physical replay safety columns (group end, frame completeness or exact record
+signature) is absent or NULL, that version is reported as undecodable with its
+stored provenance; replay never invents missing bounds or reads unchecked bytes.
+Older ASCII-folded owner spellings are accepted only through an alias derived
+from the authenticated stored plugin basename and its original master list.
+
+These optional tooling tables do not change the runtime database
+contract, accepted version range or asset encodings. World and converter asset
+schema constants therefore remain unchanged. The existing committed history
+contribution uses in-house adapter 5; subsequent adapter identities cover the
+preservation extension and required-header master-index compatibility. The
+independent `diagnostics_version` in the reader identity covers complete scalar
+diagnostics and the normalization of stored tooling lists. Older
+in-house provenance output is invalidated through the existing reader/configuration
+identity. Runtime schema constants and reusable asset encodings remain unchanged,
+and older texture or mesh bytes are not relabeled. The broad configuration hash
+includes the reader identity for metadata provenance. Normal conversion can
+reuse compatible assets through separately recorded per-kind settings and source
+proofs. Adapter-11 metadata recognizes the exact adapter-10 combined settings
+proof for independently eligible asset producers, without changing retained
+bytes or their recorded producer. The metadata-only path accepts the current
+reader identity and that explicit adapter-10 retention contract with matching
+schema/add-on bytes and complete reader fields. Older in-house packs without
+`diagnostics_version` remain refused rather than relabeled with the new tooling
+contract; unknown adapter versions cannot authorize retained settings.
+Header rows bind the exact authored
+schema; a different schema is reported as undecodable rather than silently
+interpreting an old pack with new definitions. Deterministic sorted insertion
+and an explicit physical primary key make ordered history contents reproducible.
+
+`inhouse-records history-source <pack> <owner basename> <hex full local>
+[--data DIR]` also reaches nullable runtime identities. Proven source ownership
+comes only from the original supplier's MAST list: lower high-byte indices name
+masters, the equal index names self, and a generic greater index remains
+`master_index_out_of_range` with no invented self owner. The existing GMST
+greater-index convention is separately labelled `gmst_editor_id_convention`;
+its physical rows and decoded EDID/runtime aliases do not establish native
+owner proof. Source words of zero remain a separate null state, while nonzero
+self/master words with a local component of zero retain that exact source key.
+Missing-master load-order validation remains a producer limitation: this
+extension does not admit or scan a wholly rejected plugin sequence.
+
+`history-physical <pack> <decimal plugin id> <decimal source offset> [--data DIR]`
+reaches every stored header, including unproven owner words. Source/physical
+access requires the caller to authenticate the complete database against a
+trusted completed-producer receipt/pin and preserve that integrity through
+the call, retaining before/after bundle guards. Read-only SQL is not integrity
+validation. Original-file checksums prove read bytes, not edited stored MAST,
+slot, group-bound or candidate/winner context. These APIs do not independently
+verify arbitrary edited databases; their context authority is the authenticated
+producing bundle. Callers must consume/drop streamed versions to keep one-body
+memory, and must reject partial delivery without a successful complete summary.
+Both new commands
+emit one version JSONL row at a time followed by a summary. The Rust streaming
+callback exposes exact original 24-byte header and on-disk stored payload
+(including compression prefix) with full original-file checksum guards before
+and after reading through the same handle. It does not inflate, normalize,
+repair flags, mask locals, or manufacture typed/runtime decoding. Complete
+stored frames have a 64 MiB body access ceiling. A frame crossing its original
+containing-group end yields header-only material even when later outer siblings
+would satisfy its nominal size. Changed or unavailable originals remain local
+access failures. Source queries have an explicit 4096-version capacity; callback
+errors and exceeded query capacity return partial/error rather than claiming
+complete access. The caller must retain the emitted partial report. Files are
+not embedded or copied during conversion, so immutable originals are required
+for future body access, and each queried version entails whole-original
+checksum passes. The conversion retains header structs plus a sorted-reference
+vector; this is not a disk-bounded all-candidate conversion design.
+
+The report distinguishes the latest physical source candidate, latest
+reader-admitted candidate, current accepted-source winner, runtime presence,
+and surviving earlier runtime fallback. Deletions remain admitted history but
+do not become a live source/runtime winner. Wide light locals remain proven
+owner/full-local source keys with nullable runtime IDs and exact raw access;
+they never spill or mask into an adjacent light slot. Generic required header
+indices beyond the original MAST list use the existing supplier fallback for
+runtime mapping and increment a separate bounded compatibility diagnostic.
+Original ownership stays unresolved, and the full 24-bit local component is
+retained in source history. Optional links keep their existing clear-or-reject
+policy. Width and null-runtime checks still reject unusable candidates locally,
+with their header/reason retained and valid neighbors continuing.
+Full conversion atomically recreates only the owned
+tooling table within the provenance transaction, so its older optional schema
+does not silently survive with missing columns. There are no new sidecar files,
+asset conversions or runtime schema changes. Normal asset-cache identity
+invalidation remains an existing global adapter coupling for full conversion,
+despite unchanged reusable asset encodings.
 
 ### 3. Worldspace Registry (`worldspaces`)
 
@@ -138,7 +324,7 @@ CREATE TABLE IF NOT EXISTS references (
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
-    enable_parent_flags INTEGER,        -- XESP flags; NULL when absent
+    enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
     data BLOB                           -- Subrecords payload
 );
 
@@ -147,29 +333,33 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header; `enable_parent_id` and
-`enable_parent_flags` are the two little-endian words of the eight-byte XESP
-subrecord, with the parent FormID resolved through plugin load order. The raw
-subrecord payload remains in `data`. An invalid parent link is published as
+metadata for later object LOD (#106) and enable-state support (#165). Current
+terrain LOD does not consume them; runtime parent enable-state behavior remains
+future work. `header_flags` comes from the record header. `enable_parent_id` is
+XESP's little-endian parent FormID (bytes 0-3), resolved through plugin load order;
+`enable_parent_flags` is byte 4 alone in both readers. Bit 0 inverts the parent's
+state and bit 1 enables pop-in. The three unused bytes (5-7) remain unchanged
+in the canonical subrecords serialized in `data`. Older legacy projections could
+include padding in the normalized flags value; reconversion corrects that
+projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
 
 ---
 
-### 6. Hybrid Spatial Indexing (`refs_rtree` & Interior `cell_id` Index)
+### 6. Hybrid Spatial Indexing (`exterior_spatial` & Interior `cell_id` Index)
 
-To prevent `float32` single-precision accuracy loss at large exterior coordinates (e.g. Tamriel bounds $\pm 200,000$) and avoid coordinate collisions between interior local origins $(0,0,0)$ and exterior global space, Mudcrab uses a **Two-Tier Hybrid Spatial Strategy**:
+Exterior references use a spatial index with a worldspace filter; interior references use direct cell lookup:
 
-1. **Exterior Worldspace R-Tree (`refs_rtree`):** Coordinates inside the R-Tree virtual table are stored normalized relative to cell centers (values constrained between $-2048.0$ and $+2048.0$), keeping numbers small to guarantee high single-precision float accuracy.
+1. **Exterior Worldspace R-Tree (`exterior_spatial`):** Bounds are the reference's global X/Y/Z point position, with equal minimum and maximum values. The exporter does not constrain coordinate magnitudes. SQLite stores single-precision bounds; `cell_id` and `worldspace_id` are auxiliary columns, not spatial dimensions. Cell-local X/Y offsets remain separate columns in `references`.
 2. **Interior Cell Direct Lookup (`idx_references_cell_id`):** Interior dungeons and houses do not use R-Trees. All interior references are loaded directly by `cell_id` for instant $O(1)$ lookup upon entering interior doors.
 
 ```sql
 -- R-Tree virtual table for Exterior 3D bounding box spatial queries
-CREATE VIRTUAL TABLE IF NOT EXISTS refs_rtree USING rtree(
+CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(
     id,                                 -- Matches internal reference ID
-    minX, maxX,                         -- Local cell X offset (-2048.0 to +2048.0)
-    minY, maxY,                         -- Local cell Y offset (-2048.0 to +2048.0)
+    minX, maxX,                         -- Global reference X position
+    minY, maxY,                         -- Global reference Y position
     minZ, maxZ,                         -- World Z Height units
     +cell_id,                           -- Exterior CELL FormID
     +worldspace_id                      -- Parent WorldSpace FormID (e.g. 0x0000003C for Tamriel)
@@ -225,18 +415,38 @@ uses `lod_chunks` for indexing and external GLB files for payloads. See
 
 ---
 
-### 9. Compiled Scripts (`scripts`)
+### 9. Script attachments (`scripts`)
 
-Stores compiled Papyrus script bytecode and property bindings.
+In-house output stores attached Papyrus script names and canonical VMAD bytes.
+These are property bindings, not compiled PEX bytecode. Script status and
+authored order remain in VMAD. The last exact-name attachment for a record keeps
+the existing SQL overwrite behavior.
 
 ```sql
-CREATE TABLE IF NOT EXISTS scripts (
-    form_id INTEGER PRIMARY KEY,        -- Script FormID
-    script_name TEXT NOT NULL,          -- Script EDID name
-    bytecode BLOB NOT NULL,             -- Papyrus PEX binary bytecode
-    properties BLOB                     -- Script properties table
+CREATE TABLE scripts (
+    form_id INTEGER NOT NULL,
+    script_name TEXT NOT NULL,
+    vmad BLOB NOT NULL,
+    PRIMARY KEY (form_id, script_name)
 );
 ```
+
+`script_properties` has `(form_id,script_name,property_index)` as its primary key,
+with scalar property name, native `property_type`, status and `value_count`.
+`script_property_values` adds a zero-based `value_index` to that key and stores
+nullable `object_form_id`, `alias_id`, `string_value`, `integer_value`,
+`float_bits` and `boolean_value` columns. Scalar properties have one value row;
+arrays keep their authored element order. Native type zero and empty arrays
+have no value rows and remain distinguishable by their property headers. Float
+bits preserve all f32 representations without JSON or SQLite numeric coercion.
+
+These tables replace `scripts.properties_json` for in-house exports inside the
+existing record transaction. Complete exports refresh their owned script
+snapshot; record archives leave all three runtime script tables empty. The
+legacy reader's existing JSON projection remains separate. Runtime engine
+consumers continue using the canonical record/VMAD data. Public partial exports
+into a normalized database use scalar script rows without refreshing unrelated
+attachments; fresh legacy databases retain the legacy JSON projection.
 
 ---
 
@@ -247,8 +457,9 @@ ID. `plugin_name` is the lowercase owning filename, such as `skyrim.esm`;
 `internal_id` is the low 24 bits for full plugins or the low 12 bits for light
 plugins. Full and light slots are assigned independently. The pair
 `(plugin_name, internal_id)` survives changes to the load-order slots.
-`plugin_name` is the lowercase filename; join to `plugins` with
-`lower(plugins.name) = formid_map.plugin_name`.
+`plugin_name` uses the reader's shared Unicode lowercase filename key; join to
+`plugins` by applying that same normalization to `plugins.name`. SQLite's
+built-in `lower` alone does not normalize accented Windows-1252 case pairs.
 
 Ownership differs from override provenance: `records.load_order` identifies
 the winning plugin's priority. Game settings override by case-insensitive

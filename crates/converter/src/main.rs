@@ -2,6 +2,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
+use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
     pipeline::{Cancellation, Interrupted, PipelineFailure},
@@ -32,6 +33,8 @@ struct Cli {
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
     texture_encoder: TextureEncoder,
+    record_reader: RecordReader,
+    schema_addons: Vec<PathBuf>,
     texture_fallback_quality: Option<u8>,
     texture_uastc_level: Option<u8>,
     texture_zstd_level: Option<i32>,
@@ -51,6 +54,8 @@ impl Cli {
         config.plugins_file = self.plugins_file.clone();
         config.skyrim_ccc_file = self.skyrim_ccc_file.clone();
         config.skyrim_ini_file = self.skyrim_ini_file.clone();
+        config.record_reader = self.record_reader;
+        config.schema_addons = self.schema_addons.clone();
         config.fail_fast = self.fail_fast;
         config.invalidate_cache = self.invalidate_cache;
         config.verify_cache = self.verify_cache;
@@ -218,7 +223,12 @@ async fn main() -> Result<()> {
                 report.failures.len(),
                 report.directory.display()
             );
-            if !report.failures.is_empty() {
+            if !report.record_data_complete {
+                eprintln!(
+                    "Record data remains incomplete or unverified. Run normal conversion to recheck plugin data and rebuild world metadata."
+                );
+            }
+            if !report.failures.is_empty() || !report.record_data_complete {
                 std::process::exit(1);
             }
             return Ok(());
@@ -535,6 +545,13 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     if cli.no_lod {
         command.push_str(" --no-lod");
     }
+    command.push_str(match cli.record_reader {
+        RecordReader::Legacy => " --record-reader legacy",
+        RecordReader::Inhouse => " --record-reader inhouse",
+    });
+    for path in &cli.schema_addons {
+        command.push_str(&format!(" --schema-addon \"{}\"", path.display()));
+    }
     command
 }
 
@@ -706,7 +723,7 @@ fn format_check_report(report: &converter::CheckReport) -> String {
     text
 }
 
-/// Parses conversion, check, or repair arguments and rejects options unsupported by repair.
+/// Parse conversion, check, or repair arguments with boxed pipeline commands.
 fn parse_command(args: Vec<OsString>) -> Result<Command> {
     if args.first().and_then(|argument| argument.to_str()) == Some("check") {
         return parse_check(args.into_iter().skip(1)).map(Command::Check);
@@ -733,7 +750,7 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
             || cli.verbose
         {
             bail!(
-                "repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only"
+                "repair-failed accepts Data/output, MO2 selection, reader/schema identity, encoding options, --no-lod and --apply only"
             );
         }
         return Ok(Command::Repair(Box::new(cli), apply));
@@ -761,7 +778,7 @@ fn parse_check(args: impl Iterator<Item = OsString>) -> Result<CheckCli> {
     })
 }
 
-/// Parse conversion options, preserving explicit selection inputs for resumed runs.
+/// Parse conversion options, preserving source selection and schema add-on order for resumed runs.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut positional = Vec::new();
     let mut mo2_instance = None;
@@ -775,6 +792,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut cpu_jobs = None;
     let mut io_jobs = None;
     let mut use_gpu = false;
+    let mut record_reader = RecordReader::default();
+    let mut schema_addons = Vec::new();
     let mut gpu_quality = None;
     let mut gpu_batch_mb = None;
     let mut texture_fallback_quality = None;
@@ -836,6 +855,16 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     _ => bail!("--texture-encoder must be cpu or gpu"),
                 };
             }
+            Some("--record-reader") => {
+                record_reader = match next_value(&mut args, "--record-reader")?.to_str() {
+                    Some("legacy") => RecordReader::Legacy,
+                    Some("inhouse") => RecordReader::Inhouse,
+                    _ => bail!("--record-reader must be legacy or inhouse"),
+                };
+            }
+            Some("--schema-addon") => {
+                schema_addons.push(next_path_value(&mut args, "--schema-addon")?);
+            }
             Some("--gpu-quality") => {
                 gpu_quality = Some(parse_u32(
                     next_value(&mut args, "--gpu-quality")?,
@@ -876,6 +905,11 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     }
     if positional.is_empty() || positional.len() > 2 {
         bail!(usage());
+    }
+    if reuse_assets.is_some() && mo2_instance.is_some() {
+        bail!(
+            "--reuse-assets does not support MO2 selection; use a normal conversion with --mo2-instance"
+        );
     }
     if (skyrim_ccc_file.is_some() || skyrim_ini_file.is_some()) && plugins_file.is_none() {
         bail!("--skyrim-ccc-file and --skyrim-ini-file require --plugins-file");
@@ -934,6 +968,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         cpu_jobs,
         io_jobs,
         texture_encoder,
+        record_reader,
+        schema_addons,
         texture_fallback_quality,
         texture_uastc_level,
         texture_zstd_level,
@@ -1002,6 +1038,8 @@ fn usage() -> &'static str {
                  [--texture-zstd-level 0..22]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
+                 [--record-reader legacy|inhouse]
+                 [--schema-addon JSON]
                  [--mo2-instance DIR] [--mo2-profile NAME]
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
        converter check <output directory> [--full]
@@ -1010,14 +1048,26 @@ fn usage() -> &'static str {
                  [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--texture-fallback-quality 1..255] [--texture-uastc-level 0..4]
                  [--texture-zstd-level 0..22]
+                 [--record-reader legacy|inhouse] [--schema-addon JSON]
 
-repair-failed stages only manifest failures and missing dependencies in a sibling repair directory.
-It never rebuilds the database or cell cache. --apply validates the pack's existing hashes,
-publishes validated repairs with backups, and updates the manifest last.
-Use the original conversion's encoding settings. --texture-etc1s-quality is an alias for
+repair-failed stages only manifest failures and missing dependencies in a repair directory inside the pack.
+It preserves the record projection and cell cache, and finalizes asset references in the staged database.
+--apply validates the pack's existing hashes, publishes validated repairs with backups,
+and updates the manifest last.
+Asset repair does not rebuild records. Unresolved record loss or missing historical
+record-completeness proof keeps the pack incomplete and makes repair exit 1 even
+when corrected assets were published. Normal conversion rechecks record data.
+Use the original conversion's reader/schema identity and encoding settings. --texture-etc1s-quality is an alias for
 --texture-fallback-quality; it does not select ETC1S encoding.
 
 Converts a Skyrim Data directory into runtime assets.
+The in-house record reader is the default; --record-reader legacy selects the hand-written reader.
+Reader recovery preserves usable neighboring records and reports bounded data-loss warnings.
+Warnings mark the report and manifest incomplete and make conversion exit 1 even when the
+usable output was published. --report-json and the launcher show these warnings; metadata
+rebuild with --reuse-assets follows the same completeness rule.
+Successful master-index and supplier-self compatibility remaps are report notices and do
+not affect completeness.
 --mo2-instance overlays enabled MO2 mods and overwrite over physical Data, using the profile's
 active plugins and loadorder.txt. --mo2-profile defaults to ModOrganizer.ini's selected_profile,
 or the first sorted profile if that selection is absent or stale.
@@ -1027,14 +1077,22 @@ MO2 files are read only. Native SKSE DLLs and arbitrary mod compatibility are no
 readable Skyrim.ccc Creations are always active. Missing or unreadable CCC activates
 installed Fish, Survival Mode, Rare Curios, Saints and Seducers and _ResourcePack,
 in that order, with a report warning. Readable CCC, including an empty file, wins.
---skyrim-ccc-file overrides the game-folder CCC path. --skyrim-ini-file explicitly supplies General sTestFile settings; no
-ambient profile is read. Without --plugins-file, automatic discovery orders plugins
-by dependency and skips unusable or ambiguously named plugins with bounded notices.
+--skyrim-ccc-file overrides the game-folder CCC path. --skyrim-ini-file explicitly
+supplies General sTestFile settings; no ambient profile is read. Without
+--plugins-file or MO2 selection, automatic discovery orders plugins by dependency and skips unusable
+or ambiguously named plugins with bounded notices.
 The JSON report lists every recovery exclusion in skipped_plugins and surviving filenames
 in load_order; selection_warnings contains Creation fallback warnings separately from
 failed asset conversions. Archive companions match an exact plugin stem or a following
 space, dash or underscore. The longest installed owner must survive selection; unowned
 archives are admitted outside MO2 and excluded in MO2.
+
+MO2 and --plugins-file selections cannot be combined. Automatic discovery applies
+when neither selection is supplied.
+
+--schema-addon <JSON> may be repeated to add in-house record types and explicitly
+extend fields. The full batch is checked before conversion starts. Schema add-ons
+cannot be combined with --record-reader legacy.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
@@ -1056,11 +1114,81 @@ the existence and size of every file, and with --full their hashes too. Exit cod
 --reuse-assets rebuilds metadata while preserving manifest-verified assets from an existing
 package. Data supplies matching plugins, LOD settings and terrain diffuse inputs; retained
 models, textures and scripts are not refreshed from Data. Use normal conversion after
-changing those source assets. This route cannot resume or cooperatively cancel."
+changing those source assets. This route does not support MO2 selection; use a normal
+conversion with --mo2-instance. It cannot resume or cooperatively cancel."
 }
 
 #[cfg(test)]
 mod tests {
+    /// Default conversion routes use in-house and explicit legacy survives configuration and resume.
+    #[test]
+    fn cli_defaults_to_inhouse_and_preserves_explicit_legacy() {
+        let conversion = parse_cli(args(&["Data", "pack"])).unwrap();
+        assert_eq!(conversion.record_reader, RecordReader::Inhouse);
+        assert_eq!(
+            conversion.pipeline_config().record_reader,
+            RecordReader::Inhouse
+        );
+
+        let metadata = parse_cli(args(&["Data", "pack", "--reuse-assets", "source"])).unwrap();
+        assert_eq!(
+            metadata.pipeline_config().record_reader,
+            RecordReader::Inhouse
+        );
+        let Command::Repair(repair, _) =
+            parse_command(args(&["repair-failed", "Data", "pack"])).unwrap()
+        else {
+            panic!("expected repair");
+        };
+        assert_eq!(
+            repair.pipeline_config().record_reader,
+            RecordReader::Inhouse
+        );
+
+        let legacy = parse_cli(args(&["Data", "pack", "--record-reader", "legacy"])).unwrap();
+        assert_eq!(legacy.pipeline_config().record_reader, RecordReader::Legacy);
+        assert!(
+            resume_command("converter", &legacy, Path::new("staging"))
+                .contains(" --record-reader legacy")
+        );
+    }
+
+    /// Repeated schema paths preserve input order through parsing and resume commands.
+    #[test]
+    fn schema_addon_cli_preserves_order_and_resume_flags() {
+        let cli = parse_cli(
+            [
+                "Data",
+                "Pack",
+                "--record-reader",
+                "inhouse",
+                "--schema-addon",
+                "first.json",
+                "--schema-addon",
+                "second.json",
+            ]
+            .map(OsString::from)
+            .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            cli.schema_addons,
+            vec![PathBuf::from("first.json"), PathBuf::from("second.json")]
+        );
+        let config = cli.pipeline_config();
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert_eq!(config.schema_addons, cli.schema_addons);
+        let resume = resume_command("converter", &cli, Path::new("staging"));
+        assert!(resume.contains("--schema-addon \"first.json\" --schema-addon \"second.json\""));
+        assert!(
+            parse_cli(
+                ["Data", "--schema-addon", "--no-lod"]
+                    .map(OsString::from)
+                    .to_vec()
+            )
+            .is_err()
+        );
+    }
     use super::*;
 
     /// Verifies MO2 profile defaults, invalid selections, and selection retention in resume commands.
@@ -1117,7 +1245,7 @@ mod tests {
         .unwrap();
         let resume = resume_command("converter", &cli, Path::new("out.staging-1-2"));
         assert!(resume.contains("--mo2-instance"));
-        assert!(resume.ends_with("--mo2-profile \"Zed\""));
+        assert!(resume.ends_with("--mo2-profile \"Zed\" --record-reader inhouse"));
         assert!(parse_cli(args(&["Data", "--mo2-profile", "Zed"])).is_err());
         assert!(
             parse_cli(args(&[
@@ -1153,7 +1281,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("repair-failed accepts Data/output, MO2 selection, encoding options, --no-lod and --apply only")
+                .contains("repair-failed accepts Data/output, MO2 selection, reader/schema identity, encoding options, --no-lod and --apply only")
         );
         assert!(matches!(
             parse_command(args(&["repair-failed", "Data", "out", "--apply"])).unwrap(),
@@ -1171,6 +1299,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cli.reuse_assets, Some(PathBuf::from("original")));
+    }
+
+    /// Unsupported MO2 metadata selection is rejected before opening an absent instance.
+    #[test]
+    fn mo2_metadata_rebuild_is_rejected_before_instance_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output");
+        let instance = directory.path().join("absent-instance");
+        let error = parse_cli(vec![
+            directory.path().join("Data").into_os_string(),
+            output.clone().into_os_string(),
+            OsString::from("--reuse-assets"),
+            directory.path().join("source").into_os_string(),
+            OsString::from("--mo2-instance"),
+            instance.clone().into_os_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--reuse-assets does not support MO2 selection"),
+            "wrong source boundary: {error}"
+        );
+        assert!(!output.exists());
+        assert!(!instance.exists());
+    }
+
+    /// Reader and add-on identities survive the shared conversion/repair configuration handoff.
+    #[test]
+    fn repair_preserves_inhouse_reader_and_schema_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let addon = directory.path().join("identity.json");
+        fs::write(
+            &addon,
+            br#"{"version":1,"name":"cli_identity","records":[]}"#,
+        )
+        .unwrap();
+        let options = vec![
+            OsString::from("Data"),
+            OsString::from("output"),
+            OsString::from("--record-reader"),
+            OsString::from("inhouse"),
+            OsString::from("--schema-addon"),
+            addon.clone().into_os_string(),
+        ];
+        let conversion = parse_cli(options.clone()).unwrap();
+        let mut repair_options = vec![OsString::from("repair-failed")];
+        repair_options.extend(options);
+        let Command::Repair(repair, _) = parse_command(repair_options).unwrap() else {
+            panic!("expected repair");
+        };
+        let config = repair.pipeline_config();
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert_eq!(config.schema_addons, vec![addon]);
+        let identity = converter::cache::configuration_hash(&config).unwrap();
+        assert_eq!(
+            identity,
+            converter::cache::configuration_hash(&conversion.pipeline_config()).unwrap()
+        );
+        assert_ne!(
+            identity,
+            converter::cache::configuration_hash(&PipelineConfig::new("Data", "output")).unwrap()
+        );
     }
 
     #[test]
@@ -1560,7 +1751,7 @@ mod tests {
         );
     }
 
-    /// The resume command repeats the paths, quotes them, and keeps the GPU encoder flags.
+    /// The resume command quotes paths and preserves the reader and GPU encoder options.
     #[test]
     fn names_the_exact_command_that_resumes_a_kept_staging_folder() {
         let cli = Cli {
@@ -1576,6 +1767,8 @@ mod tests {
             cpu_jobs: None,
             io_jobs: None,
             texture_encoder: TextureEncoder::Cpu,
+            record_reader: RecordReader::Legacy,
+            schema_addons: Vec::new(),
             texture_fallback_quality: None,
             texture_uastc_level: None,
             texture_zstd_level: None,
@@ -1588,18 +1781,40 @@ mod tests {
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
             resume_command("converter.exe", &cli, staging),
-            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --record-reader legacy"
         );
         // A renamed binary is named as it is, quoted when its name has a space.
         assert_eq!(
             resume_command("mudcrab converter", &cli, staging),
-            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\""
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --record-reader legacy"
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
         let no_lod = parse_cli(vec!["Data".into(), "--no-lod".into()]).unwrap();
         assert!(no_lod.no_lod);
-        assert!(resume_command("converter", &no_lod, staging).ends_with(" --no-lod"));
+        assert!(
+            resume_command("converter", &no_lod, staging)
+                .ends_with(" --no-lod --record-reader inhouse")
+        );
+        let inhouse = parse_cli(vec![
+            "Data".into(),
+            "--record-reader".into(),
+            "inhouse".into(),
+        ])
+        .unwrap();
+        assert_eq!(inhouse.record_reader, RecordReader::Inhouse);
+        assert!(
+            resume_command("converter", &inhouse, staging).ends_with(" --record-reader inhouse")
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--record-reader".into(),
+                "other".into()
+            ])
+            .is_err()
+        );
+        assert!(parse_cli(vec!["Data".into(), "--record-reader".into()]).is_err());
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {
@@ -1608,10 +1823,9 @@ mod tests {
             },
             ..cli
         };
-        assert!(
-            resume_command("converter.exe", &gpu, staging)
-                .ends_with(" --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256")
-        );
+        assert!(resume_command("converter.exe", &gpu, staging).ends_with(
+            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --record-reader legacy"
+        ));
     }
 
     /// Integration failures count as failures without skipped inputs and point to the

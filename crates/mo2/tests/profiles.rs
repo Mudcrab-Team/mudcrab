@@ -235,6 +235,82 @@ fn classic_skyrim_bare_plugins_are_active_with_and_without_loadorder() {
     }
 }
 
+/// Plugin selection and merged Data lookup use one Unicode key across mod and overwrite layers.
+#[test]
+fn unicode_case_plugin_names_share_winning_data_key() {
+    let (_dir, root) = fixture();
+    write(&root, "mods/Low/café.esp", "lower-priority plugin");
+    write(&root, "mods/High/CAFÉ.esp", "higher-priority plugin");
+    write(&root, "overwrite/CAFÉ.esp", "overwrite plugin");
+    for bank in ["strings", "dlstrings", "ilstrings"] {
+        write(
+            &root,
+            &format!("mods/Low/Strings/CAFÉ_english.{bank}"),
+            "lower bank",
+        );
+        write(
+            &root,
+            &format!("mods/High/Strings/café_english.{bank}"),
+            "higher bank",
+        );
+        write(
+            &root,
+            &format!("overwrite/Strings/café_english.{bank}"),
+            "overwrite bank",
+        );
+    }
+    fs::write(
+        root.join("profiles/Default/plugins.txt"),
+        b"*caf\xe9.esp\n*Patch.esp\n*Mod.esm\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("profiles/Default/loadorder.txt"),
+        b"Skyrim.esm\nMod.esm\nCAF\xc9.esp\nPatch.esp\n",
+    )
+    .unwrap();
+    let resolved = Instance::open(&root)
+        .unwrap()
+        .resolve(&root.join("Data"), "Default")
+        .unwrap();
+    assert_eq!(
+        resolved.plugins,
+        ["skyrim.esm", "mod.esm", "café.esp", "patch.esp"]
+    );
+    assert_eq!(
+        resolved.files["café.esp"],
+        fs::canonicalize(root.join("overwrite/CAFÉ.esp")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(&resolved.files["café.esp"]).unwrap(),
+        "overwrite plugin"
+    );
+    assert!(!resolved.files.contains_key("cafÉ.esp"));
+    assert!(
+        !resolved
+            .notices
+            .iter()
+            .any(|notice| notice.contains("café.esp"))
+    );
+    for bank in ["strings", "dlstrings", "ilstrings"] {
+        let key = format!("strings/café_english.{bank}");
+        assert_eq!(
+            resolved.files[&key],
+            fs::canonicalize(root.join(format!("overwrite/Strings/café_english.{bank}"))).unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(&resolved.files[&key]).unwrap(),
+            "overwrite bank"
+        );
+        assert!(
+            !resolved
+                .files
+                .contains_key(&format!("strings/cafÉ_english.{bank}")),
+            "losing accented-case bank must collapse to the shared key"
+        );
+    }
+}
+
 #[test]
 fn se_and_vr_bare_plugins_remain_inactive() {
     for game in ["Skyrim Special Edition", "Skyrim VR"] {

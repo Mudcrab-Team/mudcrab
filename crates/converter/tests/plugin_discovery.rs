@@ -784,19 +784,37 @@ async fn explicit_master_keeps_its_transitive_regular_prerequisites() {
     assert_eq!(setting, (50.0, "Last.esp".to_string()));
 }
 
+/// Unusable headers identify their source, while malformed framed records preserve a valid neighbor.
 #[test]
-fn header_and_record_errors_include_the_plugin_path() {
+fn header_errors_include_the_plugin_path_and_framed_record_errors_recover_locally() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Broken.esp");
     fs::write(&path, b"TES4").unwrap();
     let error = LoadOrder::read(std::slice::from_ref(&path)).err().unwrap();
     assert!(format!("{error:?}").contains(path.to_str().unwrap()));
     let malformed = record(b"STAT", 0x800, 0, b"DATA\x04\x00\x01".to_vec());
-    fs::write(&path, [record(b"TES4", 0, 0, vec![]), malformed].concat()).unwrap();
-    let error = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap_err();
-    let message = format!("{error:?}");
-    assert!(
-        message.contains(path.to_str().unwrap()) && message.contains("truncated DATA"),
-        "{message}"
-    );
+    fs::write(
+        &path,
+        [
+            record(b"TES4", 0, 0, vec![]),
+            malformed,
+            record(b"STAT", 0x801, 0, sub(b"EDID", b"Neighbor\0")),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let merged = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[&0x801].subrecords[0].1, b"Neighbor\0");
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&[path], &db).unwrap();
+    let conn = Connection::open(db).unwrap();
+    let ids: Vec<u32> = conn
+        .prepare("SELECT form_id FROM records ORDER BY form_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, [0x801]);
 }

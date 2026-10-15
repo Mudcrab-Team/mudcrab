@@ -37,7 +37,7 @@ pub struct Instance {
 }
 
 /// Winning asset paths, installed-plugin inventory and active plugin order, keyed by Data-relative paths.
-/// Direct plugin names use Unicode lowercase; other asset paths retain ASCII lowercase.
+/// Direct plugin and Strings bank names use Unicode lowercase; other asset paths retain ASCII lowercase.
 #[derive(Debug)]
 pub struct Resolved {
     /// Winning assets and deterministic installed representatives for ambiguous plugin groups.
@@ -532,13 +532,29 @@ fn direct_plugin(relative: &Path) -> bool {
         )
 }
 
-/// Normalize direct plugin filenames consistently with selection, preserving other asset rules.
+/// Match plugins and their direct Strings bank names with the shared Unicode key.
+/// Other asset namespaces retain their established ASCII normalization.
 fn data_file_key(relative: &Path) -> String {
-    let name = relative.to_string_lossy().replace('\\', "/");
-    if direct_plugin(relative) {
-        normalize_plugin_name(&name)
+    let path = relative.to_string_lossy().replace('\\', "/");
+    let plugin = !path.contains('/')
+        && relative.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("esm")
+                || extension.eq_ignore_ascii_case("esp")
+                || extension.eq_ignore_ascii_case("esl")
+        });
+    let localized_bank = path.split_once('/').is_some_and(|(folder, name)| {
+        folder.eq_ignore_ascii_case("strings")
+            && !name.contains('/')
+            && relative.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("strings")
+                    || extension.eq_ignore_ascii_case("dlstrings")
+                    || extension.eq_ignore_ascii_case("ilstrings")
+            })
+    });
+    if plugin || localized_bank {
+        normalize_plugin_name(&path)
     } else {
-        name.to_ascii_lowercase()
+        path.to_ascii_lowercase()
     }
 }
 

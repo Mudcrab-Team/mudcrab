@@ -179,14 +179,62 @@ pub fn parse_group_header(input: &[u8]) -> IResult<&[u8], GroupHeader> {
     ))
 }
 
-/// Parse nested groups in file order using an explicit stack, so malformed
-/// nesting cannot overflow the call stack. Group context is restored for siblings.
+/// Count corrupt candidates without retaining or printing every malformed payload.
+#[derive(Default)]
+struct ParseWarnings {
+    count: u64,
+    first: Option<String>,
+}
+
+impl ParseWarnings {
+    fn skipped(&mut self, reason: String) {
+        self.count += 1;
+        if self.first.is_none() {
+            self.first = Some(reason);
+        }
+    }
+
+    /// Print and collect the same bounded summary for terminal and report consumers.
+    fn report(&self, source: &str) -> Vec<String> {
+        let Some(first) = &self.first else {
+            return Vec::new();
+        };
+        let summary = format!(
+            "warning: {source}: skipped {} malformed record/frame occurrence(s); first: {first}; complete neighboring records retained",
+            self.count
+        );
+        eprintln!("{summary}");
+        vec![summary]
+    }
+}
+
+/// Parse nested groups in file order using an explicit stack. Recover only at
+/// trusted record/group boundaries; never search payload bytes for a new header.
 pub fn parse_group(
     input: &[u8],
     current_cell: Option<u32>,
     current_worldspace: Option<u32>,
     records: &mut Vec<RawRecord>,
 ) -> Result<()> {
+    let mut warnings = ParseWarnings::default();
+    parse_group_inner(
+        input,
+        current_cell,
+        current_worldspace,
+        records,
+        &mut warnings,
+    );
+    let _ = warnings.report("plugin record stream");
+    Ok(())
+}
+
+fn parse_group_inner(
+    input: &[u8],
+    current_cell: Option<u32>,
+    current_worldspace: Option<u32>,
+    records: &mut Vec<RawRecord>,
+    warnings: &mut ParseWarnings,
+) {
     let mut curr = input;
     let mut current_cell = current_cell;
     let mut current_worldspace = current_worldspace;
@@ -195,7 +243,7 @@ pub fn parse_group(
     loop {
         if curr.is_empty() {
             let Some((rest, cell, worldspace)) = parents.pop() else {
-                return Ok(());
+                return;
             };
             curr = rest;
             current_cell = cell;
@@ -203,22 +251,34 @@ pub fn parse_group(
             continue;
         }
         if curr.len() < 24 {
-            return Err(eyre!("trailing {} bytes after plugin records", curr.len()));
+            warnings.skipped(format!(
+                "trailing {} bytes in bounded record frame",
+                curr.len(),
+            ));
+            curr = &[];
+            continue;
         }
         let peek_tag = &curr[..4];
         if peek_tag == b"GRUP" {
-            let (rest, group) =
-                parse_group_header(curr).map_err(|e| eyre!("Failed to parse group header: {e}"))?;
+            let Ok((rest, group)) = parse_group_header(curr) else {
+                warnings.skipped("invalid GRUP header".into());
+                curr = &[];
+                continue;
+            };
             let group_data_size = group.data_size as usize;
             if group_data_size < 24 {
-                return Err(eyre!("invalid GRUP size {}", group.data_size));
+                warnings.skipped(format!("invalid GRUP size {}", group.data_size));
+                curr = &[];
+                continue;
             }
             let content_size = group_data_size - 24;
             if content_size > rest.len() {
-                return Err(eyre!(
+                warnings.skipped(format!(
                     "truncated GRUP payload: expected {content_size}, got {}",
                     rest.len()
                 ));
+                curr = &[];
+                continue;
             }
             let group_content = &rest[..content_size];
 
@@ -236,50 +296,34 @@ pub fn parse_group(
             current_cell = next_cell;
             current_worldspace = next_worldspace;
         } else {
-            let (rest, header) = parse_record_header(curr)
-                .map_err(|e| eyre!("Failed to parse record header: {e}"))?;
+            let Ok((rest, header)) = parse_record_header(curr) else {
+                warnings.skipped("invalid record header".into());
+                curr = &[];
+                continue;
+            };
             let record_len = header.data_size as usize;
             if record_len > rest.len() {
-                return Err(eyre!(
+                warnings.skipped(format!(
                     "truncated {:?} record {:08x}: expected {record_len}, got {}",
                     header.type_tag,
                     header.form_id,
                     rest.len()
                 ));
+                curr = &[];
+                continue;
             }
             let raw_payload = &rest[..record_len];
-            let subrecords = if header.flags & FLAG_COMPRESSED != 0 {
-                if raw_payload.len() < 4 {
-                    return Err(eyre!("truncated compressed record {:08x}", header.form_id));
-                } else {
-                    let decompressed_size = u32::from_le_bytes([
-                        raw_payload[0],
-                        raw_payload[1],
-                        raw_payload[2],
-                        raw_payload[3],
-                    ]) as usize;
-
-                    let compressed_bytes = &raw_payload[4..];
-                    let decompressed_data = read_bounded(compressed_bytes, decompressed_size)
-                        .map_err(|error| {
-                            eyre!(
-                                "failed to decompress record {:08x}: {error}",
-                                header.form_id
-                            )
-                        })?;
-                    if decompressed_data.len() != decompressed_size {
-                        return Err(eyre!(
-                            "decompressed size mismatch for {:08x}: expected {decompressed_size}, got {}",
-                            header.form_id,
-                            decompressed_data.len()
-                        ));
-                    }
-                    extract_subrecords(&decompressed_data)
-                        .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))?
+            curr = &rest[record_len..];
+            let subrecords = match decode_record_subrecords(&header, raw_payload) {
+                Ok(subrecords) => subrecords,
+                Err(error) => {
+                    warnings.skipped(format!(
+                        "{} {:08X}: {error}",
+                        String::from_utf8_lossy(&header.type_tag),
+                        header.form_id
+                    ));
+                    continue;
                 }
-            } else {
-                extract_subrecords(raw_payload)
-                    .map_err(|error| eyre!("record {:08x}: {error}", header.form_id))?
             };
 
             records.push(RawRecord {
@@ -291,17 +335,51 @@ pub fn parse_group(
                 worldspace_form_id: current_worldspace,
                 load_order: 0,
             });
-            curr = &rest[record_len..];
         }
     }
 }
 
+fn decode_record_subrecords(
+    header: &RecordHeader,
+    raw_payload: &[u8],
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let subrecords = decode_record_subrecords_inner(header, raw_payload);
+    // A deletion's header remains authoritative when its discarded body is torn.
+    // Preserve a complete body: legacy named GMST deletions can resolve by EDID.
+    if header.flags & 0x20 != 0 {
+        return Ok(subrecords.unwrap_or_default());
+    }
+    subrecords
+}
+
+fn decode_record_subrecords_inner(
+    header: &RecordHeader,
+    raw_payload: &[u8],
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    if header.flags & FLAG_COMPRESSED == 0 {
+        return extract_subrecords(raw_payload);
+    }
+    color_eyre::eyre::ensure!(raw_payload.len() >= 4, "truncated compressed record");
+    let expected = u32::from_le_bytes(raw_payload[..4].try_into().unwrap()) as usize;
+    let decoded = read_bounded(&raw_payload[4..], expected)?;
+    extract_subrecords(&decoded)
+}
+
+/// Parse usable records once, retaining the existing terminal skip summaries.
 pub fn parse_plugin_file(path: &Path) -> Result<Vec<RawRecord>> {
+    parse_plugin_file_with_warnings(path).map(|(records, _)| records)
+}
+
+/// Return the same per-plugin skip line printed while retaining usable neighboring records.
+pub(crate) fn parse_plugin_file_with_warnings(
+    path: &Path,
+) -> Result<(Vec<RawRecord>, Vec<String>)> {
     parse_plugin_file_inner(path)
         .wrap_err_with(|| format!("failed to parse plugin {}", path.display()))
 }
 
-fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
+/// Keep header checks and local recovery unchanged while returning their bounded summary.
+fn parse_plugin_file_inner(path: &Path) -> Result<(Vec<RawRecord>, Vec<String>)> {
     let reader = EsmReader::open(path)?;
     let data = reader.as_slice();
 
@@ -330,9 +408,17 @@ fn parse_plugin_file_inner(path: &Path) -> Result<Vec<RawRecord>> {
     } else {
         extract_subrecords(payload)?;
     }
-    parse_group(&after_header[header_payload..], None, None, &mut records)?;
+    let mut warnings = ParseWarnings::default();
+    parse_group_inner(
+        &after_header[header_payload..],
+        None,
+        None,
+        &mut records,
+        &mut warnings,
+    );
+    let summaries = warnings.report(&path.file_name().unwrap_or_default().to_string_lossy());
 
-    Ok(records)
+    Ok((records, summaries))
 }
 
 /// Parses REFR payload for Position and Base Form ID pointers
@@ -432,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn record_parser_rejects_partial_subrecords_and_compressed_headers() {
+    fn record_parser_skips_partial_subrecords_and_compressed_headers() {
         for compressed in [false, true] {
             let payload = b"EDID\x02\x00x\x00DATA\x04\x00x";
             let bytes = if compressed {
@@ -458,8 +544,7 @@ mod tests {
             ]
             .concat();
             let mut records = Vec::new();
-            let error = parse_group(&record, None, None, &mut records).unwrap_err();
-            assert!(error.to_string().contains("00000123"));
+            parse_group(&record, None, None, &mut records).unwrap();
             assert!(records.is_empty());
         }
         let record = [
@@ -471,7 +556,9 @@ mod tests {
             &[0; 3],
         ]
         .concat();
-        assert!(parse_group(&record, None, None, &mut Vec::new()).is_err());
+        let mut records = Vec::new();
+        parse_group(&record, None, None, &mut records).unwrap();
+        assert!(records.is_empty());
     }
 
     #[test]
@@ -562,7 +649,9 @@ mod tests {
             [b"EDID".as_slice(), &4u16.to_le_bytes(), b"Test"].concat(),
         ] {
             let valid = compressed_record(b"STAT", data.len() as u32, &data);
-            parse_group(&valid, None, None, &mut Vec::new()).unwrap();
+            let mut records = Vec::new();
+            parse_group(&valid, None, None, &mut records).unwrap();
+            assert_eq!(records.len(), 1);
             let path = directory.path().join("valid.esp");
             std::fs::write(&path, compressed_record(b"TES4", data.len() as u32, &data)).unwrap();
             parse_plugin_metadata(&path).unwrap();
@@ -575,8 +664,10 @@ mod tests {
                 bytes.truncate(bytes.len() - missing);
                 let payload_length = (bytes.len() - 24) as u32;
                 bytes[4..8].copy_from_slice(&payload_length.to_le_bytes());
+                let mut records = Vec::new();
+                parse_group(&bytes, None, None, &mut records).unwrap();
                 assert!(
-                    parse_group(&bytes, None, None, &mut Vec::new()).is_err(),
+                    records.is_empty(),
                     "accepted a stream missing {missing} trailer bytes"
                 );
 
@@ -598,12 +689,15 @@ mod tests {
         ] {
             for suffix in [b"junk".to_vec(), zlib(b"second stream")] {
                 let mut bytes = compressed_record(b"STAT", data.len() as u32, &data);
-                parse_group(&bytes, None, None, &mut Vec::new()).unwrap();
+                let mut records = Vec::new();
+                parse_group(&bytes, None, None, &mut records).unwrap();
+                assert_eq!(records.len(), 1);
                 bytes.extend_from_slice(&suffix);
                 let payload_length = (bytes.len() - 24) as u32;
                 bytes[4..8].copy_from_slice(&payload_length.to_le_bytes());
-                let error = parse_group(&bytes, None, None, &mut Vec::new()).unwrap_err();
-                assert!(format!("{error:?}").contains("trailing bytes after zlib stream"));
+                let mut records = Vec::new();
+                parse_group(&bytes, None, None, &mut records).unwrap();
+                assert!(records.is_empty());
 
                 // Compressed TES4 headers use the same exact-input rule.
                 bytes[..4].copy_from_slice(b"TES4");
@@ -634,7 +728,10 @@ mod tests {
 
         for declared in [u32::MAX, subrecord.len() as u32 - 1] {
             let corrupt = compressed_record(b"STAT", declared, &subrecord);
-            let error = parse_group(&corrupt, None, None, &mut Vec::new()).unwrap_err();
+            let mut records = Vec::new();
+            parse_group(&corrupt, None, None, &mut records).unwrap();
+            assert!(records.is_empty());
+            let error = read_bounded(&corrupt[28..], declared as usize).unwrap_err();
             // A size no stream this short could reach is refused before inflating.
             let message = error.to_string();
             assert!(

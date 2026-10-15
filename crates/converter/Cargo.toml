@@ -47,3 +47,5 @@ dummy-content = { path = "../dummy-content" }
 
 [build-dependencies]
 cc = "1.2"
+serde.workspace = true
+serde_json.workspace = true

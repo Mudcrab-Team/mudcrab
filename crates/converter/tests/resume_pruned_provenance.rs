@@ -5,7 +5,7 @@ use converter::{
     AssetPipeline, PipelineConfig, PipelineReport,
     cache::{
         CONVERTER_SCHEMA_VERSION, ConversionManifest, StagedOutput, StagingJournal,
-        configuration_hash, configuration_hash_for_schema,
+        asset_configuration_hash_for_schema, configuration_hash, configuration_hash_for_schema,
     },
 };
 use std::{collections::BTreeSet, fs, path::Path};
@@ -157,7 +157,12 @@ async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
                 SOURCE,
                 &StagedOutput {
                     schema_version: schema,
-                    configuration_hash: configuration_hash_for_schema(&config, schema).unwrap(),
+                    configuration_hash: if schema == CONVERTER_SCHEMA_VERSION {
+                        asset_configuration_hash_for_schema(&config, schema, "nif").unwrap()
+                    } else {
+                        // Historical full journal proofs remain deliberately ineligible.
+                        configuration_hash_for_schema(&config, schema).unwrap()
+                    },
                     source_hash: entry.source_hash.clone(),
                     output_size: entry.output_size,
                     output_hash: entry.output_hash.clone(),
@@ -165,6 +170,9 @@ async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
             )
             .unwrap();
         manifest.schema_version = schema;
+        if schema != CONVERTER_SCHEMA_VERSION {
+            manifest.asset_configuration_hashes.clear();
+        }
         manifest.configuration_hash = if schema == CONVERTER_SCHEMA_VERSION {
             configuration_hash(&config).unwrap()
         } else {

@@ -44,6 +44,51 @@ fn volcanic_normal_uri(glb: &Path) -> Option<String> {
         .map(|dependency| dependency.uri)
 }
 
+/// Frame the light's enable-parent target in the generated worldspace's first exterior cell.
+fn enable_parent_target() -> Vec<u8> {
+    let payload = [
+        b"NAME".as_slice(),
+        &4u16.to_le_bytes(),
+        &3u32.to_le_bytes(),
+        b"DATA".as_slice(),
+        &24u16.to_le_bytes(),
+        &[0; 24],
+    ]
+    .concat();
+    let reference = [
+        b"REFR".as_slice(),
+        &(payload.len() as u32).to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &0x1234u32.to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &44u16.to_le_bytes(),
+        &0u16.to_le_bytes(),
+        &payload,
+    ]
+    .concat();
+    // The dummy writer assigns worldspace 1 and its first exterior CELL 0x10.
+    // Preserve both parent contexts while adding a separate cell-children group.
+    let cell_children = [
+        b"GRUP".as_slice(),
+        &(reference.len() as u32 + 24).to_le_bytes(),
+        &0x10u32.to_le_bytes(),
+        &8i32.to_le_bytes(),
+        &[0; 8],
+        &reference,
+    ]
+    .concat();
+    [
+        b"GRUP".as_slice(),
+        &(cell_children.len() as u32 + 24).to_le_bytes(),
+        &1u32.to_le_bytes(),
+        &1i32.to_le_bytes(),
+        &[0; 8],
+        &cell_children,
+    ]
+    .concat()
+}
+
+/// Generate complete assets and a light whose enable-parent resolves to an authored reference.
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
     layout::generate(
@@ -66,11 +111,9 @@ fn generate(data: &Path) {
         enable_parent: Some((0x1234, 1)),
         ..esm::PRESET_LIGHT
     };
-    fs::write(
-        data.join("Skyrim.esm"),
-        esm::plugin_with_lights(&plugin, &light).unwrap(),
-    )
-    .unwrap();
+    let mut plugin_bytes = esm::plugin_with_lights(&plugin, &light).unwrap();
+    plugin_bytes.extend(enable_parent_target());
+    fs::write(data.join("Skyrim.esm"), plugin_bytes).unwrap();
     fs::write(
         data.join("Skyrim - Misc.bsa"),
         bsa::v105(
@@ -115,14 +158,18 @@ async fn rebuild(
     result
 }
 
+/// Recreate the legacy schema-15 producer proof alongside its historical database shape.
 fn schema_four_source(source: &Path) {
+    fs::write(source.join("record-reader.json"), br#"{"mode":"legacy"}"#).unwrap();
     let mut manifest: ConversionManifest =
         serde_json::from_slice(&fs::read(source.join("conversion-manifest.json")).unwrap())
             .unwrap();
     manifest.schema_version = 15;
+    manifest.asset_configuration_hashes.clear();
+    let mut legacy_config = PipelineConfig::new(".", ".");
+    legacy_config.record_reader = converter::config::RecordReader::Legacy;
     manifest.configuration_hash =
-        converter::cache::configuration_hash_for_schema(&PipelineConfig::new(".", "."), 15)
-            .unwrap();
+        converter::cache::configuration_hash_for_schema(&legacy_config, 15).unwrap();
     manifest
         .save(&source.join("conversion-manifest.json"))
         .unwrap();
@@ -171,8 +218,10 @@ async fn native_retained_configuration_survives_rebuilds_without_becoming_cache_
     let mut manifest: ConversionManifest =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     manifest.schema_version = 16;
+    manifest.asset_configuration_hashes.clear();
     manifest.configuration_hash = producer_hash.clone();
     manifest.save(&path).unwrap();
+    fs::write(source.join("record-reader.json"), br#"{"mode":"legacy"}"#).unwrap();
     let original = hash_file(&path).unwrap();
     rebuild(&data, &source, &output).await.unwrap();
     rebuild(&data, &output, &repeated).await.unwrap();
@@ -217,6 +266,7 @@ async fn native_retained_configuration_survives_rebuilds_without_becoming_cache_
     assert_eq!(current.retained_asset_configuration_hash, None);
 }
 
+/// Changed native settings fail against the exact recorded legacy producer identity.
 #[tokio::test]
 async fn metadata_rebuild_rejects_changed_native_producer_settings() {
     let directory = tempfile::tempdir().unwrap();
@@ -232,13 +282,31 @@ async fn metadata_rebuild_rejects_changed_native_producer_settings() {
         let changed = native_configuration_hash(&PipelineConfig::new(&data, &output), 7);
         if retained {
             manifest.schema_version = converter::cache::CONVERTER_SCHEMA_VERSION;
+            let mut legacy_config = PipelineConfig::new(&data, &output);
+            legacy_config.record_reader = converter::config::RecordReader::Legacy;
             manifest.configuration_hash =
-                converter::cache::configuration_hash(&PipelineConfig::new(&data, &output)).unwrap();
+                converter::cache::configuration_hash(&legacy_config).unwrap();
             manifest.retained_mesh_schema_version = Some(16);
+            manifest.asset_configuration_hashes.clear();
             manifest.retained_asset_configuration_hash = Some(changed);
+            fs::write(
+                source.join("record-reader.json"),
+                serde_json::to_vec(&converter::esm::inhouse::reader_identity(
+                    converter::config::RecordReader::Legacy,
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                source.join("metadata-rebuild.json"),
+                br#"{"retained_asset_record_reader":{"mode":"legacy"}}"#,
+            )
+            .unwrap();
         } else {
             manifest.schema_version = 16;
+            manifest.asset_configuration_hashes.clear();
             manifest.configuration_hash = changed;
+            fs::write(source.join("record-reader.json"), br#"{"mode":"legacy"}"#).unwrap();
         }
         manifest.save(&path).unwrap();
         let error = rebuild(&data, &source, &output).await.unwrap_err();
@@ -306,6 +374,7 @@ async fn metadata_rebuild_reuses_bytes_and_recovers_authoritative_flags() {
     assert!(output.join("lod-manifest.json").is_file());
 }
 
+/// Retained asset provenance allows proven producer-24 GLBs but rebuilds its textures.
 #[tokio::test]
 async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
     for source_schema in [
@@ -316,6 +385,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
         21,
         22,
         23,
+        24,
         converter::cache::CONVERTER_SCHEMA_VERSION,
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -332,11 +402,17 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
             let mut manifest: ConversionManifest =
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             manifest.schema_version = source_schema;
-            manifest.configuration_hash = converter::cache::configuration_hash_for_schema(
-                &PipelineConfig::new(&data, &output),
-                source_schema,
-            )
-            .unwrap();
+            if source_schema != converter::cache::CONVERTER_SCHEMA_VERSION {
+                manifest.asset_configuration_hashes.clear();
+            }
+            if source_schema != converter::cache::CONVERTER_SCHEMA_VERSION {
+                let mut legacy_config = PipelineConfig::new(&data, &output);
+                legacy_config.record_reader = converter::config::RecordReader::Legacy;
+                manifest.configuration_hash =
+                    converter::cache::configuration_hash_for_schema(&legacy_config, source_schema)
+                        .unwrap();
+                fs::write(source.join("record-reader.json"), br#"{"mode":"legacy"}"#).unwrap();
+            }
             manifest.save(&path).unwrap();
         }
         rebuild(&data, &source, &output).await.unwrap();
@@ -359,12 +435,12 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
+            if source_schema == 24 || source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
                 meshes
             } else {
                 0
             },
-            "metadata-only upgrades preserve original provenance; only current producer meshes are normal cache hits"
+            "metadata-only upgrades preserve original provenance; only known compatible producer meshes are normal cache hits"
         );
         let report = convert(&data, &repeated).await;
         let regenerated = if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
@@ -373,7 +449,10 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
             retained
                 .entries
                 .values()
-                .filter(|entry| !entry.output.to_ascii_lowercase().ends_with(".luau"))
+                .filter(|entry| {
+                    let output = entry.output.to_ascii_lowercase();
+                    !output.ends_with(".luau") && !(source_schema == 24 && output.ends_with(".glb"))
+                })
                 .count()
         };
         let current: ConversionManifest =
@@ -394,9 +473,19 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
     }
 }
 
+/// Invalid source/retained producer pairs are stamped faithfully and rejected.
 #[tokio::test]
 async fn metadata_rebuild_rejects_unsupported_mesh_provenance() {
-    for (schema, mesh_schema) in [(15, 16), (21, 17), (21, 18), (24, 25)] {
+    for (schema, mesh_schema) in [
+        (15, 16),
+        (21, 17),
+        (21, 18),
+        (24, 25),
+        (
+            converter::cache::CONVERTER_SCHEMA_VERSION,
+            converter::cache::CONVERTER_SCHEMA_VERSION + 1,
+        ),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -409,7 +498,9 @@ async fn metadata_rebuild_rejects_unsupported_mesh_provenance() {
         let mut manifest: ConversionManifest =
             serde_json::from_slice(&fs::read(source.join("conversion-manifest.json")).unwrap())
                 .unwrap();
+        manifest.schema_version = schema;
         manifest.retained_mesh_schema_version = Some(mesh_schema);
+        manifest.asset_configuration_hashes.clear();
         manifest
             .save(&source.join("conversion-manifest.json"))
             .unwrap();
@@ -1036,6 +1127,7 @@ async fn metadata_rebuild_v87_accepts_old_prune_hashes_only_after_exact_source_r
     }
 }
 
+/// Historical producer 17/18 and the separate 25 candidates are ambiguous for rebuild.
 #[tokio::test]
 async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
     let directory = tempfile::tempdir().unwrap();
@@ -1046,8 +1138,11 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
     let path = source.join("conversion-manifest.json");
     let mut manifest: ConversionManifest =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    for schema in [17, 18] {
+    for schema in [17, 18, 25] {
         manifest.schema_version = schema;
+        if schema != converter::cache::CONVERTER_SCHEMA_VERSION {
+            manifest.asset_configuration_hashes.clear();
+        }
         manifest.save(&path).unwrap();
         let output = directory.path().join(format!("derived-{schema}"));
         let error = rebuild(&data, &source, &output)
@@ -1055,7 +1150,10 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("complete converter schema 15, 16, 19, 20, 21, 22, 23 or 24"),
+            error.contains(&format!(
+                "complete converter schema 15, 16, 19 through 24 or {}",
+                converter::cache::CONVERTER_SCHEMA_VERSION
+            )),
             "{error}"
         );
         assert!(!output.exists());

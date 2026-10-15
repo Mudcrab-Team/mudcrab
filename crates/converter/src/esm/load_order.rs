@@ -2,7 +2,7 @@
 use super::binary::{PluginMetadata, parse_plugin_metadata};
 use color_eyre::{Result, eyre::ensure};
 use serde::Serialize;
-use shared::plugin_selection::normalize_plugin_name;
+pub(crate) use shared::plugin_selection::normalize_plugin_name;
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
@@ -501,6 +501,40 @@ impl LoadOrder {
     /// This strict API keeps metadata aligned with every supplied path; callers must
     /// remove cyclic, inverted and overflow plugins and their dependents before reading it.
     pub fn read(paths: &[PathBuf]) -> Result<Self> {
+        Self::from_metadata_readers(paths.iter().map(|path| {
+            let name = normalize_plugin_name(
+                &path
+                    .file_name()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("plugin has no filename"))?
+                    .to_string_lossy(),
+            );
+            Ok((name, move || parse_plugin_metadata(path)))
+        }))
+    }
+
+    /// Rebuild the same validated slot/master authority from immutable stored header facts.
+    /// This does not read source files, select plugins or reorder the supplied sequence.
+    /// The caller supplies source-authenticated metadata; namespace validation does not prove
+    /// that supplied fields match original bytes or authenticate an edited producing database.
+    pub fn from_metadata(names: Vec<String>, metadata: Vec<PluginMetadata>) -> Result<Self> {
+        ensure!(
+            names.len() == metadata.len(),
+            "plugin/metadata length mismatch"
+        );
+        Self::from_metadata_readers(
+            names
+                .into_iter()
+                .zip(metadata)
+                .map(|(name, metadata)| Ok((name, move || Ok(metadata)))),
+        )
+    }
+
+    /// Validate each name before reading its header, preserving the original error order.
+    fn from_metadata_readers<I, F>(rows: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = Result<(String, F)>>,
+        F: FnOnce() -> Result<PluginMetadata>,
+    {
         let mut result = Self {
             names: Vec::new(),
             metadata: Vec::new(),
@@ -509,15 +543,11 @@ impl LoadOrder {
             normal_by_slot: Vec::new(),
             light_by_slot: Vec::new(),
         };
-        for path in paths {
-            let name = normalize_plugin_name(
-                &path
-                    .file_name()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("plugin has no filename"))?
-                    .to_string_lossy(),
-            );
+        for row in rows {
+            let (name, read_metadata) = row?;
+            let name = normalize_plugin_name(&name);
             ensure!(!result.names.contains(&name), "duplicate plugin {name}");
-            let metadata = parse_plugin_metadata(path)?;
+            let metadata = read_metadata()?;
             for master in &metadata.masters {
                 ensure!(
                     result.names.contains(&normalize_plugin_name(master)),

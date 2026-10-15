@@ -5,6 +5,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Record frontend used to generate the runtime database and terrain cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordReader {
+    /// Hand-written record reader, available through an explicit choice.
+    Legacy,
+    /// MudCrab's default schema-driven Rust decoder.
+    #[default]
+    Inhouse,
+}
+
 /// Which encoder turns DDS textures into UASTC KTX2.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,7 +48,16 @@ pub struct PipelineConfig {
     /// Resolve this MO2 profile over physical Data; incompatible with plugins_file.
     #[serde(default)]
     pub mo2: Option<mo2::Selection>,
-    /// Explicit Creation list; absent uses Skyrim.ccc beside Data for player lists.
+    /// Defaults to the in-house reader when older serialized configurations omit it.
+    #[serde(default)]
+    pub record_reader: RecordReader,
+    /// Ordered schema JSON add-ons for the in-house reader.
+    #[serde(default)]
+    pub schema_addons: Vec<PathBuf>,
+    /// A run freezes schema bytes before creating or recovering output.
+    #[serde(skip)]
+    pub(crate) runtime_schemas: Option<std::sync::Arc<crate::records::addons::RuntimeSchemas>>,
+    /// Explicit Creation list; absent uses Skyrim.ccc beside Data with the built-in fallback.
     #[serde(default)]
     pub skyrim_ccc_file: Option<PathBuf>,
     /// Explicit General sTestFile settings; no ambient profile is read.
@@ -78,6 +98,28 @@ fn default_texture_zstd_level() -> i32 {
 }
 
 impl PipelineConfig {
+    /// Read all configured add-ons once, rejecting the batch before output work begins.
+    pub(crate) fn freeze_schema_addons(&mut self) -> color_eyre::Result<()> {
+        self.runtime_schemas = Some(std::sync::Arc::new(
+            crate::records::addons::RuntimeSchemas::load(&self.schema_addons)
+                .map_err(color_eyre::eyre::Error::msg)?,
+        ));
+        Ok(())
+    }
+
+    /// Use the frozen run schema, or load a temporary snapshot for settings inspection.
+    pub(crate) fn schemas(
+        &self,
+    ) -> color_eyre::Result<std::sync::Arc<crate::records::addons::RuntimeSchemas>> {
+        if let Some(schemas) = &self.runtime_schemas {
+            return Ok(schemas.clone());
+        }
+        Ok(std::sync::Arc::new(
+            crate::records::addons::RuntimeSchemas::load(&self.schema_addons)
+                .map_err(color_eyre::eyre::Error::msg)?,
+        ))
+    }
+
     /// A configuration with the default settings for converting `data_dir` into `output_dir`.
     pub fn new(data_dir: impl Into<PathBuf>, output_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -87,6 +129,9 @@ impl PipelineConfig {
             cache_dir: None,
             plugins_file: None,
             mo2: None,
+            record_reader: RecordReader::default(),
+            schema_addons: Vec::new(),
+            runtime_schemas: None,
             skyrim_ccc_file: None,
             skyrim_ini_file: None,
             lod_origins: BTreeMap::new(),
@@ -121,6 +166,10 @@ impl PipelineConfig {
 
     /// Checks that the directories and settings can be used for a run.
     pub(crate) fn validate(&self) -> color_eyre::Result<()> {
+        color_eyre::eyre::ensure!(
+            self.schema_addons.is_empty() || self.record_reader == RecordReader::Inhouse,
+            "schema add-ons require --record-reader inhouse"
+        );
         color_eyre::eyre::ensure!(
             self.data_dir.is_dir(),
             "Skyrim Data directory does not exist: {}",
@@ -381,6 +430,23 @@ fn parent_or_cwd(path: &Path) -> &Path {
 mod tests {
     use super::*;
 
+    /// New and older unstamped configurations use in-house while explicit legacy stays selected.
+    #[test]
+    fn record_reader_defaults_to_inhouse_and_preserves_serialized_choices() {
+        let config = PipelineConfig::new("Data", "pack");
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert_eq!(RecordReader::default(), RecordReader::Inhouse);
+
+        let mut serialized = serde_json::to_value(&config).unwrap();
+        serialized.as_object_mut().unwrap().remove("record_reader");
+        let unstamped: PipelineConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(unstamped.record_reader, RecordReader::Inhouse);
+
+        serialized["record_reader"] = serde_json::json!("legacy");
+        let legacy: PipelineConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(legacy.record_reader, RecordReader::Legacy);
+    }
+
     /// Older serialized configs keep default selection inputs and explicit LOD origins.
     #[test]
     fn config_v90_accepts_legacy_configs_without_inventing_lod_origins() {
@@ -402,6 +468,9 @@ mod tests {
         let config: PipelineConfig = serde_json::from_value(legacy.clone()).unwrap();
         assert!(config.skyrim_ccc_file.is_none());
         assert!(config.skyrim_ini_file.is_none());
+        assert!(config.mo2.is_none());
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert!(config.schema_addons.is_empty());
         assert!(config.lod_origins.is_empty());
         assert!(!config.no_lod);
         assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
@@ -411,6 +480,29 @@ mod tests {
         legacy["lod_origins"] = serde_json::json!({"GeneratedWorld": [-4, 12]});
         let explicit: PipelineConfig = serde_json::from_value(legacy).unwrap();
         assert_eq!(explicit.lod_origins["GeneratedWorld"], [-4, 12]);
+    }
+
+    /// Mixed source selection is rejected before opening an MO2 instance or starting output work.
+    #[test]
+    fn mo2_and_player_selection_are_rejected_before_instance_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let output = directory.path().join("pack");
+        let mut config = PipelineConfig::new(data, &output);
+        config.plugins_file = Some(directory.path().join("plugins.txt"));
+        config.mo2 = Some(mo2::Selection {
+            instance_path: directory.path().join("absent-instance"),
+            profile: "Absent".into(),
+        });
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("MO2 selection cannot be combined with plugins_file")
+        );
+        assert!(!output.exists());
     }
 
     #[test]

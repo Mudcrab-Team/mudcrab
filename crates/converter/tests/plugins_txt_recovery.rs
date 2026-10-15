@@ -56,6 +56,66 @@ async fn missing_and_disabled_master_closures_preserve_publication() {
     assert_publication(true).await;
 }
 
+/// A lower-case Windows-1252 entry selects an upper-case accented filename and publishes its slot.
+#[tokio::test]
+async fn unicode_case_player_plugin_name_publishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    plugin(&data, "Good.esp", &["Skyrim.esm"], "fUnicodeNeighbor");
+    plugin(&data, "CAFÉ.esp", &["Skyrim.esm"], "fJumpHeightMin");
+    let list = dir.path().join("plugins.txt");
+    fs::write(&list, b"*Good.esp\n*caf\xe9.esp\n").unwrap();
+    let selected = read_plugins_txt(&list, &data).unwrap();
+    assert_eq!(selected.len(), 3, "accented active plugin must be selected");
+    assert_eq!(selected[2].file_name().unwrap(), "CAFÉ.esp");
+    let order = converter::esm::load_order::LoadOrder::read(&selected).unwrap();
+    assert_eq!(order.normal["café.esp"], 2);
+    let output = dir.path().join("pack");
+    let mut config = PipelineConfig::new(&data, &output);
+    config.plugins_file = Some(list);
+    config.no_lod = true;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let result = AssetPipeline::run_async(config, tx).await;
+    drain.await.unwrap();
+    assert!(
+        result.is_ok(),
+        "accented player plugin must publish: {result:?}"
+    );
+    assert!(result.unwrap().complete);
+    let conn = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+    validate_database(&conn).unwrap();
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(names, ["Skyrim.esm", "Good.esp", "CAFÉ.esp"]);
+    let (form_id, priority): (u32, u32) = conn
+        .query_row(
+            "SELECT form_id, load_order FROM records WHERE record_type='GMST' AND load_order=2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // The source owns local slot 1; Good.esp makes the published slot independently equal 2.
+    assert_eq!((form_id, priority), (0x0200_0800, 2));
+    let value: f64 = conn
+        .query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, 67.0);
+    assert!(output.join("conversion-manifest.json").is_file());
+    assert!(output.join("meshes/generated.glb").is_file());
+}
+
 /// Run real conversion, inspect published data/provenance, and retain recovery notices.
 async fn assert_publication(broken: bool) {
     let dir = tempfile::tempdir().unwrap();

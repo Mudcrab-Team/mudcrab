@@ -5,17 +5,161 @@ use rkyv::rancor::Error;
 use shared::{CELL_CACHE_VERSION, CachedLand, CellCache, LAND_SIDE, TerrainLayer, TerrainWeight};
 use std::{collections::HashMap, fs::File, io::Write, path::Path};
 
-/// Validate and serialize merged LAND records, rejecting invalid terrain before replacing a cache.
+/// Check one decoded terrain record before the tolerant reader publishes it.
+/// Errors stay local to this record; the adapter counts and omits it.
+/// Texture/color-only LAND may omit VHGT and uses the shared cache's default heights.
+pub(crate) fn validate_inhouse_land(record: &RawRecord) -> Result<()> {
+    let view = SubrecordView::new(&record.subrecords);
+    let authored_heightmap = view.find(b"VHGT");
+    let heightmap = authored_heightmap.unwrap_or_default();
+    let heights = decode_vhgt(heightmap);
+    let count = usize::from(LAND_SIDE).pow(2);
+    color_eyre::eyre::ensure!(
+        authored_heightmap.is_none()
+            || (!heightmap.is_empty()
+                && heights.len() == count
+                && heights.iter().all(|h| h.is_finite())),
+        "incomplete or non-finite authored VHGT"
+    );
+    color_eyre::eyre::ensure!(
+        decode_normals(view.find(b"VNML").unwrap_or_default(), &heights).len() == count * 3,
+        "incomplete VNML"
+    );
+    let colors = view.find(b"VCLR").unwrap_or_default();
+    color_eyre::eyre::ensure!(
+        colors.is_empty() || colors.len() == count * 3,
+        "incomplete VCLR"
+    );
+    let (mut layers, _) = extract_texture_layers(&record.subrecords)?;
+    normalize_texture_layers(&mut layers);
+    for quadrant in 0..4 {
+        let entries: Vec<_> = layers
+            .iter()
+            .filter(|layer| layer.quadrant == quadrant)
+            .collect();
+        color_eyre::eyre::ensure!(
+            entries.is_empty() || entries.iter().filter(|layer| layer.is_base).count() == 1,
+            "terrain quadrant must have one base layer"
+        );
+    }
+    Ok(())
+}
+
+/// Write merged terrain deterministically when native source positions are unavailable.
+/// Later winning load order takes precedence; same-plugin ties use FormID.
+/// In-house publication supplies native positions through `write_cell_cache_with_source_order`.
 pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Result<usize> {
-    let water_by_cell = water_by_cell(records);
-    let mut cells_by_id = HashMap::new();
+    write_cell_cache_with_source_order(records, &HashMap::new(), path)
+}
+
+/// Rank a winning LAND by plugin priority, native position, and a deterministic fallback.
+fn land_source_priority(record: &RawRecord, source_offsets: &HashMap<u32, u64>) -> (u32, u64, u32) {
+    (
+        record.load_order,
+        source_offsets.get(&record.form_id).copied().unwrap_or(0),
+        record.form_id,
+    )
+}
+
+/// Select the complete LAND projection for each parent CELL, excluding tombstones.
+/// SQLite terrain rows and the archived cache must use this same selection rule.
+/// Native offsets belong to each accepted winner's supplying plugin, not its ID owner.
+pub(crate) fn land_winners_by_cell(
+    records: &HashMap<u32, RawRecord>,
+    source_offsets: &HashMap<u32, u64>,
+) -> HashMap<u32, u32> {
+    let mut winners = HashMap::new();
     for record in records
         .values()
-        .filter(|record| &record.record_type == b"LAND")
+        .filter(|record| &record.record_type == b"LAND" && !record.is_deleted())
     {
+        let cell_id = record.cell_form_id.unwrap_or(record.form_id);
+        let replaces = winners.get(&cell_id).is_none_or(|selected| {
+            land_source_priority(record, source_offsets)
+                > land_source_priority(&records[selected], source_offsets)
+        });
+        if replaces {
+            winners.insert(cell_id, record.form_id);
+        }
+    }
+    winners
+}
+
+/// Validate and serialize terrain using winning plugin priority and native record order.
+/// Different LAND identities may share a parent CELL. The later winning plugin, then
+/// the later physical record in that plugin, supplies the complete cached terrain.
+/// FormID breaks ties only when source positions are missing or identical; it does
+/// not give full or light plugin identities precedence over their load order.
+/// Only the selected terrain is decoded; an irrelevant losing candidate cannot
+/// prevent publication. Frontends validate candidates before replacing winners.
+pub fn write_cell_cache_with_source_order(
+    records: &HashMap<u32, RawRecord>,
+    source_offsets: &HashMap<u32, u64>,
+    path: &Path,
+) -> Result<usize> {
+    write_cell_cache_with_preserved_layers(records, source_offsets, &HashMap::new(), path)
+}
+
+/// Capture decoded global texture identities before missing-target clearing.
+/// Resolve native duplicate slots and NULL assignments once, while their distinction
+/// remains available. The caller may then clear unusable texture IDs without losing
+/// the retained assignment's weights. Runtime capacity does not limit this source projection.
+pub(crate) fn preserved_texture_layers(record: &RawRecord) -> Result<Vec<TerrainLayer>> {
+    let (mut layers, _) = extract_texture_layers(&record.subrecords)?;
+    normalize_texture_layers(&mut layers);
+    validate_preserved_layers(&layers)?;
+    Ok(layers)
+}
+
+/// Publish source-normalized layers for selected LAND identities, including cleared
+/// zero-ID placeholders. Overrides must come from accepted decoded source records;
+/// they are not normalized again. Malformed auxiliary layers fall back locally to
+/// the ordinary record layers and cannot discard valid neighboring terrain.
+/// Only this runtime projection drops the weakest overlays beyond six layers per quadrant.
+pub(crate) fn write_cell_cache_with_preserved_layers(
+    records: &HashMap<u32, RawRecord>,
+    source_offsets: &HashMap<u32, u64>,
+    layer_overrides: &HashMap<u32, Vec<TerrainLayer>>,
+    path: &Path,
+) -> Result<usize> {
+    write_cell_cache_layers(records, source_offsets, layer_overrides, path, true)
+}
+
+/// Archive every normalized source layer without imposing the runtime material's capacity.
+/// This auxiliary cache is for preservation; the engine continues to load `cell_cache.rkyv`.
+pub(crate) fn write_preserved_cell_cache_with_source_layers(
+    records: &HashMap<u32, RawRecord>,
+    source_offsets: &HashMap<u32, u64>,
+    layer_overrides: &HashMap<u32, Vec<TerrainLayer>>,
+    path: &Path,
+) -> Result<usize> {
+    write_cell_cache_layers(records, source_offsets, layer_overrides, path, false)
+}
+
+/// Share terrain selection and validation while applying capacity only to runtime output.
+fn write_cell_cache_layers(
+    records: &HashMap<u32, RawRecord>,
+    source_offsets: &HashMap<u32, u64>,
+    layer_overrides: &HashMap<u32, Vec<TerrainLayer>>,
+    path: &Path,
+    runtime: bool,
+) -> Result<usize> {
+    let water_by_cell = water_by_cell(records);
+    let winners = land_winners_by_cell(records, source_offsets);
+    let mut rejected_overrides: HashMap<u32, (usize, String)> = HashMap::new();
+    let mut cells_by_id = HashMap::new();
+    let mut land_records: Vec<_> = records
+        .values()
+        .filter(|record| &record.record_type == b"LAND" && !record.is_deleted())
+        .collect();
+    land_records.sort_unstable_by_key(|record| land_source_priority(record, source_offsets));
+    for record in land_records {
+        let cell_id = record.cell_form_id.unwrap_or(record.form_id);
+        if winners[&cell_id] != record.form_id {
+            continue;
+        }
         let view = SubrecordView::new(&record.subrecords);
         let heightmap = view.find(b"VHGT").unwrap_or_default();
-        let cell_id = record.cell_form_id.unwrap_or(record.form_id);
         let (water_height, water_type_form_id) =
             water_by_cell.get(&cell_id).copied().unwrap_or((None, None));
         if let Some(bytes) = heightmap.get(..4) {
@@ -69,9 +213,29 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
                 .collect();
             let bases = quadrant_layers.iter().filter(|layer| layer.is_base).count();
             color_eyre::eyre::ensure!(
-                quadrant_layers.is_empty() || (bases == 1 && quadrant_layers.len() <= 6),
-                "LAND {cell_id:08X} quadrant {quadrant} must be empty or have one BTXT and at most five ATXT layers"
+                quadrant_layers.is_empty() || bases == 1,
+                "LAND {cell_id:08X} quadrant {quadrant} must be empty or have one BTXT"
             );
+        }
+        if let Some(preserved) = layer_overrides.get(&record.form_id) {
+            match validate_preserved_layers(preserved) {
+                Ok(()) => layers = copy_texture_layers(preserved),
+                Err(error) => {
+                    let (count, _) = rejected_overrides
+                        .entry(record.load_order)
+                        .or_insert_with(|| (0, format!("LAND {:08X}: {error}", record.form_id)));
+                    *count += 1;
+                }
+            }
+        }
+        if runtime {
+            let dropped = limit_runtime_texture_layers(&mut layers);
+            if dropped.iter().any(|count| *count != 0) {
+                eprintln!(
+                    "warning: LAND {cell_id:08X} (record {:08X}, source priority {}): runtime terrain capacity is one base plus five overlays per quadrant; dropped weakest overlays by summed opacity (highest slot on ties), counts by quadrant {dropped:?}",
+                    record.form_id, record.load_order,
+                );
+            }
         }
         cells_by_id.insert(
             cell_id,
@@ -86,6 +250,13 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
                 water_height,
                 water_type_form_id,
             },
+        );
+    }
+    let mut rejected_overrides: Vec<_> = rejected_overrides.into_iter().collect();
+    rejected_overrides.sort_unstable_by_key(|(load_order, _)| *load_order);
+    for (load_order, (count, first)) in rejected_overrides {
+        eprintln!(
+            "warning: terrain source priority {load_order}: ignored {count} invalid preserved layer override(s); first {first}; ordinary decoded layers retained"
         );
     }
     let mut cells: Vec<_> = cells_by_id.into_values().collect();
@@ -373,6 +544,7 @@ fn extract_texture_layers(
     Ok((layers, dropped_layers))
 }
 
+/// Resolve native NULL assignments and implicit bases without discarding excess source layers.
 fn normalize_texture_layers(layers: &mut Vec<TerrainLayer>) {
     // Official plugins contain null BTXT/ATXT references. They mean that no
     // texture is assigned, not that form 00000000 must resolve at runtime.
@@ -393,6 +565,22 @@ fn normalize_texture_layers(layers: &mut Vec<TerrainLayer>) {
                 weights: Vec::new(),
             });
         }
+    }
+    layers.sort_by_key(|layer| {
+        (
+            layer.quadrant,
+            !layer.is_base,
+            layer.layer,
+            layer.texture_form_id,
+        )
+    });
+}
+
+/// Keep the existing runtime subset and return bounded per-quadrant drop counts.
+/// Cleared texture IDs remain placeholders; their weights participate in the same ranking.
+fn limit_runtime_texture_layers(layers: &mut Vec<TerrainLayer>) -> [usize; 4] {
+    let mut dropped = [0; 4];
+    for quadrant in 0..4 {
         while layers
             .iter()
             .filter(|layer| layer.quadrant == quadrant)
@@ -413,16 +601,89 @@ fn normalize_texture_layers(layers: &mut Vec<TerrainLayer>) {
                 .map(|(index, _)| index)
                 .expect("an over-capacity quadrant must contain an overlay");
             layers.remove(weakest);
+            dropped[usize::from(quadrant)] += 1;
         }
     }
-    layers.sort_by_key(|layer| {
+    dropped
+}
+
+/// Validate already normalized source layers without treating cleared IDs as NULL.
+fn validate_preserved_layers(layers: &[TerrainLayer]) -> Result<()> {
+    let sort_key = |layer: &TerrainLayer| {
         (
             layer.quadrant,
             !layer.is_base,
             layer.layer,
             layer.texture_form_id,
         )
-    });
+    };
+    color_eyre::eyre::ensure!(
+        layers
+            .windows(2)
+            .all(|pair| sort_key(&pair[0]) <= sort_key(&pair[1])),
+        "terrain layers are not in normalized quadrant/slot order"
+    );
+    let mut slots = std::collections::HashSet::new();
+    for layer in layers {
+        color_eyre::eyre::ensure!(layer.quadrant < 4, "terrain quadrant is outside 0..=3");
+        if layer.is_base {
+            color_eyre::eyre::ensure!(
+                layer.layer == 0 && layer.weights.is_empty(),
+                "base terrain layer has an overlay slot or weights"
+            );
+        } else {
+            color_eyre::eyre::ensure!(
+                slots.insert((layer.quadrant, layer.layer)),
+                "terrain overlay repeats a quadrant/slot"
+            );
+        }
+        let mut vertices = std::collections::HashSet::new();
+        for weight in &layer.weights {
+            color_eyre::eyre::ensure!(
+                weight.vertex < 17 * 17,
+                "terrain weight vertex is outside a LAND quadrant"
+            );
+            color_eyre::eyre::ensure!(
+                weight.opacity.is_finite() && (0.0..=1.0).contains(&weight.opacity),
+                "terrain weight opacity is invalid"
+            );
+            color_eyre::eyre::ensure!(
+                vertices.insert(weight.vertex),
+                "terrain overlay repeats a weight vertex"
+            );
+        }
+    }
+    for quadrant in 0..4 {
+        let entries: Vec<_> = layers
+            .iter()
+            .filter(|layer| layer.quadrant == quadrant)
+            .collect();
+        color_eyre::eyre::ensure!(
+            entries.is_empty() || entries.iter().filter(|layer| layer.is_base).count() == 1,
+            "terrain quadrant must be empty or have one base"
+        );
+    }
+    Ok(())
+}
+
+fn copy_texture_layers(layers: &[TerrainLayer]) -> Vec<TerrainLayer> {
+    layers
+        .iter()
+        .map(|layer| TerrainLayer {
+            texture_form_id: layer.texture_form_id,
+            quadrant: layer.quadrant,
+            layer: layer.layer,
+            is_base: layer.is_base,
+            weights: layer
+                .weights
+                .iter()
+                .map(|weight| TerrainWeight {
+                    vertex: weight.vertex,
+                    opacity: weight.opacity,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 pub fn validate_cell_cache(path: &Path) -> Result<Mmap> {
@@ -442,6 +703,309 @@ mod tests {
     use super::*;
     use crate::test_strategies::{arbitrary_bytes, config};
     use proptest::prelude::*;
+
+    /// Native duplicate and NULL assignments exercise source normalization before clearing.
+    fn preservation_land() -> RawRecord {
+        let assignment = |tag: &[u8; 4], texture: u32, slot: u16| {
+            let mut bytes = texture.to_le_bytes().to_vec();
+            bytes.extend([0, 0]);
+            bytes.extend(slot.to_le_bytes());
+            (tag.to_vec(), bytes)
+        };
+        let weight = |vertex: u16, opacity: f32| {
+            let mut bytes = vertex.to_le_bytes().to_vec();
+            bytes.extend([0, 0]);
+            bytes.extend(opacity.to_le_bytes());
+            (b"VTXT".to_vec(), bytes)
+        };
+        let mut land = record(0x1234, b"LAND", None, &[]);
+        land.cell_form_id = Some(0x5678);
+        // These independent native assignments distinguish absent nonzero targets
+        // from declared NULL, and distinguish the later slot's weights from earlier ones.
+        land.subrecords = vec![
+            assignment(b"BTXT", 0x2000, 0),
+            assignment(b"ATXT", 0x2200, 2),
+            weight(5, 0.25),
+            assignment(b"ATXT", 0x844, 2),
+            weight(9, 0.75),
+            assignment(b"ATXT", 0, 2),
+            weight(11, 0.125),
+        ];
+        land
+    }
+
+    #[test]
+    fn preserved_layers_resolve_missing_texture_duplicate_slot_before_target_clearing() {
+        let source = preservation_land();
+        let preserved = preserved_texture_layers(&source).unwrap();
+        assert_eq!(preserved.len(), 2);
+        assert_eq!(preserved[0].texture_form_id, 0x2000);
+        assert_eq!(preserved[1].texture_form_id, 0x844);
+        assert_eq!(preserved[1].layer, 2);
+        assert_eq!(preserved[1].weights.len(), 1);
+        assert_eq!(preserved[1].weights[0].vertex, 9);
+        assert_eq!(preserved[1].weights[0].opacity.to_bits(), 0.75f32.to_bits());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.rkyv");
+        let records = HashMap::from([(source.form_id, source.clone())]);
+        write_cell_cache(&records, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut overrides = HashMap::from([(source.form_id, copy_texture_layers(&preserved))]);
+        write_cell_cache_with_preserved_layers(&records, &HashMap::new(), &overrides, &path)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "source cache preserves every byte"
+        );
+
+        let mut cleared = source;
+        for (tag, bytes) in &mut cleared.subrecords {
+            if tag.as_slice() == b"ATXT" && bytes[..4] == 0x844u32.to_le_bytes() {
+                bytes[..4].fill(0);
+            }
+        }
+        let records = HashMap::from([(cleared.form_id, cleared)]);
+        write_cell_cache(&records, &path).unwrap();
+        let ordinary =
+            rkyv::from_bytes::<CellCache, Error>(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(ordinary.cells[0].layers[1].texture_form_id, 0x2200);
+        assert_eq!(ordinary.cells[0].layers[1].weights[0].vertex, 5);
+
+        overrides.get_mut(&0x1234).unwrap()[1].texture_form_id = 0;
+        write_cell_cache_with_preserved_layers(&records, &HashMap::new(), &overrides, &path)
+            .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let cache = rkyv::from_bytes::<CellCache, Error>(&bytes).unwrap();
+        let layer = &cache.cells[0].layers[1];
+        assert_eq!(cache.cells[0].layers.len(), 2);
+        assert!(!layer.is_base);
+        assert_eq!(layer.texture_form_id, 0);
+        assert_eq!(layer.layer, 2);
+        assert_eq!(layer.weights.len(), 1);
+        assert_eq!(layer.weights[0].vertex, 9);
+        assert_eq!(layer.weights[0].opacity.to_bits(), 0.75f32.to_bits());
+        write_cell_cache_with_preserved_layers(&records, &HashMap::new(), &overrides, &path)
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn preserved_layers_drop_native_null_assignments_but_validate_their_weights() {
+        let mut land = preservation_land();
+        land.subrecords.drain(..5);
+        assert!(preserved_texture_layers(&land).unwrap().is_empty());
+        land.subrecords[1].1[4..8].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(preserved_texture_layers(&land).is_err());
+    }
+
+    /// Invalid auxiliary structures fall back locally while usable neighboring cells publish.
+    #[test]
+    fn preserved_layers_invalid_auxiliary_data_falls_back_and_publishes_neighbors() {
+        let land = preservation_land();
+        let neighbor = record(0x9876, b"LAND", None, &[]);
+        let records = HashMap::from([(land.form_id, land.clone()), (neighbor.form_id, neighbor)]);
+        let valid = preserved_texture_layers(&land).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.rkyv");
+        write_cell_cache(&records, &path).unwrap();
+        let ordinary = std::fs::read(&path).unwrap();
+        for malformed in 0..10 {
+            let mut layers = copy_texture_layers(&valid);
+            match malformed {
+                0 => layers[1].weights[0].opacity = f32::NAN,
+                1 => layers[1].quadrant = 4,
+                2 => layers[1].weights[0].vertex = 289,
+                3 => layers.insert(0, copy_texture_layers(&layers[..1]).remove(0)),
+                4 => layers.push(copy_texture_layers(&layers[1..]).remove(0)),
+                5 => layers[1].weights.push(TerrainWeight {
+                    vertex: 9,
+                    opacity: 0.5,
+                }),
+                6 => {
+                    layers.remove(0);
+                }
+                7 => layers[0].layer = 3,
+                8 => layers[1].weights[0].opacity = 1.25,
+                9 => layers.reverse(),
+                _ => unreachable!(),
+            }
+            assert!(validate_preserved_layers(&layers).is_err());
+            let overrides = HashMap::from([(land.form_id, layers)]);
+            assert_eq!(
+                write_cell_cache_with_preserved_layers(
+                    &records,
+                    &HashMap::new(),
+                    &overrides,
+                    &path
+                )
+                .unwrap(),
+                2,
+                "invalid auxiliary case {malformed} must retain both cells"
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                ordinary,
+                "auxiliary case {malformed}"
+            );
+        }
+    }
+
+    /// Distinct authored channels reveal selection of a complete LAND rather than a mixture.
+    fn selection_land(form_id: u32, load_order: u32, offset: f32, marker: u8) -> RawRecord {
+        let mut heightmap = offset.to_le_bytes().to_vec();
+        heightmap.extend(vec![0; 33 * 33 + 3]);
+        let mut land = record(
+            form_id,
+            b"LAND",
+            None,
+            &[
+                (b"VNML", vec![marker; 33 * 33 * 3]),
+                (b"VHGT", heightmap),
+                (b"VCLR", vec![marker + 1; 33 * 33 * 3]),
+            ],
+        );
+        land.cell_form_id = Some(0x7654);
+        land.load_order = load_order;
+        land
+    }
+
+    /// Old hash iteration necessarily loses the first candidate despite its later priority.
+    #[test]
+    fn same_parent_land_uses_winning_load_order_instead_of_hash_iteration() {
+        let mut records = HashMap::from([
+            (0x0200_8011, selection_land(0x0200_8011, 0, 3.0, 7)),
+            (0xFE00_1821, selection_land(0xFE00_1821, 0, 11.0, 19)),
+        ]);
+        let first = records.values().next().unwrap().form_id;
+        for land in records.values_mut() {
+            land.load_order = if land.form_id == first { 17 } else { 5 };
+        }
+        let (expected_height, expected_marker) = if first == 0x0200_8011 {
+            (24.0, 7u8)
+        } else {
+            (88.0, 19u8)
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.rkyv");
+        assert_eq!(write_cell_cache(&records, &path).unwrap(), 1);
+        let cache = rkyv::from_bytes::<CellCache, Error>(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(cache.cells[0].heights, vec![expected_height; 33 * 33]);
+        assert_eq!(
+            cache.cells[0].normals,
+            vec![expected_marker as i8; 33 * 33 * 3]
+        );
+        assert_eq!(
+            cache.cells[0].vertex_colors,
+            vec![expected_marker + 1; 33 * 33 * 3]
+        );
+    }
+
+    #[test]
+    fn malformed_losing_land_does_not_block_selected_terrain_or_neighbors() {
+        let losing = selection_land(0x800, 1, f32::NAN, 7);
+        let selected = selection_land(0x801, 2, 11.0, 19);
+        let mut neighbor = selection_land(0x802, 1, 3.0, 7);
+        neighbor.cell_form_id = Some(0x9876);
+        let records = HashMap::from([
+            (losing.form_id, losing),
+            (selected.form_id, selected),
+            (neighbor.form_id, neighbor),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.rkyv");
+        assert_eq!(write_cell_cache(&records, &path).unwrap(), 2);
+        let cache = rkyv::from_bytes::<CellCache, Error>(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(cache.cells[0].cell_id, 0x7654);
+        assert_eq!(cache.cells[0].heights, vec![88.0; 33 * 33]);
+        assert_eq!(cache.cells[1].cell_id, 0x9876);
+        assert_eq!(cache.cells[1].heights, vec![24.0; 33 * 33]);
+    }
+
+    /// Physical order wins a same-plugin tie even when the later record has a smaller ID.
+    #[test]
+    fn same_parent_land_uses_native_offset_before_form_id() {
+        let earlier = 0xFE00_1821;
+        let later = 0x0200_8011;
+        let source_offsets = HashMap::from([(earlier, 100), (later, 900)]);
+        let directory = tempfile::tempdir().unwrap();
+        let mut expected_bytes = None;
+        for reverse in [false, true].into_iter().cycle().take(32) {
+            let lands = [
+                selection_land(earlier, 17, 3.0, 7),
+                selection_land(later, 17, 11.0, 19),
+            ];
+            let mut records = HashMap::new();
+            for index in if reverse { [1, 0] } else { [0, 1] } {
+                let land = &lands[index];
+                records.insert(land.form_id, land.clone());
+            }
+            let path = directory.path().join("cache.rkyv");
+            assert_eq!(
+                write_cell_cache_with_source_order(&records, &source_offsets, &path).unwrap(),
+                1
+            );
+            let bytes = std::fs::read(&path).unwrap();
+            let cache = rkyv::from_bytes::<CellCache, Error>(&bytes).unwrap();
+            assert_eq!(cache.cells[0].heights, vec![88.0; 33 * 33]);
+            assert_eq!(cache.cells[0].normals, vec![19; 33 * 33 * 3]);
+            assert_eq!(cache.cells[0].vertex_colors, vec![20; 33 * 33 * 3]);
+            if let Some(expected) = &expected_bytes {
+                assert_eq!(&bytes, expected);
+            } else {
+                expected_bytes = Some(bytes);
+            }
+        }
+    }
+
+    /// Full/light ID magnitudes and physical offsets cannot override winning plugin priority.
+    #[test]
+    fn same_parent_land_priority_precedes_offset_and_light_identity() {
+        let light = 0xFE00_1821;
+        let full = 0x0200_8011;
+        let source_offsets = HashMap::from([(light, 90_000), (full, 100)]);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.rkyv");
+        for light_later in [false, true] {
+            let records = HashMap::from([
+                (
+                    light,
+                    selection_land(light, if light_later { 17 } else { 5 }, 3.0, 7),
+                ),
+                (
+                    full,
+                    selection_land(full, if light_later { 5 } else { 17 }, 11.0, 19),
+                ),
+            ]);
+            write_cell_cache_with_source_order(&records, &source_offsets, &path).unwrap();
+            let cache =
+                rkyv::from_bytes::<CellCache, Error>(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                cache.cells[0].heights,
+                vec![if light_later { 24.0 } else { 88.0 }; 33 * 33]
+            );
+        }
+    }
+
+    /// A tombstone carries no terrain and cannot displace a usable same-parent candidate.
+    #[test]
+    fn same_parent_land_ignores_deleted_candidates() {
+        let live = selection_land(0x0200_8011, 5, 3.0, 7);
+        let mut deleted = selection_land(0xFE00_1821, 17, f32::NAN, 19);
+        deleted.flags = 0x20;
+        let records = HashMap::from([(live.form_id, live), (deleted.form_id, deleted)]);
+        let source_offsets = HashMap::from([(0x0200_8011, 100), (0xFE00_1821, 900)]);
+        assert_eq!(
+            land_winners_by_cell(&records, &source_offsets),
+            HashMap::from([(0x7654, 0x0200_8011)])
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.rkyv");
+        write_cell_cache_with_source_order(&records, &source_offsets, &path).unwrap();
+        let cache = rkyv::from_bytes::<CellCache, Error>(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(cache.cells[0].heights, vec![24.0; 33 * 33]);
+    }
 
     /// Validate an explicitly supplied local plugin set without publishing into its asset pack.
     #[test]
@@ -865,8 +1429,9 @@ mod tests {
         assert!(extract_texture_layers(&[(b"ATXT".to_vec(), alpha)]).is_err());
     }
 
+    /// Source normalization keeps the implicit base and every authored nonnull overlay.
     #[test]
-    fn supplies_implicit_base_and_drops_the_weakest_excess_overlay() {
+    fn preserves_implicit_base_and_excess_overlays_before_runtime_capacity() {
         let mut layers = (0..6)
             .map(|layer| TerrainLayer {
                 texture_form_id: u32::from(layer) + 1,
@@ -880,10 +1445,70 @@ mod tests {
             })
             .collect::<Vec<_>>();
         normalize_texture_layers(&mut layers);
+        assert_eq!(layers.len(), 7);
+        validate_preserved_layers(&layers).unwrap();
+        let dropped = limit_runtime_texture_layers(&mut layers);
+        assert_eq!(dropped, [0, 0, 1, 0]);
         assert_eq!(layers.len(), 6);
         assert!(layers[0].is_base);
         assert_eq!(layers[0].texture_form_id, 0);
         assert!(!layers.iter().any(|layer| layer.texture_form_id == 5));
+    }
+
+    /// Runtime trimming counts each quadrant independently and keeps cleared-ID weights.
+    #[test]
+    fn runtime_capacity_keeps_placeholders_and_uses_highest_slot_to_break_weight_ties() {
+        let mut layers = Vec::new();
+        for quadrant in [0, 2] {
+            layers.push(TerrainLayer {
+                texture_form_id: 0x2000 + u32::from(quadrant),
+                quadrant,
+                layer: 0,
+                is_base: true,
+                weights: Vec::new(),
+            });
+            let overlays = if quadrant == 0 { 7 } else { 6 };
+            for slot in 1..=overlays {
+                layers.push(TerrainLayer {
+                    // This is a cleared target, not a native NULL assignment.
+                    texture_form_id: if slot == 1 {
+                        0
+                    } else {
+                        0x3000 + u32::from(slot)
+                    },
+                    quadrant,
+                    layer: slot,
+                    is_base: false,
+                    weights: vec![TerrainWeight {
+                        vertex: slot + 10,
+                        opacity: if slot >= 5 { 0.25 } else { 0.75 },
+                    }],
+                });
+            }
+        }
+        validate_preserved_layers(&layers).unwrap();
+        assert_eq!(limit_runtime_texture_layers(&mut layers), [2, 0, 1, 0]);
+        for quadrant in [0, 2] {
+            let retained = layers.iter().filter(|layer| layer.quadrant == quadrant);
+            assert_eq!(retained.clone().count(), 6);
+            assert_eq!(
+                retained.map(|layer| layer.layer).collect::<Vec<_>>(),
+                [0, 1, 2, 3, 4, 5]
+            );
+            let placeholder = layers
+                .iter()
+                .find(|layer| layer.quadrant == quadrant && layer.layer == 1 && !layer.is_base)
+                .unwrap();
+            assert_eq!(placeholder.texture_form_id, 0);
+            assert_eq!(
+                placeholder.weights,
+                [TerrainWeight {
+                    vertex: 11,
+                    opacity: 0.75
+                }]
+            );
+        }
+        assert_eq!(limit_runtime_texture_layers(&mut layers), [0; 4]);
     }
 
     #[test]

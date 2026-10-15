@@ -45,6 +45,110 @@ fn assert_mesh_textures_resolve(output: &Path) {
     }
 }
 
+/// Repair survives normal per-kind reuse; a later broken archive cannot restore its old output.
+#[tokio::test]
+async fn repaired_archive_respects_per_kind_reuse_and_later_failure_drops_old_assets() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    dummy_content::layout::prepare_directory(&data, false).unwrap();
+    dummy_content::layout::generate(
+        &data,
+        dummy_content::layout::DEFAULT_SEED,
+        dummy_content::layout::Formats::parse("dds,pex,nif,esm").unwrap(),
+    )
+    .unwrap();
+    let archive = data.join("Skyrim - Repair.bsa");
+    fs::write(&archive, b"broken BSA before repair").unwrap();
+    let output = root.path().join("modern");
+    let mut config = PipelineConfig::new(&data, &output);
+    config.record_reader = converter::config::RecordReader::Legacy;
+    config.no_lod = true;
+    config.cpu_jobs = 2;
+    let first = run_fixture(&config).await;
+    assert!(!first.complete);
+    assert_eq!(first.skipped, 1);
+    let manifest_path = output.join("conversion-manifest.json");
+    let initial: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    let failure_key = archive.to_string_lossy().replace('\\', "/");
+    assert!(initial.failures.contains_key(&failure_key));
+    assert!(!initial.archives.contains_key("skyrim - repair.bsa"));
+
+    let script_key = "scripts/repaired_only.pex";
+    let script_output = "scripts/repaired_only.luau";
+    let script = dummy_content::pex::minimal("RepairedOnly").unwrap();
+    fs::write(
+        &archive,
+        dummy_content::bsa::v105(
+            &[dummy_content::Entry::new(script_key, &script)],
+            dummy_content::bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let repaired = repair_failed(&config, true).unwrap();
+    assert!(repaired.published);
+    assert_eq!(repaired.converted, 1);
+    assert!(repaired.failures.is_empty());
+    let repaired_manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        repaired_manifest.asset_configuration_hashes,
+        initial.asset_configuration_hashes
+    );
+    assert_eq!(repaired_manifest.entries[script_key].output, script_output);
+    let repaired_bytes = fs::read(output.join(script_output)).unwrap();
+    let asset_count: u64 = repaired_manifest.inputs_by_kind.values().sum();
+    let unchanged = run_fixture(&config).await;
+    assert!(unchanged.complete);
+    assert_eq!(unchanged.converted, 0);
+    assert_eq!(unchanged.cache_hits, asset_count + 1);
+
+    // Change the reader's metadata identity and texture settings together. The
+    // repaired script and mesh remain reusable while every texture regenerates.
+    let mut changed = config.clone();
+    changed.record_reader = converter::config::RecordReader::Inhouse;
+    changed.texture_fallback_quality -= 1;
+    let rerun = run_fixture(&changed).await;
+    assert!(rerun.complete, "{:?}", rerun.warnings);
+    let texture_count = repaired_manifest.inputs_by_kind["dds"];
+    assert_eq!(rerun.converted, texture_count);
+    assert_eq!(rerun.cache_hits, asset_count - texture_count + 1);
+    let changed_manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_ne!(
+        changed_manifest.configuration_hash,
+        repaired_manifest.configuration_hash
+    );
+    for kind in ["nif", "pex"] {
+        assert_eq!(
+            changed_manifest.asset_configuration_hashes[kind],
+            repaired_manifest.asset_configuration_hashes[kind]
+        );
+    }
+    assert_ne!(
+        changed_manifest.asset_configuration_hashes["dds"],
+        repaired_manifest.asset_configuration_hashes["dds"]
+    );
+    assert_eq!(
+        fs::read(output.join(script_output)).unwrap(),
+        repaired_bytes
+    );
+
+    fs::write(&archive, b"archive broke again after successful repair").unwrap();
+    let failed = run_fixture(&changed).await;
+    assert!(!failed.complete);
+    assert_eq!(failed.skipped, 1);
+    let failed_manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert!(failed_manifest.failures.contains_key(&failure_key));
+    assert!(!failed_manifest.archives.contains_key("skyrim - repair.bsa"));
+    assert!(!failed_manifest.entries.contains_key(script_key));
+    assert!(!output.join(script_output).exists());
+    assert!(output.join("meshes/generated.glb").is_file());
+    assert!(output.join("scripts/generated.luau").is_file());
+}
+
 #[tokio::test]
 async fn dds_only_actual_failure_repairs_retained_mesh_aliases() {
     let root = tempfile::tempdir().unwrap();

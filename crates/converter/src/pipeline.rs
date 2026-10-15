@@ -3,7 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        can_reuse_scripts_and_archives, configuration_hash, configuration_hash_for_schema,
+        asset_configuration_hash_for_schema, can_reuse_meshes, can_reuse_scripts_and_archives,
+        configuration_hash, configuration_hash_for_schema, current_configuration_hash_for_schema,
         hash_bytes, hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
@@ -54,6 +55,10 @@ use tokio::{
 };
 use walkdir::WalkDir;
 
+#[cfg(test)]
+#[path = "pipeline/rv_b_tests.rs"]
+mod rv_b_tests;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineReport {
     pub complete: bool,
@@ -82,7 +87,8 @@ pub struct PipelineReport {
     #[serde(default)]
     pub lod_warnings: Vec<String>,
     pub warnings: Vec<String>,
-    /// advisory messages that do not affect completeness
+    /// Advisory messages, including successful reader compatibility remaps,
+    /// that do not affect completeness.
     #[serde(default)]
     pub notices: Vec<String>,
     /// Original plugin filenames omitted by selection recovery, once each in selection order.
@@ -109,8 +115,9 @@ pub struct PipelineReport {
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
-/// still skip or warn, so they still land here.
-fn conversion_is_complete(report: &PipelineReport) -> bool {
+/// still skip or warn, so they still land here. Reader data-loss summaries warn
+/// while usable records still publish; successful compatibility remaps are notices.
+pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
@@ -251,12 +258,14 @@ impl AssetPipeline {
         Self::run_async_with_cancel(config, progress_tx, Cancellation::new()).await
     }
 
+    /// Freeze configuration inputs before staging and honor cancellation at publication.
     pub async fn run_async_with_cancel(
         mut config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
         config.validate()?;
+        config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
         config.output_dir =
             resolve_asset_path(&config.output_dir).wrap_err("failed to resolve asset output")?;
@@ -302,36 +311,7 @@ impl AssetPipeline {
         } else {
             ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))?
         };
-        let expected_configuration = configuration_hash(&config)?;
-        let metadata_configuration_is_compatible = loaded_manifest.configuration_hash
-            == expected_configuration
-            || ((can_reuse_scripts_and_archives(loaded_manifest.schema_version)
-                || loaded_manifest.schema_version == CONVERTER_SCHEMA_VERSION)
-                && loaded_manifest.configuration_hash
-                    == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
-        let retained_configuration_is_compatible =
-            match &loaded_manifest.retained_asset_configuration_hash {
-                Some(recorded) => {
-                    recorded
-                        == &configuration_hash_for_schema(
-                            &config,
-                            loaded_manifest
-                                .retained_mesh_schema_version
-                                .unwrap_or(loaded_manifest.schema_version),
-                        )?
-                }
-                None => {
-                    loaded_manifest.retained_mesh_schema_version.is_none()
-                        && !config.output_dir.join("metadata-rebuild.json").exists()
-                }
-            };
-        let configuration_is_compatible =
-            metadata_configuration_is_compatible && retained_configuration_is_compatible;
-        let previous_manifest = if configuration_is_compatible {
-            loaded_manifest
-        } else {
-            ConversionManifest::default()
-        };
+        let previous_manifest = reusable_manifest(&config, loaded_manifest)?;
         let staging = config
             .resume_staging
             .clone()
@@ -440,7 +420,24 @@ impl AssetPipeline {
             retained_mesh_schema_version: None,
             retained_asset_configuration_hash: None,
             complete: false,
+            // A fresh run has no record losses when there are no selected plugins.
+            // The authoritative reader replaces this proof when plugins are converted.
+            record_data_complete: Some(true),
             configuration_hash: expected_configuration.clone(),
+            schema_addons: config.schemas()?.identities().to_vec(),
+            asset_configuration_hashes: ["nif", "dds", "pex"]
+                .into_iter()
+                .map(|kind| {
+                    Ok((
+                        kind.to_owned(),
+                        asset_configuration_hash_for_schema(
+                            config,
+                            CONVERTER_SCHEMA_VERSION,
+                            kind,
+                        )?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
             inputs_by_kind: Default::default(),
             failures: Default::default(),
             excluded_inputs: Default::default(),
@@ -779,12 +776,50 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
+            let strings_root = staging.join("vfs");
+            let string_sources = if config.mo2.is_some() {
+                crate::esm::inhouse::StringSources::EffectiveData {
+                    archive_root: &strings_root,
+                    loose_files: &resolved_files,
+                }
+            } else {
+                crate::esm::inhouse::StringSources::PluginLooseFirst(&strings_root)
+            };
+            let conversion =
+                EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
+                    &plugins,
+                    &db_path,
+                    config.record_reader,
+                    string_sources,
+                    Some(config.schemas()?.as_ref()),
+                )?;
+            manifest.record_data_complete = Some(conversion.warnings.is_empty());
+            report.warnings.extend(conversion.warnings);
+            report.notices.extend(conversion.notices);
+            let merged = conversion.records;
             validate_database(&Connection::open(&db_path)?)?;
-            write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
+            } else {
+                write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            }
+            crate::esm::inhouse::write_reader_identity_with_schemas(
+                staging,
+                config.record_reader,
+                config.schemas()?.as_ref(),
+            )?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                report
+                    .artifacts
+                    .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+                report
+                    .artifacts
+                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
+            }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("record-reader.json"),
             ]);
         }
 
@@ -862,7 +897,6 @@ impl AssetPipeline {
                 staging,
                 previous,
                 staged: Arc::clone(&staged_outputs),
-                expected_configuration: &expected_configuration,
                 journal: &mut journal,
                 manifest: &mut manifest,
                 report: &mut report,
@@ -897,7 +931,6 @@ impl AssetPipeline {
                 staging,
                 previous,
                 staged: Arc::clone(&staged_outputs),
-                expected_configuration: &expected_configuration,
                 journal: &mut journal,
                 manifest: &mut manifest,
                 report: &mut report,
@@ -1164,6 +1197,106 @@ impl AssetPipeline {
     }
 }
 
+/// Keep raw archive candidates and select converted outputs using their original producer.
+/// Matching a retained metadata hash never upgrades the producer of the retained bytes.
+fn reusable_manifest(
+    config: &PipelineConfig,
+    mut manifest: ConversionManifest,
+) -> Result<ConversionManifest> {
+    let producer = manifest
+        .retained_mesh_schema_version
+        .unwrap_or(manifest.schema_version);
+    let unproven_retention = manifest.retained_mesh_schema_version.is_none()
+        && config.output_dir.join("metadata-rebuild.json").exists();
+    let provenance_is_consistent = producer <= manifest.schema_version && !unproven_retention;
+    let mut compatible = BTreeMap::new();
+    for kind in ["nif", "dds", "pex"] {
+        let producer_is_compatible = match kind {
+            "nif" => can_reuse_meshes(producer),
+            "dds" => producer == CONVERTER_SCHEMA_VERSION,
+            "pex" => {
+                producer == CONVERTER_SCHEMA_VERSION || can_reuse_scripts_and_archives(producer)
+            }
+            _ => unreachable!(),
+        };
+        let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
+            recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
+        } else {
+            // Older manifests have one combined proof. Require an exact known
+            // historical settings hash; an opaque stale schema cannot prove it.
+            let recorded = manifest
+                .retained_asset_configuration_hash
+                .as_deref()
+                .unwrap_or(&manifest.configuration_hash);
+            let mut settings = config.clone();
+            let mut matched = false;
+            for reader in [
+                crate::config::RecordReader::Legacy,
+                crate::config::RecordReader::Inhouse,
+            ] {
+                settings.record_reader = reader;
+                matched |= recorded == current_configuration_hash_for_schema(&settings, producer)?;
+                matched |= recorded == configuration_hash_for_schema(&settings, producer)?;
+                if reader == crate::config::RecordReader::Inhouse {
+                    for identity in [
+                        crate::cache::inhouse_adapter10_reader_identity(
+                            settings.schemas()?.as_ref(),
+                        ),
+                        crate::cache::inhouse_adapter11_reader_identity(
+                            settings.schemas()?.as_ref(),
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        matched |= crate::cache::retained_configuration_matches_for_reader(
+                            &settings, producer, recorded, &identity,
+                        )?;
+                    }
+                }
+                if reader == crate::config::RecordReader::Legacy {
+                    matched |= recorded
+                        == crate::cache::legacy_projection_v1_configuration_hash(
+                            &settings, producer,
+                        )?;
+                    matched |= recorded
+                        == crate::cache::legacy_projection_v2_configuration_hash(
+                            &settings, producer,
+                        )?;
+                }
+            }
+            matched
+        };
+        compatible.insert(
+            kind,
+            provenance_is_consistent && producer_is_compatible && settings_match,
+        );
+    }
+    manifest.entries.retain(|_, entry| {
+        let kind = match Path::new(&entry.output)
+            .extension()
+            .and_then(|ext| ext.to_str())
+        {
+            Some(ext) if ext.eq_ignore_ascii_case("glb") => "nif",
+            Some(ext) if ext.eq_ignore_ascii_case("ktx2") => "dds",
+            Some(ext) if ext.eq_ignore_ascii_case("luau") => "pex",
+            _ => return false,
+        };
+        compatible[kind]
+    });
+    let outputs: BTreeSet<_> = manifest
+        .entries
+        .values()
+        .map(|entry| entry.output.clone())
+        .collect();
+    manifest
+        .pruned_texture_references
+        .retain(|output, _| outputs.contains(output));
+    // Archive extraction checks source hashes and cached bytes independently.
+    // It remains available even when every generated-output proof was rejected.
+    Ok(manifest)
+}
+
 struct ConversionBatch<'a> {
     config: &'a PipelineConfig,
     staging: &'a Path,
@@ -1171,7 +1304,6 @@ struct ConversionBatch<'a> {
     /// Provenance of the outputs already in `staging`, keyed by canonical
     /// source key; empty when the cache is invalidated.
     staged: Arc<BTreeMap<String, StagedOutput>>,
-    expected_configuration: &'a str,
     journal: &'a mut StagingJournal,
     manifest: &'a mut ConversionManifest,
     report: &'a mut PipelineReport,
@@ -1300,7 +1432,9 @@ impl ConversionBatch<'_> {
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
         let staged_outputs = Arc::clone(&self.staged);
-        let expected_configuration = self.expected_configuration.to_owned();
+        let expected_configuration =
+            asset_configuration_hash_for_schema(self.config, CONVERTER_SCHEMA_VERSION, source_ext)?;
+        let worker_configuration = expected_configuration.clone();
         let force_reconvert = force_reconvert.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
@@ -1558,8 +1692,8 @@ impl ConversionBatch<'_> {
                         // A staged output survives from an earlier run, so it
                         // is reused only when the journal says it was produced
                         // from the current source under the current schema and
-                        // configuration and its bytes still match the recorded
-                        // size and hash, or the `previous_entries` fallback
+                        // asset-kind settings, and its bytes still match the
+                        // recorded size and hash, or the `previous_entries` fallback
                         // finds the previous manifest's entry for the same
                         // source and its recorded output hash matches the
                         // staged bytes (a staging tree copied from a published
@@ -1567,7 +1701,7 @@ impl ConversionBatch<'_> {
                         // converted again.
                         let staged_is_current = !forced
                             && (staged_outputs.get(&key).is_some_and(|record| {
-                                record.is_current(&target, &hash, &expected_configuration)
+                                record.is_current(&target, &hash, &worker_configuration)
                             }) || previous_entries.get(&key).is_some_and(|entry| {
                                 entry.source_hash == hash
                                     && entry.output_hash == hash_file(&target).unwrap_or_default()
@@ -1786,7 +1920,7 @@ impl ConversionBatch<'_> {
                         };
                         if let Err(error) = self
                             .journal
-                            .record(&key, &staged_output(&entry, self.expected_configuration))
+                            .record(&key, &staged_output(&entry, &expected_configuration))
                         {
                             stop_batch(&cancelled, &mut first_error, error);
                             continue;
@@ -1809,7 +1943,7 @@ impl ConversionBatch<'_> {
                             // published entry is its provenance.
                             if let Err(error) = self
                                 .journal
-                                .record(&key, &staged_output(&entry, self.expected_configuration))
+                                .record(&key, &staged_output(&entry, &expected_configuration))
                             {
                                 stop_batch(&cancelled, &mut first_error, error);
                                 continue;
@@ -2549,11 +2683,9 @@ pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[P
     archives.sort_by_cached_key(|archive| {
         (
             archive_load_order_priority(archive, plugins).unwrap_or(usize::MAX),
-            archive
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_ascii_lowercase(),
+            crate::esm::load_order::normalize_plugin_name(
+                &archive.file_stem().unwrap_or_default().to_string_lossy(),
+            ),
         )
     });
 }
@@ -2628,6 +2760,9 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         "skyrim_world.db-wal",
         "skyrim_world.db-shm",
         "cell_cache.rkyv",
+        "cell_cache_preserved.rkyv",
+        "record-reader.json",
+        "inhouse-reader-diagnostics.json",
         "integration-report.json",
         "lod-manifest.json",
         "metadata-rebuild.json",
@@ -3870,6 +4005,92 @@ mod tests {
 
     use super::*;
 
+    /// A known adapter-10 combined settings proof preserves eligible producer-26 candidates.
+    #[test]
+    fn adapter10_combined_asset_proof_reuses_eligible_candidates_without_relabeling() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = PipelineConfig::new(
+            directory.path().join("Data"),
+            directory.path().join("output"),
+        );
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        let mut identity = crate::esm::inhouse::reader_identity(config.record_reader);
+        identity["adapter_version"] = serde_json::json!(10);
+        let historical = serde_json::json!({
+            "schema": CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode": "cpu"},
+            "script_abi_version": config.script_abi_version,
+            "record_reader": identity,
+        });
+        let recorded = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash: recorded.clone(),
+            entries: [
+                (
+                    "meshes/prior.nif".into(),
+                    CacheEntry {
+                        source_hash: "native-mesh-proof".into(),
+                        output: "meshes/prior.glb".into(),
+                        output_hash: "mesh-byte-proof".into(),
+                        output_size: 137,
+                    },
+                ),
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
+            .into(),
+            complete: true,
+            ..Default::default()
+        };
+        let reused = reusable_manifest(&config, manifest.clone()).unwrap();
+        assert_eq!(
+            reused.entries, manifest.entries,
+            "metadata-only adapter identity must preserve eligible asset candidates"
+        );
+        assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
+        assert_eq!(reused.configuration_hash, recorded);
+        assert_eq!(reused.retained_mesh_schema_version, None);
+        assert_eq!(reused.retained_asset_configuration_hash, None);
+        let mut changed = config.clone();
+        changed.texture_fallback_quality = 191;
+        assert!(
+            reusable_manifest(&changed, manifest.clone())
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        let mut unsupported = manifest;
+        let mut historical = historical;
+        historical["record_reader"]["adapter_version"] = serde_json::json!(8);
+        unsupported.configuration_hash = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        assert!(
+            reusable_manifest(&config, unsupported)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
     #[test]
     fn discovery_rejects_missing_roots() {
         let directory = tempfile::tempdir().unwrap();
@@ -4284,6 +4505,7 @@ mod tests {
         fs::remove_file(output.join("lod-manifest.json")).unwrap();
         let mut legacy = published_manifest(&output);
         legacy.schema_version = 16;
+        legacy.asset_configuration_hashes.clear();
         legacy
             .save(&output.join("conversion-manifest.json"))
             .unwrap();
@@ -4312,8 +4534,10 @@ mod tests {
         assert!(output.join("skyrim_world.db").is_file());
     }
 
+    /// Explicitly compatible producer-24 meshes reuse original proof; changed
+    /// NIF source bytes still regenerate instead of being hidden by migration.
     #[tokio::test]
-    async fn current24_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn compatible_meshes_reuse_but_changed_mesh_source_reconverts() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -4328,7 +4552,11 @@ mod tests {
         config.cpu_jobs = 2;
         run_without_progress(config.clone()).await;
         let path = output.join("conversion-manifest.json");
-        let old: ConversionManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old.schema_version = 24;
+        old.asset_configuration_hashes.clear();
+        old.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -4343,10 +4571,21 @@ mod tests {
             .collect();
         assert!(!meshes.is_empty());
         let reused = run_without_progress(config.clone()).await;
-        assert_eq!(reused.converted, 0);
+        let textures = old
+            .entries
+            .values()
+            .filter(|entry| entry.output.ends_with(".ktx2"))
+            .count();
+        assert_eq!(reused.converted, textures as u64);
         for (relative, bytes) in &meshes {
             assert_eq!(fs::read(output.join(relative)).unwrap(), *bytes);
         }
+        let mut compatible: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        compatible.schema_version = 24;
+        compatible.asset_configuration_hashes.clear();
+        compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+        compatible.save(&path).unwrap();
         fs::write(
             data.join("meshes/generated.nif"),
             dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
@@ -4853,6 +5092,24 @@ mod tests {
         for name in ["Example2.bsa", "ExampleOther.bsa", "Other.bsa"] {
             assert!(!mo2_archive_is_active(Path::new(name), &plugins), "{name}");
         }
+    }
+
+    /// MO2 activation and final archive attachment share accented plugin-name keys.
+    #[test]
+    fn archive_attachment_and_mo2_activation_match_unicode_plugin_names() {
+        let plugins = vec![PathBuf::from("CAFÉ.esp")];
+        for name in ["café.bsa", "café - Textures.bsa"] {
+            assert!(mo2_archive_is_active(Path::new(name), &plugins));
+            assert_eq!(
+                archive_load_order_priority(Path::new(name), &plugins),
+                Some(0)
+            );
+        }
+        assert!(!mo2_archive_is_active(Path::new("caféElse.bsa"), &plugins));
+        assert_eq!(
+            archive_load_order_priority(Path::new("caféElse.bsa"), &plugins),
+            None
+        );
     }
 
     #[test]
@@ -5726,6 +5983,7 @@ mod tests {
         let expected_texture = fs::read(&texture).unwrap();
         let mut manifest = published_manifest(&output);
         manifest.schema_version = 23;
+        manifest.asset_configuration_hashes.clear();
         manifest.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
         let stale = b"pre-LOD23 omitted distant container";
         fs::write(output.join(PRUNED_MESH), stale).unwrap();
@@ -5766,6 +6024,7 @@ mod tests {
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest = published_manifest(&output);
             manifest.schema_version = old_schema;
+            manifest.asset_configuration_hashes.clear();
             manifest.configuration_hash =
                 configuration_hash_for_schema(&config, old_schema).unwrap();
             // A verified old GLB must still be rebuilt: its publication semantics changed.
@@ -5804,6 +6063,7 @@ mod tests {
             // Schema migration must not erase a real configuration change.
             let mut manifest = published_manifest(&output);
             manifest.schema_version = old_schema;
+            manifest.asset_configuration_hashes.clear();
             manifest.configuration_hash =
                 configuration_hash_for_schema(&config, old_schema).unwrap();
             manifest.save(&manifest_path).unwrap();

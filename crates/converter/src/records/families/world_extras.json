@@ -1,0 +1,716 @@
+{
+  "version": 1,
+  "sources": {},
+  "definitions": {},
+  "records": [
+    {
+      "signature": "NAVM",
+      "source": "xedit-tes5:8015-8150; manual counted layout in world_extras.rs",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NVNM",
+          "name": "geometry",
+          "kind": "bytes",
+          "decider": "world_navmesh",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "ONAM",
+          "name": "base_objects",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "object",
+              "kind": "form_id",
+              "targets": [
+                "CONT",
+                "FURN",
+                "TREE",
+                "STAT"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "preferred_connectors",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 2
+          },
+          "members": [
+            {
+              "name": "vertex",
+              "kind": "u16"
+            }
+          ]
+        },
+        {
+          "signature": "NNAM",
+          "name": "non_connectors",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 2
+          },
+          "members": [
+            {
+              "name": "vertex",
+              "kind": "u16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "NAVI",
+      "source": "xedit-tes5:8155-8236; manual counted layouts in world_extras.rs",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NVER",
+          "name": "version",
+          "kind": "u32"
+        },
+        {
+          "signature": "NVMI",
+          "name": "navmesh_info",
+          "kind": "bytes",
+          "decider": "world_navmesh_info",
+          "repeat": true
+        },
+        {
+          "signature": "NVPP",
+          "name": "precomputed_pathing",
+          "kind": "bytes",
+          "decider": "world_navmesh_paths"
+        },
+        {
+          "signature": "NVSI",
+          "name": "deleted_navmeshes",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "navmesh",
+              "kind": "form_id",
+              "targets": [
+                "NAVM"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "REGN",
+      "source": "xedit-tes5:12484-12592; xedit-common:683-696",
+      "allow_unordered": true,
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "RCLR",
+          "name": "map_color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 3,
+              "size": 1
+            }
+          ]
+        },
+        {
+          "signature": "WNAM",
+          "name": "worldspace",
+          "kind": "form_id",
+          "targets": [
+            "WRLD"
+          ]
+        },
+        {
+          "name": "areas",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "RPLI",
+              "name": "edge_falloff",
+              "kind": "u32"
+            },
+            {
+              "signature": "RPLD",
+              "name": "points",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 8
+              },
+              "members": [
+                {
+                  "name": "x",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "y",
+                  "kind": "f32",
+                  "offset": 4
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "entries",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "RDAT",
+              "name": "data_header",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "u32",
+                  "offset": 0,
+                  "enum": {
+                    "0": "unknown_0",
+                    "1": "unknown_1",
+                    "2": "objects",
+                    "3": "weather",
+                    "4": "map",
+                    "5": "land",
+                    "6": "grass",
+                    "7": "sound",
+                    "8": "imposter"
+                  }
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 4,
+                  "flags": {
+                    "1": "override"
+                  }
+                },
+                {
+                  "name": "priority",
+                  "kind": "u8",
+                  "offset": 5
+                },
+                {
+                  "name": "unknown",
+                  "kind": "bytes",
+                  "offset": 6
+                }
+              ]
+            },
+            {
+              "signature": "ICON",
+              "name": "icon",
+              "kind": "zstring"
+            },
+            {
+              "signature": "RDMO",
+              "name": "music",
+              "kind": "form_id",
+              "targets": [
+                "MUSC"
+              ]
+            },
+            {
+              "signature": "RDSA",
+              "name": "sounds",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 12
+              },
+              "members": [
+                {
+                  "name": "sound",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "SNDR",
+                    "SOUN"
+                  ]
+                },
+                {
+                  "name": "flags",
+                  "kind": "u32",
+                  "offset": 4,
+                  "flags": {
+                    "1": "pleasant",
+                    "2": "cloudy",
+                    "4": "rainy",
+                    "8": "snowy"
+                  }
+                },
+                {
+                  "name": "chance",
+                  "kind": "f32",
+                  "offset": 8
+                }
+              ]
+            },
+            {
+              "signature": "RDMP",
+              "name": "map_name",
+              "kind": "lstring"
+            },
+            {
+              "signature": "RDOT",
+              "name": "objects",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 52
+              },
+              "members": [
+                {
+                  "name": "object",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "TREE",
+                    "FLOR",
+                    "STAT",
+                    "LTEX",
+                    "MSTT"
+                  ]
+                },
+                {
+                  "name": "parent_index",
+                  "kind": "u16",
+                  "offset": 4
+                },
+                {
+                  "name": "unknown_6",
+                  "kind": "bytes",
+                  "offset": 6,
+                  "size": 2
+                },
+                {
+                  "name": "density",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "clustering",
+                  "kind": "u8",
+                  "offset": 12
+                },
+                {
+                  "name": "min_slope",
+                  "kind": "u8",
+                  "offset": 13
+                },
+                {
+                  "name": "max_slope",
+                  "kind": "u8",
+                  "offset": 14
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 15,
+                  "flags": {
+                    "1": "conform_to_slope",
+                    "2": "paint_vertices",
+                    "4": "size_variance",
+                    "8": "x_variance",
+                    "16": "y_variance",
+                    "32": "z_variance",
+                    "64": "tree",
+                    "128": "huge_rock"
+                  }
+                },
+                {
+                  "name": "radius_from_parent",
+                  "kind": "u16",
+                  "offset": 16
+                },
+                {
+                  "name": "radius",
+                  "kind": "u16",
+                  "offset": 18
+                },
+                {
+                  "name": "min_height",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "max_height",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "sink",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "sink_variance",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "size_variance",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "angle_x",
+                  "kind": "u16",
+                  "offset": 40
+                },
+                {
+                  "name": "angle_y",
+                  "kind": "u16",
+                  "offset": 42
+                },
+                {
+                  "name": "angle_z",
+                  "kind": "u16",
+                  "offset": 44
+                },
+                {
+                  "name": "unknown_46",
+                  "kind": "bytes",
+                  "offset": 46,
+                  "size": 2
+                },
+                {
+                  "name": "unknown_48",
+                  "kind": "bytes",
+                  "offset": 48,
+                  "size": 4
+                }
+              ]
+            },
+            {
+              "signature": "RDGS",
+              "name": "grasses",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 8
+              },
+              "members": [
+                {
+                  "name": "grass",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "GRAS"
+                  ]
+                },
+                {
+                  "name": "unknown",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                }
+              ]
+            },
+            {
+              "signature": "RDWT",
+              "name": "weather_types",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 12
+              },
+              "members": [
+                {
+                  "name": "weather",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "WTHR"
+                  ]
+                },
+                {
+                  "name": "chance",
+                  "kind": "u32",
+                  "offset": 4
+                },
+                {
+                  "name": "global",
+                  "kind": "form_id",
+                  "offset": 8,
+                  "targets": [
+                    "GLOB"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "ECZN",
+      "source": "xedit-tes5:8825-8845; older form version has whole eight-byte prefix",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "encounter_data",
+          "kind": "struct",
+          "sizes": [
+            8,
+            12
+          ],
+          "members": [
+            {
+              "name": "owner",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "NPC_",
+                "FACT"
+              ]
+            },
+            {
+              "name": "location",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "LCTN"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "i8",
+              "offset": 8,
+              "optional": true
+            },
+            {
+              "name": "min_level",
+              "kind": "i8",
+              "offset": 9,
+              "optional": true
+            },
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 10,
+              "optional": true,
+              "flags": {
+                "1": "never_resets",
+                "2": "match_player_below_minimum",
+                "4": "disable_combat_boundary"
+              }
+            },
+            {
+              "name": "max_level",
+              "kind": "i8",
+              "offset": 11,
+              "optional": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "SCOL",
+      "source": "xedit-tes5:13450-13462; xedit-common:790-802",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "definition": "bounds"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "name": "parts",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "ONAM",
+              "name": "static",
+              "kind": "form_id",
+              "targets": [
+                "STAT"
+              ]
+            },
+            {
+              "signature": "DATA",
+              "name": "placements",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 28
+              },
+              "members": [
+                {
+                  "name": "position_x",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "position_y",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "position_z",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "rotation_x",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "rotation_y",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "rotation_z",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "scale",
+                  "kind": "f32",
+                  "offset": 24
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "PLYR",
+      "source": "xedit-tes5:12793-12796; internal Player FormID has no checked target restriction",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "PLYR",
+          "name": "player",
+          "kind": "form_id",
+          "targets": [
+            "ANY_"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "CLDC",
+      "source": "xedit-tes5:13433-13435; only EDID known by reference",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        }
+      ]
+    },
+    {
+      "signature": "HAIR",
+      "source": "xedit-tes5:13436-13438; only EDID known by reference",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        }
+      ]
+    },
+    {
+      "signature": "PWAT",
+      "source": "xedit-tes5:13439-13441; only EDID known by reference",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        }
+      ]
+    },
+    {
+      "signature": "RGDL",
+      "source": "xedit-tes5:13442-13444; only EDID known by reference",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        }
+      ]
+    },
+    {
+      "signature": "SCPT",
+      "source": "xedit-tes5:13464-13466; only EDID known by reference",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        }
+      ]
+    }
+  ]
+}

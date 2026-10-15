@@ -367,7 +367,7 @@ fn rejects_malformed_land_and_alternate_texture_references() {
             0,
             record(kind, 0x800, 0, payload),
         );
-        assert!(EsmParser::merge_plugins(&[base]).is_err());
+        assert!(EsmParser::merge_plugins(&[base]).unwrap().is_empty());
     }
 }
 
@@ -446,7 +446,7 @@ fn group_parser_handles_deep_nesting_and_restores_sibling_context_in_file_order(
 }
 
 #[test]
-fn group_parser_rejects_partial_headers_in_nested_payloads_and_after_siblings() {
+fn group_parser_preserves_complete_records_around_partial_bounded_frames() {
     for length in 1..24 {
         let partial = vec![0; length];
         for input in [
@@ -458,8 +458,9 @@ fn group_parser_rejects_partial_headers_in_nested_payloads_and_after_siblings() 
             ]
             .concat(),
         ] {
-            let result = converter::esm::binary::parse_group(&input, None, None, &mut Vec::new());
-            assert!(result.unwrap_err().to_string().contains("trailing"));
+            let mut records = Vec::new();
+            converter::esm::binary::parse_group(&input, None, None, &mut records).unwrap();
+            assert_eq!(records.len(), usize::from(input.len() > 24 + length));
         }
     }
 }
@@ -518,9 +519,11 @@ fn rejects_duplicate_plugins_missing_masters_and_invalid_indices() {
     );
     assert!(LoadOrder::read(std::slice::from_ref(&patch)).is_err());
     assert!(LoadOrder::read(&[patch.clone(), base.clone()]).is_err());
-    assert!(EsmParser::merge_plugins(&[base, patch]).is_err());
+    let merged = EsmParser::merge_plugins(&[base, patch]).unwrap();
+    assert_eq!(merged.len(), 1);
+    assert!(merged.contains_key(&0x120));
     let oversized = plugin(dir.path(), "Oversized.esl", &[], 0x200, grass(0x1800, 35));
-    assert!(EsmParser::merge_plugins(&[oversized]).is_err());
+    assert!(EsmParser::merge_plugins(&[oversized]).unwrap().is_empty());
 }
 
 #[test]
@@ -606,7 +609,7 @@ fn out_of_range_master_index_resolves_to_the_plugin_itself() {
 }
 
 /// An out-of-range master index that lands on another record of the same plugin would
-/// silently replace it, so the merge rejects it whichever record comes first.
+/// silently replace it, so the conflicting candidate is omitted whichever comes first.
 #[test]
 fn out_of_range_master_index_may_not_replace_another_record() {
     for ids in [[0x0000_0800, 0x0200_0800], [0x0200_0800, 0x0000_0800]] {
@@ -622,13 +625,9 @@ fn out_of_range_master_index_may_not_replace_another_record() {
             ]
             .concat(),
         );
-        let error = format!("{:?}", EsmParser::merge_plugins(&[path]).unwrap_err());
-        assert!(
-            error.contains("both resolve to 00000800")
-                && error.contains("00000800")
-                && error.contains("02000800"),
-            "{error}"
-        );
+        let merged = EsmParser::merge_plugins(&[path]).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[&0x800].subrecords[0].1, b"First\0");
     }
 }
 
@@ -1219,9 +1218,27 @@ fn database_field(conn: &rusqlite::Connection, table: &str, id: u32, tag: &[u8; 
 /// The real pipeline publishes resolved IDs in every blob projection, including
 /// non-identity master lists, light masters, overrides and repeated subrecords.
 /// Malformed fields are absent from both record and reference blobs; valid neighbors survive.
-/// Rerunning it replaces stale database blobs without invalidating asset caches.
+/// Enable-parent flags use one byte even when all three unused bytes are nonzero;
+/// zero flags and the combined inversion/pop-in bits preserve their raw payloads.
+/// Rerunning replaces stale database blobs and old textures, retaining proven meshes/scripts.
 #[tokio::test]
 async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
+    pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(None).await;
+}
+
+/// Explicit legacy conversion preserves the same valid links while reporting malformed fields.
+#[tokio::test]
+async fn legacy_pipeline_publishes_and_rebuilds_reference_and_cell_links() {
+    pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(Some(
+        converter::config::RecordReader::Legacy,
+    ))
+    .await;
+}
+
+/// Exercise publication and cache replacement with real link targets and deliberate bad fields.
+async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
+    reader: Option<converter::config::RecordReader>,
+) {
     use converter::{AssetPipeline, PipelineConfig};
     use rusqlite::Connection;
     let dir = tempfile::tempdir().unwrap();
@@ -1235,10 +1252,21 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     .unwrap();
     plugin(&data, "Filler.esm", &["Skyrim.esm"], 1, Vec::new());
     plugin(&data, "Filler2.esm", &["Skyrim.esm"], 1, Vec::new());
-    plugin(&data, "Light.esl", &["Skyrim.esm"], 0x201, Vec::new());
+    plugin(
+        &data,
+        "Light.esl",
+        &["Skyrim.esm"],
+        0x201,
+        record(
+            b"REFR",
+            0x0100_0802,
+            0,
+            sub(b"NAME", &0x0000_0003u32.to_le_bytes()),
+        ),
+    );
     let mut xtel = 0x0200_0801u32.to_le_bytes().to_vec();
     xtel.extend([0xAB; 28]);
-    let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat();
+    let xesp = [0x0000_0802u32.to_le_bytes(), [1, 0x94, 0x27, 0xE1]].concat();
     let xapr = [0x0200_0803u32.to_le_bytes(), 1.25f32.to_le_bytes()].concat();
     let cell = 0x0200_0900;
     // Light.esl is local master 0, Skyrim.esm is 1; the plugin itself is 2.
@@ -1248,6 +1276,12 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         &["Light.esl", "Skyrim.esm"],
         0,
         [
+            record(
+                b"LGTM",
+                0x0200_0901,
+                0,
+                sub(b"EDID", b"SyntheticLinkLighting\0"),
+            ),
             record(
                 b"CELL",
                 cell,
@@ -1268,6 +1302,24 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                     [
                         record(
                             b"REFR",
+                            0x0200_0803,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0804,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0805,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
+                        record(
+                            b"REFR",
                             0x0200_0800,
                             0,
                             [
@@ -1285,7 +1337,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             [
                                 sub(
                                     b"XESP",
-                                    &[0x0300_0802u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+                                    &[0x0300_0802u32.to_le_bytes(), [2, 0x35, 0x6B, 0xC4]].concat(),
                                 ),
                                 sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                             ]
@@ -1297,6 +1349,19 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                             0,
                             [
                                 sub(b"XESP", &[0xAB; 4]),
+                                sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                            ]
+                            .concat(),
+                        ),
+                        record(
+                            b"REFR",
+                            0x0200_0808,
+                            0,
+                            [
+                                sub(
+                                    b"XESP",
+                                    &[0x0000_0802u32.to_le_bytes(), [0, 0xD8, 0x18, 0x7C]].concat(),
+                                ),
                                 sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
                             ]
                             .concat(),
@@ -1332,7 +1397,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                         sub(b"XAPR", &[0xAB; 12]),
                         sub(
                             b"XESP",
-                            &[0x0200_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat(),
+                            &[0x0200_0802u32.to_le_bytes(), [3, 0xA7, 0x51, 0xD2]].concat(),
                         ),
                         sub(
                             b"XAPR",
@@ -1358,17 +1423,40 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
     let output = dir.path().join("modern");
     let mut config = PipelineConfig::new(&data, &output);
     config.plugins_file = Some(list);
+    if let Some(reader) = reader {
+        config.record_reader = reader;
+    }
+    let mut expected_texture_rebuilds = 0;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
         drain.await.unwrap();
-        assert!(report.complete, "{:?}", report.warnings);
+        assert!(!report.complete, "malformed fields must remain visible");
+        assert_eq!(report.skipped, 0, "usable assets and records still publish");
+        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+        for plugin in ["links.esp", "override.esp"] {
+            let warnings: Vec<_> = report
+                .warnings
+                .iter()
+                .filter(|warning| warning.to_ascii_lowercase().contains(plugin))
+                .collect();
+            assert_eq!(warnings.len(), 1, "{:?}", report.warnings);
+            assert!(warnings[0].contains("first:"), "{}", warnings[0]);
+        }
+        let published: converter::cache::ConversionManifest =
+            serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                .unwrap();
+        assert!(!published.complete, "manifest must retain reader warnings");
         if pass == 1 {
-            assert_eq!(report.converted, 0);
+            assert_eq!(report.converted, expected_texture_rebuilds);
             assert!(report.cache_hits > 0);
         }
         let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let schema: u32 = conn
+            .query_row("SELECT version FROM schema_info", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema, converter::shared::WORLD_DATABASE_SCHEMA_VERSION);
         let mut expected_xtel = xtel.clone();
         expected_xtel[..4].copy_from_slice(&0x0300_0804u32.to_le_bytes());
         for table in ["records", "references"] {
@@ -1379,7 +1467,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0806, b"XESP"),
-                [0u32.to_le_bytes(), [2, 0, 0, 0]].concat()
+                [0u32.to_le_bytes(), [2, 0x35, 0x6B, 0xC4]].concat()
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XTEL"),
@@ -1387,7 +1475,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
             assert_eq!(
                 database_field(&conn, table, 0x0300_0800, b"XESP"),
-                [0xFE00_0802u32.to_le_bytes(), [1, 0, 0, 0]].concat()
+                [0xFE00_0802u32.to_le_bytes(), [3, 0xA7, 0x51, 0xD2]].concat()
+            );
+            assert_eq!(
+                database_field(&conn, table, 0x0300_0808, b"XESP"),
+                [0xFE00_0802u32.to_le_bytes(), [0, 0xD8, 0x18, 0x7C]].concat()
             );
             assert_eq!(
                 database_fields(&conn, table, 0x0300_0800, b"XAPR"),
@@ -1400,9 +1492,10 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         // The enable-parent columns follow the remapped XESP: valid, cleared to
         // zero with its flags kept, and NULL when the malformed subrecord was dropped.
         for (id, expected) in [
-            (0x0300_0800u32, (Some(0xFE00_0802i64), Some(1i64))),
+            (0x0300_0800u32, (Some(0xFE00_0802i64), Some(3i64))),
             (0x0300_0806, (Some(0), Some(2))),
             (0x0300_0807, (None, None)),
+            (0x0300_0808, (Some(0xFE00_0802), Some(0))),
         ] {
             let columns: (Option<i64>, Option<i64>) = conn
                 .query_row(
@@ -1416,6 +1509,15 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
         for table in ["records", "references"] {
             assert!(database_fields(&conn, table, 0x0300_0807, b"XESP").is_empty());
         }
+        let identity: (String, u32, u32) = conn
+            .query_row(
+                "SELECT m.plugin_name, m.internal_id, r.load_order FROM formid_map m \
+                 JOIN records r ON r.form_id=m.form_id WHERE m.form_id=?1",
+                [0x0300_0800u32],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, ("links.esp".to_owned(), 0x800, 5));
         for table in ["records", "cells"] {
             assert!(database_fields(&conn, table, 0x0300_0900, b"XCLR").is_empty());
             assert_eq!(
@@ -1424,7 +1526,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
             );
         }
         // Simulate an old pack with plugin-local IDs; the next conversion must
-        // replace it even though the source plugins and asset cache are unchanged.
+        // replace it even though the source plugins are unchanged.
         if pass == 0 {
             let old = converter::esm::extractors::serialize_subrecords(&[(
                 b"XTEL".to_vec(),
@@ -1440,6 +1542,24 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links() {
                 rusqlite::params![old, 0x0300_0800u32],
             )
             .unwrap();
+            // Producer 24 has compatible meshes/scripts, but its world projection
+            // contains padding in enable-parent flags. Rebuild the world while
+            // reusing proved meshes/scripts and regenerating all old textures.
+            let manifest_path = output.join("conversion-manifest.json");
+            let mut manifest: converter::cache::ConversionManifest =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            expected_texture_rebuilds = manifest
+                .entries
+                .values()
+                .filter(|entry| entry.output.ends_with(".ktx2"))
+                .count() as u64;
+            manifest.schema_version = 24;
+            manifest.asset_configuration_hashes.clear();
+            manifest.configuration_hash =
+                converter::cache::configuration_hash_for_schema(&config, 24).unwrap();
+            manifest.save(&manifest_path).unwrap();
+            conn.execute("UPDATE schema_info SET version=7", [])
+                .unwrap();
         }
     }
 }

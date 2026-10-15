@@ -2,9 +2,193 @@
 
 This document outlines the conversion pipeline to ingest legacy Skyrim formats (`.bsa`, `.dds`, `.nif`, `.hkx`, `.esm`) and output modern asset standards suitable for modern web & native runtimes (Bevy Engine, glTF 2.0, KTX2, WebGPU).
 
+The converter uses the in-house reader by default. `--record-reader legacy`
+selects the hand-written reader; `--record-reader inhouse` selects the default
+explicitly. Both routes use the same plugin ordering, runtime tables and terrain
+cache writer. The in-house route scans memory-mapped records and decodes authored
+schema entries before building canonical projection inputs; it does not run the
+legacy record decoder for supported records. Unknown record types remain opaque.
+Malformed fields and records are omitted with bounded per-plugin diagnostics;
+valid neighboring records continue through publication. Semantic terrain and
+movement failures are caught per record before a candidate replaces an earlier
+usable winner. Legacy decoding recovers at checked record boundaries or the end
+of the current bounded group, and never searches corrupt payload bytes for a
+replacement header. Malformed optional native links are cleared or their
+occurrences omitted; malformed required links omit only their record candidate.
+Player lists, MO2 profiles and automatic discovery omit unusable TES4/MAST headers and their dependency closures while usable neighbors continue; a nonempty selection reduced to no usable plugins fails clearly. Selection recovery also omits dependency cycles, remaining dependency inversions and slot overflow with their dependents, as described below. Unusable selection authority remains a conversion error.
+Real deletions still apply. LAND with rejected authored heights
+or incomplete framing is skipped; genuinely heightless texture/color records
+retain the existing default-height cache behavior.
+
+Both readers retain their terminal diagnostics and return bounded per-plugin
+summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
+malformed records/frames, unusable candidates, cleared optional links, truncated
+light IDs, and in-house decoder/adapter issues such as omitted fields or missing
+localized text. `PipelineReport.notices` contains successful compatibility
+remaps: master indices past a plugin's list treated as the plugin's own, and the
+in-house reader's supplier-self compatibility lines. Counts and first examples
+remain bounded per plugin and kind.
+
+The existing completeness rule requires zero skipped asset inputs and no
+warnings. Usable neighboring records still publish, but data-loss warnings mark
+both the report and conversion manifest incomplete and make the CLI exit with
+code 1. Compatibility notices remain visible without affecting completeness or
+the exit code; a mixed run retains both severities and stays incomplete.
+`--report-json`, the CLI and the launcher show the warnings and notices. Reader
+recovery does not increment the separate skipped-asset counter. Metadata rebuild
+and `--reuse-assets` use the same severity and completeness rules when they
+re-export records. Official inputs with only compatibility remaps remain complete.
+
+`record-reader.json` stamps the selected frontend. Legacy `projection_version=3`
+preserves WRLD RNAM payloads and TNAM strings and restores record-aware VMAD
+ownership compatibility. Version 2 added corrected faction links, strict native
+link ownership and local recovery to version 1's corrected TX06/TX07 and ARMO
+world-model projections. These metadata contracts are independent of asset
+producer 26. In-house adapter version 11 adds projection-aware winner admission
+to version 10's corrected schema layouts, GMST winner admission, union localization
+and filename namespaces. Required runtime projection checks resolve localized
+fields before admission, so an unusable later candidate preserves its usable
+predecessor without crossing an admitted deletion.
+Version 12 keeps zero-FormID GMST settings distinct and prevents a rejected
+identity collision from blocking a later usable definition.
+In-house identity includes the
+authored schema SHA-256, adapter version and English localization choice, and
+`inhouse-reader-diagnostics.json` records bounded decoder and adapter issues.
+The manifest's `configuration_hash` keeps the full reader identity for metadata
+provenance. Database, terrain cache and LOD artifacts are rebuilt on every
+conversion, including resumed staging. Resume commands preserve the reader choice.
+Converted assets use separate producer, settings and source proofs, described
+below; a full reader identity change alone does not discard those candidates or
+the archive extraction manifest.
+
+Localized fields in in-house mode use their declared English STRINGS, DLSTRINGS
+or ILSTRINGS bank from the effective archive VFS, with loose files taking
+precedence. Every validated occurrence remains in canonical records. Null or
+missing IDs yield empty canonical text and retain their original ID, bank,
+winning plugin and status in `inhouse_localized_fields`; nullable runtime name
+columns remain NULL. Missing nonzero keys produce counted warnings. Explicitly
+resolved empty text remains distinguishable from unresolved text. Other language
+selection is not implemented. A selected union or definition leaf's explicit
+bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
+then defaults to STRINGS.
+Ordinary plugin text and English string banks use Windows-1252, including bytes
+that happen to form valid UTF-8. VMAD strings use their independent UTF-8 format.
+Text requiring normalization is encoded as UTF-8 after decoding; already exact
+ASCII codes retain their original width and termination. Original source bytes
+remain available in provenance. The reader identity records both encoding contracts.
+Metadata rebuild uses the selected reader while validating retained assets under
+their original recorded reader configuration. Older unstamped packs and the exact
+`{"mode":"legacy"}` stamp retain the historical unversioned legacy contract;
+they are not identified as a versioned projection. Exact version-1 and version-2
+legacy stamps and full hashes remain recognized as their original retained-asset
+contracts and are not upgraded to the current projection.
+Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
+with matching original schema/add-on bytes, reader fields and combined settings
+hash. The original reader and asset producer remain recorded across repeated
+metadata rebuilds. These explicit compatibility pairs do not authorize arbitrary
+older in-house identities or automatically extend to future adapters.
+New full configuration hashes
+include the versioned legacy identity, while `configuration_hash_for_schema`
+preserves historical legacy hash reproduction. Metadata retention validates each
+hash against its recorded reader contract; a versioned source cannot omit its
+retained asset-reader provenance and infer it from the current metadata reader.
+Provenance preserves that reader, producer schema and combined settings hash
+across repeated metadata rebuilds, together with any per-kind asset settings
+proofs. Retained models/textures keep their verified bytes and may carry older
+TXST role encodings. Explicit retention does not upgrade their producer or grant
+normal cache eligibility: a later normal conversion checks the original producer
+and current settings, source dependencies and resolved texture encoding.
+Unknown source producer identities are rejected by the retained-asset route.
+Plugin filename keys use Unicode lowercase after native Windows-1252 decoding,
+including accented case pairs. The same shared function supplies player and MO2 selection, the merged MO2 Data index, master and identity lookup, and archive attachment keys. Record signatures and GMST EditorIDs retain their
+separate ASCII conventions. Filename spelling remains available in source proof;
+neither Unicode normalization nor general Unicode case folding is implemented.
+Complete load-order database exports replace canonical/runtime rows, identity
+maps and derived spatial/LOD state transactionally. Public plugin conversion
+replaces plugin metadata in that same export transaction. Subset exports retain
+unrelated rows and remove an updated reference's obsolete exterior spatial row.
+Caller tables and asset conversion proofs survive complete snapshot replacement.
+This route copies no archive extraction cache and clears its manifest entries;
+the next normal run extracts those archives once before recording new reusable
+source/integrity proofs.
+
+The explicit retained-asset route accepts the exact schema-15/16 producer
+configuration variant that records fixed Zstd level 6. Protected schema-15
+source provenance hashes default quality 192, UASTC level 2 and script ABI 1
+plus this fixed compression level to
+`b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435`.
+Texture quality and script ABI must still match the recorded configuration;
+every retained asset is copied and verified against its output hash. This
+compatibility proof does not alter normal conversion or staging cache identities.
+
+For record-only diagnostics, `inhouse-records <Data> <plugins.txt> <new directory>`
+writes the database, cell caches, reader identity and diagnostic report without
+running asset stages or publishing a runtime pack. The new directory also keeps
+selected English archive STRINGS inputs under `.strings-input` for comparison.
+
+`--typed-signatures TAG1,TAG2` selects the authored typed envelopes to retain;
+`--database-work-dir <new directory>` builds SQLite on a separate local disk and
+copies the closed database and diagnostics into the output, retaining both copies.
+Output and working directories must be fresh and separate from the inputs.
+
+The explicit diagnostic option `--record-archive-only` retains the same typed
+selection, canonical `records` and `formid_map`, original source payloads, physical
+override history, localized keys/text/status, terrain layers/source order and both
+terrain caches. It defers runtime materialized tables, script indexing and the
+exterior spatial index. Script bytes and typed VMAD fields remain in the records.
+`record-bundle-scope.json` begins with `INCOMPLETE` and declares completion only
+after all retained artifacts and any database copy finish. It lists preserved and
+deferred tables and stamps `runtime_ready=false`, as does `record-reader.json`.
+This option does not produce a runnable pack or claim whole runtime SQL
+equivalence. The default diagnostic export and normal converter still build all
+runtime views. No diagnostic mode converts meshes, textures, scripts or LOD.
+
+Fixed link-free scalar arrays use compact decoded storage with a shared element
+layout. Serialization still emits the existing tagged `Array`, `Struct` and
+`Bytes` values in source order, with unchanged numeric values and canonical field
+bytes. Layouts containing links, strings, selectors or deferred fields keep the
+ordinary representation. Rust consumers can use `Value::array_element` or
+`Value::materialized_array` for either representation; exhaustive enum matches
+must handle `Value::CompactArray`. The streaming typed writer avoids materializing
+the array. Serialized data and runtime archive layouts do not gain a new variant.
+
+Export buffers are released after their last consumers. Accepted raw records,
+physical source history and unresolved localized bytes remain available through
+their publication steps. Runtime projections clone only the retained subrecords,
+avoiding a redundant full-record clone before omitted fields are filtered.
+
+Set `MUDCRAB_RECORDS_PROFILE=1` before starting the process to emit stage timing
+observations on stderr. Each observation names the stage, elapsed wall seconds
+and record count; these timings need a quiet machine for meaningful comparisons.
+This is the single profiling switch. It covers coarse export stages, reads no
+clock when disabled, and ignores observation-write failures. Detailed per-record
+SQL/binding instrumentation is not part of production export.
+
+In-house terrain publication selects the latest accepted LAND by plugin priority
+and physical record order when several identities share a cell. It retains
+normalized original texture IDs, slots and blend weights in
+`inhouse_terrain_layers` and `cell_cache_preserved.rkyv`, including every active
+layer beyond the runtime material's capacity. The runtime `cell_cache.rkyv`
+retains its existing one-base-plus-five-overlay limit per quadrant. It removes
+overlays with the smallest sum of authored opacity, breaking ties by removing
+the highest slot first, and emits one bounded warning per affected cell with
+drop counts for all four quadrants. Retained slots and weights use explicit
+zero-ID placeholders for absent, deleted or wrong-kind texture targets;
+cleared IDs participate in the same ranking as their source assignments.
+Native null assignments are resolved before this replacement, so they do not
+displace a nonnull assignment or revive discarded weights. Runtime material
+construction accepts placeholders in any slot; a nonzero texture with missing
+converted images still fails its
+existing lookup checks. Original native fields and padding remain in the source
+table independently of these derived caches, including superseded slot
+assignments, native NULLs and their weights. The preserved cache is auxiliary;
+the engine continues to load only the runtime cache. The cache layout and
+runtime selection are unchanged; normal conversion and metadata rebuild
+regenerate both caches and the layer table.
+
 Explicit player selection is available through `--plugins-file FILE`. Optional `--skyrim-ccc-file FILE` overrides the game-folder Creation list, and `--skyrim-ini-file FILE` supplies General test-file settings without reading ambient profiles. These options also exist as `PipelineConfig.plugins_file`, `skyrim_ccc_file` and `skyrim_ini_file`. Selection rules and recoverable missing-master behavior are documented in [the database specification](db-schema.md). Automatic discovery remains the default.
 
-MO2 profiles use the same official/Creation activation, Windows-1252 decoding, last-duplicate selection and missing-master recovery. `--mo2-instance` and `--mo2-profile` retain the profile's file overlay and `loadorder.txt` order after implicitly active plugins. An active plugin omitted from `loadorder.txt` appends after ordered plugins, in `plugins.txt` order, with a warning. Missing Data entries and missing/disabled-master closures warn and skip while usable neighbors publish. `Skyrim.ccc` comes from the game folder beside physical Data. When it is missing or unreadable, player and MO2 selection activate the installed subset of `ccBGSSSE001-Fish.esm`, `ccQDRSSE001-SurvivalMode.esl`, `ccBGSSSE037-Curios.esl`, `ccBGSSSE025-AdvDSGS.esm` and `_ResourcePack.esl`, in that order after the five official masters. A readable CCC, including an empty file, remains authoritative. MO2 selection and `--plugins-file` are mutually exclusive.
+MO2 profiles use the same official/Creation activation, Windows-1252 decoding, last-duplicate selection and missing-master recovery. `--mo2-instance` and `--mo2-profile` retain the profile's file overlay and `loadorder.txt` order after implicitly active plugins. An active plugin omitted from `loadorder.txt` appends after ordered plugins, in `plugins.txt` order, with a warning. Missing Data entries and missing/disabled-master closures warn and skip while usable neighbors publish. `Skyrim.ccc` comes from the game folder beside physical Data. When it is missing or unreadable, player and MO2 selection activate the installed subset of `ccBGSSSE001-Fish.esm`, `ccQDRSSE001-SurvivalMode.esl`, `ccBGSSSE037-Curios.esl`, `ccBGSSSE025-AdvDSGS.esm` and `_ResourcePack.esl`, in that order after the five official masters. A readable CCC, including an empty file, remains authoritative. MO2 selection and `--plugins-file` are mutually exclusive. In-house localized fields use the effective winning loose English string banks from the MO2 Data overlay before archive banks; malformed winning banks remain unresolved with counted diagnostics, without reverting to a losing bank. Metadata rebuild via `--reuse-assets` requires authenticated physical Data and recorded plugin order; it rejects MO2 profile selection before source/output work. Use normal conversion for an MO2 profile.
 
 All plugin-name keys share Unicode lowercase normalization, including TES4 master lookup, direct MO2 plugin overlays and plugin-to-archive matching. Player, MO2 and automatic discovery omit unusable headers, missing-master closures, dependency cycles and their transitive dependents. Player and MO2 orders also omit a plugin still placed before one of its masters, with its dependents, instead of moving it. After each path establishes its order, it keeps the first 254 full and 4,096 light plugins and omits overflow plus its dependents without backfilling. Bounded notices reach progress and the conversion report. `skipped_plugins` lists every original filename removed by recovery, once each in pre-recovery selection order, including every file in an attempted ambiguous identity; deliberately unchecked plugins are not recovery exclusions. `load_order` lists surviving original filenames in published database slot order. Surviving paths determine slots and all subsequent conversion work.
 
@@ -18,7 +202,7 @@ Metadata rebuilds use the source package's checksum-matched plugin order for arc
 
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 
-Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The existing `warnings` field continues to describe conversion failures. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
+Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The `warnings` field describes conversion failures and reader data loss; successful compatibility remaps remain `notices`. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
 
 ---
 
@@ -89,6 +273,12 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
   aborts the transactional publication when any required texture fails.
 - Asset paths use one lowercase canonical key. Archive overlays follow plugin load order, loose
   files have highest priority, and normalized collisions inside one source layer are fatal.
+  The shared matcher attaches an archive to its longest matching active plugin stem, using
+  exact matches or a following space, dash or underscore and retaining the first slot for
+  equal stems. Archives with the same owner use ASCII-lowercase stem order; unattached archives
+  follow attached ones. This deterministic tie policy has not been established as equivalent
+  to every mod manager's archive insertion order. BSA header file-type categories are advisory;
+  unknown category bits do not relax layout, count, offset or compression validation.
 - Supports runtime transcoding into WebGPU/Vulkan native compressed formats (BC1/BC7 for Desktop, ASTC/ETC2 for Mobile/Web).
 
 ### C. World & Scene Database (`.esm` ➔ `SQLite3` + `rkyv` Zero-Copy Cache)
@@ -122,6 +312,68 @@ The converter pipeline is orchestrated asynchronously using **`tokio`** task con
 - **Non-blocking Concurrency:** Heavy I/O decompression and file transformations execute concurrently using `tokio::spawn` and `tokio::task::spawn_blocking` for CPU-bound transcode tasks (`dds` ➔ `ktx2` and `nif` ➔ `glb`).
 - **Async Progress Reporting:** Sends `ProgressEvent` updates across a `tokio::sync::mpsc::Sender` to the launcher UI or CLI without thread blocking.
 - **Unified Interface:** Exposes `AssetPipeline::run_async(config, progress_tx).await` as the single high-leverage entry point for modernizing game assets, and `run_async_with_cancel(config, progress_tx, cancellation)` for a caller that can stop it (the command-line converter's Ctrl+C handler).
+
+### Reuse proofs
+
+Current manifests record `asset_configuration_hashes` for each source kind,
+independently of the full reader identity. Each hash contains only the settings
+that affect that kind's bytes:
+
+| Kind | Settings proof | Source proof |
+| :--- | :--- | :--- |
+| NIF -> GLB | Mesh producer contract | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
+| DDS -> KTX2 | Texture producer, fallback quality, UASTC level, Zstd level and CPU/GPU encoder quality | DDS bytes, resolved `TextureEncoding` from the freshly rebuilt database and accepted GLBs, plus the applicable GPU encoding label |
+| PEX -> Luau | Script ABI | PEX bytes; known producer eligibility is checked separately |
+
+Worker counts, GPU batch size and `--no-lod` do not affect these settings proofs.
+A reader/schema edit that leaves the actual asset dependencies and encoding
+unchanged therefore permits reuse. A role edit that changes one DDS's resolved
+encoding changes that DDS's source proof and rebuilds it. Reuse still requires
+the published output to exist with its recorded size and SHA-256.
+Staging journal entries carry the same per-kind settings proof and also require
+the current producer contract and matching source/output bytes; older journal
+entries carrying a full configuration hash do not acquire a new proof implicitly.
+
+Normal producer eligibility remains independent of explicit metadata retention.
+The only cross-producer mesh allowance is producer 24 -> 26; a future producer
+does not inherit that allowance. Older textures regenerate, and scripts require
+both a supported producer and matching ABI settings. A retained producer remains
+the producer of its original bytes after any number of metadata rebuilds.
+
+Older manifests without per-kind settings hashes must match an exact known
+combined configuration hash for their original producer and a known reader
+identity. An opaque historical in-house hash whose schema/adapter identity is
+unavailable cannot establish asset settings, so its converted assets may rebuild
+once. Archive candidates survive this conservative rejection.
+
+Archive extraction reuse is independent of output producer, reader identity and
+encoder settings. The archive source SHA-256 must match, and every recorded
+content-addressed blob must exist with the recorded size. With cache verification
+enabled (the default), each blob must also match its recorded SHA-256. A failed
+source or blob integrity check causes that archive to be extracted again;
+unaffected archives remain candidates. `--invalidate-cache` explicitly discards
+both converted-asset and archive candidates.
+
+### Failed-asset repair
+
+`converter repair-failed <Data> <output> [--apply]` retries only the published manifest's
+failed inputs using the original conversion configuration, including reader,
+schema add-ons, encoding and MO2 source/profile options. Without `--apply`, the
+repair remains in a separate directory for inspection. Applying a repair holds
+the output locks, verifies existing outputs, updates the manifest and database,
+and publishes transactionally with recovery of the last good output after an
+interrupted swap. Missing winning sources remain failures; known authoring resources and geometryless overlay templates are recorded as excluded.
+Repaired outputs retain per-kind asset settings and source/integrity proofs.
+The manifest records record-data completeness separately from asset failures.
+Only normal conversion or a metadata rebuild can establish that proof from a
+fresh record read. Asset repair preserves unresolved record loss and missing
+historical proof: corrected assets may publish, but the pack remains incomplete
+and the repair CLI warns and exits `1`. Run normal conversion to recheck record
+data; verified assets remain eligible for reuse. A healthy record source with
+only asset failures can become complete after repair. Preview remains separate
+from publication and succeeds when its assets and recorded record proof are valid.
+Archive extraction candidates stay independent of converted-asset eligibility;
+old failed entries cannot override current repaired or excluded decisions.
 
 ### Checking a converted output
 

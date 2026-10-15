@@ -45,8 +45,8 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
         let path = PathBuf::from(path);
         let other = path.parent().unwrap().join("Other.esp");
         let merged = EsmParser::merge_plugins(&[path, other]).unwrap();
-        // Compatibility is unchanged: warning does not prevent the two IDs
-        // from colliding, and the last record still wins.
+        // Invalid required NAME links cannot publish guessed targets. The final
+        // complete candidate and the other plugin's header-only record still survive.
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[&0xFE00_0800].subrecords[0].1, b"Winner\0");
         assert_eq!(merged[&0xFE00_1800].subrecords[0].1, b"Other\0");
@@ -100,10 +100,11 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("uncompacted.esp: 2000 light-plugin ID occurrences")
+        stderr.contains("uncompacted.esp: 1000 light-plugin ID occurrences")
             && stderr.contains("other.esp: 1 light-plugin ID occurrences")
             && stderr.contains("00001800")
-            && stderr.contains("compact the plugin's FormIDs"),
+            && stderr.contains("compact the plugin's FormIDs")
+            && stderr.contains("uncompacted.esp: skipped 1000 unusable record candidate(s)"),
         "{stderr}"
     );
     for tag in [b"GRAS", b"LTEX", b"TXST", b"LAND", b"CELL", b"WRLD"] {
@@ -114,13 +115,7 @@ fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
             0x200,
             record(tag, 0x1800, 0, vec![]),
         );
-        let error = EsmParser::merge_plugins(&[path]).unwrap_err();
-        let message = format!("{error:?}");
-        assert!(
-            message.contains("light-plugin local ID exceeds 12 bits")
-                && message.contains("00001800"),
-            "{message}"
-        );
+        assert!(EsmParser::merge_plugins(&[path]).unwrap().is_empty());
     }
 }
 
@@ -286,20 +281,42 @@ fn game_settings_override_by_editor_id_with_deletion_restoration_and_null_overri
 }
 
 #[test]
-fn ambiguous_new_game_setting_ids_fail_instead_of_overwriting_another_record() {
-    for bytes in [
-        [
-            setting(0x800, "fFirst", 1.0, 0),
-            setting(0x800, "fSecond", 2.0, 0),
-        ]
-        .concat(),
-        [grass(0x800, 1), setting(0x800, "fFirst", 1.0, 0)].concat(),
-        [setting(0x800, "fFirst", 1.0, 0), grass(0x800, 1)].concat(),
-        setting(0, "fUnknown", 1.0, 0),
+fn ambiguous_new_game_setting_candidates_preserve_the_first_complete_record() {
+    for (bytes, expected_type) in [
+        (
+            [
+                setting(0x800, "fFirst", 1.0, 0),
+                setting(0x800, "fSecond", 2.0, 0),
+            ]
+            .concat(),
+            Some(*b"GMST"),
+        ),
+        (
+            [grass(0x800, 1), setting(0x800, "fFirst", 1.0, 0)].concat(),
+            Some(*b"GRAS"),
+        ),
+        (
+            [setting(0x800, "fFirst", 1.0, 0), grass(0x800, 1)].concat(),
+            Some(*b"GMST"),
+        ),
+        (setting(0, "fUnknown", 1.0, 0), None),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let base = plugin(dir.path(), "Base.esm", &[], 0, bytes);
-        assert!(EsmParser::merge_plugins(&[base]).is_err());
+        let merged = EsmParser::merge_plugins(std::slice::from_ref(&base)).unwrap();
+        if let Some(expected_type) = expected_type {
+            assert_eq!(merged.len(), 1);
+            assert_eq!(merged[&0x800].record_type, expected_type);
+        } else {
+            assert!(merged.is_empty());
+        }
+        let db = dir.path().join("world.db");
+        EsmParser::convert_plugins(&[base], &db).unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let published: usize = conn
+            .query_row("SELECT count(*) FROM records", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(published, usize::from(expected_type.is_some()));
     }
 }
 
@@ -409,53 +426,92 @@ fn live_game_settings_still_require_editor_ids() {
             "Base.esm",
             &[],
             0,
-            record(b"GMST", 0x800, 0, payload),
+            [
+                record(b"GMST", 0x800, 0, payload),
+                record(b"STAT", 0x801, 0, sub(b"EDID", b"Neighbor\0")),
+            ]
+            .concat(),
         );
-        assert!(
-            EsmParser::merge_plugins(&[base])
-                .unwrap_err()
-                .to_string()
-                .contains("has no EditorID")
-        );
+        let merged = EsmParser::merge_plugins(std::slice::from_ref(&base)).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[&0x801].record_type, *b"STAT");
+        EsmParser::convert_plugins(&[base], &dir.path().join("world.db")).unwrap();
     }
 }
 
 #[test]
-fn setting_alias_collisions_fail_in_both_record_orders_and_after_deletion() {
-    for bytes in [
-        [
-            setting(0x800, "fFirst", 1.0, 0),
-            grass(0x801, 1),
-            setting(0x801, "fFirst", 2.0, 0),
-        ]
-        .concat(),
-        [
-            setting(0x800, "fFirst", 1.0, 0),
-            setting(0x801, "fFirst", 2.0, 0),
-            grass(0x801, 1),
-        ]
-        .concat(),
-        [
-            setting(0x800, "fFirst", 1.0, 0),
-            setting(0x801, "fSecond", 2.0, 0),
-            setting(0x801, "fFirst", 3.0, 0),
-        ]
-        .concat(),
-        [
-            setting(0x800, "fFirst", 1.0, 0),
-            setting(0x801, "fFirst", 2.0, 0),
-            record(b"GMST", 0x801, 0x20, Vec::new()),
-            setting(0x801, "fSecond", 3.0, 0),
-        ]
-        .concat(),
+fn setting_alias_collisions_skip_candidates_in_both_orders_and_after_deletion() {
+    for (mut bytes, mut expected_ids, first_value, second_type) in [
+        (
+            [
+                setting(0x800, "fFirst", 1.0, 0),
+                grass(0x801, 1),
+                setting(0x801, "fFirst", 2.0, 0),
+            ]
+            .concat(),
+            vec![0x800, 0x801],
+            Some(1.0f32),
+            Some(*b"GRAS"),
+        ),
+        (
+            [
+                setting(0x800, "fFirst", 1.0, 0),
+                setting(0x801, "fFirst", 2.0, 0),
+                grass(0x801, 1),
+            ]
+            .concat(),
+            vec![0x800],
+            Some(2.0),
+            None,
+        ),
+        (
+            [
+                setting(0x800, "fFirst", 1.0, 0),
+                setting(0x801, "fSecond", 2.0, 0),
+                setting(0x801, "fFirst", 3.0, 0),
+            ]
+            .concat(),
+            vec![0x800, 0x801],
+            Some(1.0),
+            Some(*b"GMST"),
+        ),
+        (
+            [
+                setting(0x800, "fFirst", 1.0, 0),
+                setting(0x801, "fFirst", 2.0, 0),
+                record(b"GMST", 0x801, 0x20, Vec::new()),
+                setting(0x801, "fSecond", 3.0, 0),
+            ]
+            .concat(),
+            Vec::new(),
+            None,
+            None,
+        ),
     ] {
         let dir = tempfile::tempdir().unwrap();
+        bytes.extend(record(b"STAT", 0x900, 0, sub(b"EDID", b"Neighbor\0")));
+        expected_ids.push(0x900);
         let base = plugin(dir.path(), "Base.esm", &[], 0, bytes);
-        assert!(
-            EsmParser::merge_plugins(&[base])
-                .unwrap_err()
-                .to_string()
-                .contains("collides")
-        );
+        let merged = EsmParser::merge_plugins(std::slice::from_ref(&base)).unwrap();
+        let mut actual_ids: Vec<_> = merged.keys().copied().collect();
+        actual_ids.sort_unstable();
+        assert_eq!(actual_ids, expected_ids);
+        if let Some(value) = first_value {
+            assert_eq!(merged[&0x800].subrecords[1].1, value.to_le_bytes());
+        }
+        if let Some(record_type) = second_type {
+            assert_eq!(merged[&0x801].record_type, record_type);
+        }
+        let db = dir.path().join("world.db");
+        EsmParser::convert_plugins(&[base], &db).unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let published: Vec<u32> = conn
+            .prepare("SELECT form_id FROM records ORDER BY form_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(published, expected_ids);
     }
 }

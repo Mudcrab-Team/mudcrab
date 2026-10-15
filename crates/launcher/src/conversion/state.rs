@@ -52,6 +52,8 @@ pub struct RunReport {
     pub cache_hits: u64,
     pub skipped: u64,
     pub warnings: Vec<String>,
+    /// Advisory messages stay visible without affecting the reported completeness.
+    pub notices: Vec<String>,
     pub lod_chunks: u64,
     pub lod_warnings: Vec<String>,
     pub artifacts: usize,
@@ -59,6 +61,7 @@ pub struct RunReport {
 }
 
 impl RunReport {
+    /// Copy the final pipeline result, retaining warnings, notices and LOD omissions separately.
     pub fn from_pipeline(report: &PipelineReport) -> Self {
         Self {
             complete: report.complete,
@@ -71,6 +74,7 @@ impl RunReport {
                 .cloned()
                 .chain(report.selection_warnings.iter().map(ToString::to_string))
                 .collect(),
+            notices: report.notices.clone(),
             lod_chunks: report.lod_chunks,
             lod_warnings: report.lod_warnings.clone(),
             artifacts: report.artifacts.len(),
@@ -111,12 +115,18 @@ impl RunReport {
         )
     }
 
+    /// Show the final result with every warning, advisory notice and LOD omission.
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![self.headline(), self.artifacts_line(), self.lod_line()];
         lines.extend(
             self.warnings
                 .iter()
                 .map(|warning| format!("Warning: {warning}")),
+        );
+        lines.extend(
+            self.notices
+                .iter()
+                .map(|notice| format!("Notice: {notice}")),
         );
         lines.extend(
             self.lod_warnings
@@ -583,6 +593,7 @@ mod tests {
         ConversionState::Stopped { staging, cancelled }
     }
 
+    /// Construct a final result for the state-machine fixtures.
     fn report(complete: bool) -> RunReport {
         RunReport {
             complete,
@@ -590,6 +601,7 @@ mod tests {
             cache_hits: 2,
             skipped: 0,
             warnings: Vec::new(),
+            notices: Vec::new(),
             lod_chunks: 0,
             lod_warnings: Vec::new(),
             artifacts: 12,
@@ -1386,6 +1398,26 @@ mod tests {
         );
     }
 
+    /// Successful compatibility notices remain visible when the conversion is complete.
+    #[test]
+    fn complete_run_keeps_compatibility_notices_visible() {
+        let compatibility = "skyrim.esm: header master index used supplier-self compatibility; original owner unresolved";
+        let pipeline = PipelineReport {
+            complete: true,
+            notices: vec![compatibility.to_owned()],
+            ..Default::default()
+        };
+        let report = RunReport::from_pipeline(&pipeline);
+        assert!(report.complete);
+        assert!(report.headline().starts_with("Conversion complete"));
+        assert!(report.warnings.is_empty());
+        let lines = report.lines();
+        assert!(
+            lines.iter().any(|line| line.contains(compatibility)),
+            "compatibility notice missing from complete-run summary: {lines:?}"
+        );
+    }
+
     #[test]
     fn zero_lod_chunks_are_not_reported_as_lod_coverage() {
         let report = report(true);
@@ -1395,6 +1427,7 @@ mod tests {
         );
     }
 
+    /// Creation fallback stays visible beside a complete conversion without adding asset failures.
     #[test]
     fn creation_fallback_is_displayed_as_a_warning_without_an_asset_failure() {
         let warning = shared::plugin_selection::CreationFallbackWarning {

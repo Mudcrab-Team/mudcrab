@@ -10,22 +10,6 @@ const FILE_RECORD_SIZE: usize = 16;
 const ARCHIVE_COMPRESSED: u32 = 0x0004;
 const ARCHIVE_EMBED_FILE_NAMES: u32 = 0x0100;
 const KNOWN_ARCHIVE_FLAGS: u32 = 0x03ff;
-const STANDARD_FILE_FLAGS: u32 = 0x01ff;
-// Some distributed Skyrim SE animation archives set these otherwise undocumented
-// classifier bits together with all standard file-type bits. File flags are
-// advisory (entry names determine how files are handled), so accepting this exact
-// observed extension does not change offsets, compression, or allocation behavior.
-const SKYRIM_ANIMATION_FILE_FLAGS: u32 = 0x0052_0000;
-// Some distributed Creation Club archives set additional classifier bits
-// (observed: 0x01000000, 0x02000000, 0x86110000 across the 93 shipped BSAs).
-// Like the animation flags above, these are advisory only.
-const CREATION_CLUB_FILE_FLAGS: u32 = 0x8711_0000;
-// UIExtensions.bsa uses 0x00670104; these classifier bits are advisory too.
-const UIEXTENSIONS_FILE_FLAGS: u32 = 0x0024_0000;
-const KNOWN_FILE_FLAGS: u32 = STANDARD_FILE_FLAGS
-    | SKYRIM_ANIMATION_FILE_FLAGS
-    | CREATION_CLUB_FILE_FLAGS
-    | UIEXTENSIONS_FILE_FLAGS;
 const FILE_COMPRESSION_TOGGLE: u32 = 0x4000_0000;
 const FILE_SIZE_MASK: u32 = 0x3fff_ffff;
 
@@ -78,11 +62,11 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
     let file_count = u32_at(bytes, 20)? as usize;
     let total_folder_name_length = u32_at(bytes, 24)? as usize;
     let total_file_name_length = u32_at(bytes, 28)? as usize;
-    let file_flags = u32_at(bytes, 32)?;
-    ensure!(
-        file_flags & !KNOWN_FILE_FLAGS == 0,
-        "unsupported BSA file flags: {file_flags:#010x}"
-    );
+    // MonoPT's earlier allow-list admitted observed animation, Creation Club and
+    // UIExtensions classifier bits. Treat all file-type bits as advisory instead:
+    // filenames determine handling, and these bits do not control offsets,
+    // compression or allocation. Archive flags and structural checks remain strict.
+    let _file_type_flags = u32_at(bytes, 32)?;
     let folder_record_size = if version >= 105 { 24 } else { 16 };
     let folder_table_size = folder_count
         .checked_mul(folder_record_size)
@@ -343,6 +327,22 @@ mod tests {
         }
     }
 
+    /// Unobserved classifier bits cannot alter payload handling or admit corrupt metadata.
+    #[test]
+    fn unknown_file_type_flags_are_advisory_but_counts_stay_strict() {
+        for flags in [0x8000_0000u32, u32::MAX] {
+            let mut bytes = uncompressed_fixture();
+            bytes[32..36].copy_from_slice(&flags.to_le_bytes());
+            let entries = iter_raw_entries(&bytes).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "scripts/hello.pex");
+            assert_eq!(entries[0].decompress().unwrap(), b"PEX");
+
+            bytes[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(iter_raw_entries(&bytes).is_err());
+        }
+    }
+
     #[test]
     fn accepts_zero_padded_filename_table_and_rejects_trailing_garbage() {
         let name = b"hello.pex\0";
@@ -383,9 +383,9 @@ mod tests {
         }
     }
 
-    /// Verifies accepted UI extension flags and rejection of unsupported BSA header values.
+    /// UIExtensions classifier bits are advisory while archive header controls stay strict.
     #[test]
-    fn rejects_unsupported_versions_offsets_and_flags() {
+    fn rejects_unsupported_versions_offsets_and_archive_flags() {
         let mut ui_extensions = uncompressed_fixture();
         ui_extensions[32..36].copy_from_slice(&0x0067_0104u32.to_le_bytes());
         assert!(iter_raw_entries(&ui_extensions).is_ok());
@@ -393,7 +393,6 @@ mod tests {
             (4..8, 103u32, "unsupported BSA version"),
             (8..12, 40u32, "unsupported BSA folder record offset"),
             (12..16, 0x8000_0000u32, "unsupported BSA archive flags"),
-            (32..36, 0x4000_0000u32, "unsupported BSA file flags"),
         ] {
             let mut bytes = uncompressed_fixture();
             bytes[range].copy_from_slice(&value.to_le_bytes());

@@ -61,6 +61,49 @@ fn plugin_setting(path: &Path, master: &str, editor: &str, value: f32) {
     fs::write(path, bytes).unwrap();
 }
 
+/// Writes a localized class and an independently identified usable neighbor.
+fn localized_plugin(path: &Path, editor: &str) {
+    let header = [sub(b"MAST", b"Skyrim.esm\0"), sub(b"DATA", &[0; 8])].concat();
+    let mut bytes = record(b"TES4", 0, 0x80, header);
+    bytes.extend(record(
+        b"CLAS",
+        0x0100_0900,
+        0,
+        [
+            sub(b"EDID", format!("{editor}\0").as_bytes()),
+            sub(b"FULL", &17u32.to_le_bytes()),
+            sub(b"DESC", &17u32.to_le_bytes()),
+        ]
+        .concat(),
+    ));
+    bytes.extend(record(
+        b"KYWD",
+        0x0100_0901,
+        0,
+        sub(b"EDID", format!("{editor}Neighbor\0").as_bytes()),
+    ));
+    fs::write(path, bytes).unwrap();
+}
+
+/// Frames one native Windows-1252 string independently of the converter's bank parser.
+fn single_string_bank(text: &[u8], length_prefixed: bool) -> Vec<u8> {
+    let mut text = text.to_vec();
+    text.push(0);
+    let payload = if length_prefixed {
+        [(text.len() as u32).to_le_bytes().to_vec(), text].concat()
+    } else {
+        text
+    };
+    [
+        1u32.to_le_bytes().to_vec(),
+        (payload.len() as u32).to_le_bytes().to_vec(),
+        17u32.to_le_bytes().to_vec(),
+        0u32.to_le_bytes().to_vec(),
+        payload,
+    ]
+    .concat()
+}
+
 /// Creates synthetic game data and an MO2 profile with conflicting plugins across priority layers.
 fn fixture() -> (tempfile::TempDir, PipelineConfig, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -164,7 +207,7 @@ fn assert_publication(config: &PipelineConfig, expected: &[&str], jump_height: f
         .unwrap()
         .query_map([], |row| row.get::<_, String>(0))
         .unwrap()
-        .map(|name| name.unwrap().to_ascii_lowercase())
+        .map(|name| name.unwrap().to_lowercase())
         .collect::<Vec<_>>();
     assert_eq!(names, expected);
     assert_eq!(value(config), jump_height);
@@ -477,6 +520,252 @@ async fn windows_1252_profile_lists_and_neighbors_publish() {
         444.0,
     );
     assert_setting(&config, "fAccentSetting", 63.0, 2);
+}
+
+/// Accented profile names share the winning Data key across casing and publish the overwrite source.
+#[tokio::test]
+async fn unicode_case_mo2_plugin_name_and_overwrite_publish() {
+    let (_dir, mut config, instance) = fixture();
+    config.no_lod = true;
+    for (relative, value) in [
+        ("mods/Low/café.esp", 11.0),
+        ("mods/High/CAFÉ.esp", 29.0),
+        ("overwrite/CAFÉ.esp", 83.0),
+    ] {
+        plugin_setting(
+            &instance.join(relative),
+            "Skyrim.esm",
+            "fUnicodeAccentSetting",
+            value,
+        );
+    }
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        b"*caf\xe9.esp\n*Patch.esp\n*Middle.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        b"Skyrim.esm\nMiddle.esp\nCAF\xc9.esp\nPatch.esp\n",
+    );
+    let _report = publish(&config).await;
+    assert_publication(
+        &config,
+        &["skyrim.esm", "middle.esp", "café.esp", "patch.esp"],
+        444.0,
+    );
+    // The accented file owns native slot 1, whereas Middle.esp places it at published slot 2.
+    assert_setting(&config, "fUnicodeAccentSetting", 83.0, 2);
+    let conn = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let actual: String = conn
+        .query_row("SELECT name FROM plugins WHERE priority=2", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(actual, "CAFÉ.esp");
+}
+
+/// MO2's effective loose banks win independently of the plugin's parent and broken banks stay local.
+#[tokio::test]
+async fn inhouse_mo2_localized_banks_follow_loose_winners_and_preserve_neighbors() {
+    let (_dir, mut config, instance) = fixture();
+    config.no_lod = true;
+    config.record_reader = converter::config::RecordReader::Inhouse;
+    for (name, editor) in [
+        ("CAFÉ.esp", "Mo2Localized"),
+        ("BrokenNames.esp", "Mo2Broken"),
+    ] {
+        localized_plugin(&instance.join("mods/Low").join(name), editor);
+    }
+    for (root, name, text) in [
+        ("mods/Low", "CAFÉ", b"Losing low name".as_slice()),
+        ("mods/High", "café", b"Losing high name".as_slice()),
+        ("overwrite", "café", b"Winning overwrite Caf\xe9".as_slice()),
+        (
+            "mods/Low",
+            "BrokenNames",
+            b"Losing broken-bank name".as_slice(),
+        ),
+        (
+            "mods/High",
+            "BrokenNames",
+            b"Winning high name \x80".as_slice(),
+        ),
+    ] {
+        write(
+            &instance,
+            &format!("{root}/Strings/{name}_english.strings"),
+            single_string_bank(text, false),
+        );
+    }
+    for (root, name, text) in [
+        ("mods/Low", "CAFÉ", b"Losing low description".as_slice()),
+        (
+            "mods/High",
+            "café",
+            b"Winning high description \x80".as_slice(),
+        ),
+        (
+            "mods/Low",
+            "BrokenNames",
+            b"Losing valid description".as_slice(),
+        ),
+    ] {
+        write(
+            &instance,
+            &format!("{root}/Strings/{name}_english.dlstrings"),
+            single_string_bank(text, true),
+        );
+    }
+    write(
+        &instance,
+        "overwrite/Strings/BrokenNames_english.dlstrings",
+        b"bad",
+    );
+    write(
+        &instance,
+        "profiles/Default/plugins.txt",
+        b"*Middle.esp\n*caf\xe9.esp\n*BrokenNames.esp\n*Patch.esp\n",
+    );
+    write(
+        &instance,
+        "profiles/Default/loadorder.txt",
+        b"Skyrim.esm\nMiddle.esp\nCAF\xc9.esp\nBrokenNames.esp\nPatch.esp\n",
+    );
+    // The deliberately broken winning bank loses a description, so usable output
+    // publishes with a bounded data-loss warning and an incomplete manifest.
+    let report = run(config.clone(), Cancellation::new()).await.unwrap();
+    assert!(!report.complete, "{report:?}");
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("brokennames.esp"));
+    assert!(report.warnings[0].contains("local decode/lookup issues"));
+    assert!(report.warnings[0].contains("missing localized ID 17"));
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(config.output_dir.join("conversion-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["complete"], false);
+    assert_publication(
+        &config,
+        &[
+            "skyrim.esm",
+            "middle.esp",
+            "café.esp",
+            "brokennames.esp",
+            "patch.esp",
+        ],
+        444.0,
+    );
+    let conn = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let lookups: Vec<(u32, String, String, Option<String>, String)> = conn
+        .prepare("SELECT form_id,signature,string_table,resolved_text,status FROM inhouse_localized_fields WHERE form_id IN (33556736,50333952) ORDER BY form_id,field_index")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        lookups,
+        [
+            (
+                0x0200_0900,
+                "FULL".into(),
+                "strings".into(),
+                Some("Winning overwrite Café".into()),
+                "resolved".into()
+            ),
+            (
+                0x0200_0900,
+                "DESC".into(),
+                "dlstrings".into(),
+                Some("Winning high description €".into()),
+                "resolved".into()
+            ),
+            (
+                0x0300_0900,
+                "FULL".into(),
+                "strings".into(),
+                Some("Winning high name €".into()),
+                "resolved".into()
+            ),
+            (
+                0x0300_0900,
+                "DESC".into(),
+                "dlstrings".into(),
+                None,
+                "missing".into()
+            ),
+        ]
+    );
+    for (id, expected_full, expected_description) in [
+        (
+            0x0200_0900u32,
+            "Winning overwrite Café",
+            "Winning high description €",
+        ),
+        (0x0300_0900, "Winning high name €", ""),
+    ] {
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let runtime = rkyv::from_bytes::<
+            converter::esm::types::ArchivedRecordData,
+            rkyv::rancor::Error,
+        >(&bytes)
+        .unwrap();
+        for (tag, text) in [(b"FULL", expected_full), (b"DESC", expected_description)] {
+            let value = runtime
+                .subrecords
+                .iter()
+                .find(|field| &field.tag == tag)
+                .unwrap();
+            assert_eq!(value.data, format!("{text}\0").as_bytes());
+        }
+    }
+    for id in [0x0200_0901u32, 0x0300_0901] {
+        let count: u32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE form_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "usable neighbor must survive broken localized bank"
+        );
+    }
+    let notices: u32 = conn.query_row("SELECT COUNT(*) FROM record_diagnostics WHERE plugin_id=3 AND stage='localization_bank' AND field='dlstrings' AND action='unresolved' AND reason LIKE '%truncated STRINGS header%'", [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        notices, 1,
+        "broken winning bank must produce one contextual diagnostic"
+    );
+    let source: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM inhouse_source_records WHERE form_id=?1",
+            [0x0200_0900u32],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        source
+            .windows(10)
+            .any(|bytes| bytes == sub(b"FULL", &17u32.to_le_bytes()))
+    );
+    assert_eq!(
+        converter::cache::hash_bytes(&fs::read(instance.join("mods/Low/CAFÉ.esp")).unwrap()),
+        conn.query_row(
+            "SELECT lower(hex(checksum)) FROM plugins WHERE priority=2",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "plugin provenance must still hash the original low-layer source"
+    );
 }
 
 /// Last duplicate checkboxes and loadorder positions win while usable records publish.

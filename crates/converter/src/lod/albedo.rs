@@ -262,7 +262,9 @@ impl<'a> QuadrantBlend<'a> {
             } else {
                 overlays[index - 1]
             } / total;
-            let sample = if layer.is_base && layer.texture_form_id == 0 {
+            // Zero IDs are neutral white placeholders in any layer slot.
+            // Their weights still contribute to the same blend.
+            let sample = if layer.texture_form_id == 0 {
                 [1.0; 3]
             } else {
                 textures
@@ -510,6 +512,141 @@ mod tests {
             );
         }
         result
+    }
+
+    fn zero_overlay_source() -> TerrainCellInput {
+        let mut source = cell(vec![layer(1, true, 0.0), layer(0, false, 0.0)]);
+        source.layers[1].weights.iter_mut().for_each(|weight| {
+            weight.opacity = 0.25 + f32::from(weight.vertex % 17) / 32.0;
+        });
+        source
+    }
+
+    #[test]
+    fn lod_zero_overlay_preserves_asymmetric_weighted_color_all_tiers() {
+        let source = zero_overlay_source();
+        let textures = textures();
+        assert!(!textures.textures.contains_key(&0));
+        let weights_before: Vec<_> = source.layers[1]
+            .weights
+            .iter()
+            .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+            .collect();
+        for (tier_index, tier) in LodTier::ALL.into_iter().enumerate() {
+            let blend = QuadrantBlend::new(&source, 0).unwrap();
+            for (u, opacity) in [(0.0, 0.25), (0.5, 0.5), (1.0, 0.75)] {
+                let actual = blend
+                    .sample(&textures, tier_index, u, 0.0, (0, 0))
+                    .unwrap_or_else(|error| panic!("zero overlay at {tier:?}: {error:#}"));
+                assert_eq!(actual, [1.0, opacity, opacity]);
+            }
+            let atlas = TerrainAtlas::bake(tier, &[&source], &textures)
+                .unwrap_or_else(|error| panic!("zero overlay atlas at {tier:?}: {error:#}"));
+            for (x, expected) in [
+                (GUTTER, [255, 137, 137, 255]),
+                (atlas.tile_side - GUTTER - 1, [255, 225, 225, 255]),
+            ] {
+                let offset = (GUTTER * atlas.size + x) * 4;
+                assert_eq!(&atlas.rgba[offset..offset + 4], &expected);
+            }
+        }
+        assert_eq!(source.layers.len(), 2);
+        assert_eq!(source.layers[0].texture_form_id, 1);
+        assert!(source.layers[0].is_base);
+        assert_eq!(source.layers[1].texture_form_id, 0);
+        assert!(!source.layers[1].is_base);
+        assert_eq!(source.layers[1].weights.len(), 289);
+        let weights_after: Vec<_> = source.layers[1]
+            .weights
+            .iter()
+            .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+            .collect();
+        assert_eq!(weights_after, weights_before);
+    }
+
+    #[test]
+    fn lod_nonzero_missing_overlay_still_rejected_all_tiers() {
+        let mut source = zero_overlay_source();
+        source.layers[1].texture_form_id = 0x844;
+        let textures = textures();
+        assert!(!textures.textures.contains_key(&0x844));
+        for (tier_index, tier) in LodTier::ALL.into_iter().enumerate() {
+            let blend = QuadrantBlend::new(&source, 0).unwrap();
+            let error = blend
+                .sample(&textures, tier_index, 0.0, 0.0, (0, 0))
+                .expect_err("nonzero unresolved overlay must remain an error");
+            assert!(format!("{error:#}").contains("unresolved terrain diffuse 00000844"));
+            assert!(TerrainAtlas::bake(tier, &[&source], &textures).is_err());
+        }
+    }
+
+    #[test]
+    fn lod_configured_origin_compiles_zero_overlay_all_tiers() {
+        let mut source = zero_overlay_source();
+        source.cell_id = 0xabc;
+        source.grid_x = -95;
+        source.grid_y = -95;
+        let sources = [source];
+        let snapshot: Vec<_> = sources[0]
+            .layers
+            .iter()
+            .map(|layer| {
+                (
+                    layer.texture_form_id,
+                    layer.quadrant,
+                    layer.layer,
+                    layer.is_base,
+                    layer
+                        .weights
+                        .iter()
+                        .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let chunks = crate::lod::terrain::compile_world_terrain(
+            0x77,
+            shared::lod::LodOrigin::new(-96, -96),
+            &sources,
+            &textures(),
+        )
+        .unwrap_or_else(|error| panic!("configured-origin zero overlay compiler: {error:#}"));
+        assert_eq!(chunks.len(), 3);
+        for (chunk, tier) in chunks.iter().zip(LodTier::ALL) {
+            assert_eq!(chunk.key.worldspace_id, 0x77);
+            assert_eq!(chunk.key.tier, tier);
+            assert_eq!(chunk.key.anchor, shared::lod::ChunkAnchor::new(0, 0));
+            assert_eq!(chunk.cells, vec![(-95, -95)]);
+            assert_eq!(&chunk.glb[..4], b"glTF");
+            let json_length = u32::from_le_bytes(chunk.glb[12..16].try_into().unwrap()) as usize;
+            let document: serde_json::Value =
+                serde_json::from_slice(&chunk.glb[20..20 + json_length]).unwrap();
+            let cell_ids: Vec<_> = document["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|node| node["extras"]["cell_id"].as_u64())
+                .collect();
+            assert_eq!(cell_ids, vec![0xabc]);
+        }
+        let after: Vec<_> = sources[0]
+            .layers
+            .iter()
+            .map(|layer| {
+                (
+                    layer.texture_form_id,
+                    layer.quadrant,
+                    layer.layer,
+                    layer.is_base,
+                    layer
+                        .weights
+                        .iter()
+                        .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(after, snapshot);
     }
 
     #[test]

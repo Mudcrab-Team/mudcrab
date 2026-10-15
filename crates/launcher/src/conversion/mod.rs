@@ -542,6 +542,36 @@ pub(crate) mod tests {
         app
     }
 
+    /// An invalid MO2 source reports a before-start failure through the boxed Begin effect.
+    #[test]
+    fn invalid_mo2_source_fails_before_spawning_conversion() {
+        let mut app = test_app();
+        app.add_systems(Update, actuate_effects.after(LauncherSet::Logic));
+        app.world_mut()
+            .resource_mut::<crate::mo2_settings::SourceSettings>()
+            .use_mo2 = true;
+        let (data, output) = folders();
+        app.world_mut()
+            .resource_mut::<PendingInputs>()
+            .push(Input::Start { data, output });
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world().resource::<CurrentConversion>().0,
+            ConversionState::Stopped {
+                staging: None,
+                cancelled: false,
+            }
+        );
+        assert!(app.world().resource::<RunHandle>().cancellation.is_none());
+        assert!(
+            app.world()
+                .resource::<ConversionStatus>()
+                .notice_text()
+                .contains("Choose a valid MO2 instance and profile")
+        );
+    }
+
     /// The folders the tests run with, and a Start press that puts the window in `Running`.
     fn folders() -> (PathBuf, PathBuf) {
         (PathBuf::from("C:/Skyrim/Data"), PathBuf::from("C:/out"))
@@ -725,6 +755,10 @@ pub(crate) mod tests {
         assert_eq!(config.data_dir, data);
         assert_eq!(config.output_dir, output);
         assert_eq!(
+            config.record_reader,
+            converter::config::RecordReader::Inhouse
+        );
+        assert_eq!(
             app.world().resource::<ConversionStatus>().overall_percent(),
             0.0,
             "a run that has not reported anything shows an empty bar"
@@ -810,6 +844,7 @@ pub(crate) mod tests {
             cache_hits: 3,
             skipped: 0,
             warnings: Vec::new(),
+            notices: Vec::new(),
             lod_chunks: 1693,
             lod_warnings: (0..12).map(|i| format!("Skipped world {i}")).collect(),
             artifacts: 15,
@@ -994,6 +1029,7 @@ pub(crate) mod tests {
         std::fs::write(output.join("integration-report.json"), report).unwrap();
     }
 
+    /// Play readiness binds the actual database to its report and exact current LOD contract.
     #[test]
     fn readiness_validates_database_report_and_current_lod_identity() {
         let output = complete_output("db-lod-contract");
@@ -1005,7 +1041,7 @@ pub(crate) mod tests {
             );
         }
         set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 5);
-        write_integration_report(&output, true); // Says current world 7, actual DB is 5.
+        write_integration_report(&output, true); // Reports the current schema; actual DB is 5.
         assert!(
             !output_is_complete(&output),
             "integration report must match actual schema"
@@ -1015,7 +1051,11 @@ pub(crate) mod tests {
             !output_is_complete(&output),
             "corrupt database cannot enable Play"
         );
-        set_schemas(&output, converter::cache::CONVERTER_SCHEMA_VERSION, 7);
+        set_schemas(
+            &output,
+            converter::cache::CONVERTER_SCHEMA_VERSION,
+            shared::WORLD_DATABASE_SCHEMA_VERSION,
+        );
         let identity = "a".repeat(64);
         let database = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
         database
@@ -1040,12 +1080,14 @@ pub(crate) mod tests {
             "mixed build identity cannot enable Play"
         );
         lod["build_identity"] = serde_json::json!(identity);
-        lod["converter_schema"] = serde_json::json!(23);
-        std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
-        assert!(
-            !output_is_complete(&output),
-            "stale LOD producer cannot enable Play"
-        );
+        for stale_producer in [25, 24, 23] {
+            lod["converter_schema"] = serde_json::json!(stale_producer);
+            std::fs::write(&path, serde_json::to_vec(&lod).unwrap()).unwrap();
+            assert!(
+                !output_is_complete(&output),
+                "stale LOD producer {stale_producer} cannot enable Play"
+            );
+        }
         std::fs::remove_file(&path).unwrap();
         database
             .execute("INSERT INTO lod_chunks(id) VALUES(0)", [])
