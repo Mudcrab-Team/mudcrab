@@ -227,6 +227,8 @@ V118: Quaternion normalization ! identity for zero/non-finite norm & unit finite
 V210: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
 V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
 
+V191: Jump ascent ! proximity grounded feedback cannot reset positive jump velocity or allow airborne relaunch; descending contact resets motion; movement ordered before Rapier SyncBackend.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -277,6 +279,8 @@ T42|x|Strengthen quaternion/performance regressions & preserve both legacy schem
 
 T110|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V210
 T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
+
+T91|x|Preserve jump ascent through Rapier ground-probe overlap; reproduce native one-step apex & verify integration/48 physics checks|V191
 
 ## §B BUGS
 
@@ -370,3 +374,5 @@ B211|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict
 
 B212|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V210,V118; same workspace/target selection for both test steps
 B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190
+
+B191|2026-10-12|Rapier ground proximity stayed true after upward launch; next WALK integration zeroed velocity at 5.666668-unit rise|V191; ascent guard, deterministic feed ordering & descent/relaunch regression

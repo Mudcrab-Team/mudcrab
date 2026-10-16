@@ -345,7 +345,10 @@ impl Plugin for PlayerControlsPlugin {
                     .chain()
                     .in_set(PlayerControlsSystems),
             )
-            .add_systems(FixedUpdate, walk_movement_system);
+            .add_systems(
+                FixedUpdate,
+                walk_movement_system.before(PhysicsSet::SyncBackend),
+            );
     }
 }
 
@@ -824,6 +827,9 @@ pub fn integrate_walk(
     dt: f32,
     grounded: bool,
 ) {
+    // Rapier's ground probe can remain true for several steps after takeoff.
+    // Upward jump velocity must survive that proximity signal until ascent ends.
+    let grounded = grounded && !(state.jump_active && state.vertical_velocity > 0.0);
     state.grounded = grounded;
     let wish = intent.wish_dir * intent.target_speed;
     let current = state.horizontal_velocity;
@@ -1539,6 +1545,71 @@ mod simulation_tests {
                 .any(|t| (t.translation.x - spawn.x) > 100.0)
         };
         assert!(moved, "walk capsule did not advance under run intent");
+    }
+
+    #[test]
+    fn jump_ascent_survives_ground_probe_and_lands_on_descent() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        integrate_walk(
+            &mut state,
+            &WalkIntent {
+                jump_pressed: true,
+                ..default()
+            },
+            &tuning,
+            PHYSICS_TIMESTEP,
+            true,
+        );
+        for step in 1..=10 {
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &tuning,
+                PHYSICS_TIMESTEP,
+                true,
+            );
+            assert!(state.jump_active);
+            assert!(!state.grounded);
+            assert!(
+                (state.vertical_velocity
+                    - (tuning.jump_launch - tuning.gravity * PHYSICS_TIMESTEP * step as f32))
+                    .abs()
+                    < 0.01
+            );
+        }
+        // A new press cannot relaunch while the ground probe overlaps ascent.
+        let before = state.vertical_velocity;
+        integrate_walk(
+            &mut state,
+            &WalkIntent {
+                jump_pressed: true,
+                ..default()
+            },
+            &tuning,
+            PHYSICS_TIMESTEP,
+            true,
+        );
+        assert!(state.vertical_velocity < before);
+        while state.vertical_velocity > 0.0 {
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &tuning,
+                PHYSICS_TIMESTEP,
+                false,
+            );
+        }
+        integrate_walk(
+            &mut state,
+            &WalkIntent::default(),
+            &tuning,
+            PHYSICS_TIMESTEP,
+            true,
+        );
+        assert!(state.grounded);
+        assert!(!state.jump_active);
+        assert_eq!(state.vertical_velocity, 0.0);
     }
 
     #[test]
