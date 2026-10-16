@@ -1,4 +1,6 @@
 //! Native construction of converted NIF materials using Bevy's glTF extension hooks.
+use crate::nif_depth::{NifDepthMaterial, NifDepthMaterialSource, NifDepthState, depth_material};
+use ::gltf::material::AlphaMode as GltfAlphaMode;
 use bevy::{
     asset::LoadContext,
     gltf::{
@@ -6,25 +8,33 @@ use bevy::{
         extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
         gltf,
     },
+    light::NotShadowCaster,
     prelude::*,
 };
+use std::collections::HashMap;
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
 
 impl Plugin for NifMaterialPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<NifSourceMaterial>();
+        app.add_plugins(MaterialPlugin::<NifDepthMaterial>::default())
+            .register_type::<NifSourceMaterial>()
+            .register_type::<NifDepthMaterialSource>();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
             .write_blocking()
-            .push(Box::new(NativeMaterialHandler));
+            .push(Box::new(NativeMaterialHandler::default()));
     }
 }
 
-#[derive(Clone)]
-struct NativeMaterialHandler;
+#[derive(Clone, Default)]
+struct NativeMaterialHandler {
+    // Scene hooks use a child LoadContext, which cannot read the parent's material assets.
+    // Bevy clones a handler per glTF load, so this cache also isolates concurrent loads.
+    depth_states: HashMap<String, NifDepthState>,
+}
 
 /// The stock hook records this dependency before our hook replaces its render binding.
 /// Keep its strong handle in the scene so scene-only loads remain fully loaded.
@@ -60,9 +70,31 @@ fn native_uv_transform(material: &gltf::Material<'_>) -> Option<bevy::math::Affi
 }
 
 fn needs_native_material(material: &gltf::Material<'_>) -> bool {
+    let alpha_mode = match material.alpha_mode() {
+        GltfAlphaMode::Opaque => AlphaMode::Opaque,
+        GltfAlphaMode::Mask => AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),
+        GltfAlphaMode::Blend => AlphaMode::Blend,
+    };
     has_normal_alpha_mask(material)
         || native_tag(material, "normalConvention", "directx")
         || native_uv_transform(material).is_some()
+        || native_depth_state(material, alpha_mode).is_some()
+}
+
+fn native_depth_flags(material: &gltf::Material<'_>) -> Option<(u32, u32)> {
+    let extras: serde_json::Value = serde_json::from_str(material.extras().as_ref()?.get()).ok()?;
+    let tag = extras.get("openSkyrim")?;
+    let flags_1 = u32::try_from(tag.get("shaderFlags1")?.as_u64()?).ok()?;
+    let flags_2 = u32::try_from(tag.get("shaderFlags2")?.as_u64()?).ok()?;
+    Some((flags_1, flags_2))
+}
+
+fn native_depth_state(
+    material: &gltf::Material<'_>,
+    alpha_mode: AlphaMode,
+) -> Option<NifDepthState> {
+    let (flags_1, flags_2) = native_depth_flags(material)?;
+    NifDepthState::from_flags(flags_1, flags_2, alpha_mode)
 }
 
 fn native_material(
@@ -115,6 +147,13 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
         let material = native_material(source, standard).unwrap();
+        if let Some(state) = native_depth_state(source, material.alpha_mode) {
+            self.depth_states.insert(label.to_owned(), state);
+            context.add_labeled_asset(
+                format!("{label}/nif-depth"),
+                depth_material(material.clone(), state),
+            );
+        }
         context.add_labeled_asset(format!("{label}/nif"), material);
     }
 
@@ -133,12 +172,22 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 .expect("NifMaterialPlugin requires the stock PBR glTF handler before it")
                 .0
                 .clone();
-            entity.insert((
-                NifSourceMaterial(source),
-                MeshMaterial3d(
-                    context.get_label_handle::<StandardMaterial>(format!("{label}/nif")),
-                ),
-            ));
+            let base = context.get_label_handle::<StandardMaterial>(format!("{label}/nif"));
+            entity.insert(NifSourceMaterial(source));
+            if let Some(state) = self.depth_states.get(label).copied() {
+                entity.remove::<MeshMaterial3d<StandardMaterial>>();
+                entity.insert((
+                    NifDepthMaterialSource(base),
+                    MeshMaterial3d(
+                        context.get_label_handle::<NifDepthMaterial>(format!("{label}/nif-depth")),
+                    ),
+                ));
+                if state.excludes_shadow() {
+                    entity.insert(NotShadowCaster);
+                }
+            } else {
+                entity.insert(MeshMaterial3d(base));
+            }
         }
     }
 }
@@ -146,6 +195,132 @@ impl GltfExtensionHandler for NativeMaterialHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nif_depth::{CAST_SHADOWS, DECAL, DEPTH_TEST, DEPTH_WRITE, DYNAMIC_DECAL};
+
+    #[test]
+    fn native_depth_reads_authored_shadow_flag_for_decals_and_depth_overrides() {
+        for flags in [
+            0,
+            DEPTH_TEST,
+            DEPTH_TEST | DECAL,
+            DEPTH_TEST | DYNAMIC_DECAL,
+        ] {
+            for casts in [false, true] {
+                let document = gltf::Gltf::from_slice(
+                    &serde_json::to_vec(&serde_json::json!({
+                        "asset":{"version":"2.0"},"materials":[{
+                            "extras":{"openSkyrim":{
+                                "shaderFlags1":flags | if casts { CAST_SHADOWS } else { 0 },
+                                "shaderFlags2":0
+                            }}
+                        }]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                let source = document.materials().next().unwrap();
+                let state = native_depth_state(&source, AlphaMode::Opaque).unwrap();
+                assert_eq!(state.cast_shadows, casts);
+                assert_eq!(state.excludes_shadow(), !casts);
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_blend_without_depth_write_keeps_loaded_material() {
+        for decal in [0, DECAL, DYNAMIC_DECAL] {
+            let document = gltf::Gltf::from_slice(
+                &serde_json::to_vec(&serde_json::json!({
+                    "asset":{"version":"2.0"},"materials":[{
+                        "alphaMode":"BLEND",
+                        "extras":{"openSkyrim":{
+                            "shaderFlags1":DEPTH_TEST | decal,"shaderFlags2":0
+                        }}
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let source = document.materials().next().unwrap();
+            let loaded = StandardMaterial {
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            };
+            assert_eq!(needs_native_material(&source), decal != 0);
+            assert_eq!(native_material(&source, &loaded).is_some(), decal != 0);
+            assert_eq!(
+                native_depth_state(&source, loaded.alpha_mode).is_some(),
+                decal != 0
+            );
+        }
+    }
+
+    #[test]
+    fn native_depth_requires_both_valid_flags_and_keeps_generic_gltf_unchanged() {
+        for tag in [
+            serde_json::json!({}),
+            serde_json::json!({"shaderFlags1":DEPTH_TEST}),
+            serde_json::json!({"shaderFlags1":-1,"shaderFlags2":0}),
+            serde_json::json!({"shaderFlags1":4294967296_u64,"shaderFlags2":0}),
+            serde_json::json!({"shaderFlags1":"0","shaderFlags2":0}),
+            serde_json::json!({"shaderFlags1":DEPTH_TEST,"shaderFlags2":DEPTH_WRITE}),
+        ] {
+            let document = gltf::Gltf::from_slice(
+                &serde_json::to_vec(&serde_json::json!({
+                    "asset":{"version":"2.0"},"materials":[{"extras":{"openSkyrim":tag}}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let source = document.materials().next().unwrap();
+            assert!(native_material(&source, &StandardMaterial::default()).is_none());
+            assert!(native_depth_state(&source, AlphaMode::Opaque).is_none());
+        }
+    }
+
+    #[test]
+    fn depth_scene_clone_retains_one_render_binding_and_base_dependency() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_resource::<GltfExtensionHandlers>()
+            .init_asset::<StandardMaterial>()
+            .add_plugins(NifMaterialPlugin)
+            .register_type::<MeshMaterial3d<NifDepthMaterial>>()
+            .register_type::<NotShadowCaster>();
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let state = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Mask(0.5)).unwrap();
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<NifDepthMaterial>>()
+            .add(depth_material(StandardMaterial::default(), state));
+        let mut world = World::new();
+        world.spawn((
+            NifSourceMaterial(source.clone()),
+            NifDepthMaterialSource(source.clone()),
+            MeshMaterial3d(material.clone()),
+            NotShadowCaster,
+        ));
+        let mut cloned = WorldAsset::new(world)
+            .clone_with(
+                app.world()
+                    .resource::<bevy::ecs::reflect::AppTypeRegistry>(),
+            )
+            .unwrap();
+        let mut query = cloned.world.query::<(
+            &NifDepthMaterialSource,
+            &MeshMaterial3d<NifDepthMaterial>,
+            Option<&MeshMaterial3d<StandardMaterial>>,
+            Option<&NotShadowCaster>,
+        )>();
+        let (base, rendered, standard, no_shadow) = query.single(&cloned.world).unwrap();
+        assert_eq!(base.0, source);
+        assert_eq!(rendered.0, material);
+        assert!(standard.is_none());
+        assert!(no_shadow.is_some());
+    }
 
     #[test]
     fn v15_native_uv_transform_works_without_a_diffuse_texture() {
@@ -202,7 +377,8 @@ mod tests {
     #[test]
     fn v12_scene_cloning_retains_source_and_native_material_handles() {
         let mut app = App::new();
-        app.init_resource::<GltfExtensionHandlers>()
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_resource::<GltfExtensionHandlers>()
             .add_plugins(NifMaterialPlugin)
             .register_type::<MeshMaterial3d<StandardMaterial>>();
         let mut assets = Assets::<StandardMaterial>::default();

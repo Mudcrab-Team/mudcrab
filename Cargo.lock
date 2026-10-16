@@ -2838,6 +2838,7 @@ dependencies = [
  "converter",
  "crossbeam-channel",
  "ddsfile",
+ "gltf",
  "ktx2",
  "memmap2",
  "mlua",

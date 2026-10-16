@@ -6,6 +6,7 @@ pub mod console;
 pub mod lights;
 pub mod mesh_preparation_retry;
 pub mod metrics;
+pub mod nif_depth;
 pub mod nif_material;
 pub mod pacing;
 pub mod papyrus_runtime;
