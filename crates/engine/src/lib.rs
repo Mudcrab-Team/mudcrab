@@ -15,6 +15,7 @@ pub mod profiling;
 pub mod render;
 pub mod render_timing;
 mod renderer_init;
+pub mod room_culling;
 pub mod schedule_timing;
 pub mod shots;
 pub mod sky;
