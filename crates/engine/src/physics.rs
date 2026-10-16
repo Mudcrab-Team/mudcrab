@@ -326,6 +326,7 @@ impl Plugin for PlayerControlsPlugin {
             .init_resource::<SprintLatch>()
             .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
+            .init_resource::<WalkSpawnHold>()
             .init_resource::<CursorCapture>()
             .add_message::<TeleportPlayer>()
             .add_console_command(toggle_collision_command())
@@ -345,7 +346,12 @@ impl Plugin for PlayerControlsPlugin {
                     .chain()
                     .in_set(PlayerControlsSystems),
             )
-            .add_systems(FixedUpdate, walk_movement_system);
+            .add_systems(
+                FixedUpdate,
+                (release_walk_spawn_hold, walk_movement_system)
+                    .chain()
+                    .before(PhysicsSet::SyncBackend),
+            );
     }
 }
 
@@ -753,6 +759,80 @@ pub struct WalkEntryStatus {
     pub blocked_reason: Option<String>,
 }
 
+/// One-time protection while startup world collision reaches Rapier. A failed
+/// load must leave debug flight available rather than freeze the player forever.
+#[derive(Debug, Default, Resource)]
+pub struct WalkSpawnHold {
+    active: bool,
+    elapsed: f32,
+}
+
+const WALK_SPAWN_TIMEOUT_SECONDS: f32 = 30.0;
+
+/// Read actual Rapier collision, not render/streaming completion counters. Run
+/// before movement; colliders enabled by Update reach Rapier on a later tick.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn release_walk_spawn_hold(
+    mut hold: ResMut<WalkSpawnHold>,
+    mut mode: ResMut<MoveMode>,
+    tuning: Res<MovementTuning>,
+    context: ReadRapierContext,
+    mut status: ResMut<WalkEntryStatus>,
+    mut player: Query<(Entity, &mut Transform, &Collider), With<PlayerBody>>,
+    mut reset: MotionReset,
+    mut commands: Commands,
+) {
+    if !hold.active || *mode != MoveMode::Walk {
+        return;
+    }
+    hold.elapsed += PHYSICS_TIMESTEP;
+    let Ok((entity, mut body, collider)) = player.single_mut() else {
+        return;
+    };
+    let placement = context.single().ok().and_then(|context| {
+        context
+            .cast_ray(
+                body.translation,
+                Vec3::NEG_Y,
+                // Startup is normally just above sampled terrain. A distant
+                // cave floor must not stand in for missing local collision.
+                tuning.capsule_standing_height * 2.0,
+                true,
+                QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
+            )
+            .map(|_| {
+                try_enter_walk(
+                    &context,
+                    &tuning,
+                    body.translation + Vec3::Y * tuning.eye_height,
+                    collider,
+                )
+            })
+    });
+    let result = match placement {
+        Some(result) => result,
+        None if hold.elapsed >= WALK_SPAWN_TIMEOUT_SECONDS => Err(
+            "startup world collision unavailable after 30 seconds; use V or tcl to retry WALK"
+                .into(),
+        ),
+        None => return,
+    };
+    match result {
+        Ok(position) => {
+            body.translation = position;
+            status.blocked_reason = None;
+        }
+        Err(reason) => {
+            commands.entity(entity).insert(RigidBodyDisabled);
+            *mode = MoveMode::Noclip;
+            warn!("WALK startup fallback: {reason}");
+            status.blocked_reason = Some(reason);
+        }
+    }
+    *hold = WalkSpawnHold::default();
+    reset.clear();
+}
+
 /// Marker for the player body entity (V9).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PlayerBody;
@@ -859,6 +939,7 @@ pub fn integrate_walk(
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
     mode: Res<MoveMode>,
+    hold: Option<Res<WalkSpawnHold>>,
     mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
     mut player: Query<(
@@ -873,6 +954,12 @@ pub fn walk_movement_system(
     let Ok((mut controller, mut state, output)) = player.single_mut() else {
         return;
     };
+    if hold.as_ref().is_some_and(|hold| hold.active) {
+        *state = WalkState::default();
+        intent.jump_pressed = false;
+        controller.translation = Some(Vec3::ZERO);
+        return;
+    }
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
     integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
     intent.jump_pressed = false;
@@ -1009,8 +1096,10 @@ type TeleportBodyQuery<'w, 's> = Query<
 /// Applies [`TeleportPlayer`]: places the body, zeroes its velocity and walk state (so a fall in
 /// progress does not carry over), and sets the camera and look yaw. In NOCLIP the body is
 /// disabled and left alone: only the camera moves.
+#[allow(clippy::too_many_arguments)]
 fn apply_teleport_player(
     mut teleports: MessageReader<TeleportPlayer>,
+    mut hold: ResMut<WalkSpawnHold>,
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
     mut look: ResMut<LookIntent>,
@@ -1021,6 +1110,7 @@ fn apply_teleport_player(
     let Some(teleport) = teleports.read().last().copied() else {
         return;
     };
+    *hold = WalkSpawnHold::default();
     look.yaw = teleport.yaw;
     *intent = WalkIntent::default();
     let rotation = Quat::from_euler(EulerRot::YXZ, teleport.yaw, 0.0, 0.0);
@@ -1262,6 +1352,278 @@ pub(crate) mod headless {
             transform.translation,
             state.grounded || output.map(|o| o.grounded).unwrap_or(false),
         )
+    }
+}
+
+#[cfg(test)]
+mod world_startup_tests {
+    use super::*;
+    use bevy::{mesh::MeshPlugin, time::TimeUpdateStrategy};
+
+    fn world_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            bevy::input::InputPlugin,
+            AssetPlugin::default(),
+            MeshPlugin,
+            MaterialPlugin::<StandardMaterial>::default(),
+        ))
+        .init_resource::<ProfilingState>()
+        .init_resource::<StreamingMetrics>()
+        // Rapier's debug-render system validates Gizmos even when disabled.
+        .add_plugins(bevy::gizmos::GizmoPlugin)
+        .add_plugins((WorldPlayerPlugin, crate::console::ConsolePlugin))
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn((
+                StreamingCamera,
+                Transform::from_translation(Vec3::new(0.0, 200.0, 0.0))
+                    .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.7, -0.2, 0.0)),
+            ));
+        })
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
+        ));
+        app.finish();
+        app.update();
+        app
+    }
+
+    fn body(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<PlayerBody>>()
+            .single(app.world())
+            .unwrap()
+    }
+
+    fn tick(app: &mut App, count: usize) {
+        for _ in 0..count {
+            app.update();
+        }
+    }
+
+    fn floor(app: &mut App, disabled: bool) -> Entity {
+        let mut entity = app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(1000.0, 10.0, 1000.0),
+            Transform::from_xyz(0.0, -10.0, 0.0),
+            world_collision_groups(),
+        ));
+        if disabled {
+            entity.insert(ColliderDisabled);
+        }
+        entity.id()
+    }
+
+    fn assert_mode(app: &mut App, expected: MoveMode) {
+        assert_eq!(*app.world().resource::<MoveMode>(), expected);
+        let entity = body(app);
+        assert_eq!(
+            app.world().get::<RigidBodyDisabled>(entity).is_some(),
+            expected == MoveMode::Noclip
+        );
+    }
+
+    #[test]
+    fn world_starts_in_walk_with_active_body_and_copied_view() {
+        let mut app = world_app();
+        assert_mode(&mut app, MoveMode::Walk);
+        let entity = body(&mut app);
+        let transform = app.world().get::<Transform>(entity).unwrap();
+        let tuning = app.world().resource::<MovementTuning>();
+        assert!((transform.translation.y - (200.0 - tuning.eye_height)).abs() < 0.001);
+        let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        assert!((yaw - 0.7).abs() < 0.001);
+        assert!(pitch.abs() < 0.001);
+        let look = app.world().resource::<LookIntent>();
+        assert!((look.yaw - 0.7).abs() < 0.001 && (look.pitch + 0.2).abs() < 0.001);
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<Entity, (With<StreamingCamera>, With<ControlledCamera>)>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+        let text = app
+            .world_mut()
+            .query_filtered::<&Text, With<NoclipOverlay>>()
+            .single(app.world())
+            .unwrap();
+        assert!(text.0.starts_with("NOCLIP: OFF"));
+        assert!(text.0.contains("waiting for startup collision"));
+    }
+
+    #[test]
+    fn hold_waits_for_enabled_rapier_collision_then_grounds() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        let start = app.world().get::<Transform>(entity).unwrap().translation;
+        let ground = floor(&mut app, true);
+        {
+            let mut state = app.world_mut().get_mut::<WalkState>(entity).unwrap();
+            state.vertical_velocity = -900.0;
+            state.horizontal_velocity = Vec3::X * 300.0;
+        }
+        tick(&mut app, 20);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            start
+        );
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 120);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+        let (pose, grounded) = headless::player_pose(&mut app);
+        assert!(grounded, "{pose:?}");
+        let view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        assert!((view.translation.y - pose.y - MovementTuning::default().eye_height).abs() < 0.01);
+        let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
+        assert!((yaw - 0.7).abs() < 0.001 && (pitch + 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn distant_world_floor_does_not_release_startup_hold() {
+        let mut app = world_app();
+        let ground = floor(&mut app, false);
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y = -10_000.0;
+        tick(&mut app, 10);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+    }
+
+    #[test]
+    fn startup_overlap_uses_existing_failed_placement_fallback() {
+        let mut app = world_app();
+        app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(1000.0, 1000.0, 1000.0),
+            Transform::default(),
+            world_collision_groups(),
+        ));
+        tick(&mut app, 5);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_deref(),
+            Some("no free capsule placement nearby")
+        );
+    }
+
+    #[test]
+    fn missing_collision_times_out_safely_even_with_pending_streaming() {
+        let mut app = world_app();
+        app.world_mut()
+            .resource_mut::<StreamingMetrics>()
+            .loading_cells = 1;
+        tick(&mut app, 10);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = WALK_SPAWN_TIMEOUT_SECONDS;
+        tick(&mut app, 2);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_ref()
+                .unwrap()
+                .contains("startup world collision unavailable")
+        );
+    }
+
+    #[test]
+    fn hold_also_times_out_without_streaming_metrics() {
+        let mut app = world_app();
+        app.world_mut().remove_resource::<StreamingMetrics>();
+        tick(&mut app, 5);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = WALK_SPAWN_TIMEOUT_SECONDS;
+        tick(&mut app, 2);
+        assert_mode(&mut app, MoveMode::Noclip);
+    }
+
+    #[test]
+    fn explicit_teleport_clears_startup_hold() {
+        let mut app = world_app();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(20.0, 300.0, 40.0),
+            yaw: 1.0,
+        });
+        app.update();
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    fn send_state(app: &mut App, state: bevy::input::ButtonState) {
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: KeyCode::KeyV,
+                logical_key: bevy::input::keyboard::Key::Character("v".into()),
+                state,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        app.update();
+    }
+
+    #[test]
+    fn v_cancels_hold_and_round_trips_without_rearming_it() {
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut app = world_app();
+        app.insert_resource(CursorCapture::Captured);
+        send_state(&mut app, Pressed);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        send_state(&mut app, Released);
+        send_state(&mut app, Pressed);
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        let entity = body(&mut app);
+        let state = app.world().get::<WalkState>(entity).unwrap();
+        assert_eq!(state.horizontal_velocity, Vec3::ZERO);
+        assert_eq!(state.vertical_velocity, 0.0);
+        assert!(!app.world().resource::<SprintLatch>().0);
+    }
+
+    #[test]
+    fn tcl_cancels_hold_and_round_trips() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<WalkState>(entity)
+            .unwrap()
+            .vertical_velocity = -900.0;
+        app.world_mut().resource_mut::<SprintLatch>().0 = true;
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_eq!(
+            app.world()
+                .get::<WalkState>(entity)
+                .unwrap()
+                .vertical_velocity,
+            0.0
+        );
+        assert!(!app.world().resource::<SprintLatch>().0);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
     }
 }
 
@@ -1730,7 +2092,14 @@ fn setup_fixture_player(
     let Ok((camera, view)) = camera.single() else {
         return;
     };
-    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
+    setup_controlled_player(
+        &mut commands,
+        &tuning,
+        &mut look,
+        camera,
+        view,
+        MoveMode::Noclip,
+    );
 }
 
 fn setup_world_player(
@@ -1744,7 +2113,18 @@ fn setup_world_player(
     let Ok((camera, view)) = camera.single() else {
         return;
     };
-    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
+    setup_controlled_player(
+        &mut commands,
+        &tuning,
+        &mut look,
+        camera,
+        view,
+        MoveMode::Walk,
+    );
+    commands.insert_resource(WalkSpawnHold {
+        active: true,
+        elapsed: 0.0,
+    });
     commands.insert_resource(tankard_visuals(&mut meshes, &mut materials));
 }
 
@@ -1754,22 +2134,36 @@ fn setup_controlled_player(
     look: &mut LookIntent,
     camera: Entity,
     view: &Transform,
+    initial_mode: MoveMode,
 ) {
     let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
     *look = LookIntent { yaw, pitch };
     let body = commands
         .spawn((
             player_controller_bundle(tuning),
-            Transform::from_translation(view.translation - Vec3::Y * tuning.eye_height),
+            Transform {
+                translation: view.translation - Vec3::Y * tuning.eye_height,
+                rotation: if initial_mode == MoveMode::Walk {
+                    Quat::from_rotation_y(yaw)
+                } else {
+                    Quat::IDENTITY
+                },
+                ..default()
+            },
         ))
         .id();
-    // Noclip starts ON with the capsule disabled (V5, V8).
-    commands.entity(body).insert(RigidBodyDisabled);
+    commands.insert_resource(initial_mode);
+    if initial_mode == MoveMode::Noclip {
+        commands.entity(body).insert(RigidBodyDisabled);
+    }
     commands.entity(camera).insert(ControlledCamera);
     commands.spawn((
         Name::new("Noclip overlay"),
         NoclipOverlay,
-        Text::new("NOCLIP: ON  [V]    [T] tankard  [E] grab/drop"),
+        Text::new(noclip_overlay_text(
+            initial_mode,
+            &WalkEntryStatus::default(),
+        )),
         TextFont::from_font_size(18.0),
         TextColor(Color::WHITE),
         Node {
@@ -2028,6 +2422,7 @@ fn toggle_mode_system(
 /// Switch between NOCLIP and WALK, entering WALK only at a collision-free spot.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn toggle_move_mode_effect(
+    mut hold: ResMut<WalkSpawnHold>,
     tuning: Res<MovementTuning>,
     context: ReadRapierContext,
     mut mode: ResMut<MoveMode>,
@@ -2078,6 +2473,7 @@ fn toggle_move_mode_effect(
             *mode = MoveMode::Noclip;
         }
     }
+    *hold = WalkSpawnHold::default();
     clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
 }
 
@@ -2153,6 +2549,7 @@ fn toggle_collision_geometry_command() -> ConsoleCommand {
 
 fn overlay_system(
     mode: Res<MoveMode>,
+    hold: Option<Res<WalkSpawnHold>>,
     status: Res<WalkEntryStatus>,
     sprint: Res<SprintLatch>,
     collision_debug: Option<Res<DebugRenderContext>>,
@@ -2163,6 +2560,9 @@ fn overlay_system(
         return;
     };
     let mut label = noclip_overlay_text(*mode, &status);
+    if hold.as_ref().is_some_and(|hold| hold.active) {
+        label.push_str("  waiting for startup collision");
+    }
     if *mode == MoveMode::Walk {
         let speed = actual_walk_speed(player.single().ok().flatten());
         let sprint_status = if sprint.0 { "ON" } else { "OFF" };

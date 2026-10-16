@@ -95,6 +95,23 @@ Mudcrab is being built systematically across 5 core phases. Explore the full roa
 
 Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** to overlay a Mod Organizer 2 profile. Open **MO2 settings**, drop the instance folder containing `ModOrganizer.ini`, and select a detected profile from the dropdown (MO2's active profile is selected by default, falling back to the first detected profile). The Skyrim Data folder is still required as the base. Close settings before dropping the output folder. Source settings apply to Start and Resume and are selected per launcher session. MO2 sources are read in place; native SKSE plugins are not supported. Instances must declare a supported Skyrim `gameName`. Configured directories may resolve through junctions, but profile, enabled-mod, and asset reparse points are rejected.
 
+### Interactive player startup
+
+Interactive world sessions start in first-person **WALK** with the player capsule
+active. During initial collision streaming, movement and gravity wait for a
+nearby Rapier world-collision hit below the player, followed by the usual safe capsule
+placement check. If placement is blocked, or no collision appears within 30
+seconds of fixed simulation time, the session falls back to **NOCLIP** and shows
+the reason in the overlay. Press **V** or run **tcl** to toggle modes or retry WALK.
+Toggling or teleporting cancels the one-time startup hold. Ordinary airborne WALK
+and subsequent toggles retain their existing behavior.
+
+The asset-free `--physics-fixture` still starts in NOCLIP. Automated camera paths
+are unchanged. Full-world validation should check delayed terrain/static collision,
+blocked spawn, camera orientation, and V/tcl round trips with a Skyrim package;
+primitive regression tests do not establish Skyrim collision coverage.
+
+
 ### Repair a failed conversion without rebuilding the world
 
 ```bash
