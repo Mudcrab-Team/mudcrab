@@ -22,22 +22,30 @@ retain the existing default-height cache behavior.
 
 Both readers retain their terminal diagnostics and return bounded per-plugin
 summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
-malformed records/frames, unusable candidates, cleared optional links, truncated
-light IDs, and in-house decoder/adapter issues such as omitted fields or missing
-localized text. `PipelineReport.notices` contains successful compatibility
-remaps: master indices past a plugin's list treated as the plugin's own, and the
-in-house reader's supplier-self compatibility lines. Counts and first examples
-remain bounded per plugin and kind.
+malformed records/frames, unusable candidates, omitted fields, unexpected
+subrecords, truncated light IDs, unavailable or unreadable localized string
+tables, runtime-projection skips and terrain-provenance skips. Legacy's existing
+invalid optional FormID recovery summaries remain warnings.
+`PipelineReport.notices` contains faithful outcomes: successful master-index
+and supplier-self compatibility remaps, in-house links cleared because their
+targets are absent, disallowed or beyond the master list, and individual
+localized IDs missing from a readable string table. A valid empty table is
+readable; an absent or malformed table remains a warning. Counts and first
+examples remain bounded per plugin and kind. If a target is absent because its
+record was skipped, that record-loss warning remains alongside the link notice.
 
 The existing completeness rule requires zero skipped asset inputs and no
 warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
-code 1. Compatibility notices remain visible without affecting completeness or
+code 1. Faithful-outcome notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they
-re-export records. Official inputs with only compatibility remaps remain complete.
+re-export records. Official inputs with only faithful-outcome notices remain complete.
+This severity split does not align reader behavior for an index past the master
+list: Legacy keeps the link using the plugin's own identity, while Inhouse clears
+the link. Both outcomes remain visible as notices.
 
 `record-reader.json` stamps the selected frontend. Legacy `projection_version=3`
 preserves WRLD RNAM payloads and TNAM strings and restores record-aware VMAD
@@ -66,7 +74,8 @@ or ILSTRINGS bank from the effective archive VFS, with loose files taking
 precedence. Every validated occurrence remains in canonical records. Null or
 missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
-columns remain NULL. Missing nonzero keys produce counted warnings. Explicitly
+columns remain NULL. Missing nonzero keys in readable tables produce counted
+notices; missing or unreadable tables produce warnings. Explicitly
 resolved empty text remains distinguishable from unresolved text. Other language
 selection is not implemented. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
@@ -202,7 +211,7 @@ Metadata rebuilds use the source package's checksum-matched plugin order for arc
 
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 
-Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The `warnings` field describes conversion failures and reader data loss; successful compatibility remaps remain `notices`. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
+Creation fallback warnings are typed entries in the report's `selection_warnings`, naming the CCC path, read failure and installed built-in fallback. CLI summaries, progress and the launcher show them as warnings. They describe input-selection policy and do not count as failed asset conversions or make healthy published output incomplete. The `warnings` field describes conversion failures and reader data loss; successful compatibility remaps, faithfully cleared in-house links and missing IDs in readable string tables remain `notices`. Empty `skipped_plugins`, `load_order` and `selection_warnings` fields are omitted; old reports deserialize with empty vectors.
 
 ---
 

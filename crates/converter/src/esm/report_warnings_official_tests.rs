@@ -1,4 +1,4 @@
-//! Opt-in default-reader report control over authenticated official inputs, without assets.
+//! Opt-in selected-reader report controls over authenticated official inputs, without assets.
 use super::{EsmParser, exporter::validate_database, load_order::LoadOrder, plugins_txt};
 use crate::{
     config::RecordReader,
@@ -46,17 +46,49 @@ fn reader_summary_kind(message: &str) -> &'static str {
         "invalid_optional_links"
     } else if message.contains("unusable record candidate(s)") {
         "unusable_record_candidates"
+    } else if message.contains("in-house reader cleared") {
+        "cleared_absent_or_disallowed_links"
+    } else if message.contains("localized IDs missing from readable string tables") {
+        "missing_id_in_readable_table"
     } else {
         "other"
     }
 }
 
-/// Preserve actual DB/report observations before checking the two known compatibility notices.
+/// Prepare the same selected English archive banks used by normal metadata export.
+/// Loose banks still take precedence inside the reader; original inputs are only read.
+fn official_string_root(
+    data: &Path,
+    plugins: &[PathBuf],
+    output: &Path,
+    reader: RecordReader,
+) -> PathBuf {
+    if reader == RecordReader::Legacy {
+        return data.to_path_buf();
+    }
+    let strings = output.join(".strings-input");
+    fs::create_dir(&strings).unwrap();
+    let paths = super::inhouse::localized_string_paths(plugins);
+    let mut archives: Vec<_> = fs::read_dir(data)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("bsa") || extension.eq_ignore_ascii_case("ba2")
+            }) && crate::pipeline::archive_load_order_priority(path, plugins).is_some()
+        })
+        .collect();
+    crate::pipeline::sort_archives_by_load_order(&mut archives, plugins);
+    for archive in archives {
+        crate::archive::ArchiveExtractor::extract_paths(&archive, &strings, &paths).unwrap();
+    }
+    strings
+}
+
+/// Preserve actual DB/report observations before checking reader-specific faithful notices.
 /// Input hashing and retained-output ownership are enforced by the owning execution receipt.
 /// This exercises reader export plus the shared completeness rule, not a full asset pipeline.
-#[test]
-#[ignore = "requires explicit MUDCRAB_REPORT_DATA, PLUGINS and fresh retained OUTPUT"]
-fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
+fn official_reader_report_has_no_warnings_and_is_complete(reader: RecordReader) {
     let data = fs::canonicalize(configured_path("DATA")).unwrap();
     let list = fs::canonicalize(configured_path("PLUGINS")).unwrap();
     let output = fresh_output(&data, &list);
@@ -68,12 +100,13 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
     );
     let order = LoadOrder::read(&plugins).unwrap();
     fs::create_dir(&output).unwrap();
+    let strings_root = official_string_root(&data, &plugins, &output, reader);
     let database_path = output.join("skyrim_world.db");
     let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
         &plugins,
         &database_path,
-        RecordReader::Legacy,
-        &data,
+        reader,
+        &strings_root,
         None,
     )
     .unwrap();
@@ -133,9 +166,11 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
     fs::write(
         output.join("reader-report-control.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "scope": "default-reader records/DB export and shared report completeness only",
+            "scope": "selected-reader records/DB export and shared report completeness only",
+            "record_reader": format!("{reader:?}"),
             "data": data,
             "plugins_file": list,
+            "string_bank_root": strings_root,
             "selected_plugins": plugins.len(),
             "database_plugins": database_plugins,
             "winning_records": winning_records,
@@ -153,22 +188,45 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
     .unwrap();
     assert_eq!(database_plugins, 80);
     assert_eq!(database_records, winning_records as u64);
-    assert!(database_records > 0);
+    assert_eq!(database_records, 1_240_167);
     assert!(
         report.warnings.is_empty(),
         "official control warnings: {:?}",
         report.warnings
     );
-    assert_eq!(
-        report.notices,
-        [
+    let expected = match reader {
+        RecordReader::Legacy => vec![
             "notice: dawnguard.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0307B5B9 in ACTI)",
             "notice: skyrim.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0123C00E in GMST)",
         ],
-        "official control must retain exactly the two known compatibility notices"
+        RecordReader::Inhouse => vec![
+            "notice: cctwbsse001-puzzledungeon.esm: in-house reader cleared 2 links to absent or disallowed targets (first: record 08000883 VMAD object 0800091C is absent)",
+            "notice: dawnguard.esm: in-house reader cleared 10 links to absent or disallowed targets (first: optional FormID 0307B5B9 exceeds master list)",
+            "notice: dragonborn.esm: in-house reader cleared 2 links to absent or disallowed targets (first: descriptor link 040FB625 is absent or has a disallowed target type)",
+            "notice: skyrim.esm: in-house reader cleared 197 links to absent or disallowed targets (first: worldspace link 000136DB is absent or has a disallowed target type)",
+            "notice: skyrim.esm: 5 localized IDs missing from readable string tables (first: 00053187 subtitle missing localized ID 18)",
+        ],
+    };
+    assert_eq!(
+        report.notices, expected,
+        "official notices must retain exact counts and first examples"
     );
     assert!(
         report.complete,
         "official zero-warning completeness control failed"
     );
+}
+
+/// The configured default reader must publish the official set with faithful outcomes as notices.
+#[test]
+#[ignore = "requires explicit MUDCRAB_REPORT_DATA, PLUGINS and fresh retained OUTPUT"]
+fn official_default_reader_report_has_no_warnings_and_is_complete() {
+    official_reader_report_has_no_warnings_and_is_complete(RecordReader::default());
+}
+
+/// Explicit Legacy retains its two existing compatibility notices and complete status.
+#[test]
+#[ignore = "requires explicit MUDCRAB_REPORT_DATA, PLUGINS and fresh retained OUTPUT"]
+fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
+    official_reader_report_has_no_warnings_and_is_complete(RecordReader::Legacy);
 }

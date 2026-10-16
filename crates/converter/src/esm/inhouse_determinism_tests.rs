@@ -24,17 +24,21 @@ fn adapter_summary_ignores_visit_order() {
         (80, "A later terrain issue"),
         (24, "Z earliest terrain issue"),
     ] {
-        forward.skipped("synthetic.esm", context(offset), message.into());
+        forward.skipped("synthetic.esm", context(offset), message.into(), false);
     }
     for (offset, message) in [
         (24, "Z earliest terrain issue"),
         (80, "A later terrain issue"),
     ] {
-        reverse.skipped("synthetic.esm", context(offset), message.into());
+        reverse.skipped("synthetic.esm", context(offset), message.into(), false);
     }
-    assert_eq!(forward.summary, reverse.summary);
+    assert_eq!(forward.summary.counts, reverse.summary.counts);
+    assert_eq!(forward.warnings.counts, reverse.warnings.counts);
+    assert_eq!(forward.summary.counts, forward.warnings.counts);
+    assert!(forward.notices.counts.is_empty());
+    assert!(reverse.notices.counts.is_empty());
     assert_eq!(
-        forward.summary["synthetic.esm"],
+        forward.summary.counts["synthetic.esm"],
         (2, "Z earliest terrain issue".into())
     );
 }

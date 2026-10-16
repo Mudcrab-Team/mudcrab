@@ -385,45 +385,79 @@ pub(crate) fn localized_string_paths(plugins: &[PathBuf]) -> BTreeSet<PathBuf> {
         .collect()
 }
 
-/// Bounded summaries accompany disk-backed details for every adapter observation.
+/// Exact counts and a deterministic bounded example for each observed plugin.
+#[derive(Default)]
+struct AdapterSummary {
+    counts: BTreeMap<String, (u64, String)>,
+    keys: BTreeMap<String, records::DiagnosticSummaryKey>,
+}
+
+impl AdapterSummary {
+    /// Count an observation and retain the smallest provenance example for its plugin.
+    fn note(&mut self, plugin: &str, context: &records::diagnostics::EventContext, message: &str) {
+        let key = records::DiagnosticSummaryKey::new(context, "adapter", message);
+        let entry = self.counts.entry(plugin.to_owned()).or_default();
+        entry.0 += 1;
+        if self.keys.get(plugin).is_none_or(|chosen| key < *chosen) {
+            self.keys.insert(plugin.to_owned(), key);
+            entry.1 = records::diagnostics::bounded_summary(message.to_owned());
+        }
+    }
+}
+
+/// Keep aggregate journals intact while separating data loss from faithful missing text.
 #[derive(Default)]
 struct Warnings {
-    summary: BTreeMap<String, (u64, String)>,
-    summary_keys: BTreeMap<String, records::DiagnosticSummaryKey>,
+    summary: AdapterSummary,
+    warnings: AdapterSummary,
+    notices: AdapterSummary,
     logs: BTreeMap<String, records::diagnostics::EventLog>,
 }
 
 impl Warnings {
-    /// Journal each issue and retain the smallest bounded provenance example per plugin.
+    /// Journal every issue; only missing IDs from readable tables are advisory.
     fn skipped(
         &mut self,
         plugin: &str,
         context: records::diagnostics::EventContext,
         message: String,
+        readable_table: bool,
     ) {
         self.logs
             .entry(plugin.to_owned())
             .or_default()
             .append(&context, "adapter", &message);
-        let key = records::DiagnosticSummaryKey::new(&context, "adapter", &message);
-        let entry = self.summary.entry(plugin.to_owned()).or_default();
-        entry.0 += 1;
-        if self
-            .summary_keys
-            .get(plugin)
-            .is_none_or(|chosen| key < *chosen)
+        self.summary.note(plugin, &context, &message);
+        let summary = if readable_table
+            && context.stage == "localization"
+            && context.action == Some("unresolved")
         {
-            self.summary_keys.insert(plugin.to_owned(), key);
-            entry.1 = records::diagnostics::bounded_summary(message);
-        }
+            &mut self.notices
+        } else {
+            &mut self.warnings
+        };
+        summary.note(plugin, &context, &message);
     }
 
-    /// Print and return deterministic plugin summaries after usable neighbors are exported.
+    /// Print and return bounded data-loss summaries after usable neighbors are exported.
     fn report(&self) -> Vec<String> {
-        let mut lines = Vec::with_capacity(self.summary.len());
-        for (plugin, (count, first)) in &self.summary {
+        let mut lines = Vec::with_capacity(self.warnings.counts.len());
+        for (plugin, (count, first)) in &self.warnings.counts {
             let line = format!(
                 "warning: {plugin}: inhouse adapter reported {count} local decode/lookup issues (first: {first})"
+            );
+            eprintln!("{line}");
+            lines.push(line);
+        }
+        lines
+    }
+
+    /// Print and return bounded missing-ID notices without affecting completeness.
+    fn report_notices(&self) -> Vec<String> {
+        let mut lines = Vec::with_capacity(self.notices.counts.len());
+        for (plugin, (count, first)) in &self.notices.counts {
+            let line = format!(
+                "notice: {plugin}: {count} localized IDs missing from readable string tables (first: {first})"
             );
             eprintln!("{line}");
             lines.push(line);
@@ -706,6 +740,7 @@ fn convert_plugins_with_text_sources_report_impl(
                         "skipped",
                     ),
                     format!("{:08X} terrain layer provenance: {error}", record.form_id),
+                    false,
                 ),
             }
         }
@@ -798,6 +833,7 @@ fn convert_plugins_with_text_sources_report_impl(
                                 ..Default::default()
                             },
                             format!("localized table: {error}"),
+                            false,
                         );
                     }
                     table.reported = true;
@@ -849,6 +885,7 @@ fn convert_plugins_with_text_sources_report_impl(
                                 "{:08X} {} missing localized ID {id}",
                                 record.form_id, field.name
                             ),
+                            table.error.is_none(),
                         );
                     }
                 }
@@ -879,6 +916,7 @@ fn convert_plugins_with_text_sources_report_impl(
                     raw.form_id,
                     String::from_utf8_lossy(&raw.record_type)
                 ),
+                false,
             );
             continue;
         }
@@ -1018,7 +1056,7 @@ fn convert_plugins_with_text_sources_report_impl(
         fs::write(
             path,
             serde_json::to_vec_pretty(&serde_json::json!({
-                "decoder": decoded.diagnostics, "adapter": warnings.summary,
+                "decoder": decoded.diagnostics, "adapter": warnings.summary.counts,
             }))?,
         )?;
     }
@@ -1027,7 +1065,7 @@ fn convert_plugins_with_text_sources_report_impl(
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.warning_summary_lines(name))
         .collect::<Vec<_>>();
-    let report_notices = decoded
+    let mut report_notices = decoded
         .diagnostics
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
@@ -1036,6 +1074,7 @@ fn convert_plugins_with_text_sources_report_impl(
     drop(decoded);
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
+    report_notices.extend(warnings.report_notices());
     Ok(RecordConversion {
         records: master,
         warnings: report_warnings,
@@ -1264,7 +1303,8 @@ fn runtime_text_table<'a>(
         .entry((priority, bank.to_owned()))
         .or_insert_with(|| {
             let (values, error) = match read_plugin_strings(plugin, string_sources, bank) {
-                Ok(values) => (values, None),
+                Ok(Some(values)) => (values, None),
+                Ok(None) => (HashMap::new(), Some(format!("missing {bank} string table"))),
                 Err(error) => (HashMap::new(), Some(error.to_string())),
             };
             RuntimeTextTable {
@@ -1335,11 +1375,12 @@ fn runtime_string(text: &str) -> Vec<u8> {
 
 /// Resolve the authoritative loose bank before the effective archive VFS.
 /// A broken winning loose source remains unresolved instead of falling back to losing text.
+/// A missing bank stays distinct from a successfully read empty table.
 fn read_plugin_strings(
     plugin: &Path,
     string_sources: StringSources<'_>,
     bank: &str,
-) -> Result<HashMap<u32, String>> {
+) -> Result<Option<HashMap<u32, String>>> {
     let file_name = format!(
         "{}_english.{bank}",
         plugin.file_stem().unwrap_or_default().to_string_lossy()
@@ -1350,7 +1391,7 @@ fn read_plugin_strings(
                 child_case_insensitive(plugin.parent().unwrap_or(Path::new(".")), "strings")
                 && let Some(path) = child_case_insensitive(&folder, &file_name)
             {
-                return parse_text_table(&fs::read(path)?, bank != "strings");
+                return parse_text_table(&fs::read(path)?, bank != "strings").map(Some);
             }
         }
         StringSources::EffectiveData { loose_files, .. } => {
@@ -1358,16 +1399,16 @@ fn read_plugin_strings(
             // A single key retains layer precedence; scanning equivalent keys could select a loser.
             let key = super::load_order::normalize_plugin_name(&format!("strings/{file_name}"));
             if let Some(path) = loose_files.get(&key) {
-                return parse_text_table(&fs::read(path)?, bank != "strings");
+                return parse_text_table(&fs::read(path)?, bank != "strings").map(Some);
             }
         }
     }
     if let Some(folder) = child_case_insensitive(string_sources.archive_root(), "strings")
         && let Some(path) = child_case_insensitive(&folder, &file_name)
     {
-        return parse_text_table(&fs::read(path)?, bank != "strings");
+        return parse_text_table(&fs::read(path)?, bank != "strings").map(Some);
     }
-    Ok(HashMap::new())
+    Ok(None)
 }
 
 /// Resolve a single path component on both case-sensitive and Windows filesystems.

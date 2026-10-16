@@ -37,7 +37,7 @@ mod report_warnings_official_tests;
 
 pub struct EsmParser;
 
-/// Winning records with bounded recovery warnings and harmless compatibility notices.
+/// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
     pub(crate) records: HashMap<u32, RawRecord>,

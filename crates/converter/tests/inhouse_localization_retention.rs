@@ -400,9 +400,9 @@ fn english_text_encoding_is_explicit_and_distinct_from_vmad() {
     );
 }
 
-/// Actual parser/pipeline publication retains winning IDs despite missing text and light slots.
+/// Readable banks retain winning IDs and bound missing-text notices across full and light slots.
 #[tokio::test]
-async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnings() {
+async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notices() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
     layout::prepare_directory(&data, false).unwrap();
@@ -547,7 +547,7 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    common::assert_reader_warning_publication(&report, &output);
+    common::assert_reader_notice_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (rid, raw, priority, key, text, status) in [
         (0x0100_3500, 0x0100_3500, 5, 17, None, "missing"),
@@ -630,6 +630,18 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
         );
         assert!(!summary[1].as_str().unwrap().is_empty());
         assert!(summary[1].as_str().unwrap().len() < 1024);
+        let notices: Vec<_> = report
+            .notices
+            .iter()
+            .filter(|notice| {
+                notice.contains(plugin)
+                    && notice.contains("localized IDs missing from readable string tables")
+            })
+            .collect();
+        assert_eq!(notices.len(), 1, "{:?}", report.notices);
+        assert!(notices[0].contains(&format!("{count} localized IDs")));
+        assert!(notices[0].contains("first:"));
+        assert!(notices[0].len() < 2304);
     }
 }
 

@@ -434,7 +434,7 @@ async fn legacy_unusable_override_warns_and_preserves_earlier_winner() {
     incomplete(&report, &output, 1);
 }
 
-/// Decoder skips, native optional-link recovery and adapter lookup issues all reach the report.
+/// Decoder skips and missing banks warn while a faithfully cleared link remains a notice.
 #[tokio::test]
 async fn inhouse_decoder_and_adapter_summaries_reach_report() {
     let directory = tempfile::tempdir().unwrap();
@@ -454,13 +454,20 @@ async fn inhouse_decoder_and_adapter_summaries_reach_report() {
     assert_eq!(diagnostics["decoder"]["broken.esm"]["skipped_records"], 2);
     assert_eq!(diagnostics["decoder"]["broken.esm"]["skipped_fields"], 1);
     assert_eq!(diagnostics["decoder"]["broken.esm"]["invalid_links"], 1);
-    assert_eq!(diagnostics["adapter"]["broken.esm"][0], 1);
+    assert_eq!(diagnostics["adapter"]["broken.esm"][0], 2);
     let decoder = warning(&report, "broken.esm", "in-house reader skipped");
     assert!(decoder.contains("2 records, 1 fields"), "{decoder}");
-    assert!(decoder.contains("cleared 1 invalid links"), "{decoder}");
+    assert!(!decoder.contains("links"), "{decoder}");
+    let link_notices: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("broken.esm: in-house reader cleared 1 links"))
+        .collect();
+    assert_eq!(link_notices.len(), 1, "{:?}", report.notices);
+    assert!(link_notices[0].contains("00003000"));
     let adapter = warning(&report, "broken.esm", "inhouse adapter reported");
     assert!(
-        adapter.contains("reported 1 local decode/lookup issues"),
+        adapter.contains("reported 2 local decode/lookup issues"),
         "{adapter}"
     );
     assert!(adapter.contains("missing localized ID 6515"), "{adapter}");

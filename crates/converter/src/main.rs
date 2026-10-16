@@ -1062,12 +1062,13 @@ Use the original conversion's reader/schema identity and encoding settings. --te
 
 Converts a Skyrim Data directory into runtime assets.
 The in-house record reader is the default; --record-reader legacy selects the hand-written reader.
-Reader recovery preserves usable neighboring records and reports bounded data-loss warnings.
-Warnings mark the report and manifest incomplete and make conversion exit 1 even when the
-usable output was published. --report-json and the launcher show these warnings; metadata
-rebuild with --reuse-assets follows the same completeness rule.
-Successful master-index and supplier-self compatibility remaps are report notices and do
-not affect completeness.
+Reader recovery preserves usable neighboring records and reports bounded warnings and notices.
+Data-loss warnings mark the report and manifest incomplete and make conversion exit 1 even
+when usable output was published. --report-json and the launcher show both severities;
+metadata rebuild with --reuse-assets follows the same completeness rule.
+Successful compatibility remaps, in-house links cleared to absent or disallowed targets,
+and missing localized IDs in readable string tables are notices and preserve completeness.
+Missing or unreadable string tables and skipped records or fields remain warnings.
 --mo2-instance overlays enabled MO2 mods and overwrite over physical Data, using the profile's
 active plugins and loadorder.txt. --mo2-profile defaults to ModOrganizer.ini's selected_profile,
 or the first sorted profile if that selection is absent or stale.

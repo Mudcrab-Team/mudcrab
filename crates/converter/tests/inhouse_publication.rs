@@ -276,11 +276,12 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
         report.warnings
     );
     assert!(
-        report.warnings.iter().any(|warning| {
-            warning.contains("names.esp") && warning.contains("inhouse adapter reported")
+        report.notices.iter().any(|notice| {
+            notice.contains("names.esp")
+                && notice.contains("localized IDs missing from readable string tables")
         }),
         "{:?}",
-        report.warnings
+        report.notices
     );
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     for id in [0x900, 0x902] {
