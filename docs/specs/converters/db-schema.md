@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS references (
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
     scale REAL NOT NULL DEFAULT 1.0,    -- Scale multiplier
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
-    header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
+    header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
     data BLOB                           -- Subrecords payload
@@ -333,9 +333,11 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106) and enable-state support (#165). Current
-terrain LOD does not consume them; runtime parent enable-state behavior remains
-future work. `header_flags` comes from the record header. `enable_parent_id` is
+metadata for initial spawn filtering (#165) and later object LOD (#106).
+The engine resolves parent chains before spawning. With no parent, header bit
+`0x800` marks an initially disabled reference; the documented rule and
+runtime limits are in [reference enable-state evidence](../../research/reference-enable-state-20261005.md).
+Current terrain LOD does not consume them. `header_flags` comes from the record header. `enable_parent_id` is
 XESP's little-endian parent FormID (bytes 0-3), resolved through plugin load order;
 `enable_parent_flags` is byte 4 alone in both readers. Bit 0 inverts the parent's
 state and bit 1 enables pop-in. The three unused bytes (5-7) remain unchanged
