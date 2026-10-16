@@ -180,6 +180,16 @@ pub struct IngestedFile {
 pub struct IngestionCacheEntry {
     pub source_hash: String,
     pub files: Vec<IngestedFile>,
+    /// Version of the archive reader that produced `files`, for formats whose reader changed
+    /// what it stores (BSA names are decoded as Windows-1252 from version 1). Absent means 0,
+    /// the reader before any such change; an entry is reused only when it matches the current
+    /// reader, so a changed reader re-extracts the archive once instead of keeping old paths.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reader_version: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

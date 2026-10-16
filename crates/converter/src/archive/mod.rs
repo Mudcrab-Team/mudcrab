@@ -1,5 +1,6 @@
 mod ba2;
 mod bsa;
+mod bsa_name;
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
@@ -117,6 +118,19 @@ pub struct ExtractionOutcome {
     pub cache_hit: bool,
 }
 
+/// Current reader version of BSA archives, stored in their ingestion cache entries. Version 1
+/// decodes names as Windows-1252; entries from the earlier UTF-8 decoder hold wrong paths for any
+/// non-ASCII name and must not be restored. Other formats stay at 0.
+const BSA_READER_VERSION: u32 = 1;
+
+fn reader_version(archive_path: &Path) -> Result<u32> {
+    let mut magic = [0u8; 4];
+    let mut file = File::open(archive_path)
+        .wrap_err_with(|| format!("failed to open archive {}", archive_path.display()))?;
+    let is_bsa = std::io::Read::read_exact(&mut file, &mut magic).is_ok() && &magic == b"BSA\0";
+    Ok(if is_bsa { BSA_READER_VERSION } else { 0 })
+}
+
 pub struct ArchiveExtractor;
 
 impl ArchiveExtractor {
@@ -132,17 +146,18 @@ impl ArchiveExtractor {
         stop: Option<StopCheck<'_>>,
     ) -> Result<ExtractionOutcome> {
         let source_hash = hash_file(archive_path)?;
-        if let Some(entry) = previous.filter(|entry| entry.source_hash == source_hash)
-            && let Some(files) = restore_cached_files(
-                entry,
-                output_root,
-                previous_cache_root,
-                cache_root,
-                verify_integrity,
-                progress,
-                stop,
-            )?
-        {
+        let reader_version = reader_version(archive_path)?;
+        if let Some(entry) = previous.filter(|entry| {
+            entry.source_hash == source_hash && entry.reader_version == reader_version
+        }) && let Some(files) = restore_cached_files(
+            entry,
+            output_root,
+            previous_cache_root,
+            cache_root,
+            verify_integrity,
+            progress,
+            stop,
+        )? {
             return Ok(ExtractionOutcome {
                 files,
                 cache_entry: entry.clone(),
@@ -161,6 +176,7 @@ impl ArchiveExtractor {
                     hash: file.sha256.clone(),
                 })
                 .collect(),
+            reader_version,
         };
         persist_cache_blobs(&files, output_root, cache_root)?;
         Ok(ExtractionOutcome {
@@ -683,6 +699,46 @@ mod tests {
         let blob = blob_path(&cache, &extracted.files[0].sha256).unwrap();
         assert_one_file(&[&vfs, &blob]);
         assert!(fs::read(&vfs).unwrap().starts_with(b"DDS "));
+    }
+
+    #[test]
+    fn bsa_entries_from_an_older_reader_are_not_reused() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("assets.bsa");
+        fs::write(
+            &archive,
+            dummy_content::bsa::v105(
+                &[dummy_content::Entry::new("textures/test.dds", b"DDS ")],
+                dummy_content::bsa::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let extract = |output: &str, previous: Option<&IngestionCacheEntry>| {
+            ArchiveExtractor::extract_cached(
+                &archive,
+                &directory.path().join(output),
+                &directory.path().join("first/.ingestion-cache"),
+                &directory.path().join(format!("{output}/.ingestion-cache")),
+                previous,
+                true,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        let first = extract("first", None);
+        assert!(!first.cache_hit);
+        assert_eq!(first.cache_entry.reader_version, BSA_READER_VERSION);
+
+        // An entry written before names were decoded as Windows-1252 has no version.
+        let mut old = first.cache_entry.clone();
+        old.reader_version = 0;
+        assert!(!extract("second", Some(&old)).cache_hit);
+
+        // An entry from the current reader is reused.
+        assert!(extract("third", Some(&first.cache_entry)).cache_hit);
     }
 
     #[test]
