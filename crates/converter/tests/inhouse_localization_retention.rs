@@ -998,6 +998,18 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "room_links",
             "reference_rooms",
             "room_graph_stats",
+            "cell_environment",
+            "cell_regions",
+            "cell_lighting",
+            "worldspace_environment",
+            "lighting_templates",
+            "weathers",
+            "weather_colors",
+            "weather_directional_ambient",
+            "climates",
+            "climate_weathers",
+            "region_weathers",
+            "image_spaces",
         ];
         for (name, rows) in &full_tables {
             if deferred.contains(&name.as_str()) {
