@@ -335,8 +335,9 @@ impl Plugin for PlayerControlsPlugin {
                     cursor_lifecycle_system,
                     apply_teleport_player,
                     look_input_system,
-                    noclip_flight_system,
-                    walk_intent_system,
+                    noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
+                    // Nothing walks during a door crossing: the landing has no collision yet.
+                    walk_intent_system.run_if(crate::door_crossing::no_door_crossing),
                     toggle_mode_system.run_if(console_closed),
                     walk_camera_follow_system,
                     sprint_fov_system,
@@ -345,7 +346,10 @@ impl Plugin for PlayerControlsPlugin {
                     .chain()
                     .in_set(PlayerControlsSystems),
             )
-            .add_systems(FixedUpdate, walk_movement_system);
+            .add_systems(
+                FixedUpdate,
+                walk_movement_system.run_if(crate::door_crossing::no_door_crossing),
+            );
     }
 }
 
@@ -2029,6 +2033,7 @@ fn toggle_mode_system(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn toggle_move_mode_effect(
     tuning: Res<MovementTuning>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
     context: ReadRapierContext,
     mut mode: ResMut<MoveMode>,
     mut status: ResMut<WalkEntryStatus>,
@@ -2047,6 +2052,10 @@ fn toggle_move_mode_effect(
     // A reason from an earlier attempt must not outlive it: if this attempt stops early
     // (no camera, player or physics context), the caller reports "no player" instead.
     status.blocked_reason = None;
+    if crossing.is_some_and(|crossing| crossing.is_active()) {
+        status.blocked_reason = Some("door crossing in progress".to_owned());
+        return;
+    }
     match *mode {
         MoveMode::Noclip => {
             let (Ok(camera), Ok((entity, mut body, collider)), Ok(context)) =
@@ -2513,6 +2522,13 @@ mod gate_tests {
             );
         app.update();
         app.insert_resource(CursorCapture::Captured);
+        // The Riverwood test tankards already exist; the one T spawns is the one not listed here.
+        let existing: Vec<Entity> = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<DebugTankard>>();
+            query.iter(app.world()).collect()
+        };
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyT);
@@ -2556,7 +2572,7 @@ mod gate_tests {
                 .query_filtered::<(Entity, &Transform), With<DebugTankard>>();
             query
                 .iter(app.world())
-                .find(|(_, pose)| pose.translation.z < -100.0 && pose.translation.x.abs() < 1.0)
+                .find(|(entity, _)| !existing.contains(entity))
                 .map(|(entity, pose)| (entity, pose.translation))
                 .expect("spawned tankard above terrain")
         };
@@ -2968,6 +2984,29 @@ mod console_tests {
     }
 
     #[test]
+    fn crossing_blocks_both_mode_switch_entry_points_in_both_modes() {
+        for initial in [MoveMode::Noclip, MoveMode::Walk] {
+            let mut app = console_fixture();
+            app.insert_resource(initial);
+            app.insert_resource(CursorCapture::Captured);
+            app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+            press(&mut app, KeyCode::KeyV);
+            app.world_mut().run_system_once(toggle_mode_system).unwrap();
+            assert_eq!(mode(&app), initial, "V must preserve mode during crossing");
+            execute_line(app.world_mut(), "tcl");
+            assert_eq!(
+                mode(&app),
+                initial,
+                "tcl must preserve mode during crossing"
+            );
+            assert!(scrollback(&app).contains("door crossing in progress"));
+            app.insert_resource(crate::door_crossing::DoorCrossing::default());
+            execute_line(app.world_mut(), "tcl");
+            assert_ne!(mode(&app), initial, "switching resumes after crossing");
+        }
+    }
+
+    #[test]
     fn tcl_without_a_player_does_not_repeat_an_old_block_reason() {
         let mut app = console_fixture();
         app.world_mut()
@@ -3234,6 +3273,72 @@ mod console_tests {
 #[cfg(test)]
 mod teleport_tests {
     use super::*;
+
+    #[test]
+    fn noclip_flight_pauses_during_a_door_crossing_and_resumes_afterward() {
+        let mut app = headless::fixture_app();
+        app.insert_resource(MoveMode::Noclip);
+        app.insert_resource(CursorCapture::Captured);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        let camera_position = |app: &mut App| {
+            app.world_mut()
+                .query_filtered::<&Transform, With<StreamingCamera>>()
+                .single(app.world())
+                .unwrap()
+                .translation
+        };
+        let start = camera_position(&mut app);
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: KeyCode::KeyW,
+                logical_key: bevy::input::keyboard::Key::Character("w".into()),
+                state: bevy::input::ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        for _ in 0..360 {
+            app.update();
+        }
+        assert_eq!(camera_position(&mut app), start);
+        app.insert_resource(crate::door_crossing::DoorCrossing::default());
+        for _ in 0..360 {
+            app.update();
+        }
+        assert!((camera_position(&mut app) - start).length() > 4096.0);
+    }
+
+    /// A WALK body over nothing does not fall, or walk, while a door crossing holds the screen
+    /// black, and falls again once the crossing is over.
+    #[test]
+    fn walking_pauses_during_a_door_crossing() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(0.0, 5_000.0, 0.0);
+        headless::place_player(&mut app, start);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        {
+            let mut intent = app.world_mut().resource_mut::<WalkIntent>();
+            intent.wish_dir = Vec3::NEG_Z;
+            intent.target_speed = 300.0;
+        }
+        for _ in 0..30 {
+            app.update();
+        }
+        let (held, _) = headless::player_pose(&mut app);
+        assert!(
+            (held - start).length() < 1.0,
+            "moved during the crossing: {held}"
+        );
+        app.insert_resource(crate::door_crossing::DoorCrossing::default());
+        for _ in 0..30 {
+            app.update();
+        }
+        let (after, _) = headless::player_pose(&mut app);
+        assert!(
+            after.y < start.y - 10.0,
+            "did not fall after the crossing: {after}"
+        );
+    }
 
     #[test]
     fn teleport_player_moves_the_body_and_zeroes_its_velocity() {

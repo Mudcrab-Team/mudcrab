@@ -4,7 +4,7 @@ use crate::{
     profiling::{MetricSummary, ProfilingState, SystemMetadata, reconcile_scene, summarize},
     render::RendererMetrics,
     render_timing::{PipelineActivity, RenderTimingPlugin, RenderTimings},
-    streaming::{RenderOrigin, StreamingMetrics},
+    streaming::{ActiveSpace, RenderOrigin, StreamingMetrics},
     streaming_gpu_metrics::StreamingGpuMetricsBridge,
     streaming_trace::{BenchmarkWindow, CameraMotion, CameraObservation, StreamingFrameSample},
     world::components::{CELL_SIZE, StreamingCamera},
@@ -158,19 +158,23 @@ fn sample_streaming_trace(
     mut events: MessageReader<AssetEvent<WorldAsset>>,
     cameras: Query<(Entity, &GlobalTransform), With<StreamingCamera>>,
     origin: Option<Res<RenderOrigin>>,
+    space: Option<Res<ActiveSpace>>,
     mut previous_camera: Local<Option<PreviousCamera>>,
     mut pending_ids: Local<Vec<bevy::asset::AssetId<WorldAsset>>>,
     mut profiler: ResMut<ProfilingState>,
 ) {
-    let camera = match cameras.single() {
-        Ok((entity, transform)) => Some(observe_camera(
+    // Trace v1 has no interior identity. Do not label interior coordinates as exterior world
+    // positions or compare motion across the transition; resume observations after leaving.
+    let active = space.as_deref().copied().unwrap_or_default();
+    let camera = match cameras.single().ok().filter(|_| active.interior.is_none()) {
+        Some((entity, transform)) => Some(observe_camera(
             entity,
             transform,
-            config.worldspace_id,
+            active.exterior_worldspace(config.worldspace_id),
             origin.as_ref().map_or(IVec2::ZERO, |origin| origin.0),
             &mut previous_camera,
         )),
-        Err(_) => {
+        None => {
             *previous_camera = None;
             None
         }
@@ -829,6 +833,51 @@ mod tests {
             &mut previous,
         );
         assert_eq!(changed_space.motion, CameraMotion::Unavailable);
+    }
+
+    #[test]
+    fn trace_uses_the_active_worldspace_and_resets_camera_history_across_interiors() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig {
+                profile_output_dir: Some(directory.path().join("profile")),
+                ..default()
+            })
+            .insert_resource(RenderOrigin(IVec2::new(4, -3)))
+            .insert_resource(ActiveSpace {
+                worldspace_id: Some(42),
+                interior: None,
+            })
+            .init_resource::<DiagnosticsStore>()
+            .init_resource::<RendererMetrics>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .add_plugins((AcceptanceMetricsPlugin, crate::profiling::ProfilingPlugin));
+        app.world_mut()
+            .spawn((StreamingCamera, GlobalTransform::from_xyz(10.0, 20.0, 30.0)));
+        app.update();
+        app.update();
+        app.world_mut().resource_mut::<ActiveSpace>().interior = Some(77);
+        app.update();
+        app.world_mut().resource_mut::<ActiveSpace>().interior = None;
+        app.update();
+        let profiler = app.world().resource::<ProfilingState>();
+        let report = profiler.trace.as_ref().unwrap().report();
+        let samples = &report.samples;
+        assert_eq!(samples[0].camera.as_ref().unwrap().worldspace_id, 42);
+        assert_eq!(
+            samples[1].camera.as_ref().unwrap().motion,
+            CameraMotion::Stationary
+        );
+        assert!(
+            samples[2].camera.is_none(),
+            "interior coordinates have no exterior identity"
+        );
+        assert_eq!(
+            samples[3].camera.as_ref().unwrap().motion,
+            CameraMotion::Unavailable
+        );
     }
 
     #[test]

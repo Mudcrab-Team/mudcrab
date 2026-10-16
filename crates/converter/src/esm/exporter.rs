@@ -268,6 +268,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
+    // Optional load-door table (db-schema.md section 16), added the same way.
+    super::doors::ensure_table(conn)?;
     conn.prepare_cached(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
     )?
@@ -436,6 +438,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     // Every complete snapshot owns these derived rows, including archive-only exports
     // that deliberately defer all runtime projections.
     crate::esm::rooms::clear(tx)?;
+    super::doors::clear(tx)?;
     tx.execute("DELETE FROM schema_info", [])?;
     tx.execute(
         "INSERT INTO schema_info(version) VALUES (?1)",
@@ -831,10 +834,13 @@ fn export_records(
         }
     }
     drop(records_insert);
-    // Derived snapshot like the grass tables: only a full load-order export owns it, so the
-    // movement annotator's subset export leaves it alone. Diagnostic archives defer it.
+    // Derived snapshots like the grass tables: only a full load-order export owns them, so the
+    // movement annotator's subset export leaves them alone. Diagnostic archives defer them.
     if runtime_views && order.is_some() {
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
+        // Read back from the canonical `records` and `references` rows just written, so the
+        // legacy and in-house readers share one projection.
+        super::doors::project_door_links(&tx)?;
     }
     tx.commit()
 }
@@ -2072,6 +2078,97 @@ mod tests {
         .unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
         assert_eq!(rooms_of(&conn, 0x2001), vec![(0x1001, 1)]);
+    }
+
+    // ---- Load door links (db-schema.md section 16) ----
+
+    fn load_door(form_id: u32, cell: u32, destination: u32, arrival: [f32; 3]) -> RawRecord {
+        let mut xtel = word(destination);
+        xtel.extend(floats(arrival));
+        xtel.extend(floats([0.0, 0.0, 1.5]));
+        xtel.extend(word(0));
+        let mut door = reference(form_id, cell, 0x500, [0.0; 3], [0.0; 3]);
+        door.subrecords.push((b"XTEL".to_vec(), xtel));
+        door
+    }
+
+    fn door_links(conn: &Connection) -> Vec<(u32, u32, u32, Option<String>)> {
+        conn.prepare(
+            "SELECT ref_id,destination_ref_id,destination_cell_id,destination_name
+             FROM door_links ORDER BY ref_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    /// Full runtime exports own `door_links`; diagnostic archives clear it and subsets retain it.
+    #[test]
+    fn archive_exports_clear_door_links_and_runtime_exports_restore_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = directory.path().join("Doors.esp");
+        std::fs::write(&plugin, b"synthetic door provenance").unwrap();
+        let paths = [plugin];
+        let order = LoadOrder::from_metadata(
+            vec!["Doors.esp".into()],
+            vec![crate::esm::binary::PluginMetadata {
+                masters: Vec::new(),
+                flags: 0,
+            }],
+        )
+        .unwrap();
+        let named_cell = |form_id: u32, name: &[u8]| {
+            record(
+                form_id,
+                b"CELL",
+                None,
+                None,
+                vec![(b"FULL".to_vec(), name.to_vec())],
+            )
+        };
+        let records = vec![
+            record(0x500, b"DOOR", None, None, Vec::new()),
+            named_cell(0x100, b"Hall\0"),
+            named_cell(0x101, b"Cellar\0"),
+            load_door(0x2001, 0x100, 0x2002, [1.0, 2.0, 3.0]),
+            load_door(0x2002, 0x101, 0x2001, [4.0, 5.0, 6.0]),
+        ];
+        let master: HashMap<u32, RawRecord> = records
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        assert!(door_links(&conn).is_empty(), "create_tables adds the table");
+        let export = |conn: &Connection| {
+            export_inhouse_to_db(
+                conn,
+                &master,
+                &order,
+                &paths,
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap()
+        };
+        let expected = vec![
+            (0x2001, 0x2002, 0x101, Some("Cellar".to_owned())),
+            (0x2002, 0x2001, 0x100, Some("Hall".to_owned())),
+        ];
+        export(&conn);
+        assert_eq!(door_links(&conn), expected);
+
+        export_to_db(&conn, &HashMap::new()).unwrap();
+        assert_eq!(door_links(&conn), expected, "a subset export leaves links");
+
+        export_inhouse_record_archive_to_db(&conn, &master, &order, &paths).unwrap();
+        assert!(door_links(&conn).is_empty(), "deferred runtime table");
+        export(&conn);
+        assert_eq!(door_links(&conn), expected);
     }
 
     /// Exports `records` and returns the connection plus the room graph report.

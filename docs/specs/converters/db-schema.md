@@ -803,3 +803,56 @@ them yet; a reader must probe for them first, as the engine does for `lights` an
 | Camera outside every room | n/a | draw everything |
 | Non-box room shape | skipped, counted | its objects are in no room, so drawn |
 | Exterior markers | not written | out of scope (#106) |
+
+### 16. Load Door Links (`door_links`)
+
+A load door is a `REFR` of a `DOOR` base record that carries an `XTEL` subrecord. `XTEL` is 32
+bytes in Skyrim SE: the destination door reference (FormID, bytes 0..4), the arrival position
+(three `f32`, bytes 4..16), the arrival rotation (three `f32` radians, bytes 16..28) and a `u32`
+flags word (bytes 28..32, `1` = no alarm). The arrival frame is the one the player is placed in
+on this side's destination, not the position of the destination door. Both record readers keep
+the 32 bytes unchanged in `records.data` and remap the destination FormID with the load order
+(`form_id_layout` in `crates/converter/src/esm/mod.rs`; the in-house schema describes the
+subrecord as `teleport` in `crates/converter/src/records/schema.json`). The `door_links` table is
+projected from those canonical `records` and `references` rows, not from either reader, so the
+legacy and in-house frontends publish identical rows.
+
+```sql
+CREATE TABLE IF NOT EXISTS door_links (        -- one row per load door that can be followed
+    ref_id INTEGER PRIMARY KEY,                -- references.id of the door
+    destination_ref_id INTEGER NOT NULL,       -- XTEL[0..4], after FormID remapping
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,   -- XTEL[4..16], Creation units
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,   -- XTEL[16..28], radians
+    destination_cell_id INTEGER NOT NULL,      -- cells.id of the cell holding the destination door
+    destination_worldspace_id INTEGER,         -- that cell's worldspace, NULL for an interior
+    destination_name TEXT                      -- interior cell FULL (else EDID), or the worldspace EDID
+);
+```
+
+A door is skipped, with no row, when it has no `XTEL`, when the `XTEL` is not exactly 32 bytes,
+when the destination is `0`, when any arrival value is not finite, or when the destination door
+is not a placed `DOOR` reference in a stored cell (an exterior cell needs its grid). The winning
+record decides: an override that removes `XTEL` removes the link. The `XTEL` flags word is not
+projected; it stays in `records.data`.
+
+A full load-order export clears and rebuilds the table on every conversion, like the grass and
+room tables. The movement-annotation subset export leaves it alone, and a diagnostic archive
+(which defers every runtime view) leaves it empty. `create_tables` adds the table to an older
+reused database, and adds `destination_name` to a table that predates it.
+`door-links-annotate <skyrim_world.db>` rebuilds it in one transaction from a converted
+database's own winning records, with no plugin reparsed, so an existing package gains doors
+without a full conversion. It takes the asset lock exclusively (close the engine first), accepts
+schemas 4 through the current one, and leaves meshes, terrain, `schema_info`, reader identity and
+the other tables unchanged. A corrupt `records` row fails the rebuild and keeps the old table.
+
+**This table is optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**, for the same
+reason as the room tables: it only adds a table, and the engine probes for it. The engine reads
+it through a `LEFT JOIN` on `references`, only when the table exists with every column above.
+
+| Case | Converter writes | Engine |
+|---|---|---|
+| Old database, table absent | n/a | logs once, doors stay scenery |
+| Table of another shape (missing column) | n/a | warns, doors stay scenery |
+| Door without `XTEL`, or with a malformed one | no row | scenery |
+| Destination cell has no resolvable record | no row | scenery |
+| Row with a NULL arrival value | n/a | not a load door |
