@@ -59,11 +59,11 @@ Skyrim `.esm` files consist of 24-byte record headers (`TES4`, `CELL`, `LAND`, `
 │                            SQLite 3 Database Schema                         │
 │                                                                             │
 │   ┌──────────────────────────┐         ┌─────────────────────────────────┐  │
-│   │   table: records         │         │   virtual table: refr_spatial   │  │
+│   │   table: records         │         │ virtual table: exterior_spatial │  │
 │   │   - form_id (PRIMARY KEY)│         │   using rtree(id, minX, maxX,   │  │
 │   │   - record_type (4CHAR)  │         │               minY, maxY,       │  │
 │   │   - load_order (INTEGER) │         │               minZ, maxZ)       │  │
-│   │   - data_blob (BLOB)     │         └─────────────────────────────────┘  │
+│   │   - data (BLOB)          │         └─────────────────────────────────┘  │
 │   └──────────────────────────┘                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -72,33 +72,43 @@ Skyrim `.esm` files consist of 24-byte record headers (`TES4`, `CELL`, `LAND`, `
 
 ## 3. Database Schema DDL (`skyrim_world.db`)
 
+The authoritative, complete DDL is in [`db-schema.md`](db-schema.md); the two core tables are
+repeated here as implemented in `crates/converter/src/esm/exporter.rs`.
+
 ### A. Primary Record Table
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
-    form_id INTEGER PRIMARY KEY,
-    record_type TEXT NOT NULL,         -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMOR', etc.
-    editor_id TEXT,                    -- e.g. 'WhiterunPlaza'
-    load_order INTEGER NOT NULL,       -- Priority weight from plugins.txt (0 = Skyrim.esm, 1 = Update.esm, etc.)
-    payload BLOB NOT NULL              -- Serialized record parameters
+    form_id INTEGER PRIMARY KEY,       -- winning record, load-order numbering
+    record_type TEXT NOT NULL,         -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMO', etc.
+    cell_id INTEGER,                   -- parent CELL of a placed reference or LAND
+    worldspace_id INTEGER,             -- parent WRLD of an exterior CELL or reference
+    load_order INTEGER NOT NULL,       -- plugins.id of the winning plugin (0 = Skyrim.esm, ...)
+    data BLOB NOT NULL                 -- rkyv ArchivedRecordData (the subrecord payloads)
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_type ON records(record_type);
-CREATE INDEX IF NOT EXISTS idx_records_editor_id ON records(editor_id);
 ```
+
+There is no `editor_id` column; a record's Editor ID is its `EDID` subrecord in `data`.
 
 ### B. World Cell & Cell References Table
 
 ```sql
 CREATE TABLE IF NOT EXISTS cells (
-    cell_id INTEGER PRIMARY KEY,        -- CELL FormID
+    id INTEGER PRIMARY KEY,             -- CELL FormID
+    worldspace_id INTEGER,              -- Parent WorldSpace FormID; NULL for an interior
     grid_x INTEGER,                     -- Exterior cell Grid X (NULL if interior)
     grid_y INTEGER,                     -- Exterior cell Grid Y (NULL if interior)
-    worldspace_id INTEGER,              -- Parent WorldSpace FormID (e.g. 0x0000003C for Tamriel)
-    is_interior BOOLEAN NOT NULL DEFAULT 0,
-    name TEXT
+    interior_name TEXT,                 -- The cell's EDID, not its display name
+    flags INTEGER NOT NULL,             -- record header flags
+    data BLOB,                          -- rkyv ArchivedRecordData
+    full_name TEXT                      -- Resolved FULL display name
 );
 ```
+
+Placed references have their own `references` table (positions, rotations, base object); see
+`db-schema.md` §5.
 
 ### C. Hybrid Spatial Indexing Architecture (Exterior vs. Interior)
 
@@ -151,17 +161,25 @@ For raw terrain heightmaps (`LAND` records) and ultra-dense exterior grid geomet
 
 ### Rust Struct Definition:
 
-```rust
-use rkyv::{Archive, Serialize, Deserialize};
+The implemented record is `shared::CachedLand` (`crates/shared/src/lib.rs`), inside a versioned
+`shared::CellCache` (`CELL_CACHE_VERSION` 3):
 
-#[derive(Archive, Serialize, Deserialize, Debug)]
-#[rkyv(archived = ArchivedLandData)]
-pub struct LandData {
-    pub cell_x: i32,
-    pub cell_y: i32,
-    pub heightmap: [f32; 1089],  // 33x33 heightmap grid
-    pub normals: [[f8; 3]; 1089], // Compressed vertex normals
-    pub texture_layers: Vec<u16>,
+```rust
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, PartialEq)]
+#[rkyv(bytecheck())]
+pub struct CachedLand {
+    pub cell_id: u32,
+    pub width: u16,
+    pub height: u16,
+    /// Row-major, absolute Creation Engine height units.
+    pub heights: Vec<f32>,
+    /// Packed signed XYZ normals, three bytes per vertex.
+    pub normals: Vec<i8>,
+    /// Packed RGB colors, three bytes per vertex.
+    pub vertex_colors: Vec<u8>,
+    pub layers: Vec<TerrainLayer>,
+    pub water_height: Option<f32>,
+    pub water_type_form_id: Option<u32>,
 }
 ```
 
@@ -171,10 +189,9 @@ pub struct LandData {
 use rkyv::access;
 use memmap2::MmapOptions;
 
-pub fn load_cell_heightmap<'a>(mmap: &'a memmap2::Mmap, offset: usize) -> &'a ArchivedLandData {
-    // 0 nanoseconds parsing CPU time!
-    // Directly casts bytes from virtual memory straight into Rust reference
-    unsafe { access::<ArchivedLandData, rkyv::rancor::Error>(&mmap[offset..]).unwrap() }
+pub fn load_cell_cache<'a>(mmap: &'a memmap2::Mmap) -> &'a ArchivedCellCache {
+    // Validated access: the archive is checked before it is read in place.
+    access::<ArchivedCellCache, rkyv::rancor::Error>(&mmap[..]).unwrap()
 }
 ```
 
@@ -203,14 +220,14 @@ impl EsmToSqliteConverter {
 
         // 1. Insert record into primary table
         tx.execute(
-            "INSERT OR REPLACE INTO records (form_id, record_type, load_order, payload) VALUES (?1, 'REFR', ?2, ?3)",
+            "INSERT OR REPLACE INTO records (form_id, record_type, load_order, data) VALUES (?1, 'REFR', ?2, ?3)",
             params![form_id, load_order, payload],
         )?;
 
         // 2. Insert 3D bounding box into Spatial R-Tree Index
         let bbox = 64.0; // bounding radius around object
         tx.execute(
-            "INSERT OR REPLACE INTO refr_spatial (id, minX, maxX, minY, maxY, minZ, maxZ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO exterior_spatial (id, minX, maxX, minY, maxY, minZ, maxZ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![form_id, x - bbox, x + bbox, y - bbox, y + bbox, z - bbox, z + bbox],
         )?;
 

@@ -295,6 +295,7 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
         "historical",
         "projection-1",
         "projection-2",
+        "projection-3",
         "current",
         "unproven",
     ] {
@@ -320,6 +321,11 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
                 CONVERTER_SCHEMA_VERSION,
             )
             .unwrap(),
+            "projection-3" => crate::cache::legacy_projection_v3_configuration_hash(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+            )
+            .unwrap(),
             "current" => configuration_hash(&config).unwrap(),
             _ => "unproven-settings".into(),
         };
@@ -330,6 +336,7 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
             "historical" => Some(serde_json::json!({"mode": "legacy"})),
             "projection-1" => Some(serde_json::json!({"mode": "legacy", "projection_version": 1})),
             "projection-2" => Some(serde_json::json!({"mode": "legacy", "projection_version": 2})),
+            "projection-3" => Some(serde_json::json!({"mode": "legacy", "projection_version": 3})),
             _ => None,
         };
         if let Some(source_reader) = source_reader {
@@ -639,7 +646,7 @@ async fn repeated_metadata_migrations_preserve_recorded_asset_producer() {
 /// Mode-only and previous versioned proofs survive multiple retained publications unchanged.
 #[tokio::test]
 async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations() {
-    for projection_version in [None, Some(1), Some(2)] {
+    for projection_version in [None, Some(1), Some(2), Some(3)] {
         let fixture = Fixture::new(true);
         let legacy = fixture.config(RecordReader::Legacy);
         publish(legacy.clone()).await;
@@ -653,6 +660,11 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
             )
             .unwrap(),
             Some(2) => crate::cache::legacy_projection_v2_configuration_hash(
+                &legacy,
+                CONVERTER_SCHEMA_VERSION,
+            )
+            .unwrap(),
+            Some(3) => crate::cache::legacy_projection_v3_configuration_hash(
                 &legacy,
                 CONVERTER_SCHEMA_VERSION,
             )

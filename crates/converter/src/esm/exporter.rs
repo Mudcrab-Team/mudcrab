@@ -146,11 +146,11 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_records_cell_id ON records(cell_id) WHERE cell_id IS NOT NULL;
          CREATE TABLE IF NOT EXISTS worldspaces (
              id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL, parent_world INTEGER, flags INTEGER NOT NULL,
-             lod_origin_x INTEGER, lod_origin_y INTEGER
+             lod_origin_x INTEGER, lod_origin_y INTEGER, full_name TEXT
          );
          CREATE TABLE IF NOT EXISTS cells (
              id INTEGER PRIMARY KEY, worldspace_id INTEGER, grid_x INTEGER, grid_y INTEGER,
-             interior_name TEXT, flags INTEGER NOT NULL, data BLOB
+             interior_name TEXT, flags INTEGER NOT NULL, data BLOB, full_name TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_cells_grid ON cells(worldspace_id, grid_x, grid_y);
          CREATE TABLE IF NOT EXISTS "references" (
@@ -171,6 +171,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
          );
          CREATE TABLE IF NOT EXISTS statics (
              id INTEGER PRIMARY KEY, editor_id TEXT, model_path TEXT, flags INTEGER NOT NULL,
+             full_name TEXT,
              bounds_min_x REAL NOT NULL DEFAULT -64, bounds_min_y REAL NOT NULL DEFAULT -64,
              bounds_min_z REAL NOT NULL DEFAULT -64, bounds_max_x REAL NOT NULL DEFAULT 64,
              bounds_max_y REAL NOT NULL DEFAULT 64, bounds_max_z REAL NOT NULL DEFAULT 64,
@@ -184,7 +185,12 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              color_r INTEGER NOT NULL, color_g INTEGER NOT NULL, color_b INTEGER NOT NULL,
              flags INTEGER NOT NULL,        -- DATA flags (dynamic, can carry, negative, flicker, off by default, ...)
              falloff REAL NOT NULL,
-             fade REAL                      -- FNAM, if present
+             fade REAL,                     -- FNAM, if present
+             time INTEGER, field_of_view REAL, near_clip REAL,
+             flicker_period REAL, flicker_intensity_amplitude REAL, flicker_movement_amplitude REAL,
+             value INTEGER, weight REAL,
+             sound_id INTEGER,              -- SNAM -> SNDR
+             lens_id INTEGER                -- LNAM -> LENS
          );
          CREATE TABLE IF NOT EXISTS npcs (
              id INTEGER PRIMARY KEY, editor_id TEXT, full_name TEXT,
@@ -268,12 +274,58 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
+    // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the optional
+    // display-name columns (#269), so a subset export can still insert into it.
+    for table in ["worldspaces", "cells", "statics"] {
+        add_missing_columns(conn, table, &[("full_name", "TEXT")])?;
+    }
+
+    // Optional environment, weather and image-space tables (db-schema.md, #269 gaps 1 and 2).
+    conn.execute_batch(&crate::esm::environment::tables_sql())?;
+
+    // Optional reference link and detail tables (db-schema.md, #269 gap 3).
+    conn.execute_batch(crate::esm::reference_links::REFERENCE_LINK_TABLES_SQL)?;
+    // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
+    // later exports added, so a subset export can still insert into it.
+    add_missing_columns(conn, "lights", LIGHT_DETAIL_COLUMNS)?;
     conn.prepare_cached(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
     )?
     .execute([shared::WORLD_DATABASE_SCHEMA_VERSION])?;
     Ok(())
 }
+
+/// Adds each `(name, declaration)` column `table` lacks.
+fn add_missing_columns(conn: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+    for (name, declaration) in columns {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+            [table, name],
+            |row| row.get(0),
+        )?;
+        if !present {
+            conn.execute(
+                &format!("ALTER TABLE \"{table}\" ADD COLUMN {name} {declaration}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The `lights` columns #269 added after the first light export.
+const LIGHT_DETAIL_COLUMNS: &[(&str, &str)] = &[
+    ("time", "INTEGER"),
+    ("field_of_view", "REAL"),
+    ("near_clip", "REAL"),
+    ("flicker_period", "REAL"),
+    ("flicker_intensity_amplitude", "REAL"),
+    ("flicker_movement_amplitude", "REAL"),
+    ("value", "INTEGER"),
+    ("weight", "REAL"),
+    ("sound_id", "INTEGER"),
+    ("lens_id", "INTEGER"),
+];
 
 type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 
@@ -328,18 +380,21 @@ pub fn export_to_db_with_load_order(
 }
 
 /// Replace plugin metadata and the complete legacy snapshot in one transaction.
+/// `unresolved_fields` are the localized fields the legacy text pass left without text; like the
+/// in-house reader's, they stay in `records.data` and are left out of the runtime projections.
 pub(super) fn export_plugins_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
     order: &LoadOrder,
     plugin_paths: &[PathBuf],
+    unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
 ) -> Result<()> {
     export_records(
         conn,
         master,
         Some(order),
         Some(plugin_paths),
-        None,
+        Some(unresolved_fields),
         None,
         ExportOptions {
             runtime_views: true,
@@ -432,6 +487,12 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS lod_build;
         DROP TABLE IF EXISTS lod;"#,
     )?;
+    for table in crate::esm::environment::ENVIRONMENT_TABLES
+        .iter()
+        .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+    {
+        tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
+    }
     create_tables(tx)?;
     // Every complete snapshot owns these derived rows, including archive-only exports
     // that deliberately defer all runtime projections.
@@ -557,6 +618,14 @@ fn export_records(
             let projection = runtime_projection(record, unresolved_fields);
             let projected = projection.as_ref().unwrap_or(record);
             let (grid_x, grid_y, interior_name) = extract_cell_info(&projected.subrecords);
+            let full_name = SubrecordView::new(&projected.subrecords).get_string(b"FULL");
+
+            crate::esm::environment::insert_cell(
+                &tx,
+                &crate::esm::environment::Links { master },
+                form_id,
+                &SubrecordView::new(&projected.subrecords),
+            )?;
             let data = serialize_subrecords(&record.subrecords);
             insert_cell(
                 &tx,
@@ -566,6 +635,7 @@ fn export_records(
                     grid_x,
                     grid_y,
                     interior_name: interior_name.as_deref(),
+                    full_name: full_name.as_deref(),
                     flags: record.flags,
                     data: &data,
                 },
@@ -651,6 +721,14 @@ fn export_records(
         }
 
         match type_str {
+            "LGTM" | "WTHR" | "CLMT" | "REGN" | "IMGS" => {
+                crate::esm::environment::insert_record(
+                    &tx,
+                    &crate::esm::environment::Links { master },
+                    record,
+                    &view,
+                )?;
+            }
             "GRAS" => {
                 insert_grass(&tx, form_id, &view, record.load_order)?;
             }
@@ -660,8 +738,14 @@ fn export_records(
                     .get_string(b"EDID")
                     .unwrap_or_else(|| format!("WRLD_{form_id:08X}"));
                 tx.prepare_cached(
-                    "INSERT OR REPLACE INTO worldspaces(id, editor_id, parent_world, flags) VALUES (?1, ?2, ?3, ?4)")?.execute(
-                    params![form_id, editor_id, view.get_form_id(b"WNAM"), record.flags],
+                    "INSERT OR REPLACE INTO worldspaces(id, editor_id, parent_world, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
+                    params![form_id, editor_id, view.get_form_id(b"WNAM"), record.flags, view.get_string(b"FULL")],
+                )?;
+                crate::esm::environment::insert_worldspace(
+                    &tx,
+                    &crate::esm::environment::Links { master },
+                    form_id,
+                    &view,
                 )?;
             }
             "REFR" | "ACHR" | "ACRE" | "PGRE" | "PMIS" => {
@@ -674,6 +758,12 @@ fn export_records(
                     record.flags,
                     &record.subrecords,
                     &canonical_record.subrecords,
+                )?;
+                crate::esm::reference_links::insert(
+                    &tx,
+                    &crate::esm::reference_links::Context { master, order },
+                    record,
+                    &SubrecordView::new(&record.subrecords),
                 )?;
             }
             "LAND" => {
@@ -688,7 +778,7 @@ fn export_records(
                 let view = SubrecordView::new(&record.subrecords);
                 // Every `LIGH` lights the space whether or not it has
                 // geometry, so it gets a `lights` row regardless.
-                insert_light(&tx, form_id, &view)?;
+                insert_light(&tx, master, form_id, &view)?;
                 // Most `LIGH` records carry no model: they light the space with
                 // nothing to draw. Storing one row per invisible light would put
                 // a meshless entry in `statics` for every candle in the game, so
@@ -696,8 +786,8 @@ fn export_records(
                 // other base object.
                 if let Some(model_path) = view.get_string(b"MODL").filter(|path| !path.is_empty()) {
                     tx.prepare_cached(
-                        "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags) VALUES (?1, ?2, ?3, ?4)")?.execute(
-                        params![form_id, view.get_string(b"EDID"), model_path, record.flags],
+                        "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
+                        params![form_id, view.get_string(b"EDID"), model_path, record.flags, view.get_string(b"FULL")],
                     )?;
                 }
             }
@@ -707,8 +797,12 @@ fn export_records(
             // Records without MODL (triggers, markers) store NULL and are
             // skipped at spawn time. `LIGH` is handled above: the light goes
             // in `lights` and only a light with geometry lands in `statics`.
-            "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "WEAP"
-            | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL" | "ARMO" => {
+            // `TACT` (talking activators), `ADDN` (addon nodes), `APPA`
+            // (apparatus) and `ARTO` (art objects) are placeable `REFR` bases
+            // with a model too (`REFR.NAME` targets in xEdit's TES5 definitions).
+            "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "TACT"
+            | "WEAP" | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
+            | "ARMO" | "APPA" | "ADDN" | "ARTO" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
                 // gendered world-model slots (male first, female fallback).
@@ -720,8 +814,8 @@ fn export_records(
                     view.get_string(b"MODL")
                 };
                 tx.prepare_cached(
-                    "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags) VALUES (?1, ?2, ?3, ?4)")?.execute(
-                    params![form_id, view.get_string(b"EDID"), model, record.flags],
+                    "INSERT OR REPLACE INTO statics(id, editor_id, model_path, flags, full_name) VALUES (?1, ?2, ?3, ?4, ?5)")?.execute(
+                    params![form_id, view.get_string(b"EDID"), model, record.flags, view.get_string(b"FULL")],
                 )?;
             }
             "NPC_" => {
@@ -939,8 +1033,15 @@ fn parse_water_dnam(dnam: &[u8]) -> Option<WaterDnam> {
 /// a warning rather than guessed at. A shorter `DATA` is accepted because the
 /// leading fields are the same ones Oblivion-era light data has.
 const LIGHT_DATA_MIN: usize = 20;
+/// The full `LIGH` `DATA` in Skyrim SE.
+const LIGHT_DATA_FULL: usize = 48;
 
-fn insert_light(tx: &Transaction<'_>, form_id: u32, view: &SubrecordView<'_>) -> Result<()> {
+fn insert_light(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    form_id: u32,
+    view: &SubrecordView<'_>,
+) -> Result<()> {
     let Some(data) = view.find(b"DATA") else {
         eprintln!("warning: LIGH {form_id:08X} has no DATA; no lights row");
         return Ok(());
@@ -961,9 +1062,32 @@ fn insert_light(tx: &Transaction<'_>, form_id: u32, view: &SubrecordView<'_>) ->
         .find(b"FNAM")
         .filter(|bytes| bytes.len() >= 4)
         .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte light fade")));
+    // The rest of the 48-byte DATA (xEdit 4.1.5f `wbDefinitionsTES5.pas`, LIGH): time, FOV, near
+    // clip, the flicker period and amplitudes, value and weight. The in-house schema accepts only
+    // the full 48 bytes, so a shorter DATA leaves them NULL for both readers.
+    let full = (data.len() == LIGHT_DATA_FULL).then_some(data);
+    let real = |offset: usize| {
+        full.map(|data| f32::from_le_bytes(data[offset..offset + 4].try_into().expect("f32")))
+            .filter(|value| value.is_finite())
+    };
+    let word = |offset: usize| {
+        full.map(|data| u32::from_le_bytes(data[offset..offset + 4].try_into().expect("u32")))
+    };
+    // Links keep a FormID only when the winning record exists with the allowed type: the
+    // in-house reader clears unresolved links and the legacy reader keeps them.
+    let link = |tag: &[u8; 4], target: &[u8; 4]| {
+        view.find(tag)
+            .filter(|bytes| bytes.len() == 4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte link")))
+            .filter(|id| {
+                master
+                    .get(id)
+                    .is_some_and(|record| !record.is_deleted() && record.record_type == *target)
+            })
+    };
     tx.prepare_cached(
-        "INSERT OR REPLACE INTO lights(id, editor_id, radius, color_r, color_g, color_b, flags, falloff, fade)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?.execute(
+        "INSERT OR REPLACE INTO lights(id, editor_id, radius, color_r, color_g, color_b, flags, falloff, fade, time, field_of_view, near_clip, flicker_period, flicker_intensity_amplitude, flicker_movement_amplitude, value, weight, sound_id, lens_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?.execute(
         params![
             form_id,
             view.get_string(b"EDID"),
@@ -974,6 +1098,16 @@ fn insert_light(tx: &Transaction<'_>, form_id: u32, view: &SubrecordView<'_>) ->
             flags,
             falloff,
             fade,
+            word(0).map(|time| time as i32),
+            real(20),
+            real(24),
+            real(28),
+            real(32),
+            real(36),
+            word(40),
+            real(44),
+            link(b"SNAM", b"SNDR"),
+            link(b"LNAM", b"LENS"),
         ],
     )?;
     Ok(())
@@ -1071,14 +1205,15 @@ struct CellRow<'a> {
     grid_x: Option<i32>,
     grid_y: Option<i32>,
     interior_name: Option<&'a str>,
+    full_name: Option<&'a str>,
     flags: u32,
     data: &'a [u8],
 }
 
 fn insert_cell(tx: &Transaction<'_>, row: CellRow<'_>) -> Result<()> {
     tx.prepare_cached(
-        "INSERT OR REPLACE INTO cells(id, worldspace_id, grid_x, grid_y, interior_name, flags, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?.execute(
-        params![row.form_id, row.worldspace_id, row.grid_x, row.grid_y, row.interior_name, row.flags, row.data],
+        "INSERT OR REPLACE INTO cells(id, worldspace_id, grid_x, grid_y, interior_name, flags, data, full_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?.execute(
+        params![row.form_id, row.worldspace_id, row.grid_x, row.grid_y, row.interior_name, row.flags, row.data, row.full_name],
     )?;
     Ok(())
 }
@@ -1100,6 +1235,84 @@ pub fn validate_database(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_optional_schema_upgrade_preserves_rows_and_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        for table in ["worldspaces", "cells", "statics"] {
+            conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN full_name;"))
+                .unwrap();
+        }
+        // Use the pre-extension table verbatim: SQLite cannot DROP its final commented column.
+        conn.execute_batch(
+            "DROP TABLE lights;
+             CREATE TABLE lights (
+                 id INTEGER PRIMARY KEY, editor_id TEXT, radius REAL NOT NULL,
+                 color_r INTEGER NOT NULL, color_g INTEGER NOT NULL, color_b INTEGER NOT NULL,
+                 flags INTEGER NOT NULL, falloff REAL NOT NULL, fade REAL
+             );",
+        )
+        .unwrap();
+        conn.execute_batch("INSERT INTO statics(id, editor_id, flags) VALUES (1, 'retained', 0);")
+            .unwrap();
+        create_tables(&conn).unwrap();
+        create_tables(&conn).unwrap();
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT editor_id, full_name FROM statics WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("retained".to_owned(), None));
+        for table in ["worldspaces", "cells", "statics"] {
+            conn.prepare(&format!("SELECT full_name FROM {table}"))
+                .unwrap();
+        }
+        for (column, _) in LIGHT_DETAIL_COLUMNS {
+            conn.prepare(&format!("SELECT {column} FROM lights"))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn complete_snapshot_replaces_both_optional_families_transactionally() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO cell_environment(cell_id) VALUES (1);
+            INSERT INTO reference_details(reference_id) VALUES (2);
+            CREATE TABLE caller_owned(value INTEGER);
+            INSERT INTO caller_owned VALUES (3);",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        replace_complete_snapshot(&tx).unwrap();
+        for table in crate::esm::environment::ENVIRONMENT_TABLES
+            .iter()
+            .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+        {
+            let count: i64 = tx
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+        tx.rollback().unwrap();
+        for table in ["cell_environment", "reference_details", "caller_owned"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "{table}");
+        }
+        let tx = conn.transaction().unwrap();
+        replace_complete_snapshot(&tx).unwrap();
+        tx.commit().unwrap();
+        let value: i64 = conn
+            .query_row("SELECT value FROM caller_owned", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(value, 3);
+    }
 
     /// The schema has the interior index, the exterior spatial table and every projection table.
     #[test]

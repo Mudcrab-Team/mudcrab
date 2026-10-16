@@ -92,5 +92,8 @@ Final release verdicts and their evidence package are documented in
 
 ## Compatibility
 
-Phase 2 requires database schema version 4, converter manifest schema 14, and cell cache version 3.
+Phase 2 required database schema version 4, converter manifest schema 14, and cell cache version 3
+when it shipped. The runtime now accepts world database schemas 3 through 9
+(`shared::WORLD_DATABASE_SCHEMA_VERSION` is 9), complete converter packages of schemas 15 through
+26, and cell cache version 3.
 Older or incomplete assets are rejected and must be reconverted through the launcher or converter CLI.

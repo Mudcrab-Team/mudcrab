@@ -69,7 +69,7 @@ metadata retention preserves the producer identity of the retained bytes.
 │  │   `plugins`              │   `records`          │ `worldspaces`       │  │
 │  │   (Active Plugin Order)  │   (Raw FormID Data)  │ (Worldspace EDIDs)  │  │
 │  ├──────────────────────────┼──────────────────────┼─────────────────────┤  │
-│  │   `cells`                │   `references`       │ `refs_rtree`        │  │
+│  │   `cells`                │   `references`       │ `exterior_spatial`  │  │
 │  │   (Cell Grid & Names)    │   (3D World Placements)│ (3D Spatial R-Tree) │  │
 │  ├──────────────────────────┼──────────────────────┼─────────────────────┤  │
 │  │   `land`                 │   `lod`              │ `scripts`           │  │
@@ -91,10 +91,10 @@ Stores loaded `.esm`/`.esp`/`.esl` plugin file metadata, load order priority, an
 
 ```sql
 CREATE TABLE IF NOT EXISTS plugins (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    checksum BLOB NOT NULL
+    id INTEGER PRIMARY KEY,             -- load-order index; records.load_order refers to it
+    name TEXT NOT NULL UNIQUE,          -- plugin filename as installed
+    priority INTEGER NOT NULL,          -- same as id
+    checksum BLOB NOT NULL              -- SHA-256 of the plugin file
 );
 ```
 
@@ -117,14 +117,16 @@ earlier usable winner intact and are counted in per-plugin diagnostics. The pack
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
-    id INTEGER PRIMARY KEY,
-    form_id INTEGER NOT NULL,
-    record_type TEXT NOT NULL,          -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMOR', 'SPEL', etc.
-    data BLOB NOT NULL                  -- Serialized subrecords payload
+    form_id INTEGER PRIMARY KEY,        -- winning record, load-order numbering
+    record_type TEXT NOT NULL,          -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMO', 'SPEL', etc.
+    cell_id INTEGER,                    -- parent CELL of a placed reference or LAND; NULL otherwise
+    worldspace_id INTEGER,              -- parent WRLD of an exterior CELL or reference; NULL otherwise
+    load_order INTEGER NOT NULL,        -- plugins.id of the plugin that supplied the winning record
+    data BLOB NOT NULL                  -- rkyv ArchivedRecordData: the subrecord payloads
 );
 
-CREATE INDEX IF NOT EXISTS idx_records_formid ON records(form_id);
 CREATE INDEX IF NOT EXISTS idx_records_type ON records(record_type);
+CREATE INDEX IF NOT EXISTS idx_records_cell_id ON records(cell_id) WHERE cell_id IS NOT NULL;
 ```
 
 ---
@@ -281,7 +283,8 @@ CREATE TABLE IF NOT EXISTS worldspaces (
     parent_world INTEGER,               -- Parent WorldSpace FormID (if child worldspace)
     flags INTEGER NOT NULL,
     lod_origin_x INTEGER,               -- Validated sidecar/explicit origin; NULL if unresolved
-    lod_origin_y INTEGER
+    lod_origin_y INTEGER,
+    full_name TEXT                      -- Display name (FULL, e.g. 'Skyrim'); see "Display names"
 );
 ```
 
@@ -289,19 +292,254 @@ CREATE TABLE IF NOT EXISTS worldspaces (
 
 ### 4. Cell Registry (`cells`)
 
-Stores exterior cell grid coordinates and interior cell names.
+Stores exterior cell grid coordinates and each cell's Editor ID.
 
 ```sql
 CREATE TABLE IF NOT EXISTS cells (
     id INTEGER PRIMARY KEY,             -- CELL FormID
-    worldspace_id INTEGER NOT NULL,     -- Parent WorldSpace FormID
+    worldspace_id INTEGER,              -- Parent WorldSpace FormID; NULL for an interior
     grid_x INTEGER,                     -- Exterior cell Grid X (NULL if interior)
     grid_y INTEGER,                     -- Exterior cell Grid Y (NULL if interior)
-    interior_name TEXT,                 -- Interior cell name (NULL if exterior)
+    interior_name TEXT,                 -- The cell's EDID (Editor ID) when it has one, exterior or
+                                        -- interior; not the display name
     flags INTEGER NOT NULL,
-    data BLOB                           -- Optional cell binary payload
+    data BLOB,                          -- Optional cell binary payload
+    full_name TEXT                      -- Display name (FULL); see "Display names" below
 );
 ```
+
+#### Display names (`full_name`)
+
+`worldspaces.full_name`, `cells.full_name` and `statics.full_name` hold the record's `FULL`, the
+name the game shows (door prompts, the crosshair label, container menus, the map). `npcs.full_name`
+follows the same rules. `cells.interior_name` is still the cell's Editor ID (`EDID`), not its
+name; it keeps its column name for compatibility.
+
+`FULL` is a localized string. In a plugin with the TES4 `Localized` flag (0x80) it is a four-byte
+ID into `Strings/<plugin>_english.STRINGS`, looked up in the table of the plugin that supplied the
+winning record: a loose `Data/Strings` file first, then the archives. Otherwise it is
+Windows-1252 text. Both record readers publish the same UTF-8 text:
+
+- The in-house reader resolves every field its schema types as `lstring`.
+- The legacy reader (`--record-reader legacy`) resolves the subrecords the in-house schema types
+  as `lstring` in every occurrence for that record type, using the same table lookup
+  (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
+  `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
+  projection, so its reader identity is `projection_version` 4. Packages from versions 1-3 keep
+  their retained assets.
+
+A name whose ID is 0, missing from the table, or whose table cannot be read is NULL in these
+columns for both readers, with one warning per plugin. The canonical `records.data` payloads hold
+the same resolved text for both readers.
+
+The columns are additive and optional. They did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`:
+`create_tables` adds them to an older reused table, and a reader must probe for them. No engine
+code reads them yet.
+
+`cells.flags` and `worldspaces.flags` are the record-header flags. The `DATA` flags (interior,
+has water, show sky, ...) are in `cell_environment.data_flags` and
+`worldspace_environment.data_flags` below.
+
+#### Cell and Worldspace Environment (`cell_environment`, `cell_regions`, `cell_lighting`, `worldspace_environment`)
+
+Authored lighting, image space, climate, music, ownership and flags (#269 gap 1). Before these
+tables existed the data was only in `cells.data` / `records.data`, and the engine hard-coded
+`SkyrimClear` lighting for every space (#264). Layouts follow xEdit 4.1.5f
+(`Core/wbDefinitionsTES5.pas`, `CELL` and `WRLD`).
+
+```sql
+CREATE TABLE IF NOT EXISTS cell_environment (  -- one row per CELL
+    cell_id INTEGER PRIMARY KEY,
+    data_flags INTEGER,          -- DATA (u8 in old plugins, u16 in SSE): 0x1 interior, 0x2 has water,
+                                 -- 0x4 can travel from here, 0x8 no LOD water, 0x20 public area,
+                                 -- 0x40 hand changed, 0x80 show sky, 0x100 use sky lighting
+    image_space_id INTEGER,      -- XCIM -> IMGS
+    acoustic_space_id INTEGER,   -- XCAS -> ASPC
+    music_id INTEGER,            -- XCMO -> MUSC
+    sky_region_id INTEGER,       -- XCCM -> REGN the cell takes its sky and weather from
+    location_id INTEGER,         -- XLCN -> LCTN
+    encounter_zone_id INTEGER,   -- XEZN -> ECZN
+    owner_id INTEGER,            -- XOWN -> FACT, NPC_ or ACHR
+    owner_rank INTEGER,          -- XRNK, the faction rank that owns it
+    water_id INTEGER,            -- XCWT -> WATR
+    water_height REAL            -- XCLW; NULL when absent or not finite
+);
+CREATE TABLE IF NOT EXISTS cell_regions (      -- XCLR, one row per region
+    cell_id INTEGER NOT NULL,
+    region_id INTEGER NOT NULL,
+    PRIMARY KEY (cell_id, region_id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS cell_lighting (     -- one row per CELL with an XCLL or an LTMP
+    cell_id INTEGER PRIMARY KEY,
+    lighting_template_id INTEGER,              -- LTMP -> LGTM
+    xcll_size INTEGER,                         -- 92, or 72 for the short form; NULL without XCLL
+    ambient_r INTEGER, ambient_g INTEGER, ambient_b INTEGER,             -- XCLL[0..3]
+    directional_r INTEGER, directional_g INTEGER, directional_b INTEGER, -- XCLL[4..7]
+    fog_near_r INTEGER, fog_near_g INTEGER, fog_near_b INTEGER,          -- XCLL[8..11]
+    fog_near REAL, fog_far REAL,                                         -- XCLL[12], [16]
+    directional_rotation_xy INTEGER, directional_rotation_z INTEGER,     -- XCLL[20], [24], degrees
+    directional_fade REAL, fog_clip_distance REAL, fog_power REAL,       -- XCLL[28], [32], [36]
+    dalc_x_pos_r INTEGER, dalc_x_pos_g INTEGER, dalc_x_pos_b INTEGER,    -- XCLL[40..72]: directional
+    dalc_x_neg_r INTEGER, dalc_x_neg_g INTEGER, dalc_x_neg_b INTEGER,    -- ambient X+, X-, Y+, Y-,
+    dalc_y_pos_r INTEGER, dalc_y_pos_g INTEGER, dalc_y_pos_b INTEGER,    -- Z+, Z-, specular, scale
+    dalc_y_neg_r INTEGER, dalc_y_neg_g INTEGER, dalc_y_neg_b INTEGER,
+    dalc_z_pos_r INTEGER, dalc_z_pos_g INTEGER, dalc_z_pos_b INTEGER,
+    dalc_z_neg_r INTEGER, dalc_z_neg_g INTEGER, dalc_z_neg_b INTEGER,
+    dalc_specular_r INTEGER, dalc_specular_g INTEGER, dalc_specular_b INTEGER,
+    dalc_scale REAL,
+    fog_far_r INTEGER, fog_far_g INTEGER, fog_far_b INTEGER,             -- XCLL[72..75]
+    fog_max REAL, light_fade_begin REAL, light_fade_end REAL,            -- XCLL[76], [80], [84]
+    inherit_flags INTEGER                                                -- XCLL[88]
+);
+CREATE TABLE IF NOT EXISTS worldspace_environment ( -- one row per WRLD
+    worldspace_id INTEGER PRIMARY KEY,
+    data_flags INTEGER,          -- DATA: 0x1 small world, 0x2 can't fast travel, 0x8 no LOD water,
+                                 -- 0x10 no landscape, 0x20 no sky, 0x40 fixed dimensions, 0x80 no grass
+    parent_flags INTEGER,        -- PNAM byte 0: 0x1 use land, 0x2 LOD, 0x4 map, 0x8 water,
+                                 -- 0x10 climate, 0x40 sky cell data from the parent (WNAM)
+    climate_id INTEGER,          -- CNAM -> CLMT
+    water_id INTEGER,            -- NAM2 -> WATR
+    lod_water_id INTEGER,        -- NAM3 -> WATR
+    lod_water_height REAL,       -- NAM4
+    default_land_height REAL,    -- DNAM[0]
+    default_water_height REAL,   -- DNAM[4]
+    lighting_template_id INTEGER, -- LTMP -> LGTM (interior lighting)
+    music_id INTEGER,            -- ZNAM -> MUSC
+    location_id INTEGER,         -- XLCN -> LCTN
+    encounter_zone_id INTEGER,   -- XEZN -> ECZN
+    bounds_min_x REAL, bounds_min_y REAL, bounds_max_x REAL, bounds_max_y REAL, -- NAM0, NAM9
+    lod_multiplier REAL,         -- NAMA
+    center_cell_x INTEGER, center_cell_y INTEGER -- WCTR, fixed-dimensions centre cell
+);
+```
+
+Rules:
+
+- Colours are 8-bit sRGB; each one's fourth byte is unused and not stored. The `dalc_*` columns
+  are the cell's directional ambient lighting colours (what `LGTM` and `WTHR` keep in a `DALC`).
+- `XCLL` is 92 bytes in Skyrim SE. xEdit accepts it from 72 bytes, ending after the directional
+  ambient block; the fields past the end are then NULL. An `XCLL` under 72 bytes is ignored.
+  Floats that are not finite are NULL. `inherit_flags` says which fields the lighting template
+  supplies instead: 0x1 ambient, 0x2 directional, 0x4 fog colour, 0x8 fog near, 0x10 fog far,
+  0x20 directional rotation, 0x40 directional fade, 0x80 clip distance, 0x100 fog power,
+  0x200 fog max, 0x400 light fade distances. The template is in `lighting_templates` below.
+- Every link column holds a load-order FormID, and only when the winning record it names exists
+  and has the type listed; otherwise it is NULL (a `cell_regions` row is skipped). The in-house
+  reader already clears links that do not resolve and the legacy reader keeps them, so this check
+  is what makes both readers publish the same rows.
+- A typed field whose length the in-house schema rejects (for example a `DATA` that is neither 1
+  nor 2 bytes, or an `XCLW` that is not 4) is NULL for both readers: the in-house reader leaves it
+  out of its runtime projection, so the projection applies the same sizes to legacy records.
+- The tables are derived data: a full load-order export recreates them from the winning records.
+  The movement-annotation subset export leaves them alone, and diagnostic archives leave them
+  empty (they are deferred runtime views, like the room tables).
+
+#### Weather, Climate, Image Space and Lighting Templates (`weathers`, `weather_colors`, `weather_directional_ambient`, `climates`, `climate_weathers`, `region_weathers`, `image_spaces`, `lighting_templates`)
+
+The records Skyrim's sky and interior lighting come from (#269 gap 2). Together with the tables
+above, this is the data the engine needs to replace its hard-coded `SkyrimClear` day (#264).
+
+```sql
+CREATE TABLE IF NOT EXISTS weathers (          -- one row per WTHR
+    id INTEGER PRIMARY KEY, editor_id TEXT,
+    fog_day_near REAL, fog_day_far REAL, fog_night_near REAL, fog_night_far REAL,   -- FNAM (32 bytes)
+    fog_day_power REAL, fog_night_power REAL, fog_day_max REAL, fog_night_max REAL,
+    wind_speed INTEGER, transition_delta INTEGER, sun_glare INTEGER, sun_damage INTEGER, -- DATA (19 bytes),
+    precipitation_begin INTEGER, precipitation_end INTEGER,                           -- raw u8 values
+    lightning_begin INTEGER, lightning_end INTEGER, lightning_frequency INTEGER,
+    classification_flags INTEGER,              -- DATA[11]: 0x1 pleasant, 0x2 cloudy, 0x4 rainy, 0x8 snow, ...
+    lightning_r INTEGER, lightning_g INTEGER, lightning_b INTEGER,
+    visual_effect_begin INTEGER, visual_effect_end INTEGER,
+    wind_direction INTEGER, wind_direction_range INTEGER,
+    disabled_cloud_layers INTEGER,             -- NAM1 bits
+    precipitation_id INTEGER,                  -- MNAM -> SPGD
+    visual_effect_id INTEGER,                  -- NNAM -> RFCT
+    sky_static_id INTEGER,                     -- TNAM -> STAT
+    sun_glare_lens_id INTEGER,                 -- GNAM -> LENS
+    image_space_sunrise_id INTEGER, image_space_day_id INTEGER,              -- IMSP -> IMGS
+    image_space_sunset_id INTEGER, image_space_night_id INTEGER,
+    volumetric_lighting_sunrise_id INTEGER, volumetric_lighting_day_id INTEGER, -- HNAM -> VOLI
+    volumetric_lighting_sunset_id INTEGER, volumetric_lighting_night_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS weather_colors (    -- NAM0: one row per colour type and time of day
+    weather_id INTEGER NOT NULL,
+    color_type TEXT NOT NULL,                  -- sky_upper, fog_near, unknown, ambient, sunlight, sun,
+                                               -- stars, sky_lower, horizon, effect_lighting,
+                                               -- cloud_lod_diffuse, cloud_lod_ambient, fog_far,
+                                               -- sky_statics, water_multiplier, sun_glare, moon_glare
+    time_of_day TEXT NOT NULL,                 -- sunrise, day, sunset, night
+    r INTEGER NOT NULL, g INTEGER NOT NULL, b INTEGER NOT NULL,
+    PRIMARY KEY (weather_id, color_type, time_of_day)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS weather_directional_ambient ( -- the four DALC subrecords, in that order
+    weather_id INTEGER NOT NULL, time_of_day TEXT NOT NULL,
+    x_pos_r INTEGER, x_pos_g INTEGER, x_pos_b INTEGER, ...,   -- x_pos, x_neg, y_pos, y_neg, z_pos,
+    specular_r INTEGER, specular_g INTEGER, specular_b INTEGER, -- z_neg, then specular and scale
+    scale REAL,
+    PRIMARY KEY (weather_id, time_of_day)
+);
+CREATE TABLE IF NOT EXISTS climates (          -- one row per CLMT
+    id INTEGER PRIMARY KEY, editor_id TEXT, sun_texture TEXT, sun_glare_texture TEXT, -- FNAM, GNAM
+    sunrise_begin INTEGER, sunrise_end INTEGER,   -- TNAM (6 bytes), in units of 10 minutes
+    sunset_begin INTEGER, sunset_end INTEGER,
+    volatility INTEGER, moon_phase INTEGER        -- TNAM[4], TNAM[5] (moons and phase length bits)
+);
+CREATE TABLE IF NOT EXISTS climate_weathers (  -- CLMT WLST, in file order
+    climate_id INTEGER NOT NULL, position INTEGER NOT NULL,
+    weather_id INTEGER,                        -- -> WTHR
+    chance INTEGER NOT NULL,
+    chance_global_id INTEGER,                  -- -> GLOB
+    PRIMARY KEY (climate_id, position)
+);
+CREATE TABLE IF NOT EXISTS region_weathers (   -- REGN RDWT, in file order across the record
+    region_id INTEGER NOT NULL, position INTEGER NOT NULL,
+    weather_id INTEGER, chance INTEGER NOT NULL, chance_global_id INTEGER,
+    PRIMARY KEY (region_id, position)
+);
+CREATE TABLE IF NOT EXISTS image_spaces (      -- one row per IMGS
+    id INTEGER PRIMARY KEY, editor_id TEXT,
+    eye_adaptation_speed REAL, bloom_blur_radius REAL, bloom_threshold REAL, bloom_scale REAL, -- HNAM
+    receive_bloom_threshold REAL, white REAL, sunlight_scale REAL, sky_scale REAL,              -- (36 bytes)
+    eye_adaptation_strength REAL,
+    saturation REAL, brightness REAL, contrast REAL,       -- CNAM
+    tint_amount REAL, tint_r REAL, tint_g REAL, tint_b REAL, -- TNAM, colour as 0..1 floats
+    dof_strength REAL, dof_distance REAL, dof_range REAL,  -- DNAM (12 or 16 bytes)
+    dof_sky_blur_radius INTEGER                            -- DNAM[14], raw u16 code
+);
+CREATE TABLE IF NOT EXISTS lighting_templates ( -- one row per LGTM
+    id INTEGER PRIMARY KEY, editor_id TEXT,
+    data_size INTEGER,                          -- 64, 68, 72, 76, 80, 88 or 92; NULL otherwise
+    ...,                                        -- DATA: the same columns as cell_lighting, from
+                                                -- ambient_r to light_fade_end (DATA[88..92] unknown)
+    subrecord_dalc_x_pos_r INTEGER, ...,        -- the separate DALC subrecord, laid out like
+    subrecord_dalc_scale REAL                   -- weather_directional_ambient
+);
+```
+
+Rules beyond the ones above:
+
+- `weather_colors` has a row for each colour type `NAM0` holds: 13 to 17 types of 16 bytes (sunrise,
+  day, sunset, night; each RGB and an unused byte). A `NAM0` of another length gives no rows.
+- A `DALC` is 24, 28 or 32 bytes (the specular colour and the scale are optional); missing fields
+  are NULL.
+- Links follow the same existence and type check as above. `CLMT` `WLST` and `WTHR` `IMSP`, `HNAM`,
+  `MNAM`, `NNAM`, `TNAM`, `GNAM` and `SNAM` are now remapped by the legacy reader too, as the
+  in-house schema already did (see the remapped-field table).
+
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.**
+`create_tables` adds them to an older reused database. The engine reads them into
+`world::environment::EnvironmentCatalog` (cell lighting, worldspace environment, lighting
+templates, weathers with their colours and directional ambient, image spaces, climate weather
+lists). A table that is missing or lacks a column the reader needs loads as empty, with one log
+line. Nothing renders from the catalog yet: the hard-coded `SkyrimClear` lighting in `sky.rs` is
+unchanged.
+
+| Case | Converter writes | Engine |
+|---|---|---|
+| Old database, tables absent | n/a | empty catalog, one log line, built-in lighting |
+| Table of another shape | n/a | empty catalog for that table, one log line |
+| Cell without XCLL or LTMP | `cell_environment` row only | no authored lighting for it |
+| Link to a missing or wrong-type record | NULL | n/a |
 
 ---
 
@@ -313,10 +551,14 @@ Stores 3D positions, rotations, scales, and cell parentage for all placed world 
 CREATE TABLE IF NOT EXISTS references (
     id INTEGER PRIMARY KEY,
     cell_id INTEGER NOT NULL,           -- Parent CELL FormID
-    form_id INTEGER NOT NULL,           -- Base Object FormID
+    worldspace_id INTEGER,              -- Parent WorldSpace FormID; NULL in an interior
+    base_form_id INTEGER NOT NULL,      -- Base Object FormID (NAME)
+    is_exterior INTEGER NOT NULL,       -- 1 when the parent cell has a worldspace or a grid
     pos_x REAL NOT NULL,                -- 3D X Coordinate
     pos_y REAL NOT NULL,                -- 3D Y Coordinate
     pos_z REAL NOT NULL,                -- 3D Z Coordinate
+    local_x REAL,                       -- Exterior only: pos_x within its 4096-unit grid cell
+    local_y REAL,                       -- (from the position, not the owning CELL); NULL inside
     rot_x REAL NOT NULL,                -- Rotation X (Radians)
     rot_y REAL NOT NULL,                -- Rotation Y (Radians)
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
@@ -329,7 +571,7 @@ CREATE TABLE IF NOT EXISTS references (
 );
 
 -- Index for O(1) interior cell reference loading
-CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
+CREATE INDEX IF NOT EXISTS idx_references_cell ON "references"(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
@@ -344,6 +586,104 @@ include padding in the normalized flags value; reconversion corrects that
 projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
+
+#### Base object models (`statics`)
+
+`references.base_form_id` joins `statics.id`. The runtime spawns a reference only when its base
+has a `statics` row whose `model_path` it can resolve, so a base type missing from this table
+never renders.
+
+```sql
+CREATE TABLE IF NOT EXISTS statics (
+    id INTEGER PRIMARY KEY,                    -- base record FormID, load-order numbering
+    editor_id TEXT,                            -- EDID
+    model_path TEXT,                           -- MODL (ARMO: MOD2, else MOD4); NULL when absent
+    flags INTEGER NOT NULL,                    -- record header flags
+    bounds_min_x REAL NOT NULL DEFAULT -64, bounds_min_y REAL NOT NULL DEFAULT -64,
+    bounds_min_z REAL NOT NULL DEFAULT -64, bounds_max_x REAL NOT NULL DEFAULT 64,
+    bounds_max_y REAL NOT NULL DEFAULT 64, bounds_max_z REAL NOT NULL DEFAULT 64,
+    bounds_valid INTEGER NOT NULL DEFAULT 0,   -- 1 once integration measured the converted GLB
+    full_name TEXT                            -- Resolved FULL display name
+);
+```
+
+Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FURN`, `TREE`,
+`FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `WEAP`, `MISC`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`,
+`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, and `LIGH` when it has a model. `TACT`
+(talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
+added for #269; before that their references had no row and did not render. The engine still
+skips models under `effects/`, `sky/` or `markers/` and files named `*marker*`
+(`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
+models; that is render policy, not data the table lacks. They are additive
+rows, so no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: an older database keeps loading and
+simply lacks them until reconverted. Mesh conversion discovers NIF inputs independently of this
+table, so their models were already converted. Both record readers produce the same rows.
+
+#### Reference Links and Details (`reference_linked_refs`, `reference_activate_parents`, `reference_details`)
+
+What a placed reference is linked to, what activates it, who owns it, how it is locked and
+whether it is a map marker (#269 gap 3). Patrols, idle markers, traps, levers, pressure plates,
+stealing and locked doors need these; before they were only in `references.data`. Written for
+every exported placed reference (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`). Layouts follow xEdit
+4.1.5f (`Core/wbDefinitionsTES5.pas`, `REFR`).
+
+```sql
+CREATE TABLE IF NOT EXISTS reference_linked_refs (       -- XLKR, one row per subrecord in file order
+    reference_id INTEGER NOT NULL,                       -- references.id
+    position INTEGER NOT NULL,
+    keyword_id INTEGER,                                  -- -> KYWD; NULL for the 4-byte form
+    linked_ref_id INTEGER,                               -- -> a placed reference
+    PRIMARY KEY (reference_id, position)
+);
+CREATE TABLE IF NOT EXISTS reference_activate_parents (  -- XAPR, one row per subrecord
+    reference_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    parent_ref_id INTEGER,                               -- -> a placed reference
+    delay REAL,                                          -- seconds; NULL if not finite
+    PRIMARY KEY (reference_id, position)
+);
+CREATE TABLE IF NOT EXISTS reference_details (           -- one row per reference with any of these
+    reference_id INTEGER PRIMARY KEY,
+    owner_id INTEGER,                    -- XOWN -> FACT, NPC_ or ACHR
+    owner_rank INTEGER,                  -- XRNK, the faction rank that owns it
+    activate_parent_flags INTEGER,       -- XAPD: 0x1 parent activate only
+    lock_level INTEGER,                  -- XLOC[0]: 1 novice, 25 apprentice, 50 adept, 75 expert,
+                                         -- 100 master, 255 requires key
+    lock_key_id INTEGER,                 -- XLOC[4..8] -> KEYM, remapped here (see below)
+    lock_flags INTEGER,                  -- XLOC[8]: 0x4 leveled lock
+    open_by_default INTEGER NOT NULL DEFAULT 0, -- ONAM present (doors)
+    map_marker INTEGER NOT NULL DEFAULT 0,      -- XMRK present
+    map_marker_flags INTEGER,            -- FNAM: 0x1 visible, 0x2 can travel to, 0x4 "show all" hidden
+    map_marker_type INTEGER,             -- TNAM[0], the marker icon enum
+    location_id INTEGER,                 -- XLCN -> LCTN (persistent location)
+    location_ref_type_id INTEGER,        -- XLRL -> LCRT or LCTN
+    encounter_zone_id INTEGER,           -- XEZN -> ECZN
+    attached_ref_id INTEGER              -- XATR -> a placed reference
+);
+```
+
+Rules:
+
+- Placed references are `REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`, `PHZD`, `PARW`, `PBAR`, `PBEA`,
+  `PCON` and `PFLA`. Every link keeps its load-order FormID only when the winning record it names
+  exists with an allowed type; otherwise it is NULL (the row is kept, so `position` still counts
+  every subrecord). The in-house reader clears unresolved links and the legacy reader keeps them,
+  so this check is what makes both readers publish the same rows.
+- A field whose length the in-house schema rejects is skipped for both readers: `XLKR` must be 4
+  or 8 bytes, `XAPR` 8, `XAPD` 1, `XOWN`/`XRNK`/`XLCN`/`XLRL`/`XEZN`/`XATR` 4, `FNAM` 1 and `TNAM`
+  2.
+- `XLOC` is untyped bytes in the in-house schema, so neither reader remaps its key in
+  `references.data`. The projection remaps it through the supplying plugin's master list
+  (`records::source_identity::header_runtime_id`). A subset export without a load order leaves
+  `lock_key_id` NULL.
+- The map marker's name (`FULL`, a localized string) is not projected into these tables yet.
+  Both readers retain its resolved text in the canonical record payload after #271.
+- Derived data like the other runtime views: a full load-order export recreates the tables, and
+  diagnostic archives leave them empty.
+
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.**
+`create_tables` adds them to an older reused database. No engine code reads them yet; a reader
+must probe for them first.
 
 ---
 
@@ -370,14 +710,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(
 
 ### 7. Terrain Heightmaps (`land`)
 
-Stores 33x33 terrain heightmap data, vertex textures (`vtex`), and vertex colors (`vclr`) extracted from `LAND` records.
+Stores 33x33 terrain heightmap data, vertex textures (`vtex`), vertex colors (`vclr`) and
+vertex normals extracted from the winning `LAND` record of each cell.
 
 ```sql
 CREATE TABLE IF NOT EXISTS land (
     cell_id INTEGER PRIMARY KEY,        -- Parent CELL FormID
-    heightmap BLOB NOT NULL,            -- 33x33 float/byte heightmap buffer
-    vtext BLOB,                         -- Land texture layers
-    vclr BLOB                           -- Land vertex colors
+    heightmap BLOB NOT NULL,            -- VHGT: 33x33 height deltas
+    vtex BLOB,                          -- VTEX: land texture FormIDs
+    vclr BLOB,                          -- VCLR: vertex colors
+    normals BLOB                        -- VNML: vertex normals
 );
 ```
 
@@ -483,6 +825,8 @@ reference and cell fields, validated against their expected sizes:
 | `XLKR` | placed references | keyword and linked reference (8 bytes), or the linked reference alone (legacy 4 bytes) |
 | `XNDP` | placed references | navmesh (bytes 0-3 of 8) |
 | `XEMI` | placed references | emitted light or region |
+| `XATR` | placed references | attached reference (the in-house reader already remapped it; the legacy reader does since #269) |
+| `SNAM`, `LNAM` | LIGH | sound and lens flare (the in-house reader already remapped them; the legacy reader does since #269) |
 | `XAPR` | placed references | activate-parent reference (one 8-byte subrecord per parent) |
 | `XLRT` | placed references | location reference types (array) |
 | `XHOR` | ACHR | horse reference |
@@ -490,6 +834,12 @@ reference and cell fields, validated against their expected sizes:
 | `XCIM`, `XCMO`, `XCAS` | CELL | image space, music type, acoustic space |
 | `XCCM` | CELL | region the cell takes its sky and weather from |
 | `XCLR` | CELL | regions (array) |
+| `ZNAM` | WRLD | music (the in-house reader already remapped it; the legacy reader does since #269) |
+| `RDWT` | REGN | weathers: (weather, chance, global) entries of 12 bytes; weather and global are FormIDs |
+| `WLST` | CLMT | weathers, laid out like `RDWT` |
+| `MNAM`, `NNAM`, `TNAM`, `GNAM` | WTHR | precipitation, visual effect, sky static, sun glare lens |
+| `IMSP`, `HNAM` | WTHR | image spaces and volumetric lighting at sunrise, day, sunset, night (16 bytes) |
+| `SNAM` | WTHR | sound descriptor (bytes 0-3 of 8; one subrecord per sound) |
 | `XPOD` | REFR | the rooms a portal marker joins: an array of (origin, destination) pairs; every u32 a FormID (xEdit 4.1.5f defs) |
 | `XLRM` | REFR | linked room of a room marker |
 | `LNAM`, `INAM` | REFR | room marker lighting template, image space (other record types keep their own handling) |
@@ -499,10 +849,10 @@ PARW, PBAR, PBEA, PCON and PFLA. This does not expand the record types exported
 to the `references` table; the six newly covered types retain their blobs in
 `records` without adding `references` rows.
 Fields not covered may still hold plugin-local FormIDs. In particular, do not
-consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys, `XPWR` water
+consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys (use `reference_details.lock_key_id`), `XPWR` water
 reflections as resolved IDs. Other
-unconverted fields include `XLIB`, `XMBR`, `XATR`, `XTNM`, `PDTO`, `CELL.XILL`
-and `WRLD.ZNAM`. Check the converter's field-specific handling before using
+unconverted fields include `XLIB`, `XMBR`, `XTNM`, `PDTO` and
+`CELL.XILL`. Check the converter's field-specific handling before using
 these payloads; this list is not exhaustive.
 
 The fields in this table validate master indices and light-plugin local IDs.
@@ -577,9 +927,28 @@ CREATE TABLE IF NOT EXISTS lights (
     color_r INTEGER NOT NULL, color_g INTEGER NOT NULL, color_b INTEGER NOT NULL,
     flags INTEGER NOT NULL,        -- DATA flags (dynamic, can carry, negative, flicker, off by default, ...)
     falloff REAL NOT NULL,
-    fade REAL                      -- FNAM, if present
+    fade REAL,                     -- FNAM, if present
+    time INTEGER,                  -- DATA[0] i32, the light's duration
+    field_of_view REAL,            -- DATA[20], spotlight cone
+    near_clip REAL,                -- DATA[24]
+    flicker_period REAL,           -- DATA[28], raw (xEdit shows it multiplied by 0.01)
+    flicker_intensity_amplitude REAL, -- DATA[32]
+    flicker_movement_amplitude REAL,  -- DATA[36]
+    value INTEGER,                 -- DATA[40] u32
+    weight REAL,                   -- DATA[44]
+    sound_id INTEGER,              -- SNAM -> SNDR
+    lens_id INTEGER                -- LNAM -> LENS (lens flare)
 );
 ```
+
+The columns from `time` on were added for #269 gap 6. They come from the full 48-byte `DATA`
+(xEdit 4.1.5f `wbDefinitionsTES5.pas`, `LIGH`); the in-house schema accepts only that length, so
+a shorter `DATA` leaves them NULL for both readers, and floats that are not finite are NULL.
+`sound_id` and `lens_id` keep a FormID only when the winning record exists with that type (the
+in-house reader clears links that do not resolve and the legacy reader keeps them), and the legacy
+reader now remaps `LIGH` `SNAM`/`LNAM` as the in-house schema already did. The columns are
+additive and optional, with no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: `create_tables` adds
+them to an older reused `lights` table. The engine reads radius, colour and flags only.
 
 ---
 
@@ -679,6 +1048,94 @@ preserves the existing database version; it does not perform a full reconversion
 
 ---
 
+### Other Runtime and In-House Tables
+
+These tables are written by `create_tables` / the export and had no DDL here before #269. Their
+DDL below is copied from `crates/converter/src/esm/exporter.rs` and
+`crates/converter/src/esm/inhouse*.rs`; `statics` is documented with `references` (§5) by #270.
+
+```sql
+CREATE TABLE IF NOT EXISTS npcs (               -- one row per NPC_
+    id INTEGER PRIMARY KEY, editor_id TEXT,
+    full_name TEXT,                             -- FULL
+    race_id INTEGER,                            -- RNAM
+    class_id INTEGER,                           -- CNAM
+    flags INTEGER NOT NULL                      -- record header flags
+);
+CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
+
+CREATE TABLE IF NOT EXISTS movement_types (     -- MOVT 0003580D (NPC_Default_MT) only, today
+    id INTEGER PRIMARY KEY,
+    editor_id TEXT NOT NULL,                    -- written as the literal 'NPC_Default_MT'
+    left_walk REAL NOT NULL, left_run REAL NOT NULL,       -- SPED, Creation units per second
+    right_walk REAL NOT NULL, right_run REAL NOT NULL,
+    forward_walk REAL NOT NULL, forward_run REAL NOT NULL,
+    back_walk REAL NOT NULL, back_run REAL NOT NULL,
+    load_order INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS race_movement_links (  -- one row per RACE
+    id INTEGER PRIMARY KEY,
+    walk_movt_id INTEGER,                       -- WKMV
+    run_movt_id INTEGER,                        -- RNMV
+    load_order INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS movement_game_settings ( -- fMoveCharWalkBase and fJumpHeightMin only
+    id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
+    value REAL NOT NULL, load_order INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS texture_sets (       -- one row per TXST; slot roles in the preamble
+    id INTEGER PRIMARY KEY, editor_id TEXT,
+    diffuse_path TEXT,                          -- TX00
+    normal_path TEXT,                           -- TX01
+    glow_path TEXT,                             -- TX03
+    height_path TEXT,                           -- TX04
+    environment_path TEXT,                      -- TX05
+    mask_path TEXT,                             -- TX02
+    specular_path TEXT,                         -- TX07
+    detail_path TEXT                            -- TX06
+);
+CREATE TABLE IF NOT EXISTS landscape_textures ( -- one row per LTEX
+    id INTEGER PRIMARY KEY, editor_id TEXT,
+    texture_set_id INTEGER,                     -- TNAM -> TXST
+    material_type INTEGER,                      -- MNAM: the material type's FormID (MATT), not a number
+    friction REAL,                              -- HNAM byte 0
+    restitution REAL                            -- HNAM byte 1
+);
+```
+
+The in-house reader also writes these auxiliary tables (diagnostic and provenance data; the
+engine does not read them):
+
+```sql
+CREATE TABLE IF NOT EXISTS inhouse_source_records (     -- original decompressed source bytes
+    form_id INTEGER PRIMARY KEY, source_form_id INTEGER NOT NULL, load_order INTEGER NOT NULL,
+    record_type TEXT NOT NULL, flags INTEGER NOT NULL, payload BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inhouse_localized_fields (   -- every localized string field it met
+    form_id INTEGER NOT NULL, field_index INTEGER NOT NULL,
+    signature TEXT NOT NULL, field_name TEXT NOT NULL,
+    string_table TEXT NOT NULL,                         -- strings, dlstrings or ilstrings
+    string_id INTEGER NOT NULL, load_order INTEGER NOT NULL,
+    resolved_text TEXT,
+    status TEXT NOT NULL CHECK(status IN ('resolved','null_id','missing')),
+    PRIMARY KEY(form_id, field_index)
+);
+CREATE TABLE IF NOT EXISTS inhouse_terrain_source_order (
+    form_id INTEGER PRIMARY KEY, source_record_offset INTEGER NOT NULL
+);
+CREATE TABLE inhouse_terrain_layers (                   -- recreated with every complete export
+    form_id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
+    load_order INTEGER NOT NULL, layer_data BLOB NOT NULL
+);
+CREATE TABLE inhouse_unresolved_terrain_textures (      -- LAND layer textures that do not resolve
+    form_id INTEGER NOT NULL, texture_form_id INTEGER NOT NULL,
+    PRIMARY KEY(form_id, texture_form_id)
+) WITHOUT ROWID;
+```
+
+---
+
 ### 15. Interior Room Graph (`room_bounds`, `room_portals`, `room_links`, `reference_rooms`, `room_graph_stats`)
 
 Skyrim marks the rooms of an interior with `RoomMarker` references (base `0x1F`) and the
@@ -773,11 +1230,11 @@ Columns and rules:
   not exist, which only makes the engine draw more. A `contained = 1` row is never also written
   as `contained = 0`.
   Overlap rows need a base with bounds in `statics`, which holds every base type with a world
-  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, placed items and armour,
-  and `LIGH` with a model). Placed references of other base types get pivot rows only: actors
+  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `APPA`, `ADDN`,
+  `ARTO`, placed items and armour, and `LIGH` with a model; see §5). Placed references of other base types get pivot rows only: actors
   (`NPC_`, which move and stay ordinary entities), lights without a model (their reach is a
   lighting question, not geometry), decals (`TXST`), and bases with no geometry (`IDLM`, `SOUN`,
-  `ASPC`). In the all-plugins conversion these are 22,251 of 364,262 pivot rows.
+  `ASPC`). In the all-plugins conversion these were 22,251 of 364,262 pivot rows (measured before `TACT`, `APPA`, `ADDN` and `ARTO` joined `statics`).
 - **`room_graph_stats`**: the counters the conversion report shows in `integration-report.json`
   under `room_graph`: `rooms`, `portals` (portal markers written, not rows), `links`,
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
