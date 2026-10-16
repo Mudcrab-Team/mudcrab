@@ -345,6 +345,37 @@ projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
 
+#### Base object models (`statics`)
+
+`references.base_form_id` joins `statics.id`. The runtime spawns a reference only when its base
+has a `statics` row whose `model_path` it can resolve, so a base type missing from this table
+never renders.
+
+```sql
+CREATE TABLE IF NOT EXISTS statics (
+    id INTEGER PRIMARY KEY,                    -- base record FormID, load-order numbering
+    editor_id TEXT,                            -- EDID
+    model_path TEXT,                           -- MODL (ARMO: MOD2, else MOD4); NULL when absent
+    flags INTEGER NOT NULL,                    -- record header flags
+    bounds_min_x REAL NOT NULL DEFAULT -64, bounds_min_y REAL NOT NULL DEFAULT -64,
+    bounds_min_z REAL NOT NULL DEFAULT -64, bounds_max_x REAL NOT NULL DEFAULT 64,
+    bounds_max_y REAL NOT NULL DEFAULT 64, bounds_max_z REAL NOT NULL DEFAULT 64,
+    bounds_valid INTEGER NOT NULL DEFAULT 0    -- 1 once integration measured the converted GLB
+);
+```
+
+Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FURN`, `TREE`,
+`FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `WEAP`, `MISC`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`,
+`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, and `LIGH` when it has a model. `TACT`
+(talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
+added for #269; before that their references had no row and did not render. The engine still
+skips models under `effects/`, `sky/` or `markers/` and files named `*marker*`
+(`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
+models; that is render policy, not data the table lacks. They are additive
+rows, so no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: an older database keeps loading and
+simply lacks them until reconverted. Mesh conversion discovers NIF inputs independently of this
+table, so their models were already converted. Both record readers produce the same rows.
+
 ---
 
 ### 6. Hybrid Spatial Indexing (`exterior_spatial` & Interior `cell_id` Index)
@@ -773,11 +804,11 @@ Columns and rules:
   not exist, which only makes the engine draw more. A `contained = 1` row is never also written
   as `contained = 0`.
   Overlap rows need a base with bounds in `statics`, which holds every base type with a world
-  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, placed items and armour,
-  and `LIGH` with a model). Placed references of other base types get pivot rows only: actors
+  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `APPA`, `ADDN`,
+  `ARTO`, placed items and armour, and `LIGH` with a model; see §5). Placed references of other base types get pivot rows only: actors
   (`NPC_`, which move and stay ordinary entities), lights without a model (their reach is a
   lighting question, not geometry), decals (`TXST`), and bases with no geometry (`IDLM`, `SOUN`,
-  `ASPC`). In the all-plugins conversion these are 22,251 of 364,262 pivot rows.
+  `ASPC`). In the all-plugins conversion these were 22,251 of 364,262 pivot rows (measured before `TACT`, `APPA`, `ADDN` and `ARTO` joined `statics`).
 - **`room_graph_stats`**: the counters the conversion report shows in `integration-report.json`
   under `room_graph`: `rooms`, `portals` (portal markers written, not rows), `links`,
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several

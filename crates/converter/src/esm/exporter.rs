@@ -707,8 +707,12 @@ fn export_records(
             // Records without MODL (triggers, markers) store NULL and are
             // skipped at spawn time. `LIGH` is handled above: the light goes
             // in `lights` and only a light with geometry lands in `statics`.
-            "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "WEAP"
-            | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL" | "ARMO" => {
+            // `TACT` (talking activators), `ADDN` (addon nodes), `APPA`
+            // (apparatus) and `ARTO` (art objects) are placeable `REFR` bases
+            // with a model too (`REFR.NAME` targets in xEdit's TES5 definitions).
+            "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "TACT"
+            | "WEAP" | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
+            | "ARMO" | "APPA" | "ADDN" | "ARTO" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
                 // gendered world-model slots (male first, female fallback).
