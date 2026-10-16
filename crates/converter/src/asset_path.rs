@@ -328,21 +328,11 @@ mod tests {
                 .starts_with(modded)
         );
 
-        let collision = base.join("Landscape/ROCK.dds");
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&collision)
-        {
-            Ok(_) => {
-                fs::write(collision, b"collision").unwrap();
-                assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_ok());
-            }
-            Err(error) => panic!("create case-collision fixture: {error}"),
-        }
+        // Distinct paths that normalize to the same key also work on case-insensitive disks.
+        fs::create_dir_all(base.join("textures/landscape")).unwrap();
+        fs::write(base.join("textures/landscape/ROCK.dds"), b"collision").unwrap();
+        let error = AssetSourceIndex::build(&[base], AssetKind::Texture).unwrap_err();
+        assert!(error.to_string().contains("normalized asset collision"));
     }
 
     #[test]

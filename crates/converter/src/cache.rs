@@ -231,12 +231,15 @@ pub struct ConversionManifest {
 /// Historical producers whose scripts may pass normal reuse eligibility.
 /// Script ABI/settings, source and output proofs still have to match. Archive
 /// extraction uses its own source/blob integrity proof, independent of this gate.
+/// Schema 25 is excluded: two unmerged candidates both used it for different contracts.
 pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
-    matches!(schema, 12..=24)
+    matches!(schema, 12..=24 | 26)
 }
 
-/// Published producer-24 meshes retain the producer-26 byte contract. This never
-/// authorizes texture reuse or bypasses source/configuration/output proof.
+/// Published producer-24 meshes retain the producer-26 byte contract. Producer 27
+/// changes the GLB collision data, so no earlier producer's meshes pass this gate
+/// at 27. This never authorizes texture reuse or bypasses source/configuration/
+/// output proof.
 pub(crate) fn can_reuse_meshes(schema: u32) -> bool {
     can_reuse_meshes_for_producer(schema, CONVERTER_SCHEMA_VERSION)
 }
@@ -277,8 +280,9 @@ impl ConversionManifest {
             let compatible_meshes = can_reuse_meshes(mesh_schema)
                 && mesh_schema <= manifest.schema_version
                 && (manifest.retained_mesh_schema_version.is_some() || !metadata_rebuild);
-            // All old textures regenerate. Proven producer-24 GLBs and scripts
-            // remain candidates for the usual per-asset verification.
+            // All old textures regenerate. GLBs of a producer `can_reuse_meshes`
+            // accepts (none for an earlier producer at 27) and scripts remain
+            // candidates for the usual per-asset verification.
             manifest.complete = false;
             manifest.entries.retain(|_, entry| {
                 let output = entry.output.to_ascii_lowercase();
@@ -836,7 +840,7 @@ mod tests {
         for name in ["old.glb", "old.ktx2"] {
             let path = directory.path().join(name);
             fs::write(&path, b"verified old bytes").unwrap();
-            for schema_version in [17, 18, 19, 20, 21, 22, 23, 24, 25] {
+            for schema_version in [17, 18, 19, 20, 21, 22, 23, 24, 25, 26] {
                 let record = StagedOutput {
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
@@ -1095,7 +1099,7 @@ mod tests {
             output_hash: hash_file(&path).unwrap(),
         };
         assert!(record.is_current(&path, "source", "config"));
-        for schema_version in [16, 17, 18, 19, 20, 21, 22, 23, 24, 25] {
+        for schema_version in [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26] {
             let stale = StagedOutput {
                 schema_version,
                 ..record.clone()
@@ -1106,7 +1110,7 @@ mod tests {
 
     #[test]
     fn recent_schema_migrations_reuse_only_unchanged_asset_kinds() {
-        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
+        for schema_version in [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
             let mut manifest = ConversionManifest {
@@ -1137,14 +1141,18 @@ mod tests {
         }
     }
 
-    /// Compatible published meshes keep original provenance; texture migration
-    /// still applies to metadata-only packs and impossible retained identities.
+    /// Producer 27 changed the GLB collision data, so no earlier producer's meshes
+    /// (including the producer-24 and producer-26 contract) are reusable. Provenance
+    /// is still kept as recorded, scripts stay reusable, and textures never are.
     #[test]
-    fn database_only_migration_preserves_compatible_mesh_provenance() {
+    fn database_only_migration_discards_meshes_of_earlier_producers() {
         for (producer, retained, compatible) in [
-            (24, None, true),
-            (CONVERTER_SCHEMA_VERSION, Some(24), true),
+            (24, None, false),
+            (26, None, false),
+            (CONVERTER_SCHEMA_VERSION, Some(24), false),
+            (CONVERTER_SCHEMA_VERSION, Some(26), false),
             (24, Some(CONVERTER_SCHEMA_VERSION), false),
+            (26, Some(CONVERTER_SCHEMA_VERSION), false),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("conversion-manifest.json");
@@ -1195,6 +1203,9 @@ mod tests {
             21,
             22,
             23,
+            24,
+            25,
+            26,
             CONVERTER_SCHEMA_VERSION + 1,
         ] {
             let directory = tempfile::tempdir().unwrap();

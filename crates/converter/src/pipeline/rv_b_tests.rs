@@ -822,7 +822,7 @@ async fn unknown_retained_script_producer_does_not_gain_current_metadata_eligibi
         "the test isolates original producer policy"
     );
 
-    // Producer 25 is outside the existing known script set12..24/current26 but
+    // Producer 25 is outside the existing known script set 12..24 and 26 (current 27) but
     // below the metadata stamp, so rejecting producer>metadata cannot hide a
     // mistaken decision based only on the metadata producer. Preserve any new
     // kind map; its script ABI proof deliberately still matches.

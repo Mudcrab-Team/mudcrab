@@ -88,22 +88,24 @@ content hashes of inputs, rule set, settings, and compiler version
 publish only after every referenced payload validates. The `lod` reshape
 ships with a world DB version bump.
 
-The combined implementation uses converter schema 26 and world schema 9. World schema 5
-belongs to grass data; LOD tables were introduced in schema 6. Verified current and
-explicitly compatible producer-24 meshes may be reused during normal conversion;
-producer 26 combines corrected TXST columns, texture semantics and one-byte XESP flags, leaving GLBs unchanged.
+The combined implementation uses converter schema 27 and world schema 9. World schema 5
+belongs to grass data; LOD tables were introduced in schema 6. Only verified current
+producer 27 meshes may be reused during normal conversion. Producer 26 combined corrected TXST
+columns, texture semantics and one-byte XESP flags and left GLBs unchanged from the compatible
+producer 24; producer 27 adds collision shapes and layers to the GLB collision data, so no earlier
+producer's meshes remain reusable.
 Producer 23 was shared by
 the source-surface exporter before and after rigid-body dynamics changed the GLB payload;
-its number cannot prove the current mesh contract. All earlier producers through 23
+its number cannot prove the current mesh contract. All earlier producers (12–24 and 26)
 regenerate GLBs and textures, retaining only verified scripts/archive ingestion.
 Numeric ordering grants no reuse. Separate #194/#196 candidates both used 25/8
 for different contracts; the combined producer allocates 26/9 and rejects those
 ambiguous candidate identities for asset or metadata reuse.
 Configuration proof includes encoder selection and GPU quality, while batch size only
 changes scheduling. Metadata-only retained bytes preserve explicit original producer,
-configuration, manifest and output hashes; their retained textures are not certified as
-current-producer bytes. A subsequent normal conversion regenerates every producer-24
-texture while preserving proven compatible GLBs.
+configuration, manifest and output hashes; their retained textures and meshes are not certified as
+current-producer bytes. A subsequent normal conversion regenerates every earlier-producer
+texture and GLB.
 Grass-only schema-5 worlds remain readable without LOD tables.
 
 When combining these branches, resolve the cache and metadata gates deliberately:
@@ -142,7 +144,7 @@ settings cannot survive in staged metadata or payloads.
 - LOD-V3: resumed output after an origin change equals a clean build's chunk
   keys/hashes; removing the winning sidecar removes old chunks, R-tree rows,
   payloads, and manifest. Full-detail conversion remains usable.
-- LOD-V4: `--reuse-assets DIR` requires complete source producer 15, 16, 19 through 24 or 26;
+- LOD-V4: `--reuse-assets DIR` requires complete source producer 15, 16, 19 through 24, 26 or 27;
   retained bytes match manifest hashes; source DB plugin order/checksums
   match originals before rebuild. New disjoint output only; source unchanged.
   Retained meshes/textures/scripts reflect source package, not later Data
@@ -163,7 +165,8 @@ settings cannot survive in staged metadata or payloads.
 - LOD-V7: metadata-only migration preserves the original mesh cache contract
   in `retained_mesh_schema_version`, including repeated rebuilds. Normal
   conversion regenerates incompatible retained GLBs and all old textures;
-  proven producer-24 GLBs and unchanged scripts remain reuse candidates. Runtime metadata schema is independent.
+  unchanged scripts remain reuse candidates (no earlier producer's GLBs, since producer 27 changed
+  the GLB collision data). Runtime metadata schema is independent.
   Preserve the exact source manifest beside the derived provenance report;
   rebuilding metadata does not assert a newer asset producer.
   Markerless metadata-only sources cannot become GLB cache hits and are
@@ -172,8 +175,8 @@ settings cannot survive in staged metadata or payloads.
   Preserve `retained_asset_configuration_hash` independently of rebuilt
   metadata settings. Explicit reuse accepts the historical schema-15 fixed-Zstd-6 configuration or native schema-16 projection
   with fixed `texture_zstd_level=6` only when every other setting matches;
-  normal conversion regenerates schema-12–23 meshes; compatible producer-24
-  meshes still require matching source, bytes and configuration. Equal schema
+  normal conversion regenerates schema-12–24 and schema-26 meshes (producer-24 meshes were
+  compatible with producer 26 only). Equal schema
   numbers do not establish equal producer contracts. Repeated rebuilds keep
   the original retained configuration hash and verify it again. Missing
   producer configuration in metadata-only output rejects metadata reuse and
