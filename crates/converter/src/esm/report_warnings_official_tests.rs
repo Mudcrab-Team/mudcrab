@@ -74,6 +74,7 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         &database_path,
         RecordReader::Legacy,
         &data,
+        crate::config::DEFAULT_LANGUAGE,
         None,
     )
     .unwrap();

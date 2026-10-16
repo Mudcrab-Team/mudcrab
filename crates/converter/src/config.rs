@@ -91,6 +91,17 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub texture_encoder: TextureEncoder,
     pub script_abi_version: u32,
+    /// Language of the string tables localized plugins' names are read from, as in Skyrim's
+    /// `sLanguage`: `Strings/<plugin>_<language>.STRINGS`.
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+/// The language Skyrim's own `sLanguage` defaults to.
+pub const DEFAULT_LANGUAGE: &str = "english";
+
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_owned()
 }
 
 fn default_texture_zstd_level() -> i32 {
@@ -147,6 +158,7 @@ impl PipelineConfig {
             texture_zstd_level: default_texture_zstd_level(),
             texture_encoder: TextureEncoder::Cpu,
             script_abi_version: 1,
+            language: default_language(),
         }
     }
 
@@ -195,6 +207,15 @@ impl PipelineConfig {
         color_eyre::eyre::ensure!(
             (0..=22).contains(&self.texture_zstd_level),
             "texture_zstd_level must be between 0 and 22"
+        );
+        // Part of a file name: `Strings/<plugin>_<language>.STRINGS`.
+        color_eyre::eyre::ensure!(
+            !self.language.is_empty()
+                && self
+                    .language
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_'),
+            "language must be a name such as english, made of letters, digits and underscores"
         );
         // Compared as resolved folders, not as spelled: the output is replaced
         // on publish, staging is deleted after it, and the cache is pruned, so
@@ -429,6 +450,26 @@ fn parent_or_cwd(path: &Path) -> &Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A language is part of a string table's file name, so only letters, digits and underscores
+    /// are accepted.
+    #[test]
+    fn language_must_be_usable_in_a_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(&data, dir.path().join("pack"));
+        assert_eq!(config.language, "english");
+        for language in ["german", "chinese_traditional"] {
+            config.language = language.into();
+            config.validate().unwrap();
+        }
+        for language in ["", "../english", "en glish", "english.strings"] {
+            config.language = language.into();
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("language must be"), "{language:?}: {error}");
+        }
+    }
 
     /// New and older unstamped configurations use in-house while explicit legacy stays selected.
     #[test]

@@ -43,6 +43,8 @@ struct Cli {
     verify_cache: bool,
     no_lod: bool,
     verbose: bool,
+    /// Overrides the default string-table language.
+    language: Option<String>,
 }
 
 impl Cli {
@@ -61,6 +63,9 @@ impl Cli {
         config.verify_cache = self.verify_cache;
         config.no_lod = self.no_lod;
         config.texture_encoder = self.texture_encoder;
+        if let Some(language) = &self.language {
+            config.language = language.clone();
+        }
         if let Some(value) = self.texture_fallback_quality {
             config.texture_fallback_quality = value;
         }
@@ -552,6 +557,10 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     for path in &cli.schema_addons {
         command.push_str(&format!(" --schema-addon \"{}\"", path.display()));
     }
+    // The database is rebuilt on resume; it must read the same string tables.
+    if let Some(language) = &cli.language {
+        command.push_str(&format!(" --language {language}"));
+    }
     command
 }
 
@@ -804,6 +813,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut verify_cache = true;
     let mut no_lod = false;
     let mut verbose = false;
+    let mut language = None;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.to_str() {
@@ -897,6 +907,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
             Some("--no-lod") => no_lod = true,
+            Some("--language") => {
+                let value = next_value(&mut args, "--language")?;
+                language =
+                    Some(value.into_string().map_err(|_| {
+                        color_eyre::eyre::eyre!("--language value is not valid UTF-8")
+                    })?);
+            }
             Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
@@ -978,6 +995,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         verify_cache,
         no_lod,
         verbose,
+        language,
     })
 }
 
@@ -1038,7 +1056,7 @@ fn usage() -> &'static str {
                  [--texture-zstd-level 0..22]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
-                 [--record-reader legacy|inhouse]
+                 [--record-reader legacy|inhouse] [--language NAME]
                  [--schema-addon JSON]
                  [--mo2-instance DIR] [--mo2-profile NAME]
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
@@ -1096,6 +1114,9 @@ cannot be combined with --record-reader legacy.
 
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
+
+--language selects the string tables that localized plugins' names are read from,
+Strings/<plugin>_<language>.STRINGS, as Skyrim's sLanguage does. Default: english.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -1777,6 +1798,7 @@ mod tests {
             verify_cache: true,
             no_lod: false,
             verbose: false,
+            language: None,
         };
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
@@ -1815,6 +1837,10 @@ mod tests {
             .is_err()
         );
         assert!(parse_cli(vec!["Data".into(), "--record-reader".into()]).is_err());
+        let german = parse_cli(vec!["Data".into(), "--language".into(), "german".into()]).unwrap();
+        assert_eq!(german.language.as_deref(), Some("german"));
+        assert_eq!(german.pipeline_config().language, "german");
+        assert!(resume_command("converter", &german, staging).ends_with(" --language german"));
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {

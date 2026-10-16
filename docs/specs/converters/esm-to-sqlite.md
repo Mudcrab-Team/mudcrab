@@ -12,7 +12,7 @@ decompressed payload is separately preserved in the auxiliary
 `inhouse_source_records` table; its embedded FormIDs remain file-relative. Unknown types are
 opaque source records, not a claim of typed schema coverage. See
 [the pipeline specification](pipeline.md) for producer identity, diagnostics and
-English localized-name resolution.
+localized-name resolution in the selected `--language`.
 
 In-house output also retains localized occurrence IDs and lookup status in
 `inhouse_localized_fields`, winning LAND physical order in

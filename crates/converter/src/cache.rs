@@ -334,10 +334,7 @@ pub fn configuration_hash_for_schema(
     schema: u32,
 ) -> Result<String> {
     let identity = if config.record_reader == crate::config::RecordReader::Inhouse {
-        Some(crate::esm::inhouse::reader_identity_with_schemas(
-            config.record_reader,
-            config.schemas()?.as_ref(),
-        ))
+        Some(crate::esm::inhouse::configured_reader_identity(config)?)
     } else {
         None
     };
@@ -349,10 +346,7 @@ pub(crate) fn current_configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
 ) -> Result<String> {
-    let identity = crate::esm::inhouse::reader_identity_with_schemas(
-        config.record_reader,
-        config.schemas()?.as_ref(),
-    );
+    let identity = crate::esm::inhouse::configured_reader_identity(config)?;
     configuration_hash_with_identity(config, schema, Some(&identity))
 }
 
@@ -647,10 +641,7 @@ pub(crate) fn retained_configuration_matches_for_reader(
     {
         return Ok(recorded == legacy_projection_v2_configuration_hash(config, schema)?);
     }
-    let current = crate::esm::inhouse::reader_identity_with_schemas(
-        config.record_reader,
-        config.schemas()?.as_ref(),
-    );
+    let current = crate::esm::inhouse::configured_reader_identity(config)?;
     if identity == &current {
         return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
     }

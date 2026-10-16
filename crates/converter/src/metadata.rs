@@ -277,8 +277,17 @@ fn settings_for_source_reader(
     schemas: RuntimeSchemas,
 ) -> Result<PipelineConfig> {
     let reader: crate::config::RecordReader = serde_json::from_value(identity["mode"].clone())?;
+    // A pack's string-table language changes its database text, never its asset bytes, so a
+    // pack read in any language proves its assets; the proof is checked in that language.
+    let language = identity["language"]
+        .as_str()
+        .unwrap_or(crate::config::DEFAULT_LANGUAGE)
+        .to_owned();
     ensure!(
-        identity == &crate::esm::inhouse::reader_identity_with_schemas(reader, &schemas)
+        identity
+            == &crate::esm::inhouse::reader_identity_with_schemas_in_language(
+                reader, &schemas, &language
+            )
             || (reader == crate::config::RecordReader::Inhouse
                 && [
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
@@ -297,6 +306,7 @@ fn settings_for_source_reader(
     );
     let mut settings = config.clone();
     settings.record_reader = reader;
+    settings.language = language;
     settings.schema_addons.clear();
     settings.runtime_schemas = Some(Arc::new(schemas));
     Ok(settings)
@@ -396,10 +406,7 @@ async fn rebuild_into(
     let (retained, replay_verified_pruned_assets) =
         copy_verified_assets(source, staging, manifest)?;
     let provenance = MetadataProvenance {
-        record_reader: crate::esm::inhouse::reader_identity_with_schemas(
-            config.record_reader,
-            config.schemas()?.as_ref(),
-        ),
+        record_reader: crate::esm::inhouse::configured_reader_identity(config)?,
         retained_asset_record_reader: retained_reader.clone(),
         retained_asset_schema_json: retained_schemas.addon_bytes().map(<[u8]>::to_vec).collect(),
         source_converter_schema: manifest.schema_version,
@@ -500,7 +507,7 @@ async fn rebuild_into(
     .await;
     let database = staging.join("skyrim_world.db");
     if config.record_reader == crate::config::RecordReader::Inhouse {
-        let strings = crate::esm::inhouse::localized_string_paths(plugins);
+        let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
         for archive in &archives {
             // Strings are metadata inputs; decode only the selected plugin tables.
             if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
@@ -516,6 +523,7 @@ async fn rebuild_into(
         &database,
         config.record_reader,
         &vfs,
+        &config.language,
         Some(config.schemas()?.as_ref()),
     )?;
     // This fresh read owns record completeness independently of the retained assets.
@@ -529,11 +537,7 @@ async fn rebuild_into(
     } else {
         write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
     }
-    crate::esm::inhouse::write_reader_identity_with_schemas(
-        staging,
-        config.record_reader,
-        config.schemas()?.as_ref(),
-    )?;
+    crate::esm::inhouse::write_configured_reader_identity(staging, config)?;
     report.artifacts.push(PathBuf::from("record-reader.json"));
     if config.record_reader == crate::config::RecordReader::Inhouse {
         report
@@ -950,6 +954,29 @@ mod metadata_schema_controls {
 
     const ORIGINAL: &[u8] = br#"{"version":1,"name":"original_source","records":[{"signature":"ZMEX","source":"synthetic metadata fixture","fields":[{"signature":"SCAL","name":"value","kind":"u32"}]}]}"#;
     const REQUESTED: &[u8] = br#"{"version":1,"name":"requested_output","records":[{"signature":"ZMEX","source":"synthetic metadata fixture","fields":[{"signature":"SCAL","name":"value","kind":"i32"}]}]}"#;
+
+    /// A pack read in another language proves its assets in that language: the language
+    /// changes database text, never asset bytes.
+    #[test]
+    fn source_settings_accept_a_pack_read_in_another_language() {
+        let schemas = || RuntimeSchemas::from_addon_bytes(&[]).unwrap();
+        let identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+            RecordReader::Inhouse,
+            &schemas(),
+            "german",
+        );
+        let mut config = PipelineConfig::new("Data", "output");
+        config.record_reader = RecordReader::Inhouse;
+        let settings = settings_for_source_reader(&config, &identity, schemas()).unwrap();
+        assert_eq!(settings.language, "german");
+        assert_eq!(
+            crate::esm::inhouse::configured_reader_identity(&settings).unwrap(),
+            identity
+        );
+        let mut altered = identity.clone();
+        altered["string_table_encoding"] = serde_json::json!("windows-1252");
+        assert!(settings_for_source_reader(&config, &altered, schemas()).is_err());
+    }
 
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]

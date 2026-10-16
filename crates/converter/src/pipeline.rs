@@ -777,13 +777,17 @@ impl AssetPipeline {
                 fs::remove_file(&db_path)?;
             }
             let strings_root = staging.join("vfs");
-            let string_sources = if config.mo2.is_some() {
-                crate::esm::inhouse::StringSources::EffectiveData {
+            let string_roots = if config.mo2.is_some() {
+                crate::esm::inhouse::StringRoots::EffectiveData {
                     archive_root: &strings_root,
                     loose_files: &resolved_files,
                 }
             } else {
-                crate::esm::inhouse::StringSources::PluginLooseFirst(&strings_root)
+                crate::esm::inhouse::StringRoots::PluginLooseFirst(&strings_root)
+            };
+            let string_sources = crate::esm::inhouse::StringSources {
+                roots: string_roots,
+                language: &config.language,
             };
             let conversion =
                 EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
@@ -803,11 +807,7 @@ impl AssetPipeline {
             } else {
                 write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
             }
-            crate::esm::inhouse::write_reader_identity_with_schemas(
-                staging,
-                config.record_reader,
-                config.schemas()?.as_ref(),
-            )?;
+            crate::esm::inhouse::write_configured_reader_identity(staging, config)?;
             if config.record_reader == crate::config::RecordReader::Inhouse {
                 report
                     .artifacts
