@@ -209,6 +209,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             SkyPlugin,
             ConsolePlugin,
             crate::nif_material::NifMaterialPlugin,
+            crate::emittance::EmittancePlugin,
         ))
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
@@ -514,10 +515,13 @@ impl StreamingFixtureDirectory {
     fn populate(&self, worldspace_id: u32, start_grid: (i32, i32)) -> Result<()> {
         let database_path = self.path.join("skyrim_world.db");
         let connection = Connection::open(&database_path)?;
+        connection.execute("CREATE TABLE schema_info(version INTEGER NOT NULL)", [])?;
+        connection.execute(
+            "INSERT INTO schema_info VALUES(?1)",
+            [shared::WORLD_DATABASE_SCHEMA_VERSION],
+        )?;
         connection.execute_batch(
-            r#"CREATE TABLE schema_info(version INTEGER NOT NULL);
-            INSERT INTO schema_info VALUES(7);
-            CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
+            r#"CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
             CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);
             CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
             CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);

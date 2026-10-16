@@ -51,6 +51,11 @@ pub struct ReferenceRow {
     /// The reference's own light radius (`XRDS`), which wins over [`LightRow::radius`]. `None` when
     /// the reference carries no override, and in a database converted before the column existed.
     pub light_radius_override: Option<f32>,
+    /// The 8-bit sRGB colour the reference's `XEMI` light or region lends its model's
+    /// `External_Emittance` surfaces by day, the engine's one time of day (see `sky.rs`). `None`
+    /// when the reference names no source the converter could resolve, and in a database
+    /// converted before the `emittance` table existed.
+    pub emittance: Option<[u8; 3]>,
 }
 
 /// A `lights` row as the converted database stores it
@@ -768,6 +773,12 @@ const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 /// each reference lighting the space at its own radius.
 const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
 
+/// The day colour of the reference's `XEMI` source (`docs/specs/converters/db-schema.md`). The
+/// `emittance` table and `references.emittance_id` are optional: an older database has neither.
+const EMITTANCE_COLUMNS: &str = "e.day_r,e.day_g,e.day_b";
+const ABSENT_EMITTANCE_COLUMNS: &str = "NULL,NULL,NULL";
+const EMITTANCE_JOIN: &str = " LEFT JOIN emittance e ON e.id=r.emittance_id";
+
 fn has_records(connection: &Connection) -> Result<bool> {
     let count: i64 = connection
         .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'")?
@@ -796,9 +807,20 @@ fn has_radius_override(connection: &Connection) -> Result<bool> {
     Ok(count > 0)
 }
 
-/// The reference query's column list and joins for one database: the `lights` table and the
-/// `radius_override` column are joined when the database has them and read as `NULL` when it does
-/// not, so [`map_reference`]'s column indices are the same either way.
+/// Whether the database carries both `references.emittance_id` and the `emittance` table it names.
+fn has_emittance(connection: &Connection) -> Result<bool> {
+    let count: i64 = connection
+        .prepare_cached(
+            "SELECT (SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='emittance_id')
+                  * (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='emittance')",
+        )?
+        .query_row([], |row| row.get(0))?;
+    Ok(count > 0)
+}
+
+/// The reference query's column list and joins for one database: the `lights` and `emittance`
+/// tables and the `radius_override` column are joined when the database has them and read as
+/// `NULL` when it does not, so [`map_reference`]'s column indices are the same either way.
 struct ReferenceQuery {
     columns: String,
     joins: String,
@@ -819,6 +841,12 @@ impl ReferenceQuery {
         } else {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
+        let has_emittance = has_emittance(connection)?;
+        let emittance_columns = if has_emittance {
+            EMITTANCE_COLUMNS
+        } else {
+            ABSENT_EMITTANCE_COLUMNS
+        };
         let mut joins = String::from(REFERENCE_JOIN);
         if has_records {
             joins.push_str(" LEFT JOIN records b ON b.form_id=r.base_form_id");
@@ -826,9 +854,12 @@ impl ReferenceQuery {
         if has_lights {
             joins.push_str(LIGHT_JOIN);
         }
+        if has_emittance {
+            joins.push_str(EMITTANCE_JOIN);
+        }
         Ok(Self {
             columns: format!(
-                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column}"
+                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},{emittance_columns}"
             ),
             joins,
         })
@@ -901,6 +932,10 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         }),
         None => None,
     };
+    let emittance = match row.get::<_, Option<u8>>(25)? {
+        Some(red) => Some([red, row.get(26)?, row.get(27)?]),
+        None => None,
+    };
     Ok(ReferenceRow {
         form_id: row.get(0)?,
         cell_id: row.get(1)?,
@@ -915,6 +950,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         bounds_valid: row.get(17)?,
         light,
         light_radius_override: row.get(24)?,
+        emittance,
     })
 }
 
@@ -1169,12 +1205,16 @@ mod tests {
         }
         Connection::open(&database)
             .unwrap()
-            .execute("UPDATE schema_info SET version=7", [])
+            .execute(
+                "UPDATE schema_info SET version=?1",
+                [shared::WORLD_DATABASE_SCHEMA_VERSION],
+            )
             .unwrap();
         std::fs::write(
             directory.path().join("lod-manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "build_identity": identity, "converter_schema": 24, "world_database_schema": 7,
+                "build_identity": identity, "converter_schema": 24,
+                "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
                 "chunks": 1, "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
             }))
             .unwrap(),
@@ -1908,6 +1948,72 @@ mod tests {
         assert_eq!(lit.light_radius_override, None);
     }
 
+    /// Reference 30 names a region the converter resolved; reference 40 names one it could not.
+    fn emittance_fixture(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"INSERT INTO statics(id,model_path,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(22,'clutter/barrel.nif',-2,-3,-4,2,3,4,1);
+                INSERT INTO "references" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
+                INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);
+                ALTER TABLE "references" ADD COLUMN emittance_id INTEGER;
+                UPDATE "references" SET emittance_id=535419 WHERE id=30;
+                UPDATE "references" SET emittance_id=535420 WHERE id=40;
+                CREATE TABLE emittance(id INTEGER PRIMARY KEY,source_type TEXT NOT NULL,weather_id INTEGER,
+                    sunrise_r INTEGER NOT NULL,sunrise_g INTEGER NOT NULL,sunrise_b INTEGER NOT NULL,
+                    day_r INTEGER NOT NULL,day_g INTEGER NOT NULL,day_b INTEGER NOT NULL,
+                    sunset_r INTEGER NOT NULL,sunset_g INTEGER NOT NULL,sunset_b INTEGER NOT NULL,
+                    night_r INTEGER NOT NULL,night_g INTEGER NOT NULL,night_b INTEGER NOT NULL);
+                INSERT INTO emittance VALUES(535419,'REGN',535418,124,70,16,12,34,56,243,118,54,242,176,55);"#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn returns_the_day_colour_of_a_reference_emittance_source() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        emittance_fixture(&connection);
+        assert!(has_emittance(&connection).unwrap());
+
+        let payload = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        let emittance = |form_id: u32| {
+            payload
+                .references
+                .iter()
+                .find(|reference| reference.form_id == form_id)
+                .expect("the reference is in the cell")
+                .emittance
+        };
+        assert_eq!(emittance(30), Some([12, 34, 56]), "the day column only");
+        assert_eq!(
+            emittance(40),
+            None,
+            "a source without an emittance row lends nothing"
+        );
+    }
+
+    /// The column alone, without the table it names, does not make the query join it.
+    #[test]
+    fn needs_both_the_emittance_column_and_table() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(r#"ALTER TABLE "references" ADD COLUMN emittance_id INTEGER;"#)
+            .unwrap();
+        assert!(!has_emittance(&connection).unwrap());
+        let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert_eq!(payload.references[0].emittance, None);
+    }
+
     #[test]
     fn loads_a_database_whose_references_are_all_unlit() {
         let connection = Connection::open_in_memory().unwrap();
@@ -1929,6 +2035,14 @@ mod tests {
         assert!(payload.references.iter().all(
             |reference| reference.light.is_none() && reference.light_radius_override.is_none()
         ));
+        assert!(!has_emittance(&connection).unwrap());
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.emittance.is_none()),
+            "a database without the emittance table lends no emittance"
+        );
         assert_eq!(
             payload.references[0].model_path.as_deref(),
             Some("architecture/wall.nif"),
