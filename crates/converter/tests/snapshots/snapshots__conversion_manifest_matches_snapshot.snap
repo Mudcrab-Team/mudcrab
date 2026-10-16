@@ -90,31 +90,31 @@ expression: manifest
     "textures/generated_color.dds": {
       "output": "textures/generated_color.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 3169,
+      "output_size": 3099,
       "source_hash": "[source_hash]"
     },
     "textures/generated_color_x8.dds": {
       "output": "textures/generated_color_x8.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 1753,
+      "output_size": 1714,
       "source_hash": "[source_hash]"
     },
     "textures/generated_cube.dds": {
       "output": "textures/generated_cube.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 4537,
+      "output_size": 4498,
       "source_hash": "[source_hash]"
     },
     "textures/generated_normal.dds": {
       "output": "textures/generated_normal.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 5913,
+      "output_size": 5859,
       "source_hash": "[source_hash]"
     },
     "textures/generated_volume.dds": {
       "output": "textures/generated_volume.ktx2",
       "output_hash": "[output_hash]",
-      "output_size": 2689,
+      "output_size": 2649,
       "source_hash": "[source_hash]"
     }
   },
