@@ -73,7 +73,7 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
 
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
-    build_static_shape(shape, colors, &[])
+    build_static_shape(shape, colors, &[], None)
 }
 
 /// Like [`static_shape`], plus one collision body per entry. Each body hangs off its own
@@ -83,15 +83,34 @@ pub fn static_shape_with_bodies(
     shape: &StaticShape<'_>,
     bodies: &[BoxBody<'_>],
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies)
+    build_static_shape(shape, &[], bodies, None)
+}
+
+/// Like [`static_shape_with_bodies`], but the body nodes hang off a `BSMultiBoundNode` named
+/// `multibound_name` (a child of the root, written after the shape), the way Skyrim's pine trees
+/// put `TrunkBone` below their `"FadeNode Anim"` multibound node. The converter's glTF node
+/// order is root, shape, the multibound node, then the body nodes in order.
+pub fn static_shape_with_bodies_under_multibound(
+    shape: &StaticShape<'_>,
+    multibound_name: &str,
+    bodies: &[BoxBody<'_>],
+) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], bodies, Some(multibound_name))
 }
 
 fn build_static_shape(
     shape: &StaticShape<'_>,
     colors: &[[u8; 4]],
     bodies: &[BoxBody<'_>],
+    multibound_name: Option<&str>,
 ) -> Result<Vec<u8>> {
     validate(shape)?;
+    if let Some(name) = multibound_name {
+        ensure!(
+            !name.is_empty() && name.bytes().all(|byte| (0x20..0x7f).contains(&byte)),
+            "NIF multibound node name must be printable ASCII"
+        );
+    }
     ensure!(
         colors.is_empty() || colors.len() == shape.positions.len(),
         "vertex color count mismatch"
@@ -101,9 +120,17 @@ fn build_static_shape(
     }
     let mut strings = vec![shape.name];
     strings.extend(bodies.iter().map(|body| body.node_name));
-    let first_body_block = 4_u32;
+    // The multibound node, when there is one, is block 4 and pushes the bodies back by one.
+    let first_body_block = if multibound_name.is_some() { 5_u32 } else { 4 };
+    let body_nodes: Vec<u32> = (0..bodies.len())
+        .map(|i| first_body_block + 4 * i as u32)
+        .collect();
     let mut children = vec![1_u32];
-    children.extend((0..bodies.len()).map(|i| first_body_block + 4 * i as u32));
+    if multibound_name.is_some() {
+        children.push(4);
+    } else {
+        children.extend(&body_nodes);
+    }
     let mut blocks = vec![
         fade_node(&children),
         triangle_shape(shape, colors)?,
@@ -116,6 +143,13 @@ fn build_static_shape(
         "BSLightingShaderProperty",
         "BSShaderTextureSet",
     ];
+    if let Some(name) = multibound_name {
+        let name_index =
+            u32::try_from(strings.len()).map_err(|_| eyre!("NIF string count overflow"))?;
+        strings.push(name);
+        blocks.push(multibound_node(name_index, &body_nodes));
+        block_types.push("BSMultiBoundNode");
+    }
     for (index, body) in bodies.iter().enumerate() {
         let node_block = first_body_block + 4 * index as u32;
         let mut node = Vec::new();
@@ -268,6 +302,21 @@ fn fade_node(children: &[u32]) -> Vec<u8> {
         push_u32(&mut block, *child);
     }
     push_u32(&mut block, 0);
+    block
+}
+
+/// `BSMultiBoundNode`: the `NiNode` fields, then a null `BSMultiBound` reference and the
+/// Skyrim culling mode.
+fn multibound_node(name: u32, children: &[u32]) -> Vec<u8> {
+    let mut block = Vec::with_capacity(92 + 4 * children.len());
+    push_av_object(&mut block, name);
+    push_u32(&mut block, children.len() as u32);
+    for child in children {
+        push_u32(&mut block, *child);
+    }
+    push_u32(&mut block, 0); // effects
+    push_u32(&mut block, NULL_REF); // multi bound
+    push_u32(&mut block, 0); // culling mode
     block
 }
 

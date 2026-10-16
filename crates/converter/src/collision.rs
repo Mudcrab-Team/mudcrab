@@ -178,20 +178,24 @@ fn classify(motion_system: u8, quality_type: u8, mass: f32) -> BodyKind {
 }
 
 /// glTF node index the exporter gives a NIF block: the static scene writes one node per
-/// `NiNode`, `BSFadeNode` and geometry block, in block order. The converter re-checks this
-/// against the model it exported (`mesh.rs`).
+/// `NiNode`, `BSFadeNode`, `BSMultiBoundNode` and geometry block, in block order (the
+/// vendored `populate_static_scene`). The converter re-checks this against the model it
+/// exported (`mesh.rs`).
+///
+/// `BSMultiBoundNode` must be counted: Skyrim's pine trees put `TrunkBone` below a
+/// `BSMultiBoundNode` ("FadeNode Anim"), and leaving it out predicted an index one short,
+/// so the trunk's body was rejected (Mudcrab #218).
 fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
     fn exported(block: &NifBlock) -> bool {
-        matches!(
-            block,
-            NifBlock::NiNode(_)
-                | NifBlock::BSFadeNode(_)
-                | NifBlock::BSTriShape(_)
-                | NifBlock::BSDynamicTriShape(_)
-                | NifBlock::BSSubIndexTriShape(_)
-                | NifBlock::BSLODTriShape(_)
-                | NifBlock::NiTriShape(_)
-        )
+        is_exported_node(block)
+            || matches!(
+                block,
+                NifBlock::BSTriShape(_)
+                    | NifBlock::BSDynamicTriShape(_)
+                    | NifBlock::BSSubIndexTriShape(_)
+                    | NifBlock::BSLODTriShape(_)
+                    | NifBlock::NiTriShape(_)
+            )
     }
     ensure!(
         nif.blocks.get(target).is_some_and(exported),
@@ -205,9 +209,15 @@ fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
     )?)
 }
 
+/// The scene-node blocks the static scene exports as glTF nodes: exactly the blocks
+/// [`NifBlock::as_node`] reads as an `NiNode` (`NiNode`, `BSFadeNode`, `BSMultiBoundNode`).
+fn is_exported_node(block: &NifBlock) -> bool {
+    block.as_node().is_ok()
+}
+
 fn node_name(nif: &NifFile, target: usize) -> String {
-    let name = match nif.blocks.get(target) {
-        Some(NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) => node.av.object.name,
+    let name = match nif.blocks.get(target).map(NifBlock::as_node) {
+        Some(Ok(node)) => node.av.object.name,
         _ => return String::new(),
     };
     nif.header
@@ -339,8 +349,8 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
     fn visit(nif: &NifFile, blocks: &[Block<'_>], index: usize, depth: usize) -> Result<Mat4> {
         ensure!(depth < 64, "NIF node hierarchy is too deep");
         let raw_av;
-        let av = match nif.blocks.get(index) {
-            Some(NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) => &node.av,
+        let av = match nif.blocks.get(index).map(NifBlock::as_node) {
+            Some(Ok(node)) => &node.av,
             _ => {
                 let block = blocks
                     .get(index)
@@ -362,7 +372,7 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
         );
         let mut parent = None;
         for (candidate, block) in nif.blocks.iter().enumerate() {
-            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block
+            if let Ok(node) = block.as_node()
                 && node.children.contains(&(index as u32))
             {
                 ensure!(
