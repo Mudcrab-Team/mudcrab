@@ -291,7 +291,9 @@ fn settings_for_source_reader(
                     || identity
                         == &serde_json::json!({"mode": "legacy", "projection_version": 1})
                     || identity
-                        == &serde_json::json!({"mode": "legacy", "projection_version": 2}))
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 2})
+                    || identity
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 3}))
                 && schemas.identities().is_empty()),
         "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
     );
@@ -499,16 +501,14 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    if config.record_reader == crate::config::RecordReader::Inhouse {
-        let strings = crate::esm::inhouse::localized_string_paths(plugins);
-        for archive in &archives {
-            // Strings are metadata inputs; decode only the selected plugin tables.
-            if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
-                eprintln!(
-                    "warning: {}: unable to extract localized names: {error}",
-                    archive.display()
-                );
-            }
+    // Both readers resolve localized names; decode only the selected plugin tables.
+    let strings = crate::esm::inhouse::localized_string_paths(plugins);
+    for archive in &archives {
+        if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
+            eprintln!(
+                "warning: {}: unable to extract localized names: {error}",
+                archive.display()
+            );
         }
     }
     let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
@@ -1066,6 +1066,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy"}),
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
+            serde_json::json!({"mode": "legacy", "projection_version": 3}),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1078,7 +1079,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 4}),
+            serde_json::json!({"mode": "legacy", "projection_version": 5}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

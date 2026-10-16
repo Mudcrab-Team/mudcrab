@@ -122,6 +122,14 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             InitialCameraGroundHeight(ground_height),
         ))
     };
+    // Authored lighting, weather, climate and image space, when the database has them (#269).
+    // Read only; nothing renders from it yet.
+    let environment = runtime_data.as_ref().map(|_| {
+        crate::world::environment::EnvironmentCatalog::open(
+            &config.assets_dir.join("skyrim_world.db"),
+        )
+        .unwrap_or_default()
+    });
     let movement_tuning = (interactive_world_physics
         && runtime_data.is_some()
         && !config.streaming_fixture)
@@ -216,6 +224,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_systems(PostUpdate, keep_windows_hidden);
     add_camera_and_capture_systems(&mut app);
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
+        if let Some(environment) = environment {
+            app.insert_resource(environment);
+        }
         app.insert_resource(database)
             .insert_resource(catalog)
             .insert_resource(cache)
