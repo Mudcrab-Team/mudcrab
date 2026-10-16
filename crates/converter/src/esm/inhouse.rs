@@ -28,8 +28,9 @@ use std::{
 pub const ADAPTER_VERSION: u32 = 12;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
+/// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 3;
+pub const LEGACY_PROJECTION_VERSION: u32 = 4;
 
 /// Explicit loose-text precedence while keeping original plugin paths and provenance.
 #[derive(Clone, Copy)]
@@ -86,6 +87,21 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_links",
     "reference_rooms",
     "room_graph_stats",
+    "cell_environment",
+    "cell_regions",
+    "cell_lighting",
+    "worldspace_environment",
+    "lighting_templates",
+    "weathers",
+    "weather_colors",
+    "weather_directional_ambient",
+    "climates",
+    "climate_weathers",
+    "region_weathers",
+    "image_spaces",
+    "reference_linked_refs",
+    "reference_activate_parents",
+    "reference_details",
 ];
 
 /// Identity binds decoder behavior and schema bytes so stale output cannot prove reuse.
@@ -1295,7 +1311,7 @@ fn localized_bank(
 }
 
 /// A zero localized key stays null even when an invalid table gives it a value.
-fn localized_text(id: u32, table: &HashMap<u32, String>) -> Option<&str> {
+pub(crate) fn localized_text(id: u32, table: &HashMap<u32, String>) -> Option<&str> {
     if id == 0 {
         None
     } else {
@@ -1327,7 +1343,7 @@ fn runtime_text(text: &str, source: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Encode a resolved or normalized runtime string as UTF-8 followed by one NUL.
-fn runtime_string(text: &str) -> Vec<u8> {
+pub(crate) fn runtime_string(text: &str) -> Vec<u8> {
     let mut bytes = text.as_bytes().to_vec();
     bytes.push(0);
     bytes
@@ -1335,7 +1351,7 @@ fn runtime_string(text: &str) -> Vec<u8> {
 
 /// Resolve the authoritative loose bank before the effective archive VFS.
 /// A broken winning loose source remains unresolved instead of falling back to losing text.
-fn read_plugin_strings(
+pub(crate) fn read_plugin_strings(
     plugin: &Path,
     string_sources: StringSources<'_>,
     bank: &str,
