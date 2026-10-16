@@ -93,8 +93,12 @@ fn legacy_projection_identity_separates_current_and_historical_full_hashes() {
         "52045b4ce9519e636d5948e24185871df559dfe1f40b1edbe6195b844d71d59f"
     );
     assert_eq!(
-        configuration_hash(&legacy).unwrap(),
+        legacy_projection_v3_configuration_hash(&legacy, 26).unwrap(),
         "4482b6966e40954faa2655b13e909ba75a107d58ebbf6478b977dcf45c92b912"
+    );
+    assert_eq!(
+        configuration_hash(&legacy).unwrap(),
+        "7e8228deaa653b57e8a1e91e54aba74040e7711c976d34600a52f7bb491422a5"
     );
     assert_eq!(
         configuration_hash_for_schema(&legacy, 15).unwrap(),
@@ -126,14 +130,17 @@ fn retained_legacy_hash_validation_does_not_upgrade_old_reader_provenance() {
     let current_identity = crate::esm::inhouse::reader_identity(RecordReader::Legacy);
     let v1_identity = serde_json::json!({"mode": "legacy", "projection_version": 1});
     let v2_identity = serde_json::json!({"mode": "legacy", "projection_version": 2});
+    let v3_identity = serde_json::json!({"mode": "legacy", "projection_version": 3});
     let historical = configuration_hash_for_schema(&config, 26).unwrap();
     let current = configuration_hash(&config).unwrap();
     let v1 = legacy_projection_v1_configuration_hash(&config, 26).unwrap();
     let v2 = legacy_projection_v2_configuration_hash(&config, 26).unwrap();
+    let v3 = legacy_projection_v3_configuration_hash(&config, 26).unwrap();
     let contracts = [
         (&old_identity, historical.as_str()),
         (&v1_identity, v1.as_str()),
         (&v2_identity, v2.as_str()),
+        (&v3_identity, v3.as_str()),
         (&current_identity, current.as_str()),
     ];
     for (identity, matching) in contracts {

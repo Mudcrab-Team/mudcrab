@@ -20,6 +20,7 @@ pub mod extractors;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
+mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
@@ -30,6 +31,10 @@ pub mod types;
 pub use plugins_txt::{
     OFFICIAL_MASTERS, read_plugins_txt, read_plugins_txt_with_options, read_skyrim_ccc,
 };
+#[cfg(test)]
+mod base_model_parity_tests;
+#[cfg(test)]
+mod display_name_parity_tests;
 #[cfg(test)]
 mod plugin_table_tests;
 #[cfg(test)]
@@ -129,7 +134,7 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         match reader {
             crate::config::RecordReader::Legacy => {
-                Self::convert_plugins_with_records_report(plugin_paths, db_path)
+                Self::convert_legacy_plugins_report(plugin_paths, db_path, string_sources)
             }
             crate::config::RecordReader::Inhouse => {
                 inhouse::convert_plugins_with_string_sources_report(
@@ -161,11 +166,35 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         db_path: &Path,
     ) -> Result<RecordConversion> {
+        // Without a staged archive VFS, string tables come from each plugin's loose folder.
+        let loose = plugin_paths
+            .first()
+            .and_then(|path| path.parent())
+            .unwrap_or(Path::new("."));
+        Self::convert_legacy_plugins_report(
+            plugin_paths,
+            db_path,
+            inhouse::StringSources::PluginLooseFirst(loose),
+        )
+    }
+
+    /// Export legacy records, resolving localized text through the in-house string sources.
+    fn convert_legacy_plugins_report(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        string_sources: inhouse::StringSources<'_>,
+    ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let unresolved = legacy_text::resolve_localized_fields(
+            &mut master.records,
+            plugin_paths,
+            &order,
+            string_sources,
+        );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths)?;
+        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
 
         Ok(master)
     }

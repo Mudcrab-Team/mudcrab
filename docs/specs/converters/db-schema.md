@@ -281,7 +281,8 @@ CREATE TABLE IF NOT EXISTS worldspaces (
     parent_world INTEGER,               -- Parent WorldSpace FormID (if child worldspace)
     flags INTEGER NOT NULL,
     lod_origin_x INTEGER,               -- Validated sidecar/explicit origin; NULL if unresolved
-    lod_origin_y INTEGER
+    lod_origin_y INTEGER,
+    full_name TEXT                      -- Display name (FULL, e.g. 'Skyrim'); see "Display names"
 );
 ```
 
@@ -299,9 +300,38 @@ CREATE TABLE IF NOT EXISTS cells (
     grid_y INTEGER,                     -- Exterior cell Grid Y (NULL if interior)
     interior_name TEXT,                 -- Interior cell name (NULL if exterior)
     flags INTEGER NOT NULL,
-    data BLOB                           -- Optional cell binary payload
+    data BLOB,                          -- Optional cell binary payload
+    full_name TEXT                      -- Display name (FULL); see "Display names" below
 );
 ```
+
+#### Display names (`full_name`)
+
+`worldspaces.full_name`, `cells.full_name` and `statics.full_name` hold the record's `FULL`, the
+name the game shows (door prompts, the crosshair label, container menus, the map). `npcs.full_name`
+follows the same rules. `cells.interior_name` is still the cell's Editor ID (`EDID`), not its
+name; it keeps its column name for compatibility.
+
+`FULL` is a localized string. In a plugin with the TES4 `Localized` flag (0x80) it is a four-byte
+ID into `Strings/<plugin>_english.STRINGS`, looked up in the table of the plugin that supplied the
+winning record: a loose `Data/Strings` file first, then the archives. Otherwise it is
+Windows-1252 text. Both record readers publish the same UTF-8 text:
+
+- The in-house reader resolves every field its schema types as `lstring`.
+- The legacy reader (`--record-reader legacy`) resolves the subrecords the in-house schema types
+  as `lstring` in every occurrence for that record type, using the same table lookup
+  (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
+  `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
+  projection, so its reader identity is `projection_version` 4. Packages from versions 1-3 keep
+  their retained assets.
+
+A name whose ID is 0, missing from the table, or whose table cannot be read is NULL in these
+columns for both readers, with one warning per plugin. The canonical `records.data` payloads hold
+the same resolved text for both readers.
+
+The columns are additive and optional. They did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`:
+`create_tables` adds them to an older reused table, and a reader must probe for them. No engine
+code reads them yet.
 
 ---
 
@@ -344,6 +374,37 @@ include padding in the normalized flags value; reconversion corrects that
 projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
+
+#### Base object models (`statics`)
+
+`references.base_form_id` joins `statics.id`. The runtime spawns a reference only when its base
+has a `statics` row whose `model_path` it can resolve, so a base type missing from this table
+never renders.
+
+```sql
+CREATE TABLE IF NOT EXISTS statics (
+    id INTEGER PRIMARY KEY,                    -- base record FormID, load-order numbering
+    editor_id TEXT,                            -- EDID
+    model_path TEXT,                           -- MODL (ARMO: MOD2, else MOD4); NULL when absent
+    flags INTEGER NOT NULL,                    -- record header flags
+    bounds_min_x REAL NOT NULL DEFAULT -64, bounds_min_y REAL NOT NULL DEFAULT -64,
+    bounds_min_z REAL NOT NULL DEFAULT -64, bounds_max_x REAL NOT NULL DEFAULT 64,
+    bounds_max_y REAL NOT NULL DEFAULT 64, bounds_max_z REAL NOT NULL DEFAULT 64,
+    bounds_valid INTEGER NOT NULL DEFAULT 0    -- 1 once integration measured the converted GLB
+);
+```
+
+Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FURN`, `TREE`,
+`FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `WEAP`, `MISC`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`,
+`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, and `LIGH` when it has a model. `TACT`
+(talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
+added for #269; before that their references had no row and did not render. The engine still
+skips models under `effects/`, `sky/` or `markers/` and files named `*marker*`
+(`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
+models; that is render policy, not data the table lacks. They are additive
+rows, so no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: an older database keeps loading and
+simply lacks them until reconverted. Mesh conversion discovers NIF inputs independently of this
+table, so their models were already converted. Both record readers produce the same rows.
 
 ---
 
@@ -773,11 +834,11 @@ Columns and rules:
   not exist, which only makes the engine draw more. A `contained = 1` row is never also written
   as `contained = 0`.
   Overlap rows need a base with bounds in `statics`, which holds every base type with a world
-  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, placed items and armour,
-  and `LIGH` with a model). Placed references of other base types get pivot rows only: actors
+  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `APPA`, `ADDN`,
+  `ARTO`, placed items and armour, and `LIGH` with a model; see §5). Placed references of other base types get pivot rows only: actors
   (`NPC_`, which move and stay ordinary entities), lights without a model (their reach is a
   lighting question, not geometry), decals (`TXST`), and bases with no geometry (`IDLM`, `SOUN`,
-  `ASPC`). In the all-plugins conversion these are 22,251 of 364,262 pivot rows.
+  `ASPC`). In the all-plugins conversion these were 22,251 of 364,262 pivot rows (measured before `TACT`, `APPA`, `ADDN` and `ARTO` joined `statics`).
 - **`room_graph_stats`**: the counters the conversion report shows in `integration-report.json`
   under `room_graph`: `rooms`, `portals` (portal markers written, not rows), `links`,
   `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
