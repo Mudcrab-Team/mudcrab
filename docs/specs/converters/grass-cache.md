@@ -19,8 +19,10 @@ reduce grass coverage. Normals are derived from heights at runtime rather than
 duplicated in this cache. No instance lists are saved.
 Incomplete grass rules, missing model paths, and unresolved/deleted species
 links are skipped; raw database records remain available for diagnostics.
-Incomplete or invalid rules and invalid terrain cells produce bounded report
-warnings and mark the published run incomplete. Healthy neighboring cells still bake.
+Incomplete or invalid rules that have a model, and invalid terrain cells, produce
+bounded report warnings and mark the published run incomplete. Healthy neighboring
+cells still bake. A grass type without a model draws nothing in game either, so it
+is counted in one notice and does not affect completeness.
 These omissions also clear the manifest's record-data completeness proof, so
 repairing an unrelated asset cannot mark the pack complete without restoring grass.
 

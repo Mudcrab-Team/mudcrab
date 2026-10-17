@@ -27,6 +27,10 @@ pub struct GrassBakeReport {
     pub skipped_obstruction_models: usize,
     pub obstruction_diagnostics: Vec<String>,
     pub skipped_rules: usize,
+    /// Lowest FormID among the skipped modeled rules, named in the warning.
+    pub first_invalid_rule: Option<u32>,
+    /// Grass types without a model: they draw nothing in game either, so nothing is lost.
+    pub modelless_rules: usize,
     pub skipped_cells: usize,
     pub first_invalid_cell: Option<u32>,
 }
@@ -36,8 +40,12 @@ impl GrassBakeReport {
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         if self.skipped_rules > 0 {
+            let first = self
+                .first_invalid_rule
+                .map(|id| format!("; first GRAS {id:08X}"))
+                .unwrap_or_default();
             warnings.push(format!(
-                "grass cache skipped {} incomplete or invalid grass rules",
+                "grass cache skipped {} incomplete or invalid grass rules{first}",
                 self.skipped_rules
             ));
         }
@@ -54,6 +62,12 @@ impl GrassBakeReport {
     /// metadata rebuilds. Unavailable bounds and unsampleable geometry never make a run incomplete.
     pub fn notices(&self) -> Vec<String> {
         let mut notices = Vec::new();
+        if self.modelless_rules > 0 {
+            notices.push(format!(
+                "grass cache ignored {} grass types without a model",
+                self.modelless_rules
+            ));
+        }
         if self.unbounded_references > 0 {
             notices.push(format!(
                 "grass exclusion skipped {} exterior references without validated model bounds",
@@ -391,7 +405,7 @@ pub fn write_grass_cache(
     let mut geometry = GeometryCache::new(asset_root)?;
     let terrain_map = super::cell_cache::validate_cell_cache(terrain_path)?;
     let terrain = rkyv::access::<shared::ArchivedCellCache, Error>(&terrain_map)?;
-    let (types, skipped_rules) = read_types(conn)?;
+    let (types, skipped_rules, modelless_rules, first_invalid_rule) = read_types(conn)?;
     let valid_types: std::collections::BTreeSet<_> =
         types.iter().map(|rule| rule.form_id).collect();
     let mut links = BTreeMap::<u32, Vec<u32>>::new();
@@ -477,6 +491,8 @@ pub fn write_grass_cache(
     let mut report = GrassBakeReport {
         unbounded_references,
         skipped_rules,
+        first_invalid_rule,
+        modelless_rules,
         ..Default::default()
     };
     let mut cells = Vec::new();
@@ -591,8 +607,15 @@ pub fn validate_grass_cache(path: &Path) -> Result<Mmap> {
 }
 
 /// Read complete valid grass rules, skipping unusable optional definitions.
-fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize)> {
+/// Returns the rules, the count of modeled rules lost to incomplete or invalid data, the
+/// model-less types (nothing to draw, counted separately) and the lowest lost rule's FormID.
+fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option<u32>)> {
     let total: usize = conn.query_row("SELECT count(*) FROM grass_types", [], |row| row.get(0))?;
+    let modelless: usize = conn.query_row(
+        "SELECT count(*) FROM grass_types WHERE model_path IS NULL OR model_path = ''",
+        [],
+        |row| row.get(0),
+    )?;
     let mut statement = conn.prepare("SELECT id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags FROM grass_types WHERE model_path IS NOT NULL AND model_path <> '' AND density IS NOT NULL AND min_slope IS NOT NULL AND max_slope IS NOT NULL AND units_from_water IS NOT NULL AND water_comparison IS NOT NULL AND position_range IS NOT NULL AND height_range IS NOT NULL AND color_range IS NOT NULL AND wave_period IS NOT NULL AND flags IS NOT NULL ORDER BY id")?;
     let mut types = Vec::new();
     for rule in statement.query_map([], |row| {
@@ -625,8 +648,26 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize)> {
             types.push(rule);
         }
     }
-    let skipped = total - types.len();
-    Ok((types, skipped))
+    let skipped = total - types.len() - modelless;
+    let first_invalid = if skipped == 0 {
+        None
+    } else {
+        let valid: std::collections::HashSet<u32> = types.iter().map(|rule| rule.form_id).collect();
+        let mut statement = conn.prepare(
+            "SELECT id FROM grass_types WHERE model_path IS NOT NULL AND model_path <> '' ORDER BY id",
+        )?;
+        let ids = statement.query_map([], |row| row.get::<_, u32>(0))?;
+        let mut first = None;
+        for id in ids {
+            let id = id?;
+            if !valid.contains(&id) {
+                first = Some(id);
+                break;
+            }
+        }
+        first
+    };
+    Ok((types, skipped, modelless, first_invalid))
 }
 
 /// Collect eligible exterior obstruction bounds and count references lacking valid bounds.
@@ -1725,6 +1766,56 @@ mod tests {
             &output,
         )
         .unwrap();
+        assert_eq!(read(&output).types.len(), 2);
+    }
+
+    /// A model-less grass type is a notice; a modeled type with incomplete data still warns.
+    #[test]
+    fn modelless_grass_types_are_notices_and_incomplete_modeled_rules_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        conn.execute(
+            "INSERT INTO grass_types(id,editor_id,load_order) VALUES(24,'NoModel',0)",
+            [],
+        )
+        .unwrap();
+        let output = dir.path().join("grass.rkyv");
+        let report = write_grass_cache(
+            &conn,
+            dir.path(),
+            &dir.path().join("terrain.rkyv"),
+            None,
+            &output,
+        )
+        .unwrap();
+        assert_eq!((report.skipped_rules, report.modelless_rules), (0, 1));
+        assert!(report.warnings().is_empty(), "{:?}", report.warnings());
+        assert!(
+            report
+                .notices()
+                .contains(&"grass cache ignored 1 grass types without a model".to_owned()),
+            "{:?}",
+            report.notices()
+        );
+        conn.execute(
+            "INSERT INTO grass_types(id,model_path,density,load_order) VALUES(25,'meshes/partial.glb',40,0)",
+            [],
+        )
+        .unwrap();
+        let report = write_grass_cache(
+            &conn,
+            dir.path(),
+            &dir.path().join("terrain.rkyv"),
+            None,
+            &output,
+        )
+        .unwrap();
+        assert_eq!((report.skipped_rules, report.modelless_rules), (1, 1));
+        assert_eq!(report.first_invalid_rule, Some(25));
+        assert_eq!(
+            report.warnings(),
+            ["grass cache skipped 1 incomplete or invalid grass rules; first GRAS 00000019"]
+        );
         assert_eq!(read(&output).types.len(), 2);
     }
 
