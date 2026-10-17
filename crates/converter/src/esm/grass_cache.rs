@@ -394,7 +394,9 @@ fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
     Ok(triangles)
 }
 
-/// Bake after model-bound finalization. A valid previous cache allows unchanged cells to be reused.
+/// Bake complete source terrain after model-bound finalization. The terrain archive must retain
+/// all normalized layers, without the runtime material's limit. A valid previous grass cache allows
+/// unchanged cells to be reused.
 pub fn write_grass_cache(
     conn: &Connection,
     asset_root: &Path,
@@ -1658,9 +1660,9 @@ mod tests {
         );
     }
 
-    /// The first upstream grass artifact starts at version one and rebuilds other versions.
+    /// Full-layer coverage uses version two and rebuilds caches made from capped terrain.
     #[test]
-    fn first_upstream_grass_cache_uses_version_one_and_rebuilds_other_versions() {
+    fn full_layer_grass_cache_uses_version_two_and_rebuilds_version_one() {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         let terrain = dir.path().join("terrain.rkyv");
@@ -1668,14 +1670,17 @@ mod tests {
         let output = dir.path().join("grass.rkyv");
         write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
         let mut cache = read(&previous);
-        assert_eq!(cache.version, 1, "the first upstream format starts at one");
-        cache.version = 5;
+        assert_eq!(
+            cache.version, 2,
+            "full-layer coverage invalidates capped terrain masks"
+        );
+        cache.version = 1;
         std::fs::write(&previous, rkyv::to_bytes::<Error>(&cache).unwrap()).unwrap();
         assert!(validate_grass_cache(&previous).is_err());
         let report =
             write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
         assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
-        assert_eq!(read(&output).version, 1);
+        assert_eq!(read(&output).version, 2);
     }
 
     /// Reuse unchanged cells and invalidate cells affected by rule or reference changes.

@@ -181,10 +181,12 @@ construction accepts placeholders in any slot; a nonzero texture with missing
 converted images still fails its
 existing lookup checks. Original native fields and padding remain in the source
 table independently of these derived caches, including superseded slot
-assignments, native NULLs and their weights. The preserved cache is auxiliary;
-the engine continues to load only the runtime cache. The cache layout and
-runtime selection are unchanged; normal conversion and metadata rebuild
-regenerate both caches and the layer table.
+assignments, native NULLs and their weights. Both readers produce the complete
+preserved cache for grass baking; legacy selection keeps its existing priority
+and FormID tie breaker. The terrain renderer continues to load the capped runtime
+cache. The cache layout and runtime selection are unchanged. Normal conversion
+and metadata rebuild regenerate both caches; in-house output also regenerates
+its source layer table.
 
 Explicit player selection is available through `--plugins-file FILE`. Optional `--skyrim-ccc-file FILE` overrides the game-folder Creation list, and `--skyrim-ini-file FILE` supplies General test-file settings without reading ambient profiles. These options also exist as `PipelineConfig.plugins_file`, `skyrim_ccc_file` and `skyrim_ini_file`. Selection rules and recoverable missing-master behavior are documented in [the database specification](db-schema.md). Automatic discovery remains the default.
 

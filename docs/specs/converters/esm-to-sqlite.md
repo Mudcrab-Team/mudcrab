@@ -17,10 +17,11 @@ English localized-name resolution.
 In-house output also retains localized occurrence IDs and lookup status in
 `inhouse_localized_fields`, winning LAND physical order in
 `inhouse_terrain_source_order`, and normalized source texture assignments in
-`inhouse_terrain_layers`. `cell_cache_preserved.rkyv` keeps original texture
-identities and all active normalized layers, without the runtime capacity
-limit. The runtime cache retains its existing one base plus five overlays per
-quadrant, dropping the lowest summed-opacity overlays (highest slot on ties)
+`inhouse_terrain_layers`. Both readers produce `cell_cache_preserved.rkyv` for
+grass baking. It keeps original texture identities and all active normalized
+layers, without the runtime capacity limit. The runtime cache retains its
+existing one base plus five overlays per quadrant, dropping the lowest
+summed-opacity overlays (highest slot on ties)
 with a bounded per-cell warning. Its retained layers use explicit placeholders
 for unusable targets without dropping their blend weights. These auxiliary
 contracts preserve source information beyond the nullable runtime projections.

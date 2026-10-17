@@ -13,10 +13,15 @@ resolved water height, and
 four quadrants in Creation XY order (southwest, southeast, northwest,
 northeast). Each terrain layer retains every resolved grass species assigned
 by the winning LTEX record. Its 17 by 17 row-major blend field stores normalized
-overlay weights and the base residual. The converter normalizes all texture
-layers before omitting grassless or zero-weight layers, so bare textures still
-reduce grass coverage. Normals are derived from heights at runtime rather than
-duplicated in this cache. No instance lists are saved.
+overlay weights and the base residual. Both record readers supply the complete
+`cell_cache_preserved.rkyv` terrain projection to the grass bake, retaining layers
+beyond the runtime terrain material's one base plus five overlays per quadrant.
+The converter normalizes all texture layers before omitting grassless or
+zero-weight layers, so bare textures still reduce grass coverage. Normals are
+derived from heights at runtime rather than duplicated in this cache. No
+instance lists are saved.
+Grass cache version two invalidates version-one coverage derived from the capped
+runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
 Incomplete grass rules, missing model paths, and unresolved/deleted species
 links are skipped; raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -94,9 +99,11 @@ and is validated before runtime-pack publication. The engine can sample the
 validated archived arrays directly in background jobs without making owned
 copies of the terrain or masks.
 
-Metadata rebuilds regenerate the grass artifact after terrain and converted
-model bounds are available. The source package's `grass_cache.rkyv` is the
-previous cache, so unchanged cells can be reused. The rebuilt artifact is
-validated before publication. `metadata-rebuild.json` records
+Metadata rebuilds regenerate the full terrain projection and grass artifact
+after terrain and converted model bounds are available. The source package's
+`grass_cache.rkyv` is the previous cache, so unchanged cells can be reused. The rebuilt artifact is
+validated before publication. A source version-one grass artifact can be rebuilt;
+its masks are not reused and the source package remains unchanged.
+`metadata-rebuild.json` records
 `grass_baked_cells` and `grass_reused_cells` for that rebuild. Optional obstruction
 mask omissions use the same notice policy as a full conversion.

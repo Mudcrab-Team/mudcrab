@@ -10,7 +10,7 @@ use crate::{
     config::{PipelineConfig, TextureEncoder},
     esm::{
         EsmParser,
-        cell_cache::write_cell_cache,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
         exporter::validate_database,
         grass_cache::write_grass_cache,
         lodsettings::{LodSettings, sidecar_path},
@@ -804,6 +804,7 @@ impl AssetPipeline {
                 crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
             } else {
                 write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+                write_preserved_cell_cache(&merged, &staging.join("cell_cache_preserved.rkyv"))?;
             }
             crate::esm::inhouse::write_reader_identity_with_schemas(
                 staging,
@@ -814,13 +815,11 @@ impl AssetPipeline {
                 report
                     .artifacts
                     .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-                report
-                    .artifacts
-                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
             }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("cell_cache_preserved.rkyv"),
                 PathBuf::from("record-reader.json"),
             ]);
         }
@@ -1146,7 +1145,7 @@ impl AssetPipeline {
             let grass = write_grass_cache(
                 &Connection::open(staging.join("skyrim_world.db"))?,
                 staging,
-                &staging.join("cell_cache.rkyv"),
+                &staging.join("cell_cache_preserved.rkyv"),
                 Some(&config.output_dir.join("grass_cache.rkyv")),
                 &staging.join("grass_cache.rkyv"),
             )?;

@@ -13,7 +13,9 @@ use crate::{
         retained_configuration_matches_for_reader,
     },
     esm::{
-        EsmParser, cell_cache::write_cell_cache, exporter::validate_database,
+        EsmParser,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
+        exporter::validate_database,
         grass_cache::write_grass_cache,
     },
     integration::finalize_world_database,
@@ -537,6 +539,7 @@ async fn rebuild_into(
         crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
     } else {
         write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+        write_preserved_cell_cache(&merged, &staging.join("cell_cache_preserved.rkyv"))?;
     }
     crate::esm::inhouse::write_reader_identity_with_schemas(
         staging,
@@ -548,10 +551,10 @@ async fn rebuild_into(
         report
             .artifacts
             .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-        report
-            .artifacts
-            .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
+    report
+        .artifacts
+        .push(PathBuf::from("cell_cache_preserved.rkyv"));
     drop(merged);
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
     for archive in &archives {
@@ -615,7 +618,7 @@ async fn rebuild_into(
     let grass = write_grass_cache(
         &Connection::open(&database)?,
         staging,
-        &staging.join("cell_cache.rkyv"),
+        &staging.join("cell_cache_preserved.rkyv"),
         Some(&source.join("grass_cache.rkyv")),
         &staging.join("grass_cache.rkyv"),
     )?;
