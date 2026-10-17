@@ -696,9 +696,6 @@ fn despawn_cells(world: &mut World) {
     for (_, root) in retiring.iter().take(budget) {
         entities = entities.saturating_add(despawn_subtree(world, *root));
     }
-    if budget > 0 {
-        world.resource_mut::<lod::LodStreaming>().visibility_dirty = true;
-    }
     {
         let mut streaming = world.resource_mut::<StreamingWorld>();
         for (key, _) in retiring.iter().take(budget) {
@@ -1147,6 +1144,12 @@ fn spawn_cell(
                         flow_normal.clone(),
                         fresnel,
                         reflectivity,
+                    )
+                    .with_reflection_color(
+                        water_colors
+                            .map_or(crate::render::DEFAULT_WATER_REFLECTION_COLOR, |colors| {
+                                colors.reflection
+                            }),
                     ),
                 });
                 parent.spawn((
@@ -2071,7 +2074,6 @@ fn track_surface_readiness(
     )>,
     water: Query<(Entity, &PendingWaterProfile)>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
-    mut lod_streaming: ResMut<lod::LodStreaming>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
@@ -2133,7 +2135,6 @@ fn track_surface_readiness(
                 commands
                     .entity(entity)
                     .insert((Visibility::Inherited, TerrainSurfaceReady));
-                lod_streaming.visibility_dirty = true;
                 commands.entity(entity).remove::<ColliderDisabled>();
                 commands.entity(entity).remove::<PendingTerrainProfile>();
                 completed += 1;

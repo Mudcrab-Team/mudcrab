@@ -44,6 +44,14 @@ const WAVE_STRENGTH: f32 = 0.05;
 /// `crates/converter` started reading them.
 pub const DEFAULT_WATER_FRESNEL: f32 = 0.10;
 pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
+/// DefaultWater's Reflection Color after Update.esm (`#778C9D`): what the water reflects where the
+/// reflection image holds nothing, and what a water with no decoded colours falls back to.
+pub const DEFAULT_WATER_REFLECTION_COLOR: [u8; 3] = [0x77, 0x8C, 0x9D];
+
+fn water_reflection_color(rgb: [u8; 3]) -> Vec4 {
+    let linear = Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear();
+    Vec4::new(linear.red, linear.green, linear.blue, 0.0)
+}
 
 /// One rendering layer per role, so no view list is a bare literal.
 ///
@@ -605,6 +613,9 @@ struct WaterSettings {
     flow_direction: Vec4,
     /// x = Fresnel Amount (Schlick F0), y = Reflectivity Amount. z/w unused.
     fresnel_reflectivity: Vec4,
+    /// The water's Reflection Color (WATR DNAM), linear. What the reflection fades to where the
+    /// reflection image has no coverage; alpha unused.
+    reflection_color: Vec4,
 }
 
 impl Default for WaterExtension {
@@ -619,6 +630,7 @@ impl Default for WaterExtension {
                     0.0,
                     0.0,
                 ),
+                reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
             },
             reflection: None,
             flow_normal: None,
@@ -653,8 +665,15 @@ impl WaterExtension {
                 wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
                 fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 0.0, 0.0),
+                reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
             },
         }
+    }
+
+    /// Sets the water's own Reflection Color (WATR DNAM, as stored bytes).
+    pub fn with_reflection_color(mut self, rgb: [u8; 3]) -> Self {
+        self.settings.reflection_color = water_reflection_color(rgb);
+        self
     }
 }
 
@@ -722,6 +741,9 @@ fn setup_water_reflection(mut commands: Commands, mut images: ResMut<Assets<Imag
             // their winding: inverting the culling drew the back faces.
             invert_culling: false,
             is_active: false,
+            // Nothing drawn means alpha 0, so the water can tell "no reflected geometry" from
+            // reflected geometry and fall back to its Reflection Color there.
+            clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
         },
         RenderTarget::Image(image.into()),
@@ -739,6 +761,15 @@ type WaterReflectionObserver = (
     Without<WaterReflectionCamera>,
 );
 
+/// What the gate drives on the reflection camera: its entity, pose, switch, exposure and lens.
+type WaterReflectionCameraParts = (
+    Entity,
+    &'static mut Transform,
+    &'static mut Camera,
+    Option<&'static mut Exposure>,
+    Option<&'static mut Projection>,
+);
+
 /// What the gate reads off the world camera: its pose, the [`Frustum`] Bevy keeps in step with it,
 /// and the projection whose far distance the frustum itself does not carry.
 type WaterReflectionObserverView = (
@@ -752,16 +783,13 @@ fn update_water_reflection_camera(
     mut commands: Commands,
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
-    mut reflection_camera: Query<
-        (Entity, &mut Transform, &mut Camera, Option<&mut Exposure>),
-        With<WaterReflectionCamera>,
-    >,
+    mut reflection_camera: Query<WaterReflectionCameraParts, With<WaterReflectionCamera>>,
     mut profiler: ResMut<ProfilingState>,
 ) {
     let started = std::time::Instant::now();
     let (
         Ok((main, frustum, projection, exposure)),
-        Ok((entity, mut reflection, mut camera, reflection_exposure)),
+        Ok((entity, mut reflection, mut camera, reflection_exposure, reflection_projection)),
     ) = (main_camera.single(), reflection_camera.single_mut())
     else {
         return;
@@ -800,6 +828,17 @@ fn update_water_reflection_camera(
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
     *reflection = reflected_camera_transform(main, surface.translation().y);
+    // The reflection image is sampled with the main view's screen coordinates, so it has to be
+    // rendered with the main camera's lens, and with everything below the water out of it.
+    if let (Some(Projection::Perspective(main_lens)), Some(mut reflection_projection)) =
+        (projection, reflection_projection)
+    {
+        *reflection_projection = Projection::Perspective(reflection_lens(
+            main_lens,
+            &reflection,
+            surface.translation().y,
+        ));
+    }
     camera.is_active = surface_in_view;
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
@@ -838,6 +877,33 @@ fn water_plane_in_view(
         return false;
     }
     frustum.intersects_obb(&grown, &surface_to_world, true, true)
+}
+
+/// The reflection camera's lens: the main camera's, clipped at the water plane.
+///
+/// The reflection camera sits below the surface looking up, so the river bed and the banks lie
+/// between it and the sky and would fill the image (the white sheet). Clipping at the water plane
+/// keeps only what is above it, as a real mirror shows. Bevy's own mirror example does the same with
+/// [`PerspectiveProjection::near_clip_plane`]: the plane's normal in the camera's view space, and
+/// the negative distance to it as the fourth component.
+fn reflection_lens(
+    main_lens: &PerspectiveProjection,
+    reflection: &Transform,
+    water_y: f32,
+) -> PerspectiveProjection {
+    // Keep the side the main camera looks at the water from: above it, unless the main camera is
+    // underwater (its mirrored camera then sits above the surface).
+    let height_above_camera = water_y - reflection.translation.y;
+    let normal_world = if height_above_camera >= 0.0 {
+        Vec3::Y
+    } else {
+        Vec3::NEG_Y
+    };
+    let normal_view = reflection.rotation.inverse() * normal_world;
+    PerspectiveProjection {
+        near_clip_plane: normal_view.extend(-height_above_camera.abs()),
+        ..*main_lens
+    }
 }
 
 fn reflected_camera_transform(main: &GlobalTransform, water_y: f32) -> Transform {
@@ -890,6 +956,7 @@ mod tests {
                         ..default()
                     },
                     Transform::default(),
+                    Projection::Perspective(PerspectiveProjection::default()),
                     SceneColorPipeline::reflection(),
                     WaterReflectionCamera,
                 ))
@@ -1469,6 +1536,102 @@ mod tests {
         let reflected = reflected_camera_transform(&below, 3.0);
         assert!((reflected.translation.y - 10.0).abs() < 1.0e-5);
         assert!(reflected.forward().y < 0.0);
+    }
+
+    /// Whether a world point is inside the reflection camera's clipped view (reverse-z, so a point
+    /// in front of the near or oblique clip plane has `z > w`).
+    fn in_reflection_view(lens: &PerspectiveProjection, camera: &Transform, point: Vec3) -> bool {
+        use bevy::camera::CameraProjection;
+        let view = camera.compute_affine().inverse().transform_point3(point);
+        let clip = lens.get_clip_from_view() * view.extend(1.0);
+        clip.w > 0.0 && clip.z >= 0.0 && clip.z <= clip.w
+    }
+
+    #[test]
+    fn the_reflection_lens_keeps_what_is_above_the_water_and_drops_what_is_below() {
+        let main = GlobalTransform::from(
+            Transform::from_xyz(0.0, 10.0, 0.0).looking_to(Vec3::NEG_Z, Vec3::Y),
+        );
+        let water_y = 3.0;
+        let reflection = reflected_camera_transform(&main, water_y);
+        let lens = reflection_lens(&PerspectiveProjection::default(), &reflection, water_y);
+        // The mirrored camera sits at y = -4 looking level; the points are straight ahead of it.
+        assert!(in_reflection_view(
+            &lens,
+            &reflection,
+            Vec3::new(0.0, 5.0, -20.0)
+        ));
+        assert!(!in_reflection_view(
+            &lens,
+            &reflection,
+            Vec3::new(0.0, 1.0, -20.0)
+        ));
+        assert!(!in_reflection_view(
+            &lens,
+            &reflection,
+            Vec3::new(0.0, -2.0, -20.0)
+        ));
+    }
+
+    #[test]
+    fn the_reflection_lens_for_a_camera_below_the_water_keeps_what_is_below_it() {
+        let main = GlobalTransform::from(
+            Transform::from_xyz(0.0, -4.0, 0.0).looking_to(Vec3::NEG_Z, Vec3::Y),
+        );
+        let water_y = 3.0;
+        let reflection = reflected_camera_transform(&main, water_y);
+        let lens = reflection_lens(&PerspectiveProjection::default(), &reflection, water_y);
+        // The mirrored camera sits at y = 10 looking level: the world under the surface is kept
+        // and the air above it is dropped.
+        assert!(in_reflection_view(
+            &lens,
+            &reflection,
+            Vec3::new(0.0, -2.0, -20.0)
+        ));
+        assert!(!in_reflection_view(
+            &lens,
+            &reflection,
+            Vec3::new(0.0, 5.0, -20.0)
+        ));
+    }
+
+    #[test]
+    fn the_reflection_system_gives_the_reflection_camera_the_clipped_main_lens() {
+        use bevy::camera::CameraProjection;
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert!(harness.frame().active);
+        let Projection::Perspective(lens) = harness
+            .app
+            .world()
+            .get::<Projection>(harness.reflection_camera)
+            .unwrap()
+        else {
+            panic!("the reflection camera lost its perspective projection");
+        };
+        let Projection::Perspective(main_lens) = main_camera_projection() else {
+            unreachable!();
+        };
+        assert_eq!(lens.far, main_lens.far);
+        assert!(lens.near_clip_plane.xyz().length() > 0.99);
+        assert!(lens.near_clip_plane.w < 0.0);
+        let _ = lens.get_clip_from_view();
+    }
+
+    #[test]
+    fn the_reflection_lens_keeps_the_main_cameras_field_of_view() {
+        let main_lens = PerspectiveProjection {
+            fov: 1.3,
+            aspect_ratio: 4.0 / 3.0,
+            near: 0.5,
+            far: 5000.0,
+            ..default()
+        };
+        let reflection = Transform::from_xyz(0.0, -4.0, 0.0);
+        let lens = reflection_lens(&main_lens, &reflection, 3.0);
+        assert_eq!(lens.fov, main_lens.fov);
+        assert_eq!(lens.aspect_ratio, main_lens.aspect_ratio);
+        assert_eq!(lens.far, main_lens.far);
     }
 
     /// The reflection pass is what costs 1.72 ms of a 4.41 ms frame at the rural cell, because it
