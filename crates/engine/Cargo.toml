@@ -37,6 +37,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_
 tempfile = "3.20"
 converter = { path = "../converter" }
 dummy-content = { path = "../dummy-content" }
+tokio.workspace = true
 ddsfile = "0.5"
 # Compiles the terrain shaders in tests; the version Bevy 0.19's shader cache already builds.
 # No default features: the "glsl" one makes naga_oil write every imported header in GLSL as well,

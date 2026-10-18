@@ -710,6 +710,95 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "performance"]
+    /// Measure retained VCLR interpolation with eight species under the existing worker ceilings.
+    fn performance_coloured_terrain_generation() {
+        use std::{hint::black_box, time::Duration};
+
+        let mut rules: Vec<_> = (7..15).map(species).collect();
+        for rule in &mut rules {
+            rule.position_range = 64.0;
+        }
+        let cache = mapped(
+            rules,
+            fixture(vec![
+                layer(9, vec![7, 8, 9, 10], 1.0),
+                layer(10, vec![11, 12, 13, 14], 0.4),
+            ]),
+        );
+        let snapshot = crate::world::cache::TerrainSnapshot {
+            cell_id: 42,
+            width: 33,
+            height: 33,
+            heights: vec![120.0; 1089],
+            normals: vec![0; 3267],
+            vertex_colors: (0..1089).flat_map(|i| [(i % 33 * 7) as u8; 3]).collect(),
+            layers: vec![],
+            water_height: Some(20.0),
+            water_type_form_id: None,
+        };
+        let terrain = GrassTerrain::from_snapshot(&snapshot);
+        assert_eq!(
+            terrain.bytes() - GrassTerrain::new(vec![120.0; 1089], Some(20.0)).bytes(),
+            4356
+        );
+        for (spacing, slots, milliseconds) in
+            [(64.0, 4096, 10), (32.0, 16384, 50), (20.0, 41944, 100)]
+        {
+            let config = EngineConfig {
+                grass_min_spacing: spacing,
+                grass_max_types_per_texture: 3,
+                ..EngineConfig::default()
+            };
+            let warm = generate_on_terrain(&cache, 42, &config, &terrain);
+            assert_eq!(
+                warm.batches
+                    .iter()
+                    .map(|batch| batch.grass_id)
+                    .collect::<Vec<_>>(),
+                vec![7, 8, 9, 10, 11, 12, 13, 14]
+            );
+            let count: usize = warm.batches.iter().map(|batch| batch.instances.len()).sum();
+            assert!(count > 500 && count <= slots);
+            assert!(warm.bytes + terrain.bytes() <= slots * 32 + 32 * 1024);
+            assert!(
+                warm.batches
+                    .iter()
+                    .flat_map(|batch| batch.instances.iter())
+                    .any(|instance| instance.color < 100)
+            );
+            let mut samples = Vec::new();
+            for _ in 0..3 {
+                let start = Instant::now();
+                let result = black_box(generate_on_terrain(
+                    &cache,
+                    42,
+                    black_box(&config),
+                    black_box(&terrain),
+                ));
+                samples.push(start.elapsed());
+                assert_eq!(warm.batches.len(), result.batches.len());
+                for (expected, actual) in warm.batches.iter().zip(&result.batches) {
+                    assert_eq!(expected.grass_id, actual.grass_id);
+                    assert_eq!(expected.instances, actual.instances);
+                }
+            }
+            samples.sort_unstable();
+            let ceiling = Duration::from_millis(milliseconds);
+            assert!(
+                samples[1] < ceiling,
+                "spacing={spacing}: {:?} exceeds {ceiling:?}",
+                samples[1]
+            );
+            eprintln!(
+                "coloured grass: spacing={spacing}, instances={count}, median={:?}, budget={ceiling:?}, retained_surface_bytes={}",
+                samples[1],
+                terrain.bytes()
+            );
+        }
+    }
+
+    #[test]
     /// Verify grass roots follow rendered triangles on nonplanar terrain.
     fn grass_roots_follow_rendered_triangles_on_nonplanar_terrain() {
         let mut cell = fixture(vec![layer(9, vec![7], 1.0)]);
