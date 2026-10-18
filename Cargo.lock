@@ -2838,6 +2838,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_rapier3d",
+ "bytemuck",
  "color-eyre",
  "converter",
  "crossbeam-channel",
@@ -6321,6 +6322,8 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

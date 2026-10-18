@@ -17,6 +17,8 @@ pub mod emittance;
 pub mod fingerprint;
 pub mod frame_budget;
 pub mod hdr_probe;
+pub mod grass;
+pub mod grass_render;
 pub mod indirect_metrics;
 pub mod lights;
 mod live_console;

@@ -462,6 +462,27 @@ fn grade_override_bit(label: &str) -> Option<u8> {
 }
 
 impl RenderingSettings {
+    /// Keep automatically sized grass inside terrain while retaining wider saved preferences.
+    /// Explicit terrain limits and programmatic configurations retain their clamped grass ring.
+    fn retain_grass_coverage(&mut self, config: &EngineConfig) {
+        if !config.grass || !config.loads_world() {
+            return;
+        }
+        let automatic = config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "grass:stream-radius");
+        let minimum = if automatic {
+            config.grass_radius.saturating_add(1).max(2)
+        } else {
+            2
+        };
+        self.stream_radius = self.stream_radius.max(minimum);
+        self.unload_radius = self
+            .unload_radius
+            .max(self.stream_radius.saturating_add(i32::from(automatic)));
+    }
+
     pub(crate) fn grade_overrides(&self) -> crate::color_pipeline::SceneGradeOverrides {
         let value = |bit: u8, value| (self.grade_override_mask & (1 << bit) != 0).then_some(value);
         crate::color_pipeline::SceneGradeOverrides {
@@ -762,6 +783,7 @@ pub(crate) fn prepare_settings(config: &mut EngineConfig) -> (RenderingSettings,
     prepare_settings_at(config, preferences_path())
 }
 
+/// Resolve saved preferences with launch ownership and active grass's terrain minimum.
 fn prepare_settings_at(
     config: &mut EngineConfig,
     path: Option<PathBuf>,
@@ -810,6 +832,7 @@ fn prepare_settings_at(
             Err(error) => file.status = format!("Could not read settings: {error}"),
         }
     }
+    settings.retain_grass_coverage(config);
     settings.apply_config(config);
     config.io_threads = settings.io_threads;
     if let Some(profile) = crate::visual_profile::VisualProfile::from_index(settings.visual_profile)
@@ -893,10 +916,12 @@ pub(crate) fn apply_render_settings(
     mut previous: Local<Option<RenderingSettings>>,
     adapter: Option<Res<RenderAdapter>>,
     mut file: Option<ResMut<SettingsFile>>,
+    mut grass_fade: Option<ResMut<crate::grass::GrassFade>>,
 ) {
     if !settings.is_changed() {
         return;
     }
+    settings.retain_grass_coverage(&config);
     let old_mode = current_mode
         .as_deref()
         .copied()
@@ -978,12 +1003,27 @@ pub(crate) fn apply_render_settings(
     if settings.config_differs(&config) {
         settings.apply_config(&mut config);
     }
+    // Menu changes to the terrain ring retain the same fade clamp as startup.
+    if config.grass
+        && let Some(fade) = grass_fade.as_deref_mut()
+    {
+        let (start, end) = config.effective_grass_fade();
+        fade.enabled = config.grass_enable_fade;
+        fade.start = start;
+        fade.end = end;
+    }
     for (entity, mut exposure, mut tone_map, mut msaa, mut projection) in &mut targets.cameras {
         exposure.ev100 = settings.exposure_ev100;
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
             *tone_map = TONE_MAPS[settings.tone_map];
         }
-        *msaa = MSAA_MODES[settings.msaa];
+        // The grass coverage shader has a four-sample contract. Reflections below keep the
+        // selected preference, which also remains saved for runs without grass.
+        *msaa = if config.grass && config.loads_world() {
+            Msaa::Sample4
+        } else {
+            MSAA_MODES[settings.msaa]
+        };
         if let Projection::Perspective(p) = &mut *projection {
             p.fov = settings.fov_degrees.to_radians();
         }
@@ -1103,6 +1143,285 @@ mod tests {
         match EngineConfig::from_args(args.iter().cloned()).unwrap() {
             ConfigAction::Run(config) => *config,
             ConfigAction::Help => panic!("expected a run"),
+        }
+    }
+
+    /// Exercise renderer preferences on a streamed world camera and a separate reflection camera.
+    fn msaa_settings_app(
+        config: EngineConfig,
+        settings: RenderingSettings,
+        file: SettingsFile,
+    ) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(config)
+            .insert_resource(settings)
+            .insert_resource(file)
+            .add_systems(Update, apply_render_settings);
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::color_pipeline::SceneColorPipeline::default(),
+                StreamingCamera,
+                Msaa::Sample4,
+            ))
+            .id();
+        let reflection = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                crate::render::WaterReflectionCamera,
+                Msaa::Sample4,
+            ))
+            .id();
+        (app, camera, reflection)
+    }
+
+    /// Saved narrow terrain radii cannot remove the ring required by automatically sized grass.
+    #[test]
+    fn g3_saved_preferences_keep_automatic_grass_streaming_coverage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            stream_radius: 2,
+            unload_radius: 3,
+            exposure_ev100: 8.5,
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+        let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+        assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (8, 9));
+        assert_eq!(config.effective_grass_radius(), 7);
+        assert_eq!(loaded.exposure_ev100, saved.exposure_ev100);
+        assert!(config.validate_grass().is_ok());
+    }
+
+    /// Menu radius changes keep the existing grass fade inside the newly generated ring.
+    #[test]
+    fn g3_interactive_radius_updates_grass_fade_with_its_generated_ring() {
+        let mut config = launch(&["--grass", "--stream-radius", "3"].map(String::from));
+        let (start, end) = config.effective_grass_fade();
+        let (settings, file) = prepare_settings_at(&mut config, None);
+        let (mut app, _, _) = msaa_settings_app(config, settings, file);
+        app.insert_resource(crate::grass::GrassFade {
+            enabled: true,
+            start,
+            end,
+        });
+        for (radius, expected_start, expected_end) in [(2, 3584.0, 4096.0), (3, 7000.0, 8000.0)] {
+            {
+                let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+                settings.stream_radius = radius;
+                settings.unload_radius = radius + 1;
+            }
+            app.update();
+            let config = app.world().resource::<EngineConfig>();
+            assert_eq!(config.stream_radius, radius);
+            let fade = app.world().resource::<crate::grass::GrassFade>();
+            assert!((fade.start - expected_start).abs() < 0.001);
+            assert_eq!(fade.end, expected_end);
+            assert!(fade.end <= config.effective_grass_radius() as f32 * 4096.0);
+        }
+    }
+
+    /// Explicit terrain limits still override saved preferences and clamp the generated grass ring.
+    #[test]
+    fn g3_saved_preferences_respect_explicit_grass_streaming_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 10,
+                unload_radius: 12,
+                exposure_ev100: 8.5,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config =
+            launch(&["--grass", "--grass-radius", "7", "--stream-radius", "2"].map(String::from));
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (2, 3));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (2, 3));
+        assert_eq!(config.effective_grass_radius(), 1);
+        assert_eq!(loaded.exposure_ev100, 8.5);
+        assert!(config.validate_grass().is_ok());
+    }
+
+    /// Automatic grass coverage is a minimum and retains wider saved load and unload rings.
+    #[test]
+    fn g3_grass_keeps_larger_saved_streaming_radii() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 10,
+                unload_radius: 12,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (10, 12));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (10, 12));
+        assert_eq!(config.effective_grass_radius(), 7);
+    }
+
+    /// Grass imported through the shared INI reader requires the same terrain coverage as CLI grass.
+    #[test]
+    fn g3_ini_grass_radius_survives_saved_preference_loading() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let ini = directory.path().join("grass.ini");
+        std::fs::write(&ini, "[Grass]\niGrassCellRadius=7\n").unwrap();
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 2,
+                unload_radius: 3,
+                exposure_ev100: 8.5,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass".into(), "--ini".into(), ini.display().to_string()]);
+        assert_eq!(config.grass_radius, 7);
+
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+
+        assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+        assert_eq!((loaded.stream_radius, loaded.unload_radius), (8, 9));
+        assert_eq!(config.effective_grass_radius(), 7);
+        assert_eq!(loaded.exposure_ev100, 8.5);
+    }
+
+    /// Disabled grass and no-world modes leave ordinary saved streaming and exposure values intact.
+    #[test]
+    fn g3_inactive_grass_leaves_saved_preferences_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let ini = directory.path().join("disabled.ini");
+        std::fs::write(&ini, "[Grass]\nbDrawShaderGrass=0\niGrassCellRadius=7\n").unwrap();
+        let saved = RenderingSettings {
+            stream_radius: 2,
+            unload_radius: 3,
+            exposure_ev100: 8.5,
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut cases = vec![
+            Vec::new(),
+            vec!["--grass-radius".into(), "7".into()],
+            vec!["--grass".into(), "--ini".into(), ini.display().to_string()],
+        ];
+        for mode in [
+            "--benchmark-only",
+            "--material-fixture",
+            "--terrain-water-fixture",
+            "--transform-bounds-fixture",
+            "--renderer-fixture",
+            "--physics-fixture",
+        ] {
+            cases.push(
+                [mode, "--grass", "--grass-radius", "7"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+        }
+        for args in cases {
+            let mut config = launch(&args);
+            assert!(!config.grass || !config.loads_world(), "{args:?}");
+
+            let (loaded, _) = prepare_settings_at(&mut config, Some(path.clone()));
+
+            assert_eq!(
+                (config.stream_radius, config.unload_radius),
+                (2, 3),
+                "{args:?}"
+            );
+            assert_eq!(
+                (loaded.stream_radius, loaded.unload_radius),
+                (2, 3),
+                "{args:?}"
+            );
+            assert_eq!(loaded.exposure_ev100, saved.exposure_ev100, "{args:?}");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{args:?}");
+        }
+    }
+
+    /// Grass world cameras retain alpha-to-coverage MSAA while reflections and the file retain
+    /// the selected preference, including after an unrelated exposure change.
+    #[test]
+    fn g3_grass_world_msaa_survives_preferences_and_later_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        for (index, selected) in MSAA_MODES.into_iter().enumerate() {
+            save_settings(
+                &path,
+                &RenderingSettings {
+                    msaa: index,
+                    ..default()
+                },
+            )
+            .unwrap();
+            let mut config = launch(&["--grass".into()]);
+            let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let (mut app, camera, reflection) = msaa_settings_app(config, settings, file);
+
+            app.update();
+            assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+            assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
+
+            app.world_mut()
+                .resource_mut::<RenderingSettings>()
+                .exposure_ev100 = 8.5;
+            app.update();
+            assert_eq!(app.world().get::<Exposure>(camera).unwrap().ev100, 8.5);
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+            assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
+            assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
+            save_app_settings(&mut app);
+            let persisted =
+                serde_json::from_slice::<RenderingSettings>(&std::fs::read(&path).unwrap())
+                    .unwrap();
+            assert_eq!(persisted.msaa, index);
+            assert_eq!(persisted.exposure_ev100, 8.5);
+        }
+    }
+
+    /// Without grass, both streaming and reflection cameras honor every selected MSAA mode.
+    #[test]
+    fn g3_disabled_grass_cameras_honor_selected_msaa() {
+        for (index, selected) in MSAA_MODES.into_iter().enumerate() {
+            let (mut app, camera, reflection) = msaa_settings_app(
+                launch(&[]),
+                RenderingSettings {
+                    msaa: index,
+                    ..default()
+                },
+                SettingsFile::session_only(),
+            );
+
+            app.update();
+
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&selected));
+            assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
+            assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
         }
     }
 
