@@ -231,6 +231,8 @@ V174: Complete XESP ! little-endian parent FormID bytes 0–3 & flags byte 4; by
 V210: CI ! dispatch software Vulkan UASTC encoder, decode synthetic color/alpha/normal/mip/partial-block cases with CPU comparison; absent adapter fails explicit run; production CPU-adapter rejection retained.
 V190: Record-aware remap ! exact faction SNAM length 8; rank/padding unchanged; WRLD RNAM coordinates & TNAM strings unchanged; consumed single links remap under relocated full/light slots.
 
+V200: Real-output timing validation ! propagate full selected-set failure; missing configuration, empty selection & semantics collection errors fail; diagnostics never certify passing subset.
+
 ## §T TASKS
 
 id|status|task|cites
@@ -281,6 +283,8 @@ T70|x|Remove redundant atlas compression; fuse diffuse decode/tier resizing; sha
 
 T110|x|Exercise actual GPU batch/dispatch/readback with software Vulkan in CI|V210
 T90|x|Fix faction remap & reject aliased non-FormID fields; independent full/light field regressions|V190
+
+T100|x|Make validation timing fail on bad output; valid/broken generated artifact regression|V200
 
 ## §B BUGS
 
@@ -378,3 +382,4 @@ B211|2026-10-05|New GPU fixture used constant chunks_exact under Rust1.98 strict
 
 B212|2026-10-05|Package-only ignored GPU step changed feature unification & rebuilt after workspace tests; cold combined CI exceeded30min|V210,V118; same workspace/target selection for both test steps
 B190|2026-10-05|Four-byte global guard skipped NPC faction structures; WRLD RNAM/TNAM mistaken for links|V190
+B200|2026-10-05|Timing harness discarded invalid artifacts & asserted passing subset|V200
