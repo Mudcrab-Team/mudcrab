@@ -7461,7 +7461,7 @@ mod tests {
     /// Failures are counted per kind and fail the test; timing never discards invalid artifacts.
     #[test]
     #[ignore = "needs a converted output; set MUDCRAB_VALIDATE_OUTPUT"]
-    fn validation_timing_on_a_real_output() {
+    fn validation_timing_on_a_real_output() -> Result<()> {
         use std::time::Instant;
 
         let output = std::env::var_os("MUDCRAB_VALIDATE_OUTPUT")
@@ -7511,7 +7511,7 @@ mod tests {
         // Collecting semantics reads every GLB and takes minutes on a full install.
         let started = Instant::now();
         let texture_semantics = collect_texture_semantics(&output, &BTreeSet::new())
-            .expect("collect texture semantics");
+            .wrap_err("collect texture semantics")?;
         eprintln!(
             "texture semantics: {} textures in {:.2} s (not part of the timing)",
             texture_semantics.len(),
@@ -7524,9 +7524,11 @@ mod tests {
             output.display()
         );
         time_artifact_validation(&output, &artifacts, &texture_semantics, jobs)
-            .expect("all selected output artifacts must validate");
+            .wrap_err("validate selected output artifacts")?;
+        Ok(())
     }
 
+    /// Times selected-artifact validation, reporting failures while preserving the original result.
     fn time_artifact_validation(
         output: &Path,
         artifacts: &[PathBuf],
@@ -7568,6 +7570,7 @@ mod tests {
         result
     }
 
+    /// Checks semantic collection and contextual artifact errors through the real-output harness.
     #[test]
     fn timing_validation_collects_semantics_in_subprocess_even_if_skip_is_set() {
         use std::process::Command;
@@ -7603,7 +7606,7 @@ mod tests {
         glb.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
         glb.extend_from_slice(b"JSON");
         glb.extend_from_slice(&json);
-        fs::write(output.join("meshes/material.glb"), glb).unwrap();
+        fs::write(output.join("meshes/material.glb"), &glb).unwrap();
         fs::write(
             output.join("conversion-manifest.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -7616,19 +7619,22 @@ mod tests {
         )
         .unwrap();
 
-        let result = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "pipeline::tests::validation_timing_on_a_real_output",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("MUDCRAB_VALIDATE_OUTPUT", output)
-            .env("MUDCRAB_VALIDATE_LIMIT", "0")
-            .env("MUDCRAB_VALIDATE_JOBS", "2")
-            .env("MUDCRAB_VALIDATE_SEMANTICS", "skip")
-            .output()
-            .unwrap();
+        let run_timing = || {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pipeline::tests::validation_timing_on_a_real_output",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("MUDCRAB_VALIDATE_OUTPUT", output)
+                .env("MUDCRAB_VALIDATE_LIMIT", "0")
+                .env("MUDCRAB_VALIDATE_JOBS", "2")
+                .env("MUDCRAB_VALIDATE_SEMANTICS", "skip")
+                .output()
+                .unwrap()
+        };
+        let result = run_timing();
         let stdout = String::from_utf8_lossy(&result.stdout);
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(
@@ -7644,8 +7650,32 @@ mod tests {
             stderr.contains("RESULT artifacts=2") && stderr.contains("errors=0"),
             "real-output test did not validate the complete artifact set\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
+
+        for (artifact, context) in [
+            ("meshes/material.glb", "collect texture semantics"),
+            ("textures/srgb.ktx2", "validate selected output artifacts"),
+        ] {
+            fs::write(output.join("meshes/material.glb"), &glb).unwrap();
+            fs::write(output.join(artifact), b"broken").unwrap();
+            let result = run_timing();
+            let diagnostic = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(
+                !result.status.success(),
+                "accepted {artifact}: {diagnostic}"
+            );
+            assert!(diagnostic.contains(context), "{artifact}: {diagnostic}");
+            assert!(
+                !diagnostic.contains("panicked at"),
+                "{artifact} must return an error: {diagnostic}"
+            );
+        }
     }
 
+    /// Checks that timing rejects a corrupt artifact or an empty selection after a valid run.
     #[test]
     fn v200_timing_validation_rejects_any_bad_artifact_and_empty_selection() {
         let directory = tempfile::tempdir().unwrap();
