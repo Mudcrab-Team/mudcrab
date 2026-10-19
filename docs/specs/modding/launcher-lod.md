@@ -66,10 +66,10 @@ ordinary resumable conversion.
   job kind. Hide unsupported Resume for this kind; failure must not invent
   resumable staging or point Delete staging at source assets.
 - Verify native source producer/configuration, all retained bytes, winning
-  plugin order/checksums, regenerated LOD identity and current schema-26/9 integration.
-  Retained producer-24 GLBs are explicitly compatible for subsequent normal conversion;
-  retained textures keep their original provenance and require normal conversion to repair
-  the TXST encoding contract.
+  plugin order/checksums, regenerated LOD identity and current schema-27/9 integration.
+  Retained meshes and textures keep their original provenance; no earlier producer's GLBs are
+  reusable by a subsequent normal conversion, which repairs the TXST encoding and collision
+  contracts.
   Publish new directory atomically. Never overwrite source or relabel old LOD.
 - On success, select new derived output for Play. On failure/cancellation,
   preserve previous playable output and show actionable error.

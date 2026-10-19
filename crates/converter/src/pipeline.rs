@@ -4673,78 +4673,49 @@ mod tests {
         assert!(output.join("skyrim_world.db").is_file());
     }
 
-    /// Explicitly compatible producer-24 meshes reuse original proof; changed
-    /// NIF source bytes still regenerate instead of being hidden by migration.
+    /// Producer 27 changed the GLB collision data, so the producer-24/26 mesh contract
+    /// no longer grants reuse: every mesh and texture regenerates, scripts stay reused.
     #[tokio::test]
-    async fn compatible_meshes_reuse_but_changed_mesh_source_reconverts() {
-        let directory = tempfile::tempdir().unwrap();
-        let data = directory.path().join("Data");
-        let output = directory.path().join("assets");
-        dummy_content::layout::prepare_directory(&data, false).unwrap();
-        dummy_content::layout::generate(
-            &data,
-            dummy_content::layout::DEFAULT_SEED,
-            dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
-        )
-        .unwrap();
-        let mut config = PipelineConfig::new(&data, &output);
-        config.cpu_jobs = 2;
-        run_without_progress(config.clone()).await;
-        let path = output.join("conversion-manifest.json");
-        let mut old: ConversionManifest =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        old.schema_version = 24;
-        old.asset_configuration_hashes.clear();
-        old.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
-        old.save(&path).unwrap();
-        let meshes: BTreeMap<_, _> = old
-            .entries
-            .values()
-            .filter(|entry| entry.output.ends_with(".glb"))
-            .map(|entry| {
-                (
-                    entry.output.clone(),
-                    fs::read(output.join(&entry.output)).unwrap(),
-                )
-            })
-            .collect();
-        assert!(!meshes.is_empty());
-        let reused = run_without_progress(config.clone()).await;
-        let textures = old
-            .entries
-            .values()
-            .filter(|entry| entry.output.ends_with(".ktx2"))
-            .count();
-        assert_eq!(reused.converted, textures as u64);
-        for (relative, bytes) in &meshes {
-            assert_eq!(fs::read(output.join(relative)).unwrap(), *bytes);
+    async fn earlier_producer_meshes_regenerate_under_the_collision_contract() {
+        for producer in [24, 26] {
+            let directory = tempfile::tempdir().unwrap();
+            let data = directory.path().join("Data");
+            let output = directory.path().join("assets");
+            dummy_content::layout::prepare_directory(&data, false).unwrap();
+            dummy_content::layout::generate(
+                &data,
+                dummy_content::layout::DEFAULT_SEED,
+                dummy_content::layout::Formats::parse("dds,pex,nif,esm,lodsettings").unwrap(),
+            )
+            .unwrap();
+            let mut config = PipelineConfig::new(&data, &output);
+            config.cpu_jobs = 2;
+            run_without_progress(config.clone()).await;
+            let path = output.join("conversion-manifest.json");
+            let mut old: ConversionManifest =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            old.schema_version = producer;
+            old.asset_configuration_hashes.clear();
+            old.configuration_hash = configuration_hash_for_schema(&config, producer).unwrap();
+            old.save(&path).unwrap();
+            let meshes = old
+                .entries
+                .values()
+                .filter(|entry| entry.output.ends_with(".glb"))
+                .count();
+            assert!(meshes > 0);
+            let textures = old
+                .entries
+                .values()
+                .filter(|entry| entry.output.ends_with(".ktx2"))
+                .count();
+            let regenerated = run_without_progress(config).await;
+            assert_eq!(
+                regenerated.converted,
+                (meshes + textures) as u64,
+                "producer {producer} meshes must not be reused"
+            );
         }
-        let mut compatible: ConversionManifest =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        compatible.schema_version = 24;
-        compatible.asset_configuration_hashes.clear();
-        compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
-        compatible.save(&path).unwrap();
-        fs::write(
-            data.join("meshes/generated.nif"),
-            dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
-                name: "changed",
-                positions: &[[0.0, 0.0, 0.0], [128.0, 0.0, 0.0], [0.0, 128.0, 0.0]],
-                normals: &[[0.0, 0.0, 1.0]; 3],
-                uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-                indices: &[[0, 1, 2]],
-                diffuse: "textures/generated_color.dds",
-                normal_texture: "textures/generated_normal.dds",
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let changed = run_without_progress(config).await;
-        assert!(changed.converted > 0);
-        assert_ne!(
-            fs::read(output.join("meshes/generated.glb")).unwrap(),
-            meshes["meshes/generated.glb"]
-        );
     }
 
     #[tokio::test]

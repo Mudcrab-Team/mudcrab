@@ -354,7 +354,8 @@ mod tests {
         // strips the redundant textures prefix and lowercases the asset path.
         fs::create_dir_all(base.join("textures/landscape")).unwrap();
         fs::write(base.join("textures/landscape/rock.dds"), b"collision").unwrap();
-        assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
+        let error = AssetSourceIndex::build(&[base], AssetKind::Texture).unwrap_err();
+        assert!(error.to_string().contains("normalized asset collision"));
     }
 
     #[test]

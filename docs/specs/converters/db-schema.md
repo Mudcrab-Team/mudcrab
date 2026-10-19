@@ -38,19 +38,24 @@ from TX04 and `environment_path` from TX05. TX00 and TX01 provide diffuse and
 normal paths. Both frontends project TX06 into `detail_path` and TX07 into
 `specular_path`, as documented above. Schema 9 also
 projects only XESP byte 4 into `enable_parent_flags`. Separate candidate fixes
-used producer 25/world 8 for different contracts; combined output uses 26/9.
+used producer 25/world 8 for different contracts; the combined output first shipped
+as 26/9, and producer 27 keeps world schema 9.
 The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 26**. Legacy worlds render full detail without
+support schemas **15 through 27**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
 
 Converter producer 26 also corrects the texture encodings chosen from those
-columns. Normal conversion rebuilds every older KTX2, the database, cell cache
-and derived LOD outputs. Verified producer-24 GLBs, unchanged scripts and
-archive ingestion remain reusable with matching source/dependency,
-configuration and output-byte proof; producers 12-23 still rebuild GLBs.
+columns. Producer 27 adds sphere, multi-sphere and cylinder collision shapes
+and more physical layers to the GLB collision data; the database stays at
+schema 9. Normal conversion rebuilds every older GLB and KTX2, the database,
+cell cache and derived LOD outputs. Unchanged scripts and archive ingestion
+remain reusable with matching source/dependency, configuration and
+output-byte proof; no earlier producer's GLBs are reusable, including the
+producer-24 GLBs that producer 26 accepted.
 Metadata-only rebuilds preserve the original retained producer/configuration
-and texture bytes. Run normal conversion to repair those retained encodings.
+and mesh and texture bytes. Run normal conversion to repair those retained
+encodings and collision data.
 
 The legacy TX06/TX07 alignment changes the SQL role assignment while retaining
 the current texture-byte encoding: multilayer/detail and specular/backlight are

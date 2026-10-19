@@ -189,10 +189,10 @@ fn legacy_pack(data: &Path, output: &Path, schema: u32) -> ConversionManifest {
     legacy
 }
 
-/// Producer 24 rebuilds every texture and world output, retaining verified GLBs/Luau.
-/// Producer 23 remains a negative control for the earlier changed mesh contract.
+/// Producers 23 and 24 rebuild every texture, GLB and world output, retaining verified Luau.
+/// Producer 27 changed the GLB collision data, so producer-24 GLBs no longer count as compatible.
 #[tokio::test]
-async fn texture_semantic_migration_preserves_only_known_compatible_published_meshes() {
+async fn texture_semantic_migration_rebuilds_meshes_and_textures_of_earlier_producers() {
     for schema in [24, 23] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
@@ -215,10 +215,7 @@ async fn texture_semantic_migration_preserves_only_known_compatible_published_me
         let mut config = PipelineConfig::new(&data, &output);
         config.no_lod = true;
         let report = run_pipeline(config.clone()).await;
-        assert_eq!(
-            report.converted,
-            (textures + if schema == 24 { 0 } else { meshes }) as u64
-        );
+        assert_eq!(report.converted, (textures + meshes) as u64);
         assert_eq!(
             fs::read(output.join("textures/txst_slot_05.ktx2")).unwrap(),
             expected_cube
@@ -277,7 +274,7 @@ async fn texture_semantic_migration_still_requires_matching_configuration() {
     assert_eq!(report.converted, legacy.entries.len() as u64);
 }
 
-/// Metadata retains honest producer-24 texture provenance until normal conversion.
+/// Metadata retains honest producer-24 mesh and texture provenance until normal conversion.
 #[tokio::test]
 async fn texture_semantic_migration_preserves_original_metadata_asset_provenance() {
     let directory = tempfile::tempdir().unwrap();
@@ -316,24 +313,20 @@ async fn texture_semantic_migration_preserves_original_metadata_asset_provenance
         );
     }
     let eligible = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    // Producer 27 changed the GLB collision data, so producer-24 meshes are no longer
+    // compatible cache hits.
     assert!(
         eligible
             .entries
             .values()
-            .any(|entry| entry.output.ends_with(".glb"))
-    );
-    assert!(
-        eligible
-            .entries
-            .values()
-            .all(|entry| !entry.output.ends_with(".ktx2"))
+            .all(|entry| !entry.output.ends_with(".glb") && !entry.output.ends_with(".ktx2"))
     );
     let normal = run_pipeline(config).await;
     let current = manifest(&output);
     let textures = retained
         .entries
         .values()
-        .filter(|entry| entry.output.ends_with(".ktx2"))
+        .filter(|entry| entry.output.ends_with(".ktx2") || entry.output.ends_with(".glb"))
         .count();
     let ingested = current
         .archives

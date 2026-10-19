@@ -44,7 +44,7 @@ preserves WRLD RNAM payloads and TNAM strings and restores record-aware VMAD
 ownership compatibility. Version 2 added corrected faction links, strict native
 link ownership and local recovery to version 1's corrected TX06/TX07 and ARMO
 world-model projections. These metadata contracts are independent of asset
-producer 26. In-house adapter version 11 adds projection-aware winner admission
+producer 27. In-house adapter version 11 adds projection-aware winner admission
 to version 10's corrected schema layouts, GMST winner admission, union localization
 and filename namespaces. Required runtime projection checks resolve localized
 fields before admission, so an unusable later candidate preserves its usable
@@ -336,7 +336,8 @@ entries carrying a full configuration hash do not acquire a new proof implicitly
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer
-does not inherit that allowance. Older textures regenerate, and scripts require
+does not inherit that allowance, so producer 27 (which changes the GLB collision
+data) reuses only its own meshes. Older textures regenerate, and scripts require
 both a supported producer and matching ABI settings. A retained producer remains
 the producer of its original bytes after any number of metadata rebuilds.
 

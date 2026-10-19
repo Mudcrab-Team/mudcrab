@@ -1426,7 +1426,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
     if let Some(reader) = reader {
         config.record_reader = reader;
     }
-    let mut expected_texture_rebuilds = 0;
+    let mut expected_asset_rebuilds = 0;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1449,7 +1449,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 .unwrap();
         assert!(!published.complete, "manifest must retain reader warnings");
         if pass == 1 {
-            assert_eq!(report.converted, expected_texture_rebuilds);
+            assert_eq!(report.converted, expected_asset_rebuilds);
             assert!(report.cache_hits > 0);
         }
         let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -1542,16 +1542,17 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 rusqlite::params![old, 0x0300_0800u32],
             )
             .unwrap();
-            // Producer 24 has compatible meshes/scripts, but its world projection
-            // contains padding in enable-parent flags. Rebuild the world while
-            // reusing proved meshes/scripts and regenerating all old textures.
+            // Producer 24's world projection contains padding in enable-parent
+            // flags. Rebuild the world while reusing proved scripts; the old
+            // textures and, since producer 27 changed the GLB collision data,
+            // the old meshes all regenerate.
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest: converter::cache::ConversionManifest =
                 serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-            expected_texture_rebuilds = manifest
+            expected_asset_rebuilds = manifest
                 .entries
                 .values()
-                .filter(|entry| entry.output.ends_with(".ktx2"))
+                .filter(|entry| entry.output.ends_with(".ktx2") || entry.output.ends_with(".glb"))
                 .count() as u64;
             manifest.schema_version = 24;
             manifest.asset_configuration_hashes.clear();

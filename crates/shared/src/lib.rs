@@ -12,7 +12,9 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// Current combined database contract: corrected TXST roles and one-byte XESP flags.
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 /// Latest producer required when a package advertises the combined LOD contract.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 26;
+/// 27: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
+/// shapes) changes GLB collision extras.
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 27;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and

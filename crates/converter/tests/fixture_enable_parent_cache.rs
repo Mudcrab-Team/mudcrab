@@ -24,18 +24,21 @@ fn manifest(output: &Path) -> ConversionManifest {
     serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap()).unwrap()
 }
 
-/// Producer 24 meshes/scripts retain their contracts; all old textures rebuild.
-/// Configuration, source and
-/// output changes still force regeneration instead of being hidden by migration.
+/// Producer 27 changed the GLB collision data: producer-24 and producer-26 meshes and all old
+/// textures rebuild, while proven scripts are kept. Configuration and script source
+/// changes still force regeneration instead of being hidden by migration.
 #[tokio::test]
-async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
-    for changed in [
-        "none",
-        "configuration",
-        "source",
-        "texture-source",
-        "output",
-    ] {
+async fn earlier_producer_meshes_regenerate_and_scripts_reuse_only_with_valid_proof() {
+    for (producer, changed) in [24, 26].into_iter().flat_map(|producer| {
+        [
+            "none",
+            "configuration",
+            "source",
+            "texture-source",
+            "output",
+        ]
+        .map(|changed| (producer, changed))
+    }) {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("modern");
@@ -56,9 +59,9 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
             .unwrap();
         let mesh_path = output.join(&mesh.output);
         let original_mesh = fs::read(&mesh_path).unwrap();
-        original.schema_version = 24;
+        original.schema_version = producer;
         original.asset_configuration_hashes.clear();
-        original.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+        original.configuration_hash = configuration_hash_for_schema(&config, producer).unwrap();
         original
             .save(&output.join("conversion-manifest.json"))
             .unwrap();
@@ -79,10 +82,10 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
             "none" => {}
             _ => unreachable!(),
         }
-        let textures = original
+        let regenerated = original
             .entries
             .values()
-            .filter(|entry| entry.output.ends_with(".ktx2"))
+            .filter(|entry| entry.output.ends_with(".ktx2") || entry.output.ends_with(".glb"))
             .count() as u64;
         let report = convert(config).await;
         let current = manifest(&output);
@@ -97,8 +100,11 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
         }
         match changed {
             "none" => {
-                assert_eq!(report.converted, textures);
-                assert_eq!(report.cache_hits, original.entries.len() as u64 - textures);
+                assert_eq!(report.converted, regenerated, "producer {producer}");
+                assert_eq!(
+                    report.cache_hits,
+                    original.entries.len() as u64 - regenerated
+                );
                 assert_eq!(current.entries, original.entries);
             }
             "configuration" => {
@@ -106,8 +112,10 @@ async fn producer_twenty_four_meshes_reuse_only_with_valid_proof() {
                 assert_eq!(report.converted, original.entries.len() as u64);
             }
             "source" | "texture-source" | "output" => {
-                let converted = textures + u64::from(changed != "texture-source");
-                assert_eq!(report.converted, converted, "{changed}");
+                // Only the script source change adds a conversion; mesh and texture
+                // changes land in outputs that regenerate anyway.
+                let converted = regenerated + u64::from(changed == "source");
+                assert_eq!(report.converted, converted, "{changed} {producer}");
                 assert_eq!(report.cache_hits, original.entries.len() as u64 - converted);
             }
             _ => unreachable!(),
