@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run on the machine that holds Skyrim: send the Data directory to the CI laptop's cache.
+# Usage: sync-skyrim <local Skyrim Data dir> [host=tuvalu-laptop]
+set -euo pipefail
+src=${1:?usage: sync-skyrim <Skyrim Data dir> [host]}
+host=${2:-tuvalu-laptop}
+rsync -a --partial --delete "${src%/}/" "$host:ci/mudcrab/cache/skyrim/Data/"

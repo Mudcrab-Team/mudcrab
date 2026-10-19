@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Shared, deduplicated store of converted Skyrim assets. Runs inside the CI container.
+#
+#   artifact-store ensure-assets   convert once per converter schema version, reuse after
+#   artifact-store prune           keep only the newest $MUDCRAB_KEEP_SCHEMAS schema packs
+#
+# One pack per schema version lives in $MUDCRAB_CI_STORE/assets/schema-N. Any job or branch
+# at schema N reuses it. A new schema seeds its pack from the newest older pack with a
+# reflink copy (no extra disk on btrfs) so the converter upgrades it in place instead of
+# starting from nothing.
+set -euo pipefail
+
+store=${MUDCRAB_CI_STORE:-/cache/store}
+data=${MUDCRAB_SKYRIM_DATA:-/cache/skyrim/Data}
+keep=${MUDCRAB_KEEP_SCHEMAS:-2}
+workspace=${GITHUB_WORKSPACE:-$PWD}
+
+schema_version() {
+  sed -n 's/^pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = \([0-9]*\);.*/\1/p' \
+    "$workspace/crates/shared/src/lib.rs"
+}
+
+pack_is_current() {
+  local pack=$1 want=$2
+  [ -f "$pack/conversion-manifest.json" ] &&
+    [ "$(jq -r '[.schema_version, .complete] | @tsv' "$pack/conversion-manifest.json")" = "$want	true" ]
+}
+
+# Newest first by last use; the pack in $1 is never listed.
+older_packs() {
+  local current=$1
+  find "$store/assets" -mindepth 1 -maxdepth 1 -name 'schema-*' ! -path "$current" -printf '%T@ %p\n' |
+    sort -rn | cut -d' ' -f2-
+}
+
+prune() {
+  local current=${1:-} count=0 limit=$keep pack
+  [ -d "$store/assets" ] || return 0
+  # The current pack uses one of the $keep slots.
+  [ -z "$current" ] || limit=$((keep - 1))
+  while read -r pack; do
+    [ -n "$pack" ] || continue
+    count=$((count + 1))
+    if [ "$count" -gt "$limit" ]; then
+      echo "pruning $pack"
+      rm -rf -- "$pack"
+    fi
+  done < <(older_packs "$current")
+}
+
+ensure_assets() {
+  local schema pack seed
+  schema=$(schema_version)
+  [ -n "$schema" ] || { echo "cannot read LOD_CONVERTER_SCHEMA_VERSION" >&2; exit 1; }
+  [ -d "$data" ] || { echo "Skyrim Data missing at $data" >&2; exit 1; }
+  pack=$store/assets/schema-$schema
+  mkdir -p "$store/assets"
+  exec 9>"$store/.assets.lock"
+  flock 9
+
+  if pack_is_current "$pack" "$schema"; then
+    echo "schema $schema pack present: reusing $pack"
+  else
+    if [ ! -d "$pack" ]; then
+      seed=$(older_packs "$pack" | head -n1)
+      if [ -n "$seed" ] && cp -a --reflink=always -- "$seed" "$pack.tmp" 2>/dev/null; then
+        echo "seeded schema $schema from $seed"
+        mv -- "$pack.tmp" "$pack"
+      else
+        rm -rf -- "$pack.tmp"
+        mkdir -p "$pack"
+      fi
+    fi
+    cargo run --release --locked -p converter -- "$data" "$pack" --report-json "$pack/ci-report.json"
+    pack_is_current "$pack" "$schema" || { echo "schema $schema pack incomplete" >&2; exit 1; }
+  fi
+  touch "$pack"
+  prune "$pack"
+  echo "assets=$pack"
+  [ -z "${GITHUB_OUTPUT:-}" ] || echo "assets=$pack" >> "$GITHUB_OUTPUT"
+}
+
+case ${1:-} in
+  ensure-assets) ensure_assets ;;
+  prune) exec 9>"$store/.assets.lock"; flock 9; prune "" ;;
+  *) echo "usage: artifact-store ensure-assets|prune" >&2; exit 2 ;;
+esac

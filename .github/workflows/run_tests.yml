@@ -31,6 +31,18 @@ jobs:
           clean: false
           fetch-depth: ${{ github.ref == 'refs/heads/main' && 2 || 350 }}
 
+      - id: runner
+        name: Pick runner
+        # Fork pull requests run untrusted code: keep them off the self-hosted runner.
+        env:
+          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          if [ "$TRUSTED" = true ]; then
+            echo 'runner=["self-hosted","linux","x64","mudcrab"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'runner="ubuntu-latest"' >> "$GITHUB_OUTPUT"
+          fi
+
       - id: filter
         name: Filter changed files
         run: |
@@ -64,6 +76,7 @@ jobs:
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '(\.(ps1|py)$|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
     outputs:
+      runner: ${{ steps.runner.outputs.runner }}
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
 
@@ -120,7 +133,7 @@ jobs:
   clippy:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.orchestrate.outputs.runner) }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -129,6 +142,7 @@ jobs:
           clean: false
 
       - name: Install Linux build dependencies
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -139,15 +153,18 @@ jobs:
             pkg-config
 
       - name: Install Rust toolchain
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"
           components: clippy
 
       - name: Set up mold linker
+        if: runner.environment == 'github-hosted'
         uses: rui314/setup-mold@v1
 
       - name: Setup kache compiler cache
+        if: runner.environment == 'github-hosted'
         uses: kunobi-ninja/kache-action@v1
 
       - name: Clippy check
@@ -156,7 +173,7 @@ jobs:
   test:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.orchestrate.outputs.runner) }}
     # Cold test builds can take 26 minutes; leave time for the full suite.
     timeout-minutes: 45
     steps:
@@ -166,6 +183,7 @@ jobs:
           clean: false
 
       - name: Install Linux build dependencies
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -177,14 +195,17 @@ jobs:
             pkg-config
 
       - name: Install Rust toolchain
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"
 
       - name: Set up mold linker
+        if: runner.environment == 'github-hosted'
         uses: rui314/setup-mold@v1
 
       - name: Setup kache compiler cache
+        if: runner.environment == 'github-hosted'
         uses: kunobi-ninja/kache-action@v1
         with:
           # Clippy and tests produce different artifacts. GitHub cache keys are
@@ -192,6 +213,7 @@ jobs:
           cache-key-prefix: kache-test
 
       - name: Install nextest
+        if: runner.environment == 'github-hosted'
         uses: taiki-e/install-action@nextest
 
       - name: Run unit & integration tests
@@ -207,7 +229,7 @@ jobs:
   security:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.orchestrate.outputs.runner) }}
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -216,11 +238,13 @@ jobs:
           clean: false
 
       - name: Install Rust toolchain
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"
 
       - name: Install cargo-audit
+        if: runner.environment == 'github-hosted'
         uses: taiki-e/install-action@cargo-audit
 
       - name: Audit dependencies
@@ -232,7 +256,7 @@ jobs:
   performance:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.orchestrate.outputs.runner) }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -241,6 +265,7 @@ jobs:
           clean: false
 
       - name: Install Rust toolchain
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"

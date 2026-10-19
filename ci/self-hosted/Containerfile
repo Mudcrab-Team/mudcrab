@@ -1,0 +1,43 @@
+# Image for the self-hosted Mudcrab CI runner (Linux x86_64). Packages mirror the
+# apt steps in .github/workflows/run_tests.yml so those steps can be skipped.
+FROM docker.io/library/ubuntu:24.04
+
+ARG RUST_TOOLCHAIN
+ARG RUNNER_VERSION
+ARG SCCACHE_VERSION=0.10.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates clang cmake curl git jq mold pkg-config python3 \
+      sudo unzip xz-utils xvfb \
+      libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo-bootstrap PATH=/opt/cargo-bootstrap/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
+      --default-toolchain "${RUST_TOOLCHAIN}" -c clippy -c rustfmt \
+    && cargo install --locked cargo-nextest cargo-audit \
+    && curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+       | tar -xz --strip-components=1 -C /opt/cargo-bootstrap/bin "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
+    && chmod -R a+rwX /opt/rustup /opt/cargo-bootstrap
+
+# The runner updates itself in place, so it must be writable by the job user.
+RUN mkdir -p /opt/runner \
+    && curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+       | tar -xz -C /opt/runner \
+    && /opt/runner/bin/installdependencies.sh \
+    && chmod -R a+rwX /opt/runner
+
+# Persistent caches are bind-mounted at /cache by ci/self-hosted/runner.
+RUN printf '%s\n' \
+      'PATH=/opt/cargo-bootstrap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+      'RUSTUP_HOME=/opt/rustup' \
+      'CARGO_HOME=/cache/cargo' \
+      'CARGO_TARGET_DIR=/cache/target' \
+      'RUSTC_WRAPPER=sccache' \
+      'SCCACHE_DIR=/cache/sccache' \
+      'SCCACHE_CACHE_SIZE=30G' \
+      'CARGO_INCREMENTAL=0' \
+      'MUDCRAB_CI_STORE=/cache/store' \
+      'MUDCRAB_SKYRIM_DATA=/cache/skyrim/Data' \
+      > /opt/runner/.env

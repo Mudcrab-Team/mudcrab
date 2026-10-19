@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Host-side control for the Mudcrab self-hosted runner. Run inside the devenv ci-runner
+# profile so distrobox, podman and gh come from nix:
+#
+#   devenv --profile ci-runner shell -- ci/self-hosted/runner <command>
+#
+#   image    build the container image (rebuilt only when the toolchain or runner changes)
+#   create   create the isolated distrobox
+#   run      serve one job at a time with just-in-time runner registrations
+#   prune    trim caches that grow without bound
+#   shell    open a shell in the box
+set -euo pipefail
+
+repo=${MUDCRAB_REPO:-Mudcrab-Team/mudcrab}
+root=${CI_ROOT:-$HOME/ci/mudcrab}
+box=${CI_BOX:-mudcrab-ci}
+labels=${CI_LABELS:-self-hosted,linux,x64,mudcrab}
+cpus=${CI_CPUS:-6}
+memory=${CI_MEMORY:-10g}
+target_max_gb=${CI_TARGET_MAX_GB:-60}
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd "$here/../.." && pwd)
+
+toolchain() { sed -n 's/^channel *= *"\(.*\)"/\1/p' "$repo_root/rust-toolchain.toml"; }
+runner_version() { gh api repos/actions/runner/releases/latest --jq '.tag_name | ltrimstr("v")'; }
+image_tag() { echo "localhost/mudcrab-ci:rust-$(toolchain)-runner-$(runner_version)"; }
+
+cmd_image() {
+  local tag; tag=$(image_tag)
+  if podman image exists "$tag"; then echo "image $tag present"; return; fi
+  # Image layers are staged in TMPDIR; NixOS root here is a small tmpfs, so stage on disk.
+  mkdir -p "$root/tmp"
+  TMPDIR="$root/tmp" podman build -t "$tag" -f "$here/Containerfile" \
+    --build-arg "RUST_TOOLCHAIN=$(toolchain)" --build-arg "RUNNER_VERSION=${tag##*runner-}" "$here"
+}
+
+cmd_create() {
+  mkdir -p "$root"/{home,cache/cargo,cache/sccache,cache/target,cache/store,cache/skyrim}
+  local tag; tag=$(image_tag)
+  podman image exists "$tag" || cmd_image
+  # Isolated home plus --unshare-all keeps the box away from the host user's $HOME
+  # (gh token, SSH keys). Only the cache directories are mounted in.
+  distrobox create --yes --name "$box" --image "$tag" --home "$root/home" --unshare-all \
+    --volume "$root/cache/cargo:/cache/cargo" \
+    --volume "$root/cache/sccache:/cache/sccache" \
+    --volume "$root/cache/target:/cache/target" \
+    --volume "$root/cache/store:/cache/store" \
+    --volume "$root/cache/skyrim:/cache/skyrim:ro" \
+    --volume "$here:/opt/ci-tools:ro" \
+    --additional-flags "--cpus=$cpus --memory=$memory --memory-swap=$memory"
+}
+
+cmd_prune() {
+  local used_gb
+  used_gb=$(du -s --block-size=1G "$root/cache/target" | cut -f1)
+  if [ "$used_gb" -gt "$target_max_gb" ]; then
+    echo "target dir ${used_gb}G over ${target_max_gb}G cap: clearing (sccache keeps rebuilds fast)"
+    find "$root/cache/target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  fi
+  distrobox enter "$box" -- /opt/ci-tools/artifact-store prune
+  # Finished jobs' checkouts and logs; the next job starts from a clean workspace.
+  distrobox enter "$box" -- sh -c 'rm -rf /opt/runner/_work /opt/runner/_diag'
+}
+
+jit_config() {
+  local args=(-X POST "repos/$repo/actions/runners/generate-jitconfig"
+              -f "name=$box-$(hostname)-$(date +%s)" -F runner_group_id=1 -f work_folder=/opt/runner/_work)
+  local label parts
+  IFS=, read -ra parts <<<"$labels"
+  for label in "${parts[@]}"; do args+=(-f "labels[]=$label"); done
+  gh api "${args[@]}" --jq '[.runner.id, .encoded_jit_config] | @tsv'
+}
+
+cmd_run() {
+  podman image exists "$(image_tag)" || cmd_image
+  distrobox list --no-color | grep -q "| $box " || cmd_create
+  local id cfg
+  # An unused JIT registration stays listed as offline; remove it when the box stops.
+  drop_runner() { [ -z "${id:-}" ] || gh api -X DELETE "repos/$repo/actions/runners/$id" >/dev/null 2>&1 || true; }
+  trap 'echo stopping; drop_runner; exit 0' TERM INT
+  while true; do
+    cmd_prune || echo "prune failed; continuing" >&2
+    # Each job gets its own single-use JIT registration. It goes to the box through a
+    # mode-600 file that the box reads and deletes, never through argv or env where
+    # `ps` or `systemctl status` would show it. The box never sees a gh credential.
+    IFS=$'\t' read -r id cfg < <(jit_config)
+    (umask 077; printf '%s' "$cfg" > "$root/home/.jitconfig")
+    cfg=
+    env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+      distrobox enter "$box" -- sh -c \
+      'c=$(cat "$HOME/.jitconfig") && rm -f "$HOME/.jitconfig" && ACTIONS_RUNNER_INPUT_JITCONFIG=$c exec /opt/runner/run.sh' &
+    # Waiting lets the TERM trap run while a job is in flight.
+    wait $! || echo "runner exited $?; restarting" >&2
+    drop_runner
+    sleep 2
+  done
+}
+
+case ${1:-} in
+  image) cmd_image ;;
+  create) cmd_create ;;
+  run) cmd_run ;;
+  prune) cmd_prune ;;
+  shell) exec distrobox enter "$box" ;;
+  *) echo "usage: runner image|create|run|prune|shell" >&2; exit 2 ;;
+esac

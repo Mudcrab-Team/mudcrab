@@ -37,4 +37,14 @@
     vulkan-tools
     vulkan-validation-layers
   ];
+
+  # Self-hosted CI runner host tools; see ci/self-hosted/. Activate with
+  # `devenv --profile ci-runner shell`. Not part of the default shell.
+  profiles.ci-runner.module = { pkgs, ... }: {
+    packages = with pkgs; [
+      distrobox
+      gh
+      rsync
+    ];
+  };
 }

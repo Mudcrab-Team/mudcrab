@@ -1,0 +1,17 @@
+[Unit]
+Description=Mudcrab self-hosted GitHub Actions runner (distrobox)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Control checkout of trusted main, separate from the runner's job workspaces.
+WorkingDirectory=%h/ci/mudcrab/control
+Environment=PATH=%h/.nix-profile/bin:/etc/profiles/per-user/%u/bin:/run/wrappers/bin:/run/current-system/sw/bin
+ExecStart=/usr/bin/env devenv --profile ci-runner shell -- ci/self-hosted/runner run
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target
