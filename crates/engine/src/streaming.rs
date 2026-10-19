@@ -1254,6 +1254,11 @@ fn spawn_cell(
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
+            // The colour the reference's `XEMI` source lends its model's `External_Emittance`
+            // surfaces once they are instantiated below it; see `crate::emittance`.
+            if let Some(rgb) = reference.emittance {
+                entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
+            }
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
@@ -5974,6 +5979,7 @@ mod tests {
                     bounds_valid: false,
                     light: None,
                     light_radius_override: None,
+                    emittance: None,
                 }],
             },
             Some(terrain),
@@ -6795,6 +6801,7 @@ mod tests {
             bounds_valid: false,
             light,
             light_radius_override: radius_override,
+            emittance: None,
         }
     }
 

@@ -86,6 +86,43 @@ For testing, reconvert to separate output directory with converter built from th
 
 Verification: `v6_emission_preserves_zero_dim_hdr_and_black_glow_energy`, `v6_own_emit_does_not_enable_slot_two_glow`, `v6_rejects_overflowing_emission_with_context`, `v8_signed_tint_keeps_source_and_clamps_only_gltf_negative_channels`, `recent_schema_migrations_reuse_only_unchanged_asset_kinds`, `v15_old_material_schemas_rebuild_meshes_and_reuse_compatible_assets`; engine runtime-schema acceptance tests; both probe backgrounds plus legacy negative control. Full converter/engine library suites, formatting and Clippy required before publication.
 
+## External emittance (#242)
+
+`SLSF1_External_Emittance` (bit 29) says a surface's emission colour comes from outside the model:
+from the light or region its reference names in `XEMI`. Building windows use it. The Sleeping
+Giant Inn's window (`architecture\farmhouse\inn01.nif`, shape `Inn01:14`) is a Glow shader with a
+white tint, multiplier 3 and a neutral grey glow map; its Riverwood reference names
+`FXLightRegionInvertWindowWhiterun`, whose weather's Effect Lighting colour is black by day and
+amber at night. Publishing the static emission alone left the windows lit in daylight.
+
+The GLB keeps the flag in `extras.openSkyrim.shaderFlags1`, so no mesh is reconverted. The
+converter resolves each `XEMI` source's colour at every time of day into the `emittance` table
+([db-schema §16](../converters/db-schema.md#16-reference-emittance-sources-emittance), an
+optional table the engine probes for). At runtime:
+
+- `NifMaterialPlugin` marks each primitive whose material has bit 29 with `ExternalEmittance`,
+  carried with the scene into every instance.
+- A reference whose source resolved gets `ReferenceEmittance`: the day colour (the engine's one
+  time of day, `sky.rs`) decoded from 8-bit sRGB to linear, as light colours are.
+- When the model is instantiated below the reference, each marked surface draws with a material
+  whose emission is the model's own emission times that colour. Materials are shared per model
+  material and colour, and the model's material stays unchanged for other references. The cache
+  of shared materials holds ids, not handles, so a material is freed with the last surface that
+  draws with it when its cell unloads.
+
+Approximations: the colour multiplies the published emission instead of replacing the NIF tint,
+because the glTF cannot separate tint from multiplier; the two agree for the white-tinted window
+shaders. A region's likeliest weather stands in for its climate. A surface whose reference names
+no source, or one the converter could not resolve, keeps the model's emission; Skyrim's behaviour
+there is unverified. A database converted without the `emittance` table has no sources and keeps the
+previous always-lit result until reconverted.
+
+Verification: `resolves_reference_emittance_from_regions_and_lights`,
+`the_sleeping_giant_inn_windows_are_dark_by_day` (opt-in, reads `Skyrim.esm`),
+`returns_the_day_colour_of_a_reference_emittance_source`,
+`external_emittance_needs_bit_29_of_shader_flags_1`,
+`a_black_day_colour_darkens_only_the_external_emittance_surface` and the other `emittance` tests.
+
 ## Local verification, 2026-10-02
 
 Headless Vulkan on llvmpipe / Mesa 26.2.2, LLVM 21.1.8. No renderer errors in the six final runs. These are functional shader checks, not target-hardware performance or Skyrim visual acceptance.

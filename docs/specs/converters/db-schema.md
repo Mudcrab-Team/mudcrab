@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS references (
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
+    emittance_id INTEGER,               -- Remapped XEMI light or region FormID; NULL when absent
     data BLOB                           -- Subrecords payload
 );
 
@@ -344,6 +345,9 @@ include padding in the normalized flags value; reconversion corrects that
 projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
+
+`emittance_id` is the reference's `XEMI`: the light or region whose colour the
+`External_Emittance` surfaces of its model take (§16). A cleared link is stored as NULL.
 
 ---
 
@@ -490,6 +494,7 @@ reference and cell fields, validated against their expected sizes:
 | `XCIM`, `XCMO`, `XCAS` | CELL | image space, music type, acoustic space |
 | `XCCM` | CELL | region the cell takes its sky and weather from |
 | `XCLR` | CELL | regions (array) |
+| `RDWT` | REGN | each 12-byte entry's weather (bytes 0-3) and global (bytes 8-11); the chance is kept |
 | `XPOD` | REFR | the rooms a portal marker joins: an array of (origin, destination) pairs; every u32 a FormID (xEdit 4.1.5f defs) |
 | `XLRM` | REFR | linked room of a room marker |
 | `LNAM`, `INAM` | REFR | room marker lighting template, image space (other record types keep their own handling) |
@@ -803,3 +808,58 @@ them yet; a reader must probe for them first, as the engine does for `lights` an
 | Camera outside every room | n/a | draw everything |
 | Non-box room shape | skipped, counted | its objects are in no room, so drawn |
 | Exterior markers | not written | out of scope (#106) |
+
+---
+
+### 16. Reference Emittance Sources (`emittance`)
+
+A NIF shader with `SLSF1_External_Emittance` (bit 29) takes its emission colour from outside the
+model: from the light or region the placing reference names in `XEMI`
+(`references.emittance_id`). Skyrim keeps building windows dark by day this way. The Sleeping Giant
+Inn's reference in Riverwood (`0002D763`) names `FXLightRegionInvertWindowWhiterun` (`0008277B`),
+whose one weather `FXWthrInvertWindowsWhiterun` (`0008277A`) has a black Effect Lighting colour by
+day and an amber one at night (#242).
+
+The complete load-order export rebuilds the table, writing one row per distinct `XEMI` target it can
+resolve, as 8-bit sRGB at sunrise, day, sunset and night:
+
+- `LIGH`: the `DATA` colour (bytes 8-10), the same at every time of day.
+- `REGN`: the `RDWT` weather with the highest chance (the first on a tie), and that weather's
+  `NAM0` Effect Lighting colour, the tenth colour type. `NAM0` holds 16 bytes per colour type
+  (sunrise, day, sunset and night, each RGB and an unused byte); the official plugins store 13,
+  14 or 17 types. A region changes weather with its climate, which the runtime does not model, so
+  its likeliest weather stands in.
+
+Effect Lighting rather than Sunlight: the inn's window shader has a white tint and a neutral grey
+glow map, so the warm colour of Skyrim's lit windows at night can only come from the source. Both
+colours are black by day for the window regions.
+
+A target that is missing, deleted, not a `LIGH` or `REGN`, or whose weather has no Effect Lighting
+colour gets no row and a warning; the runtime then keeps the model's own emission. The movement
+annotator's subset export does not touch this table.
+
+Measured on Skyrim SE with its official plugins: 9,655 references carry `XEMI`, naming 211
+sources. 166 lights and 31 regions resolve; 14 regions list no weather at all (the largest,
+`RiverwoodMountainsSnow` `0002E2CC`, is named by 479 references), and what Skyrim lends from such
+a region is unverified, so their 651 references keep the model's emission.
+
+```sql
+CREATE TABLE IF NOT EXISTS emittance (
+    id INTEGER PRIMARY KEY,        -- XEMI target: a LIGH or REGN FormID
+    source_type TEXT NOT NULL,     -- 'LIGH' or 'REGN'
+    weather_id INTEGER,            -- REGN: the WTHR its colours come from
+    sunrise_r INTEGER NOT NULL, sunrise_g INTEGER NOT NULL, sunrise_b INTEGER NOT NULL,
+    day_r INTEGER NOT NULL, day_g INTEGER NOT NULL, day_b INTEGER NOT NULL,
+    sunset_r INTEGER NOT NULL, sunset_g INTEGER NOT NULL, sunset_b INTEGER NOT NULL,
+    night_r INTEGER NOT NULL, night_g INTEGER NOT NULL, night_b INTEGER NOT NULL
+);
+```
+
+The engine reads the day columns, its one time of day; see
+[`color-pipeline.md`](../engine/color-pipeline.md#external-emittance-242).
+
+**The table and `references.emittance_id` are optional and did not bump
+`shared::WORLD_DATABASE_SCHEMA_VERSION`**, for the same reason as the room tables: they only add a
+table and a column, and the engine probes for both. `create_tables` adds `emittance_id` to an older
+reused `references` table. A database without them loads with every reference unlit by `XEMI`, so
+`External_Emittance` surfaces keep the model's own emission.

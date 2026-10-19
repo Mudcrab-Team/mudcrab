@@ -1,4 +1,5 @@
 use crate::esm::{
+    emittance,
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
     load_order::LoadOrder,
     records::{RawRecord, achr::SubrecordXESP},
@@ -160,7 +161,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              local_x REAL, local_y REAL, rot_x REAL NOT NULL, rot_y REAL NOT NULL,
              rot_z REAL NOT NULL, scale REAL NOT NULL DEFAULT 1.0,
              radius_override REAL, header_flags INTEGER NOT NULL DEFAULT 0,
-             enable_parent_id INTEGER, enable_parent_flags INTEGER, data BLOB
+             enable_parent_id INTEGER, enable_parent_flags INTEGER, emittance_id INTEGER, data BLOB
          );
          CREATE INDEX IF NOT EXISTS idx_references_cell ON "references"(cell_id);
          CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(
@@ -185,6 +186,15 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              flags INTEGER NOT NULL,        -- DATA flags (dynamic, can carry, negative, flicker, off by default, ...)
              falloff REAL NOT NULL,
              fade REAL                      -- FNAM, if present
+         );
+         CREATE TABLE IF NOT EXISTS emittance (
+             id INTEGER PRIMARY KEY,        -- XEMI target: a LIGH or REGN FormID
+             source_type TEXT NOT NULL,     -- 'LIGH' or 'REGN'
+             weather_id INTEGER,            -- REGN: the WTHR its colours come from
+             sunrise_r INTEGER NOT NULL, sunrise_g INTEGER NOT NULL, sunrise_b INTEGER NOT NULL,
+             day_r INTEGER NOT NULL, day_g INTEGER NOT NULL, day_b INTEGER NOT NULL,
+             sunset_r INTEGER NOT NULL, sunset_g INTEGER NOT NULL, sunset_b INTEGER NOT NULL,
+             night_r INTEGER NOT NULL, night_g INTEGER NOT NULL, night_b INTEGER NOT NULL
          );
          CREATE TABLE IF NOT EXISTS npcs (
              id INTEGER PRIMARY KEY, editor_id TEXT, full_name TEXT,
@@ -268,10 +278,31 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
+    // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
+    // later exports added, so a complete export can still insert into it.
+    add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
     conn.prepare_cached(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
     )?
     .execute([shared::WORLD_DATABASE_SCHEMA_VERSION])?;
+    Ok(())
+}
+
+/// Adds each `(name, declaration)` column `table` lacks.
+fn add_missing_columns(conn: &Connection, table: &str, columns: &[(&str, &str)]) -> Result<()> {
+    for (name, declaration) in columns {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+            [table, name],
+            |row| row.get(0),
+        )?;
+        if !present {
+            conn.execute(
+                &format!("ALTER TABLE \"{table}\" ADD COLUMN {name} {declaration}"),
+                [],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -831,12 +862,93 @@ fn export_records(
         }
     }
     drop(records_insert);
-    // Derived snapshot like the grass tables: only a full load-order export owns it, so the
-    // movement annotator's subset export leaves it alone. Diagnostic archives defer it.
+    // Derived snapshots like the grass tables: only a full load-order export owns them, so the
+    // movement annotator's subset export leaves them alone, and diagnostic archives defer them.
+    // The emittance pass holds every reference and the records their XEMI names, and may run on
+    // a database older than `emittance_id`.
     if runtime_views && order.is_some() {
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
+        insert_emittance_sources(&tx, master)?;
     }
     tx.commit()
+}
+
+/// Rebuilds `emittance`: one row per `XEMI` target in `references` that resolves to a colour.
+///
+/// A light lends its `DATA` colour at every hour; a region lends its likeliest weather's Effect
+/// Lighting colour at each time of day (see [`crate::esm::emittance`]). A target that is missing
+/// or does not resolve gets no row, so the runtime keeps the model's own emission for its
+/// references. Rows from an earlier export into the same database are dropped first, so a target
+/// that no longer resolves loses its old colour.
+fn insert_emittance_sources(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -> Result<()> {
+    tx.execute("DELETE FROM emittance", [])?;
+    let targets: Vec<u32> = tx
+        .prepare("SELECT DISTINCT emittance_id FROM \"references\" WHERE emittance_id IS NOT NULL")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_>>()?;
+    for target in targets {
+        let Some(record) = master.get(&target).filter(|record| !record.is_deleted()) else {
+            eprintln!(
+                "warning: emittance target {target:08X} is not in the load order; no emittance row"
+            );
+            continue;
+        };
+        let view = SubrecordView::new(&record.subrecords);
+        let (source_type, weather, colours) = match &record.record_type {
+            b"LIGH" => {
+                let Some(data) = view
+                    .find(b"DATA")
+                    .filter(|data| data.len() >= LIGHT_DATA_MIN)
+                else {
+                    eprintln!(
+                        "warning: emittance LIGH {target:08X} has no usable DATA; no emittance row"
+                    );
+                    continue;
+                };
+                ("LIGH", None, [[data[8], data[9], data[10]]; 4])
+            }
+            b"REGN" => {
+                let Some(weather) = view.find(b"RDWT").and_then(emittance::region_weather) else {
+                    eprintln!(
+                        "warning: emittance REGN {target:08X} names no weather; no emittance row"
+                    );
+                    continue;
+                };
+                let Some(colours) = master
+                    .get(&weather)
+                    .filter(|record| record.record_type == *b"WTHR" && !record.is_deleted())
+                    .and_then(|record| SubrecordView::new(&record.subrecords).find(b"NAM0"))
+                    .and_then(emittance::weather_effect_lighting)
+                else {
+                    eprintln!(
+                        "warning: emittance REGN {target:08X} weather {weather:08X} has no Effect Lighting colours; no emittance row"
+                    );
+                    continue;
+                };
+                ("REGN", Some(weather), colours)
+            }
+            other => {
+                eprintln!(
+                    "warning: emittance target {target:08X} is a {}, not a LIGH or REGN; no emittance row",
+                    String::from_utf8_lossy(other)
+                );
+                continue;
+            }
+        };
+        let [sunrise, day, sunset, night] = colours;
+        tx.execute(
+            "INSERT OR REPLACE INTO emittance(id, source_type, weather_id, sunrise_r, sunrise_g, sunrise_b, day_r, day_g, day_b, sunset_r, sunset_g, sunset_b, night_r, night_g, night_b)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                target, source_type, weather,
+                sunrise[0], sunrise[1], sunrise[2],
+                day[0], day[1], day[2],
+                sunset[0], sunset[1], sunset[2],
+                night[0], night[1], night[2],
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// Projects xEdit's TES5 GRAS/DATA layout without inventing missing fields.
@@ -1045,11 +1157,18 @@ fn insert_reference_with_canonical_data(
         .and_then(SubrecordXESP::parse)
         .map(|parent| (parent.parent_ref, parent.flags))
         .unzip();
+    // `XEMI` names the light or region whose colour the model's `External_Emittance` surfaces
+    // take; `insert_emittance_sources` resolves it. A cleared link (0) stores NULL.
+    let emittance_id = view
+        .find(b"XEMI")
+        .filter(|bytes| bytes.len() >= 4)
+        .map(|bytes| u32::from_le_bytes(bytes[..4].try_into().expect("four-byte XEMI source")))
+        .filter(|&id| id != 0);
 
     tx.prepare_cached(
-        "INSERT OR REPLACE INTO \"references\"(id, cell_id, worldspace_id, base_form_id, is_exterior, pos_x, pos_y, pos_z, local_x, local_y, rot_x, rot_y, rot_z, scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, data)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?.execute(
-        params![form_id, cell_id, worldspace_id, base_form_id, is_exterior, pos[0], pos[1], pos[2], local_x, local_y, rot[0], rot[1], rot[2], scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, blob],
+        "INSERT OR REPLACE INTO \"references\"(id, cell_id, worldspace_id, base_form_id, is_exterior, pos_x, pos_y, pos_z, local_x, local_y, rot_x, rot_y, rot_z, scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?.execute(
+        params![form_id, cell_id, worldspace_id, base_form_id, is_exterior, pos[0], pos[1], pos[2], local_x, local_y, rot[0], rot[1], rot[2], scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, blob],
     )?;
     // A subset update can move an existing reference into an interior.
     tx.prepare_cached("DELETE FROM exterior_spatial WHERE id=?1")?
@@ -1095,6 +1214,7 @@ pub fn validate_database(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
 
     /// The schema has the interior index, the exterior spatial table and every projection table.
     #[test]
@@ -1123,6 +1243,7 @@ mod tests {
             "land",
             "statics",
             "lights",
+            "emittance",
             "npcs",
             "movement_types",
             "race_movement_links",
@@ -1846,6 +1967,243 @@ mod tests {
         assert_eq!(radius(0x1000), Some(f64::from(544.3856f32)));
         assert_eq!(radius(0x2000), None, "a reference without XRDS stays NULL");
         assert_eq!(radius(0x3000), None, "a two-byte XRDS holds no radius");
+    }
+
+    /// A reference lit by `source` through `XEMI`.
+    fn emitting_reference(form_id: u32, source: u32) -> RawRecord {
+        let mut reference = reference(form_id, 0x100, 0x900, [0.0; 3], [0.0; 3]);
+        reference
+            .subrecords
+            .push((b"XEMI".to_vec(), source.to_le_bytes().to_vec()));
+        reference
+    }
+
+    /// A `WTHR` whose 14 `NAM0` colour types are black except Effect Lighting.
+    fn weather(form_id: u32, effect_lighting: [[u8; 3]; 4]) -> RawRecord {
+        let mut nam0 = vec![0u8; 14 * 16];
+        for (time, rgb) in effect_lighting.iter().enumerate() {
+            nam0[9 * 16 + time * 4..9 * 16 + time * 4 + 3].copy_from_slice(rgb);
+        }
+        record(form_id, b"WTHR", None, None, vec![(b"NAM0".to_vec(), nam0)])
+    }
+
+    /// A `REGN` listing `(weather, chance)` pairs, without globals.
+    fn region(form_id: u32, weathers: &[(u32, u32)]) -> RawRecord {
+        let rdwt = weathers
+            .iter()
+            .flat_map(|(weather, chance)| {
+                [weather.to_le_bytes(), chance.to_le_bytes(), [0; 4]].concat()
+            })
+            .collect();
+        record(form_id, b"REGN", None, None, vec![(b"RDWT".to_vec(), rdwt)])
+    }
+
+    type EmittanceRow = (String, Option<u32>, [[u8; 3]; 4]);
+
+    fn emittance_row(conn: &Connection, id: u32) -> Option<EmittanceRow> {
+        conn.query_row(
+            "SELECT source_type, weather_id, sunrise_r, sunrise_g, sunrise_b, day_r, day_g, day_b,
+                    sunset_r, sunset_g, sunset_b, night_r, night_g, night_b
+             FROM emittance WHERE id=?1",
+            [id],
+            |row| {
+                let colour = |time: usize| -> Result<[u8; 3]> {
+                    Ok([
+                        row.get(2 + time * 3)?,
+                        row.get(3 + time * 3)?,
+                        row.get(4 + time * 3)?,
+                    ])
+                };
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    [colour(0)?, colour(1)?, colour(2)?, colour(3)?],
+                ))
+            },
+        )
+        .optional()
+        .unwrap()
+    }
+
+    /// Writes the `emittance` rows the way the load-order export does after its records.
+    fn export_with_emittance(conn: &Connection, master: &HashMap<u32, RawRecord>) {
+        export_to_db(conn, master).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        insert_emittance_sources(&tx, master).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn resolves_reference_emittance_from_regions_and_lights() {
+        const INVERT_WINDOW: [[u8; 3]; 4] =
+            [[124, 70, 16], [0, 0, 0], [243, 118, 54], [242, 176, 55]];
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let mut master = HashMap::new();
+        for record in [
+            emitting_reference(0x1000, 0x8277B),
+            emitting_reference(0x1001, 0x8277B),
+            emitting_reference(0x2000, 0x700),
+            emitting_reference(0x3000, 0x600),
+            emitting_reference(0x4000, 0x900),
+            emitting_reference(0x5000, 0xDEAD),
+            emitting_reference(0x6000, 0),
+            reference(0x7000, 0x100, 0x900, [0.0; 3], [0.0; 3]),
+            // The likeliest weather wins.
+            region(0x8277B, &[(0x500, 10), (0x8277A, 90)]),
+            weather(0x500, [[255; 3]; 4]),
+            weather(0x8277A, INVERT_WINDOW),
+            light(
+                0x700,
+                "WindowFill",
+                light_data_bytes(256, [255, 200, 120], 0, 1.0),
+                None,
+                None,
+            ),
+            // A region whose only weather is missing resolves to nothing.
+            region(0x600, &[(0x601, 100)]),
+            // `XEMI` names a light or a region; a static has no colour to lend.
+            record(0x900, b"STAT", None, None, Vec::new()),
+        ] {
+            master.insert(record.form_id, record);
+        }
+
+        export_with_emittance(&conn, &master);
+
+        let emittance_id = |id: u32| -> Option<u32> {
+            conn.query_row(
+                "SELECT emittance_id FROM \"references\" WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(emittance_id(0x1000), Some(0x8277B));
+        assert_eq!(emittance_id(0x6000), None, "a cleared XEMI stores NULL");
+        assert_eq!(emittance_id(0x7000), None, "no XEMI stores NULL");
+
+        assert_eq!(
+            emittance_row(&conn, 0x8277B),
+            Some(("REGN".into(), Some(0x8277A), INVERT_WINDOW))
+        );
+        assert_eq!(
+            emittance_row(&conn, 0x700),
+            Some(("LIGH".into(), None, [[255, 200, 120]; 4]))
+        );
+        for unresolved in [0x600, 0x900, 0xDEAD] {
+            assert_eq!(emittance_row(&conn, unresolved), None, "{unresolved:08X}");
+        }
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM emittance", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
+    /// A second export into the same database drops the colour of a target that no longer
+    /// resolves, instead of keeping the first export's row.
+    #[test]
+    fn re_exporting_drops_emittance_that_no_longer_resolves() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let mut master = HashMap::new();
+        for record in [
+            emitting_reference(0x1000, 0x8277B),
+            region(0x8277B, &[(0x8277A, 100)]),
+            weather(0x8277A, [[0; 3]; 4]),
+        ] {
+            master.insert(record.form_id, record);
+        }
+        export_with_emittance(&conn, &master);
+        assert!(emittance_row(&conn, 0x8277B).is_some());
+
+        master.remove(&0x8277A);
+        export_with_emittance(&conn, &master);
+        assert_eq!(emittance_row(&conn, 0x8277B), None);
+    }
+
+    /// A `references` table from before the emittance export has no `emittance_id`; `create_tables`
+    /// adds it, so a complete export into a reused database still inserts its references.
+    #[test]
+    fn create_tables_adds_emittance_id_to_an_older_references_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"CREATE TABLE "references" (
+                id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL, worldspace_id INTEGER,
+                base_form_id INTEGER NOT NULL, is_exterior INTEGER NOT NULL,
+                pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+                local_x REAL, local_y REAL, rot_x REAL NOT NULL, rot_y REAL NOT NULL,
+                rot_z REAL NOT NULL, scale REAL NOT NULL DEFAULT 1.0,
+                radius_override REAL, header_flags INTEGER NOT NULL DEFAULT 0,
+                enable_parent_id INTEGER, enable_parent_flags INTEGER, data BLOB
+            );"#,
+        )
+        .unwrap();
+        create_tables(&conn).unwrap();
+        // A second call finds the column and leaves the table alone.
+        create_tables(&conn).unwrap();
+        let mut master = HashMap::new();
+        for record in [
+            emitting_reference(0x1000, 0x8277B),
+            region(0x8277B, &[(0x8277A, 100)]),
+            weather(0x8277A, [[0; 3]; 4]),
+        ] {
+            master.insert(record.form_id, record);
+        }
+        export_with_emittance(&conn, &master);
+        let emittance_id: Option<u32> = conn
+            .query_row(
+                "SELECT emittance_id FROM \"references\" WHERE id=0x1000",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(emittance_id, Some(0x8277B));
+        assert!(emittance_row(&conn, 0x8277B).is_some());
+    }
+
+    /// The Sleeping Giant Inn's reference in Riverwood names `FXLightRegionInvertWindowWhiterun`,
+    /// whose weather `FXWthrInvertWindowsWhiterun` gives its windows no colour by day (#242).
+    ///
+    /// Reads the game install, so it is opt-in:
+    /// `cargo test -p converter --lib -- --ignored`.
+    #[test]
+    #[ignore = "requires MUDCRAB_SKYRIM_DATA with locally installed game assets"]
+    fn the_sleeping_giant_inn_windows_are_dark_by_day() {
+        const INN: u32 = 0x2D763;
+        const REGION: u32 = 0x8277B;
+        const WEATHER: u32 = 0x8277A;
+        let data_dir = std::env::var_os("MUDCRAB_SKYRIM_DATA")
+            .or_else(|| std::env::var_os("OPENSKYRIM_SKYRIM_DATA"))
+            .map(std::path::PathBuf::from)
+            .expect("set MUDCRAB_SKYRIM_DATA to the Skyrim Data directory");
+        let records = crate::esm::binary::parse_plugin_file(&data_dir.join("Skyrim.esm")).unwrap();
+        let master: HashMap<u32, RawRecord> = records
+            .into_iter()
+            .filter(|record| [INN, REGION, WEATHER].contains(&record.form_id))
+            .map(|record| (record.form_id, record))
+            .collect();
+        assert_eq!(master.len(), 3, "the inn, its region and its weather");
+
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        export_with_emittance(&conn, &master);
+
+        let source: Option<u32> = conn
+            .query_row(
+                "SELECT emittance_id FROM \"references\" WHERE id=?1",
+                [INN],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, Some(REGION));
+        assert_eq!(
+            emittance_row(&conn, REGION),
+            Some((
+                "REGN".into(),
+                Some(WEATHER),
+                [[124, 70, 16], [0, 0, 0], [243, 118, 54], [242, 176, 55]]
+            ))
+        );
     }
 
     /// The real `LIGH` records and their references, read through the same

@@ -154,6 +154,7 @@ expression: snapshot
       "data": {
         "encoded_bytes": 60
       },
+      "emittance_id": null,
       "enable_parent_flags": null,
       "enable_parent_id": null,
       "header_flags": 0,
@@ -177,6 +178,7 @@ expression: snapshot
       "data": {
         "encoded_bytes": 104
       },
+      "emittance_id": null,
       "enable_parent_flags": null,
       "enable_parent_id": null,
       "header_flags": 0,
@@ -200,6 +202,7 @@ expression: snapshot
       "data": {
         "encoded_bytes": 104
       },
+      "emittance_id": null,
       "enable_parent_flags": null,
       "enable_parent_id": null,
       "header_flags": 0,
