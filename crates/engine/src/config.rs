@@ -138,6 +138,10 @@ pub struct EngineConfig {
     /// Whether a streamed `LIGH` reference places a point light (`--lights`). Off by default, so
     /// every run that does not ask for lights renders exactly as it did before.
     pub lights: bool,
+    /// Whether the main camera culls interior objects by room and portal (`--room-culling`). Off
+    /// by default; it needs the converter's room tables (`db-schema.md` section 15) and does
+    /// nothing without them.
+    pub room_culling: bool,
     pub physics_fixture: bool,
 }
 
@@ -204,6 +208,7 @@ impl Default for EngineConfig {
             renderer_fixture: false,
             streaming_fixture: false,
             lights: false,
+            room_culling: false,
             physics_fixture: false,
         }
     }
@@ -231,6 +236,7 @@ Assets and start position:
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
   --lights                              place a point light for each streamed LIGH reference
+  --room-culling                        cull interior objects by room and portal (needs the room tables)
 
 Streaming:
   --ini <file>                        layer Skyrim INI settings; CLI options override files
@@ -774,6 +780,7 @@ impl EngineConfig {
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
                 "--lights" => config.lights = true,
+                "--room-culling" => config.room_culling = true,
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
@@ -1609,6 +1616,7 @@ mod tests {
             "--renderer-fixture",
             "--streaming-fixture",
             "--lights",
+            "--room-culling",
             "--physics-fixture",
         ]);
         assert_eq!(config.assets_dir, PathBuf::from("converted"));
@@ -1654,6 +1662,7 @@ mod tests {
         assert!(config.renderer_fixture);
         assert!(config.streaming_fixture);
         assert!(config.lights);
+        assert!(config.room_culling);
         assert!(config.physics_fixture);
     }
 
@@ -1698,6 +1707,14 @@ mod tests {
             "another flag does not turn lights on"
         );
         assert!(run_config(&["--lights"]).lights);
+    }
+
+    /// Room culling is opt-in like lights: nothing changes unless the flag is given.
+    #[test]
+    fn room_culling_is_off_until_the_flag_is_given() {
+        assert!(!EngineConfig::default().room_culling);
+        assert!(!run_config(&["--headless"]).room_culling);
+        assert!(run_config(&["--room-culling"]).room_culling);
     }
 
     #[test]

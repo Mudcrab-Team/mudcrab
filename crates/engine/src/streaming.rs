@@ -1254,6 +1254,10 @@ fn spawn_cell(
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
+            // Actors, doors and loose objects are never culled by their stored room.
+            if crate::room_culling::exempt_record_type(reference.base_record_type.as_deref()) {
+                entity.insert(crate::room_culling::RoomCullExempt);
+            }
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.

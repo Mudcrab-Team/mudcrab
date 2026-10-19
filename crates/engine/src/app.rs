@@ -170,6 +170,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
+    let room_culling = crate::room_culling::RoomCullingPlugin::from_config(&config);
     app.insert_resource(config)
         .insert_resource(origin)
         .insert_resource(render_asset_budget)
@@ -213,6 +214,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
+        // Registered for every run; with `--room-culling` off it adds no system.
+        .add_plugins(room_culling)
         .add_systems(PostUpdate, keep_windows_hidden);
     add_camera_and_capture_systems(&mut app);
     if let Some((database, catalog, cache, ground_height)) = runtime_data {
