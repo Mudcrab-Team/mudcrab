@@ -38,6 +38,143 @@ fn grass(id: u32, density: u8) -> Vec<u8> {
     )
 }
 
+/// Same-priority LAND uses the shared deterministic fallback in both cache and SQL.
+#[test]
+fn same_priority_land_cells_publish_with_valid_neighbors() {
+    const CHILD_ROOT: &str = "MUDCRAB_AMBIGUOUS_LAND_TEST_ROOT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let paths = [root.join("Base.esm"), root.join("Patch.esp")];
+        let db = root.join("world.db");
+        EsmParser::convert_plugins(&paths, &db).unwrap();
+        let records = EsmParser::merge_plugins(&paths).unwrap();
+        let path = root.join("cell_cache.rkyv");
+        assert_eq!(
+            converter::esm::cell_cache::write_cell_cache(&records, &path).unwrap(),
+            4
+        );
+        let cache =
+            rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(&fs::read(path).unwrap())
+                .unwrap();
+        let conn = rusqlite::Connection::open(db).unwrap();
+        for (cell, height) in [(100, 80.0), (200, 72.0), (300, 40.0), (400, 48.0)] {
+            let terrain = cache
+                .cells
+                .iter()
+                .find(|land| land.cell_id == cell)
+                .unwrap();
+            assert_eq!(terrain.heights[0], height);
+            let bytes: Vec<u8> = conn
+                .query_row(
+                    "SELECT heightmap FROM land WHERE cell_id=?1",
+                    [cell],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                f32::from_le_bytes(bytes[..4].try_into().unwrap()) * 8.0,
+                height
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM land", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM records WHERE record_type='LAND'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            10
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT record_type FROM records WHERE form_id=2304",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "STAT"
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let land = |id: u32, height: f32| {
+        let mut bytes = height.to_le_bytes().to_vec();
+        bytes.extend(vec![0; 33 * 33 + 3]);
+        record(b"LAND", id, 0, sub(b"VHGT", &bytes))
+    };
+    let group = |cell: u32, payload: Vec<u8>| {
+        [
+            b"GRUP".as_slice(),
+            &(payload.len() as u32 + 24).to_le_bytes(),
+            &cell.to_le_bytes(),
+            &6u32.to_le_bytes(),
+            &[0; 8],
+            &payload,
+        ]
+        .concat()
+    };
+    let mut base: Vec<u8> = [100, 200, 300, 400]
+        .into_iter()
+        .flat_map(|cell| record(b"CELL", cell, 0, sub(b"DATA", &[0])))
+        .collect();
+    base.extend(group(100, land(0x800, 1.0)));
+    base.extend(group(200, land(0x802, 9.0)));
+    // This older plugin's ambiguous cell is superseded by one higher-priority LAND.
+    base.extend(group(400, [land(0x804, 2.0), land(0x805, 3.0)].concat()));
+    base.extend(record(b"STAT", 0x900, 0, sub(b"EDID", b"Unaffected\0")));
+    plugin(dir.path(), "Base.esm", &[], 1, base);
+    plugin(
+        dir.path(),
+        "Patch.esp",
+        &["Base.esm"],
+        0,
+        [
+            // IDs deliberately disagree with physical record order. The merged map
+            // lacks source positions, so the shared highest-ID fallback applies.
+            group(
+                100,
+                [
+                    land(0x0100_0812, 10.0),
+                    land(0x0100_0810, 7.0),
+                    land(0x0100_0811, 8.0),
+                ]
+                .concat(),
+            ),
+            group(
+                300,
+                [land(0x0100_0820, 4.0), land(0x0100_0821, 5.0)].concat(),
+            ),
+            group(400, land(0x0100_0830, 6.0)),
+        ]
+        .concat(),
+    );
+    // Capture real stderr without changing process-global descriptors or loggers.
+    // Repeated conversions must preserve the same deterministic selection.
+    for _ in 0..2 {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "same_priority_land_cells_publish_with_valid_neighbors",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, dir.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "{stderr}\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!stderr.contains("warning: base.esm:"), "{stderr}");
+    }
+}
+
 #[test]
 fn oversized_light_ids_warn_for_references_but_reject_landscape_records() {
     const CHILD_PLUGIN: &str = "MUDCRAB_LIGHT_ID_WARNING_TEST_PLUGIN";

@@ -69,16 +69,17 @@ reason is chained onto a later failure's error. Cubemaps and volumes of these la
 formats, palettes and L8 also fall back to UASTC. Under `--texture-encoder gpu` these textures are
 encoded to UASTC on the GPU instead.
 
-The combined native-BC DDS, authored surface-input and corrected TXST semantic producer
-uses converter schema 26. Texture-set TX02 selects environment-mask linear data,
+The combined native-BC DDS, authored surface-input and corrected TXST semantic producer arrived in
+converter schema 26; the current producer is 27 (collision coverage), with the same texture contract.
+Texture-set TX02 selects environment-mask linear data,
 TX03 emissive color, TX04 height linear data and TX05 environment-cube color.
 Schema 18 was allocated independently to native-BC DDS and specular changes, so its numeric identity
-cannot prove mesh or texture compatibility. Manifests from known schemas 12–24 rebuild all
-textures and world outputs. Producer 24 has an explicitly compatible GLB contract, so verified
-GLBs remain reusable; producers 12–23 rebuild GLBs. Source/configuration/output-verified scripts
-and archive ingestion remain reusable. Configuration hashes since schema 22 include CPU/GPU
+cannot prove mesh or texture compatibility. Manifests from known schemas 12–24 and 26 rebuild all
+textures, GLBs and world outputs. Producer 24's explicitly compatible GLB contract ends with producer
+27, which changes GLB collision data, so no earlier GLBs remain reusable. Source/configuration/output-verified
+scripts and archive ingestion remain reusable. Configuration hashes since schema 22 include CPU/GPU
 encoder selection and GPU quality; GPU batch size changes scheduling only. Staged outputs
-require exact current schema 26 provenance. Earlier texture bytes are never promoted to current
+require exact current schema 27 provenance. Earlier texture bytes are never promoted to current
 output. Metadata-only rebuilds retain original asset provenance and do not repair old encodings.
 
 Byte preservation is asserted per mip level in fixtures, and a Bevy engine test loads native

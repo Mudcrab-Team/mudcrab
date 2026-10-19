@@ -33,7 +33,10 @@ pub struct SubrecordXAPR {
     pub delay: f32,
 }
 
-/// Enable Parent Subrecord (XESP, 8 bytes)
+/// Enable Parent Subrecord: four-byte parent, one flags byte, three unused bytes.
+///
+/// Layout source: xEdit 4.1.5f, `wbXESP` (`itU8` flags and three unused bytes):
+/// <https://github.com/TES5Edit/TES5Edit/blob/f5c00f3fa3ee39511185515802647246c807f759/Core/wbDefinitionsTES5.pas#L5156-L5163>.
 #[derive(Debug)]
 pub struct SubrecordXESP {
     pub parent_ref: u32,
@@ -41,6 +44,15 @@ pub struct SubrecordXESP {
 }
 
 impl SubrecordXESP {
+    pub(crate) fn parse(data: &[u8]) -> Option<Self> {
+        let data = data.get(..8)?;
+        Some(Self {
+            parent_ref: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            // Retail XESP padding can be non-zero; retain only the flags byte.
+            flags: u32::from(data[4]),
+        })
+    }
+
     pub fn set_enable_opposite(&self) -> bool {
         (self.flags & 0x0001) != 0
     }
@@ -156,13 +168,7 @@ impl EsmRecord for AchrRecord {
         }
 
         let horse_id = view.get_form_id(b"XHOR");
-        let enable_parent = view
-            .find(b"XESP")
-            .filter(|d| d.len() >= 8)
-            .map(|d| SubrecordXESP {
-                parent_ref: u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
-                flags: u32::from(d[4]),
-            });
+        let enable_parent = view.find(b"XESP").and_then(SubrecordXESP::parse);
 
         let owner = view.get_form_id(b"XOWN");
         let location = view
@@ -216,6 +222,51 @@ impl EsmRecord for AchrRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v174_achr_enable_parent_ignores_xesp_padding() {
+        for flags in 0..=u8::MAX {
+            let raw = RawRecord {
+                form_id: 0x1000,
+                record_type: *b"ACHR",
+                flags: 0,
+                subrecords: vec![
+                    (b"NAME".to_vec(), 7u32.to_le_bytes().to_vec()),
+                    (
+                        b"XESP".to_vec(),
+                        [0x78, 0x56, 0x34, 0x12, flags, 0x0D, 0xBF, 0x38].to_vec(),
+                    ),
+                ],
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            };
+            let parent = AchrRecord::parse(&raw).unwrap().enable_parent.unwrap();
+            assert_eq!(parent.parent_ref, 0x1234_5678);
+            assert_eq!(parent.flags, u32::from(flags));
+            assert_eq!(parent.set_enable_opposite(), flags & 1 != 0);
+            assert_eq!(parent.pop_in(), flags & 2 != 0);
+        }
+    }
+
+    #[test]
+    fn v174_achr_enable_parent_requires_complete_xesp() {
+        for length in 0..8 {
+            let raw = RawRecord {
+                form_id: 0x1000,
+                record_type: *b"ACHR",
+                flags: 0,
+                subrecords: vec![
+                    (b"NAME".to_vec(), 7u32.to_le_bytes().to_vec()),
+                    (b"XESP".to_vec(), vec![0xFF; length]),
+                ],
+                cell_form_id: None,
+                worldspace_form_id: None,
+                load_order: 0,
+            };
+            assert!(AchrRecord::parse(&raw).unwrap().enable_parent.is_none());
+        }
+    }
 
     #[test]
     fn parses_achr_pdto_with_little_endian() {

@@ -62,12 +62,12 @@ expression: manifest
     }
   },
   "asset_configuration_hashes": {
-    "dds": "56b588cc8e2cc51e7fbdd4ee25f5b5db3bc9eeda24d7cc1c2d566329f513b760",
-    "nif": "57430a12a46f7610f7297f5513d6aa633dfa4c079ac40f01b96f251337dba01a",
+    "dds": "a219a7c650f50a442d6a12b19c965feed2eb480b534474f516a0ee4187feec40",
+    "nif": "2378d459ee153ec2dba792300e620bbd599ca389e9e62e1df5597ffff8962f16",
     "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
   },
   "complete": true,
-  "configuration_hash": "8b5b189175ee095ede0571ab1dc1ff8af88acfb58e3f55ca70fc269a325084d4",
+  "configuration_hash": "9a2926b704ad4c96d1987300d983a4d0bc23070e31dea991bd711ac08c3dc5ee",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -126,5 +126,5 @@ expression: manifest
   },
   "pruned_texture_references": {},
   "record_data_complete": true,
-  "schema_version": 26
+  "schema_version": 27
 }

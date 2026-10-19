@@ -62,7 +62,7 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '\.(ps1|py)$'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
@@ -103,6 +103,9 @@ jobs:
       - name: Test repeated terrain startup runner
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
+      - name: Test Riverwood LOD capture gates
+        run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
@@ -115,6 +118,9 @@ jobs:
             fi
           done < <(git ls-files '*.ps1')
           exit "$failed"
+
+      - name: Verify LOD acceptance summary checks
+        run: python3 -m unittest discover -s scripts/tests -p test_lod_acceptance_summary.py -v
 
   enable_observations:
     needs: [orchestrate]

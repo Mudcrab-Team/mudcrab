@@ -115,11 +115,11 @@ impl AssetPipeline {
                 .map_err(color_eyre::eyre::Error::msg)?,
         )?;
         ensure!(
-            (matches!(manifest.schema_version, 15 | 16 | 19..=24)
+            (matches!(manifest.schema_version, 15 | 16 | 19..=24 | 26)
                 || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
                 && manifest.complete
                 && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15, 16, 19 through 24 or {} assets",
+            "metadata rebuild requires complete converter schema 15, 16, 19 through 24, 26 or {} assets",
             CONVERTER_SCHEMA_VERSION
         );
         ensure!(
@@ -131,7 +131,8 @@ impl AssetPipeline {
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
         ensure!(
-            (matches!(mesh_schema, 15 | 16 | 19..=24) || mesh_schema == CONVERTER_SCHEMA_VERSION)
+            (matches!(mesh_schema, 15 | 16 | 19..=24 | 26)
+                || mesh_schema == CONVERTER_SCHEMA_VERSION)
                 && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );
@@ -588,6 +589,7 @@ async fn rebuild_into(
     compile_lod_chunks(
         config,
         staging,
+        source,
         plugins,
         plugin_hashes,
         progress,

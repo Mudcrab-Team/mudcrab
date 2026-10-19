@@ -38,19 +38,24 @@ from TX04 and `environment_path` from TX05. TX00 and TX01 provide diffuse and
 normal paths. Both frontends project TX06 into `detail_path` and TX07 into
 `specular_path`, as documented above. Schema 9 also
 projects only XESP byte 4 into `enable_parent_flags`. Separate candidate fixes
-used producer 25/world 8 for different contracts; combined output uses 26/9.
+used producer 25/world 8 for different contracts; the combined output first shipped
+as 26/9, and producer 27 keeps world schema 9.
 The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 26**. Legacy worlds render full detail without
+support schemas **15 through 27**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
 
 Converter producer 26 also corrects the texture encodings chosen from those
-columns. Normal conversion rebuilds every older KTX2, the database, cell cache
-and derived LOD outputs. Verified producer-24 GLBs, unchanged scripts and
-archive ingestion remain reusable with matching source/dependency,
-configuration and output-byte proof; producers 12-23 still rebuild GLBs.
+columns. Producer 27 adds sphere, multi-sphere and cylinder collision shapes
+and more physical layers to the GLB collision data; the database stays at
+schema 9. Normal conversion rebuilds every older GLB and KTX2, the database,
+cell cache and derived LOD outputs. Unchanged scripts and archive ingestion
+remain reusable with matching source/dependency, configuration and
+output-byte proof; no earlier producer's GLBs are reusable, including the
+producer-24 GLBs that producer 26 accepted.
 Metadata-only rebuilds preserve the original retained producer/configuration
-and texture bytes. Run normal conversion to repair those retained encodings.
+and mesh and texture bytes. Run normal conversion to repair those retained
+encodings and collision data.
 
 The legacy TX06/TX07 alignment changes the SQL role assignment while retaining
 the current texture-byte encoding: multilayer/detail and specular/backlight are
@@ -325,6 +330,7 @@ CREATE TABLE IF NOT EXISTS references (
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
+    emittance_id INTEGER,               -- Remapped XEMI light or region FormID; NULL when absent
     data BLOB                           -- Subrecords payload
 );
 
@@ -346,6 +352,9 @@ include padding in the normalized flags value; reconversion corrects that
 projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
+
+`emittance_id` is the reference's `XEMI`: the light or region whose colour the
+`External_Emittance` surfaces of its model take (§16). A cleared link is stored as NULL.
 
 ---
 
@@ -492,6 +501,7 @@ reference and cell fields, validated against their expected sizes:
 | `XCIM`, `XCMO`, `XCAS` | CELL | image space, music type, acoustic space |
 | `XCCM` | CELL | region the cell takes its sky and weather from |
 | `XCLR` | CELL | regions (array) |
+| `RDWT` | REGN | each 12-byte entry's weather (bytes 0-3) and global (bytes 8-11); the chance is kept |
 | `XPOD` | REFR | the rooms a portal marker joins: an array of (origin, destination) pairs; every u32 a FormID (xEdit 4.1.5f defs) |
 | `XLRM` | REFR | linked room of a room marker |
 | `LNAM`, `INAM` | REFR | room marker lighting template, image space (other record types keep their own handling) |
@@ -805,3 +815,113 @@ them yet; a reader must probe for them first, as the engine does for `lights` an
 | Camera outside every room | n/a | draw everything |
 | Non-box room shape | skipped, counted | its objects are in no room, so drawn |
 | Exterior markers | not written | out of scope (#106) |
+
+---
+
+### 16. Reference Emittance Sources (`emittance`)
+
+A NIF shader with `SLSF1_External_Emittance` (bit 29) takes its emission colour from outside the
+model: from the light or region the placing reference names in `XEMI`
+(`references.emittance_id`). Skyrim keeps building windows dark by day this way. The Sleeping Giant
+Inn's reference in Riverwood (`0002D763`) names `FXLightRegionInvertWindowWhiterun` (`0008277B`),
+whose one weather `FXWthrInvertWindowsWhiterun` (`0008277A`) has a black Effect Lighting colour by
+day and an amber one at night (#242).
+
+The complete load-order export rebuilds the table, writing one row per distinct `XEMI` target it can
+resolve, as 8-bit sRGB at sunrise, day, sunset and night:
+
+- `LIGH`: the `DATA` colour (bytes 8-10), the same at every time of day.
+- `REGN`: the `RDWT` weather with the highest chance (the first on a tie), and that weather's
+  `NAM0` Effect Lighting colour, the tenth colour type. `NAM0` holds 16 bytes per colour type
+  (sunrise, day, sunset and night, each RGB and an unused byte); the official plugins store 13,
+  14 or 17 types. A region changes weather with its climate, which the runtime does not model, so
+  its likeliest weather stands in.
+
+Effect Lighting rather than Sunlight: the inn's window shader has a white tint and a neutral grey
+glow map, so the warm colour of Skyrim's lit windows at night can only come from the source. Both
+colours are black by day for the window regions.
+
+A target that is missing, deleted, not a `LIGH` or `REGN`, or whose weather has no Effect Lighting
+colour gets no row and a warning; the runtime then keeps the model's own emission. The movement
+annotator's subset export does not touch this table.
+
+Measured on Skyrim SE with its official plugins: 9,655 references carry `XEMI`, naming 211
+sources. 166 lights and 31 regions resolve; 14 regions list no weather at all (the largest,
+`RiverwoodMountainsSnow` `0002E2CC`, is named by 479 references), and what Skyrim lends from such
+a region is unverified, so their 651 references keep the model's emission.
+
+```sql
+CREATE TABLE IF NOT EXISTS emittance (
+    id INTEGER PRIMARY KEY,        -- XEMI target: a LIGH or REGN FormID
+    source_type TEXT NOT NULL,     -- 'LIGH' or 'REGN'
+    weather_id INTEGER,            -- REGN: the WTHR its colours come from
+    sunrise_r INTEGER NOT NULL, sunrise_g INTEGER NOT NULL, sunrise_b INTEGER NOT NULL,
+    day_r INTEGER NOT NULL, day_g INTEGER NOT NULL, day_b INTEGER NOT NULL,
+    sunset_r INTEGER NOT NULL, sunset_g INTEGER NOT NULL, sunset_b INTEGER NOT NULL,
+    night_r INTEGER NOT NULL, night_g INTEGER NOT NULL, night_b INTEGER NOT NULL
+);
+```
+
+The engine reads the day columns, its one time of day; see
+[`color-pipeline.md`](../engine/color-pipeline.md#external-emittance-242).
+
+**The table and `references.emittance_id` are optional and did not bump
+`shared::WORLD_DATABASE_SCHEMA_VERSION`**, for the same reason as the room tables: they only add a
+table and a column, and the engine probes for both. `create_tables` adds `emittance_id` to an older
+reused `references` table. A database without them loads with every reference unlit by `XEMI`, so
+`External_Emittance` surfaces keep the model's own emission.
+
+---
+
+### 17. Load Door Links (`door_links`)
+
+A load door is a `REFR` of a `DOOR` base record that carries an `XTEL` subrecord. `XTEL` is 32
+bytes in Skyrim SE: the destination door reference (FormID, bytes 0..4), the arrival position
+(three `f32`, bytes 4..16), the arrival rotation (three `f32` radians, bytes 16..28) and a `u32`
+flags word (bytes 28..32, `1` = no alarm). The arrival frame is the one the player is placed in
+on this side's destination, not the position of the destination door. Both record readers keep
+the 32 bytes unchanged in `records.data` and remap the destination FormID with the load order
+(`form_id_layout` in `crates/converter/src/esm/mod.rs`; the in-house schema describes the
+subrecord as `teleport` in `crates/converter/src/records/schema.json`). The `door_links` table is
+projected from those canonical `records` and `references` rows, not from either reader, so the
+legacy and in-house frontends publish identical rows.
+
+```sql
+CREATE TABLE IF NOT EXISTS door_links (        -- one row per load door that can be followed
+    ref_id INTEGER PRIMARY KEY,                -- references.id of the door
+    destination_ref_id INTEGER NOT NULL,       -- XTEL[0..4], after FormID remapping
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,   -- XTEL[4..16], Creation units
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,   -- XTEL[16..28], radians
+    destination_cell_id INTEGER NOT NULL,      -- cells.id of the cell holding the destination door
+    destination_worldspace_id INTEGER,         -- that cell's worldspace, NULL for an interior
+    destination_name TEXT                      -- interior cell FULL (else EDID), or the worldspace EDID
+);
+```
+
+A door is skipped, with no row, when it has no `XTEL`, when the `XTEL` is not exactly 32 bytes,
+when the destination is `0`, when any arrival value is not finite, or when the destination door
+is not a placed `DOOR` reference in a stored cell (an exterior cell needs its grid). The winning
+record decides: an override that removes `XTEL` removes the link. The `XTEL` flags word is not
+projected; it stays in `records.data`.
+
+A full load-order export clears and rebuilds the table on every conversion, like the grass and
+room tables. The movement-annotation subset export leaves it alone, and a diagnostic archive
+(which defers every runtime view) leaves it empty. `create_tables` adds the table to an older
+reused database, and adds `destination_name` to a table that predates it.
+`door-links-annotate <skyrim_world.db>` rebuilds it in one transaction from a converted
+database's own winning records, with no plugin reparsed, so an existing package gains doors
+without a full conversion. It takes the asset lock exclusively (close the engine first), accepts
+schemas 4 through the current one, and leaves meshes, terrain, `schema_info`, reader identity and
+the other tables unchanged. A corrupt `records` row fails the rebuild and keeps the old table.
+
+**This table is optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**, for the same
+reason as the room tables: it only adds a table, and the engine probes for it. The engine reads
+it through a `LEFT JOIN` on `references`, only when the table exists with every column above.
+
+| Case | Converter writes | Engine |
+|---|---|---|
+| Old database, table absent | n/a | logs once, doors stay scenery |
+| Table of another shape (missing column) | n/a | warns, doors stay scenery |
+| Door without `XTEL`, or with a malformed one | no row | scenery |
+| Destination cell has no resolvable record | no row | scenery |
+| Row with a NULL arrival value | n/a | not a load door |

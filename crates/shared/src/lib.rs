@@ -12,13 +12,16 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// Current combined database contract: corrected TXST roles and one-byte XESP flags.
 pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 /// Latest producer required when a package advertises the combined LOD contract.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 26;
+/// 27: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
+/// shapes) changes GLB collision extras.
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 27;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and
-/// so the oldest the launcher calls ready. Schemas 4 and 5 only added tables and columns (`lights`,
-/// `references.radius_override`, the movement tables, water fresnel columns and grass tables), and every
-/// runtime query probes for them, so a schema 3 database still loads.
+/// so the oldest the launcher calls ready. Schemas 4, 5 and 8 only added tables and columns
+/// (`lights`, `references.radius_override`, the movement tables, water fresnel columns, grass tables,
+/// `references.emittance_id` and `emittance`), and every runtime query probes for them, so a schema
+/// 3 database still loads.
 pub const MIN_RUNTIME_WORLD_DATABASE_SCHEMA_VERSION: u32 = 3;
 
 /// The oldest converter manifest schema the runtime still loads, and so the oldest the launcher

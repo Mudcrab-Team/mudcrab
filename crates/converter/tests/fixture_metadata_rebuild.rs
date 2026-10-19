@@ -374,7 +374,8 @@ async fn metadata_rebuild_reuses_bytes_and_recovers_authoritative_flags() {
     assert!(output.join("lod-manifest.json").is_file());
 }
 
-/// Retained asset provenance allows proven producer-24 GLBs but rebuilds its textures.
+/// Retained asset provenance keeps the original producer; only current-producer GLBs are cache
+/// hits, since producer 27 changed the GLB collision data of every earlier producer.
 #[tokio::test]
 async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
     for source_schema in [
@@ -386,6 +387,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
         22,
         23,
         24,
+        26,
         converter::cache::CONVERTER_SCHEMA_VERSION,
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -435,12 +437,12 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
                 .values()
                 .filter(|entry| entry.output.ends_with(".glb"))
                 .count(),
-            if source_schema == 24 || source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
+            if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
                 meshes
             } else {
                 0
             },
-            "metadata-only upgrades preserve original provenance; only known compatible producer meshes are normal cache hits"
+            "metadata-only upgrades preserve original provenance; only current producer meshes are normal cache hits"
         );
         let report = convert(&data, &repeated).await;
         let regenerated = if source_schema == converter::cache::CONVERTER_SCHEMA_VERSION {
@@ -449,10 +451,7 @@ async fn metadata_rebuild_preserves_retained_mesh_cache_contract() {
             retained
                 .entries
                 .values()
-                .filter(|entry| {
-                    let output = entry.output.to_ascii_lowercase();
-                    !output.ends_with(".luau") && !(source_schema == 24 && output.ends_with(".glb"))
-                })
+                .filter(|entry| !entry.output.to_ascii_lowercase().ends_with(".luau"))
                 .count()
         };
         let current: ConversionManifest =
@@ -481,6 +480,7 @@ async fn metadata_rebuild_rejects_unsupported_mesh_provenance() {
         (21, 17),
         (21, 18),
         (24, 25),
+        (26, 27),
         (
             converter::cache::CONVERTER_SCHEMA_VERSION,
             converter::cache::CONVERTER_SCHEMA_VERSION + 1,
@@ -1151,7 +1151,7 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
             .to_string();
         assert!(
             error.contains(&format!(
-                "complete converter schema 15, 16, 19 through 24 or {}",
+                "complete converter schema 15, 16, 19 through 24, 26 or {}",
                 converter::cache::CONVERTER_SCHEMA_VERSION
             )),
             "{error}"
