@@ -10,7 +10,8 @@ use std::fs;
 /// Compare with the pre-PR configuration contract for every supported schema.
 #[test]
 fn plugin_repairs_preserve_historical_asset_configuration_hashes() {
-    let config = PipelineConfig::new("synthetic-data", "synthetic-output");
+    let mut config = PipelineConfig::new("synthetic-data", "synthetic-output");
+    config.record_reader = converter::config::RecordReader::Legacy;
     for schema in 12..=21 {
         let mut historical = serde_json::json!({
             "schema": schema,

@@ -1002,11 +1002,11 @@ dependencies = [
  "image 0.25.10",
  "ktx2",
  "rectangle-pack",
- "ruzstd",
  "serde",
  "thiserror 2.0.18",
  "tracing",
  "wgpu-types",
+ "zstd",
 ]
 
 [[package]]
@@ -4437,6 +4437,7 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "serde",
+ "shared",
  "tempfile",
  "walkdir",
 ]
@@ -6155,9 +6156,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "ruzstd"
-version = "0.8.3"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]

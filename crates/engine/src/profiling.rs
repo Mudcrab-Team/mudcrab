@@ -1,5 +1,17 @@
-use crate::{config::EngineConfig, render::RendererMetrics, streaming::StreamingMetrics};
-use bevy::{diagnostic::DiagnosticsStore, prelude::*};
+use crate::{
+    config::EngineConfig,
+    render::RendererMetrics,
+    streaming::StreamingMetrics,
+    streaming_gpu_metrics::{StreamingGpuMetricsBridge, StreamingGpuMetricsPlugin},
+    streaming_trace::{SceneLoadStatus, StreamingTrace},
+};
+use bevy::{
+    asset::{AssetId, DependencyLoadState, LoadState, RecursiveDependencyLoadState},
+    diagnostic::DiagnosticsStore,
+    prelude::*,
+    time::TimeSystems,
+    world_serialization::WorldAsset,
+};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -10,13 +22,37 @@ use std::{
 
 const MAX_SAMPLES_PER_METRIC: usize = 200_000;
 const MAX_TIMELINE_EVENTS: usize = 100_000;
+const MAX_STREAMING_FRAMES: usize = 20_000;
+const MAX_STREAMING_SCENES: usize = 20_000;
 
 pub struct ProfilingPlugin;
 
 impl Plugin for ProfilingPlugin {
+    /// Install aggregate profiling and enable bounded frame tracing only for profile output.
     fn build(&self, app: &mut App) {
         app.init_resource::<ProfilingState>()
             .add_systems(Update, sample_scene_inventory);
+        if app
+            .world()
+            .get_resource::<EngineConfig>()
+            .is_some_and(|config| config.profile_output_dir.is_some())
+        {
+            app.world_mut().resource_mut::<ProfilingState>().trace = Some(StreamingTrace::new(
+                MAX_STREAMING_FRAMES,
+                MAX_STREAMING_SCENES,
+            ));
+            if app.world().resource::<EngineConfig>().profile_gpu_inventory {
+                app.add_plugins(StreamingGpuMetricsPlugin);
+                app.world_mut()
+                    .resource_mut::<ProfilingState>()
+                    .trace
+                    .as_mut()
+                    .unwrap()
+                    .set_gpu_inventory_enabled(true);
+            }
+            app.add_message::<AssetEvent<WorldAsset>>()
+                .add_systems(First, begin_trace_frame.after(TimeSystems));
+        }
     }
 }
 
@@ -30,9 +66,14 @@ pub struct ProfilingState {
     gauges: BTreeMap<String, f64>,
     timeline: Vec<TimelineEvent>,
     memory: Vec<MemorySample>,
+    pub(crate) trace: Option<StreamingTrace>,
+    pub(crate) frame_cpu_spans_ms: BTreeMap<String, f64>,
+    pub(crate) frame_completion_latencies_ms: BTreeMap<String, f64>,
+    pub(crate) trace_delta_ms: f64,
 }
 
 impl Default for ProfilingState {
+    /// Start an empty aggregate profile with frame tracing disabled.
     fn default() -> Self {
         Self {
             started: Instant::now(),
@@ -43,6 +84,10 @@ impl Default for ProfilingState {
             gauges: BTreeMap::new(),
             timeline: Vec::new(),
             memory: Vec::new(),
+            trace: None,
+            frame_cpu_spans_ms: BTreeMap::new(),
+            frame_completion_latencies_ms: BTreeMap::new(),
+            trace_delta_ms: 0.0,
         }
     }
 }
@@ -68,8 +113,58 @@ impl ProfilingState {
         self.record_ms(name, micros as f64 / 1000.0);
     }
 
+    /// Attribute a reported asynchronous latency to its arrival frame, not as CPU work.
+    pub(crate) fn record_completed_latency_micros(&mut self, name: impl Into<String>, micros: u64) {
+        self.record_completed_latency_ms(name.into(), micros as f64 / 1000.0);
+    }
+
+    /// Record elapsed asynchronous latency in the arrival frame and the aggregate profile.
+    pub(crate) fn record_completed_latency_elapsed(
+        &mut self,
+        name: impl Into<String>,
+        started: Instant,
+    ) {
+        self.record_completed_latency_ms(name.into(), started.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    /// Accumulate completion latency separately from frame CPU spans while preserving aggregate samples.
+    fn record_completed_latency_ms(&mut self, name: String, value: f64) {
+        if self.trace.is_some() {
+            *self
+                .frame_completion_latencies_ms
+                .entry(name.clone())
+                .or_default() += value;
+        }
+        // Preserve the existing aggregate profiling contract.
+        push_bounded(self.cpu_spans_ms.entry(name).or_default(), value);
+    }
+
+    /// Record a CPU span in the bounded aggregate and, when enabled, sum it into this frame.
     pub fn record_ms(&mut self, name: impl Into<String>, value: f64) {
-        push_bounded(self.cpu_spans_ms.entry(name.into()).or_default(), value);
+        let name = name.into();
+        if self.trace.is_some() {
+            *self.frame_cpu_spans_ms.entry(name.clone()).or_default() += value;
+        }
+        push_bounded(self.cpu_spans_ms.entry(name).or_default(), value);
+    }
+
+    /// Observe an existing request without retaining its strong handle.
+    pub(crate) fn observe_scene(&mut self, id: AssetId<WorldAsset>, server: &AssetServer) {
+        if let Some(trace) = self.trace.as_mut()
+            && trace.observe_scene(id)
+        {
+            reconcile_scene(trace, server, id);
+        }
+    }
+
+    /// Return the shared main-frame index used by trace samples and timeline events.
+    pub(crate) fn main_frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// Return milliseconds since this profiling session began.
+    pub(crate) fn elapsed_ms(&self) -> f64 {
+        self.started.elapsed().as_secs_f64() * 1000.0
     }
 
     pub fn increment(&mut self, name: impl Into<String>, amount: u64) {
@@ -99,12 +194,15 @@ impl ProfilingState {
         });
     }
 
+    /// Collect render diagnostics and periodic memory samples, advancing the clock when tracing is off.
     pub fn sample_frame(
         &mut self,
         diagnostics: &DiagnosticsStore,
         process_memory_gib: Option<f64>,
     ) {
-        self.frame = self.frame.saturating_add(1);
+        if self.trace.is_none() {
+            self.frame = self.frame.saturating_add(1);
+        }
         for diagnostic in diagnostics.iter() {
             let path = diagnostic.path().as_str();
             if path.starts_with("render/")
@@ -126,6 +224,8 @@ impl ProfilingState {
         }
     }
 
+    /// Write aggregate profiling files and the optional frame trace to the configured output directory.
+    /// Return without writing when no directory is configured; propagate filesystem and JSON errors.
     pub fn write_bundle(
         &self,
         config: &EngineConfig,
@@ -203,6 +303,9 @@ impl ProfilingState {
                 timeline: self.timeline.clone(),
             },
         )?;
+        if let Some(trace) = &self.trace {
+            write_json(&root.join("streaming-frames.json"), &trace.report())?;
+        }
         write_json(&root.join("renderer.json"), renderer)?;
         write_json(
             &root.join("memory.json"),
@@ -216,6 +319,51 @@ impl ProfilingState {
             summary_markdown(config, frame_metrics, &cpu, &render, streaming, renderer),
         )?;
         Ok(())
+    }
+}
+
+/// Advance the trace clock, retain the real frame delta and clear frame-local span totals.
+/// Request a matching render observation when GPU inventory is enabled.
+fn begin_trace_frame(
+    time: Res<Time<Real>>,
+    bridge: Option<Res<StreamingGpuMetricsBridge>>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    profiler.frame = profiler.frame.saturating_add(1);
+    profiler.trace_delta_ms = time.delta_secs_f64() * 1000.0;
+    profiler.frame_cpu_spans_ms.clear();
+    profiler.frame_completion_latencies_ms.clear();
+    if let Some(bridge) = bridge {
+        bridge.request(profiler.frame);
+    }
+}
+
+/// Refresh an observed scene from asset-server state, marking it inactive if no state remains.
+pub(crate) fn reconcile_scene(
+    trace: &mut StreamingTrace,
+    server: &AssetServer,
+    id: AssetId<WorldAsset>,
+) {
+    if let Some(status) = scene_status(server.get_load_states(id)) {
+        trace.update_scene(id, status);
+    } else {
+        trace.remove_scene(id);
+    }
+}
+
+/// Classify scene loading, requiring recursive dependencies for CPU readiness.
+/// An absent load state remains unknown; scene or recursive dependency failures count as failed.
+fn scene_status(
+    states: Option<(LoadState, DependencyLoadState, RecursiveDependencyLoadState)>,
+) -> Option<SceneLoadStatus> {
+    match states {
+        Some((LoadState::Failed(_), _, _))
+        | Some((_, _, RecursiveDependencyLoadState::Failed(_))) => Some(SceneLoadStatus::Failed),
+        Some((LoadState::Loaded, _, RecursiveDependencyLoadState::Loaded)) => {
+            Some(SceneLoadStatus::CpuLoaded)
+        }
+        Some(_) => Some(SceneLoadStatus::Loading),
+        None => None,
     }
 }
 
@@ -565,6 +713,7 @@ mod tests {
         assert!((memory_slope(&samples).unwrap() - 0.1).abs() < 0.0001);
     }
 
+    /// Verify aggregate bundle files are written without a frame sidecar when tracing is disabled.
     #[test]
     fn writes_complete_profile_bundle() {
         let directory = tempfile::tempdir().unwrap();
@@ -607,6 +756,73 @@ mod tests {
         assert!(
             summary.contains("Terrain seam points welded: 0"),
             "the summary must report the welded terrain seam points"
+        );
+        assert!(!directory.path().join("streaming-frames.json").exists());
+    }
+
+    /// Verify ordinary runs install neither frame tracing nor the GPU inventory bridge.
+    #[test]
+    fn normal_runs_do_not_install_trace_collection() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .add_plugins(ProfilingPlugin);
+        assert!(app.world().resource::<ProfilingState>().trace.is_none());
+        assert!(!app.world().contains_resource::<StreamingGpuMetricsBridge>());
+    }
+
+    /// Verify profile output enables frame tracing while leaving GPU inventory disabled.
+    #[test]
+    fn profile_trace_does_not_install_expensive_gpu_inventory_by_default() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig {
+            profile_output_dir: Some("unused-test-output".into()),
+            ..default()
+        })
+        .add_plugins(ProfilingPlugin);
+        assert!(app.world().resource::<ProfilingState>().trace.is_some());
+        assert!(!app.world().contains_resource::<StreamingGpuMetricsBridge>());
+    }
+
+    /// Verify recursive dependency loading and failure determine scene readiness.
+    #[test]
+    fn scene_status_requires_recursive_dependencies_and_catches_their_failures() {
+        use bevy::asset::{AssetLoadError, io::AssetReaderError};
+        use std::sync::Arc;
+        let error = Arc::new(AssetLoadError::AssetReaderError(
+            AssetReaderError::NotFound("missing-image.ktx2".into()),
+        ));
+        assert_eq!(scene_status(None), None);
+        assert_eq!(
+            scene_status(Some((
+                LoadState::Loaded,
+                DependencyLoadState::Loaded,
+                RecursiveDependencyLoadState::Loading
+            ))),
+            Some(SceneLoadStatus::Loading)
+        );
+        assert_eq!(
+            scene_status(Some((
+                LoadState::Loaded,
+                DependencyLoadState::Loaded,
+                RecursiveDependencyLoadState::Failed(error.clone())
+            ))),
+            Some(SceneLoadStatus::Failed)
+        );
+        assert_eq!(
+            scene_status(Some((
+                LoadState::Failed(error),
+                DependencyLoadState::Loaded,
+                RecursiveDependencyLoadState::Loaded
+            ))),
+            Some(SceneLoadStatus::Failed)
+        );
+        assert_eq!(
+            scene_status(Some((
+                LoadState::Loaded,
+                DependencyLoadState::Loaded,
+                RecursiveDependencyLoadState::Loaded
+            ))),
+            Some(SceneLoadStatus::CpuLoaded)
         );
     }
 }

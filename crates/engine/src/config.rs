@@ -88,6 +88,8 @@ pub struct EngineConfig {
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
     pub headless: bool,
+    /// Keep a renderable window hidden for automated screenshot capture.
+    pub hidden_window: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -113,6 +115,7 @@ pub struct EngineConfig {
     pub allow_incomplete_assets: bool,
     pub synthetic_instances: usize,
     pub profile_output_dir: Option<PathBuf>,
+    pub profile_gpu_inventory: bool,
     pub profile_scenario: String,
     pub profile_run_id: String,
     pub profile_commit: String,
@@ -139,6 +142,7 @@ pub struct EngineConfig {
 }
 
 impl Default for EngineConfig {
+    /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
         Self {
             assets_dir: PathBuf::from("modern_assets"),
@@ -167,6 +171,7 @@ impl Default for EngineConfig {
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
             headless: false,
+            hidden_window: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -182,6 +187,7 @@ impl Default for EngineConfig {
             allow_incomplete_assets: false,
             synthetic_instances: 250_000,
             profile_output_dir: None,
+            profile_gpu_inventory: false,
             profile_scenario: "adhoc".into(),
             profile_run_id: "run-1".into(),
             profile_commit: "unknown".into(),
@@ -223,6 +229,7 @@ Assets and start position:
   --grid-y <cell>                       starting cell y (default: 0)
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
+  --hidden-window                       render screenshots without showing a window
   --lights                              place a point light for each streamed LIGH reference
 
 Streaming:
@@ -253,6 +260,7 @@ Benchmark and profiling:
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
+  --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
   --profile-run-id <id>                 run id recorded in the profile (default: run-1)
   --profile-commit <hash>               commit recorded in the profile (default: unknown)
@@ -304,6 +312,11 @@ pub enum ConfigError {
         /// What the option needs, phrased for the message.
         expected: &'static str,
     },
+    /// An option that only works together with another option that was not given.
+    MissingRequirement {
+        option: &'static str,
+        requires: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -332,6 +345,7 @@ impl ConfigError {
 }
 
 impl fmt::Display for ConfigError {
+    /// Format a configuration error with the relevant option and usage guidance.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownOption {
@@ -352,6 +366,10 @@ impl fmt::Display for ConfigError {
             Self::UnexpectedArgument { argument } => write!(
                 formatter,
                 "unexpected argument '{argument}'. Run with --help to list every option."
+            ),
+            Self::MissingRequirement { option, requires } => write!(
+                formatter,
+                "option '{option}' requires '{requires}'. Run with --help to list every option."
             ),
             Self::InvalidValue {
                 option,
@@ -402,6 +420,7 @@ impl EngineConfig {
     /// back at the player's body.
     pub fn interactive_world_physics(&self) -> bool {
         !self.headless
+            && !self.hidden_window
             && self.benchmark_jump.is_none()
             && !self.benchmark_only
             && self.benchmark_frames.is_none()
@@ -547,6 +566,7 @@ impl EngineConfig {
                     config.unload_radius = value + 1;
                 }
                 "--headless" => config.headless = true,
+                "--hidden-window" => config.hidden_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -707,6 +727,7 @@ impl EngineConfig {
                         take_value("--profile-commit", "a commit hash", args.next())?;
                 }
                 "--profile-dirty-worktree" => config.profile_dirty_worktree = true,
+                "--profile-gpu-inventory" => config.profile_gpu_inventory = true,
                 "--profile-hardware" => {
                     config.profile_hardware = take_value(
                         "--profile-hardware",
@@ -756,6 +777,13 @@ impl EngineConfig {
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
+        }
+        // The inventory is written into the profile bundle; without one it would do nothing.
+        if config.profile_gpu_inventory && config.profile_output_dir.is_none() {
+            return Err(ConfigError::MissingRequirement {
+                option: "--profile-gpu-inventory",
+                requires: "--profile-output",
+            });
         }
         config.drop_jump_the_run_would_overwrite();
         Ok(ConfigAction::Run(Box::new(config)))
@@ -1109,6 +1137,37 @@ mod tests {
         assert_eq!(config.io_threads, 0);
     }
 
+    /// Verify GPU inventory is opt-in and requires a profile output directory.
+    #[test]
+    fn gpu_inventory_is_separate_from_normal_profile_output() {
+        assert!(!EngineConfig::default().profile_gpu_inventory);
+        assert!(!run_config(&["--profile-output", "profiles/test"]).profile_gpu_inventory);
+        let diagnostic = run_config(&[
+            "--profile-gpu-inventory",
+            "--profile-output",
+            "profiles/test",
+        ]);
+        assert!(diagnostic.profile_gpu_inventory);
+        assert_eq!(
+            diagnostic.profile_output_dir,
+            Some(PathBuf::from("profiles/test"))
+        );
+        // The switch alone must not silently do nothing or implicitly enable profile collection.
+        let error = parse_error(&["--profile-gpu-inventory"]);
+        assert!(matches!(
+            error,
+            ConfigError::MissingRequirement {
+                option: "--profile-gpu-inventory",
+                requires: "--profile-output",
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "option '--profile-gpu-inventory' requires '--profile-output'. \
+             Run with --help to list every option."
+        );
+    }
+
     #[test]
     fn help_shows_the_model_spawn_default_the_engine_uses() {
         let line = HELP_TEXT
@@ -1120,6 +1179,20 @@ mod tests {
             .expect("--help has a --max-model-spawns-per-frame line");
         let default = EngineConfig::default().max_model_spawns_per_frame;
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
+    }
+
+    /// Hidden capture selects rendering without enabling interactive mouse ownership.
+    #[test]
+    fn parses_hidden_window_capture_mode() {
+        assert!(!EngineConfig::default().hidden_window);
+        let config = run_config(&["--hidden-window", "--acceptance-screenshot", "capture.png"]);
+        assert!(config.hidden_window);
+        assert!(!config.headless);
+        assert!(!config.interactive_world_physics());
+        assert_eq!(
+            config.acceptance_screenshot,
+            Some(PathBuf::from("capture.png"))
+        );
     }
 
     #[test]

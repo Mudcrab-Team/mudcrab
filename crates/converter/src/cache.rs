@@ -8,7 +8,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// Combined native-BC, lighting and LOD producer. Earlier numeric identities
+#[cfg(test)]
+#[path = "cache/rv_b_tests.rs"]
+mod rv_b_tests;
+
+// Combined native-BC, lighting, LOD, TXST and XESP producer. Earlier numeric identities
 // alone do not establish compatible output semantics.
 pub const CONVERTER_SCHEMA_VERSION: u32 = shared::LOD_CONVERTER_SCHEMA_VERSION;
 
@@ -16,10 +20,12 @@ pub const CONVERTER_SCHEMA_VERSION: u32 = shared::LOD_CONVERTER_SCHEMA_VERSION;
 ///
 /// A staging directory outlives the run that filled it, so a resumed run finds
 /// outputs this process did not write. The journal records, per output, the
-/// source hash, the converter schema and the configuration hash it was produced
+/// source hash, converter schema and asset-kind settings hash it was produced
 /// under, together with the output's size and hash, appended as the output is
 /// written. A resumed run reuses a staged output only while its record still
-/// matches the current source, schema and configuration and the bytes on disk.
+/// matches the current source, schema, kind settings and bytes on disk. The
+/// serialized `configuration_hash` field carries this narrow settings proof;
+/// the published manifest separately records the full metadata identity.
 /// The name is dotted so it can never collide with a converted asset, and the
 /// file is dropped from the output directory once the staging directory has
 /// been published.
@@ -29,6 +35,7 @@ pub const STAGING_JOURNAL_FILE: &str = ".conversion-staging-journal.jsonl";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedOutput {
     pub schema_version: u32,
+    /// Asset-kind settings proof; independent of full reader/schema metadata.
     pub configuration_hash: String,
     pub source_hash: String,
     pub output_size: u64,
@@ -186,8 +193,19 @@ pub struct ConversionManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_asset_configuration_hash: Option<String>,
     pub complete: bool,
+    /// Whether the last authoritative record conversion had no data-loss warnings.
+    /// Missing historical proof stays unknown; asset repair cannot establish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_data_complete: Option<bool>,
     #[serde(default)]
     pub configuration_hash: String,
+    /// Ordered identities of the runtime schema add-ons used by this pack.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schema_addons: Vec<crate::records::addons::SchemaAddonIdentity>,
+    /// Original producer settings of each converted asset kind, independent of
+    /// record-reader metadata. A metadata-only migration retains these values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asset_configuration_hashes: BTreeMap<String, String>,
     #[serde(default)]
     pub inputs_by_kind: BTreeMap<String, u64>,
     #[serde(default)]
@@ -210,13 +228,26 @@ pub struct ConversionManifest {
     pub entries: BTreeMap<String, CacheEntry>,
 }
 
-/// These schema changes affect GLBs/textures/world data, leaving script/archive
-/// bytes compatible. Configuration and source hashes still have to match.
+/// Historical producers whose scripts may pass normal reuse eligibility.
+/// Script ABI/settings, source and output proofs still have to match. Archive
+/// extraction uses its own source/blob integrity proof, independent of this gate.
 pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
-    matches!(schema, 12..=23)
+    matches!(schema, 12..=24)
+}
+
+/// Published producer-24 meshes retain the producer-26 byte contract. This never
+/// authorizes texture reuse or bypasses source/configuration/output proof.
+pub(crate) fn can_reuse_meshes(schema: u32) -> bool {
+    can_reuse_meshes_for_producer(schema, CONVERTER_SCHEMA_VERSION)
+}
+
+/// Check the explicit producer pair so later contracts cannot inherit old mesh reuse.
+pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
+    schema == current || matches!((schema, current), (24, 26))
 }
 
 impl ConversionManifest {
+    /// Load archive candidates independently of converted-output producer eligibility.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.is_file() {
             return Ok(Self {
@@ -228,30 +259,41 @@ impl ConversionManifest {
             fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let mut manifest: Self =
             serde_json::from_slice(&bytes).wrap_err("invalid conversion manifest")?;
-        let retained_meshes_are_stale = (manifest.schema_version == CONVERTER_SCHEMA_VERSION)
+        let metadata_rebuild = path
+            .parent()
+            .is_some_and(|root| root.join("metadata-rebuild.json").exists());
+        let retained_assets_are_stale = (manifest.schema_version == CONVERTER_SCHEMA_VERSION)
             && match manifest.retained_mesh_schema_version {
                 Some(schema) => schema != CONVERTER_SCHEMA_VERSION,
-                None => path
-                    .parent()
-                    .is_some_and(|root| root.join("metadata-rebuild.json").exists()),
+                None => metadata_rebuild,
             };
         if (can_reuse_scripts_and_archives(manifest.schema_version)
             && manifest.schema_version != CONVERTER_SCHEMA_VERSION)
-            || retained_meshes_are_stale
+            || retained_assets_are_stale
         {
-            // Legacy producers lack the combined texture and lighting contracts.
-            // Preserve only verified scripts; regenerate GLBs, textures and world data.
+            let mesh_schema = manifest
+                .retained_mesh_schema_version
+                .unwrap_or(manifest.schema_version);
+            let compatible_meshes = can_reuse_meshes(mesh_schema)
+                && mesh_schema <= manifest.schema_version
+                && (manifest.retained_mesh_schema_version.is_some() || !metadata_rebuild);
+            // All old textures regenerate. Proven producer-24 GLBs and scripts
+            // remain candidates for the usual per-asset verification.
             manifest.complete = false;
-            manifest
-                .entries
-                .retain(|_, entry| entry.output.to_ascii_lowercase().ends_with(".luau"));
+            manifest.entries.retain(|_, entry| {
+                let output = entry.output.to_ascii_lowercase();
+                output.ends_with(".luau") || (compatible_meshes && output.ends_with(".glb"))
+            });
             return Ok(manifest);
         }
         if manifest.schema_version != CONVERTER_SCHEMA_VERSION {
-            return Ok(Self {
-                schema_version: CONVERTER_SCHEMA_VERSION,
-                ..Self::default()
-            });
+            // Archive extraction is independent of converted output schemas.
+            // Preserve its candidates and original producer metadata; each
+            // archive still has to pass its source/integrity checks. Unknown
+            // producers never establish normal converted-output eligibility.
+            manifest.complete = false;
+            manifest.entries.clear();
+            return Ok(manifest);
         }
         Ok(manifest)
     }
@@ -272,16 +314,85 @@ impl ConversionManifest {
     }
 }
 
+/// Full configuration identity for metadata provenance and older manifests.
+/// New converted outputs use separate per-kind settings proofs.
 pub fn configuration_hash(config: &crate::config::PipelineConfig) -> Result<String> {
     // no_lod only selects regenerated outputs; it does not change converted asset
     // bytes. Resume invalidates database/LOD outputs before evaluating this proof.
-    configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION)
+    current_configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION)
 }
 
-/// Hashes conversion settings and MO2 identity; winning inputs are hashed per source.
+/// Recreate the historical combined proof for a recorded producer schema.
+/// Legacy proofs predate projection versions and omit the reader identity; the
+/// non-MO2 calculation remains byte-identical. New publication uses `configuration_hash`.
+/// Matching this known hash is the conservative fallback when per-kind settings
+/// are absent; an arbitrary historical hash cannot establish those settings.
+/// MO2 instance/profile paths also bind source selection; winning input bytes
+/// remain independently hashed per source.
 pub fn configuration_hash_for_schema(
     config: &crate::config::PipelineConfig,
     schema: u32,
+) -> Result<String> {
+    let identity = if config.record_reader == crate::config::RecordReader::Inhouse {
+        Some(crate::esm::inhouse::reader_identity_with_schemas(
+            config.record_reader,
+            config.schemas()?.as_ref(),
+        ))
+    } else {
+        None
+    };
+    configuration_hash_with_identity(config, schema, identity.as_ref())
+}
+
+/// Bind current metadata projections independently of per-kind asset settings.
+pub(crate) fn current_configuration_hash_for_schema(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+) -> Result<String> {
+    let identity = crate::esm::inhouse::reader_identity_with_schemas(
+        config.record_reader,
+        config.schemas()?.as_ref(),
+    );
+    configuration_hash_with_identity(config, schema, Some(&identity))
+}
+
+/// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
+/// These compatibility pairs are limited to metadata adapters 11 and 12; a future
+/// adapter must establish its own retained-byte compatibility instead of inheriting it.
+pub(crate) fn inhouse_adapter10_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+) -> Option<serde_json::Value> {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11 | 12) {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+    );
+    identity["adapter_version"] = serde_json::json!(10);
+    Some(identity)
+}
+
+/// Adapter 12 corrects metadata identities while retaining adapter-11 asset bytes.
+pub(crate) fn inhouse_adapter11_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 12 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+    );
+    identity["adapter_version"] = serde_json::json!(11);
+    Some(identity)
+}
+
+/// Hash the unchanged settings payload with an explicitly selected metadata identity.
+fn configuration_hash_with_identity(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    identity: Option<&serde_json::Value>,
 ) -> Result<String> {
     let mut relevant = serde_json::json!({
         "schema": schema,
@@ -289,6 +400,10 @@ pub fn configuration_hash_for_schema(
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
+    // Actual DDS roles remain in per-source proofs rather than this broad identity.
+    if let Some(identity) = identity {
+        relevant["record_reader"] = identity.clone();
+    }
     if let Some(selection) = &config.mo2 {
         let instance = mo2::Instance::open(&selection.instance_path)?;
         let profile = instance.profile_dir(&selection.profile)?;
@@ -299,7 +414,6 @@ pub fn configuration_hash_for_schema(
             "mods": instance.mods_dir,
             "overwrite": instance.overwrite_dir,
             "data": std::fs::canonicalize(&config.data_dir)?,
-
         });
     }
     if schema >= 16 {
@@ -308,6 +422,70 @@ pub fn configuration_hash_for_schema(
     if schema >= 22 {
         // CPU native-BC output and GPU UASTC output have different contracts;
         // quality changes bytes, while GPU batch size only changes scheduling.
+        relevant["texture_encoder"] = match config.texture_encoder {
+            crate::config::TextureEncoder::Cpu => serde_json::json!({"mode": "cpu"}),
+            crate::config::TextureEncoder::Gpu { quality, .. } => {
+                serde_json::json!({"mode": "gpu", "quality": quality})
+            }
+        };
+    }
+    Ok(hash_bytes(&serde_json::to_vec(&relevant)?))
+}
+
+/// Reproduce the exact version-1 legacy projection proof for retained assets.
+pub(crate) fn legacy_projection_v1_configuration_hash(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+) -> Result<String> {
+    configuration_hash_with_identity(
+        config,
+        schema,
+        Some(&serde_json::json!({"mode": "legacy", "projection_version": 1})),
+    )
+}
+
+/// Reproduce the exact version-2 legacy projection proof for retained assets.
+pub(crate) fn legacy_projection_v2_configuration_hash(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+) -> Result<String> {
+    configuration_hash_with_identity(
+        config,
+        schema,
+        Some(&serde_json::json!({"mode": "legacy", "projection_version": 2})),
+    )
+}
+
+/// Settings that change one asset kind's bytes, excluding full reader metadata.
+///
+/// Mesh conversion consumes NIF/skeleton/material source dependencies. Texture
+/// source proofs additionally include the resolved encoding from fresh SQL/GLB
+/// usage. Producer compatibility remains a separate eligibility check; matching
+/// one of these hashes does not authorize an unknown or retained old producer.
+pub fn asset_configuration_hash_for_schema(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    source_ext: &str,
+) -> Result<String> {
+    let mut relevant = match source_ext {
+        "nif" => serde_json::json!({"mesh_producer": schema}),
+        "dds" => serde_json::json!({
+            "texture_producer": schema,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+        }),
+        // Script producer eligibility is checked separately. The configured ABI
+        // must advance when script-emission behavior changes; metadata migrations
+        // keep the original ABI settings hash with the retained script bytes.
+        "pex" => serde_json::json!({
+            "script_abi_version": config.script_abi_version,
+        }),
+        _ => color_eyre::eyre::bail!("unsupported asset cache kind {source_ext}"),
+    };
+    if source_ext == "dds" && schema >= 16 {
+        relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
+    }
+    if source_ext == "dds" && schema >= 22 {
         relevant["texture_encoder"] = match config.texture_encoder {
             crate::config::TextureEncoder::Cpu => serde_json::json!({"mode": "cpu"}),
             crate::config::TextureEncoder::Gpu { quality, .. } => {
@@ -422,7 +600,9 @@ fn same_path(from: &Path, to: &Path) -> bool {
     }
 }
 
-/// The native collision producer includes its fixed Zstd level in schema 16.
+/// Retained schema-15/16 producers also recorded their fixed Zstd level of 6.
+/// The protected schema-15 source manifest proves this exact configuration
+/// variant; quality and script ABI must still match its recorded hash.
 /// This compatibility route verifies retained bytes, not normal cache reuse.
 pub(crate) fn retained_configuration_matches(
     config: &crate::config::PipelineConfig,
@@ -432,7 +612,7 @@ pub(crate) fn retained_configuration_matches(
     if recorded == configuration_hash_for_schema(config, schema)? {
         return Ok(true);
     }
-    if schema != 16 {
+    if !matches!(schema, 15 | 16) || config.texture_zstd_level != 6 {
         return Ok(false);
     }
     let native = serde_json::json!({
@@ -443,6 +623,48 @@ pub(crate) fn retained_configuration_matches(
         "script_abi_version": config.script_abi_version,
     });
     Ok(recorded == hash_bytes(&serde_json::to_vec(&native)?))
+}
+
+/// Verify full settings under their recorded projection contract without upgrading it.
+pub(crate) fn retained_configuration_matches_for_reader(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+    recorded: &str,
+    identity: &serde_json::Value,
+) -> Result<bool> {
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && identity == &serde_json::json!({"mode": "legacy"})
+    {
+        return retained_configuration_matches(config, schema, recorded);
+    }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && identity == &serde_json::json!({"mode": "legacy", "projection_version": 1})
+    {
+        return Ok(recorded == legacy_projection_v1_configuration_hash(config, schema)?);
+    }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && identity == &serde_json::json!({"mode": "legacy", "projection_version": 2})
+    {
+        return Ok(recorded == legacy_projection_v2_configuration_hash(config, schema)?);
+    }
+    let current = crate::esm::inhouse::reader_identity_with_schemas(
+        config.record_reader,
+        config.schemas()?.as_ref(),
+    );
+    if identity == &current {
+        return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
+    }
+    if config.record_reader == crate::config::RecordReader::Inhouse
+        && [
+            inhouse_adapter10_reader_identity(config.schemas()?.as_ref()),
+            inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
+        ]
+        .iter()
+        .any(|prior| prior.as_ref() == Some(identity))
+    {
+        return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
+    }
+    Ok(false)
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
@@ -476,13 +698,145 @@ pub fn hash_file(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// Historical absence stays unknown while known loss and success round-trip distinctly.
     #[test]
-    fn ambiguous_legacy_producers_cannot_reuse_staged_meshes_or_textures() {
+    fn record_completeness_preserves_unknown_false_and_true() {
+        let original = serde_json::to_value(ConversionManifest::default()).unwrap();
+        assert!(original.get("record_data_complete").is_none());
+        let historical: ConversionManifest = serde_json::from_value(original.clone()).unwrap();
+        assert_eq!(historical.record_data_complete, None);
+        for complete in [false, true] {
+            let mut json = original.clone();
+            json["record_data_complete"] = serde_json::json!(complete);
+            let manifest: ConversionManifest = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(manifest.record_data_complete, Some(complete));
+            assert_eq!(serde_json::to_value(manifest).unwrap(), json);
+        }
+    }
+
+    /// Known prior adapter proofs retain asset bytes without accepting unknown readers.
+    #[test]
+    fn adapter10_retained_settings_keep_original_identity_and_require_exact_proofs() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        for adapter in [10, 11] {
+            let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
+            original["adapter_version"] = serde_json::json!(adapter);
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&original),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original
+                )
+                .unwrap(),
+                "the exact original adapter-{adapter} proof must survive the metadata-only adapter change"
+            );
+            assert_ne!(recorded, configuration_hash(&config).unwrap());
+            assert_eq!(original["adapter_version"], adapter);
+
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original
+                )
+                .unwrap()
+            );
+            let mut changed = config.clone();
+            changed.script_abi_version = 2;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &original
+                )
+                .unwrap()
+            );
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    "different-proof",
+                    &original
+                )
+                .unwrap()
+            );
+            for (key, value) in [
+                ("adapter_version", serde_json::json!(8)),
+                ("schema_sha256", serde_json::json!("different-schema")),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = original.clone();
+                altered[key] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered
+                    )
+                    .unwrap(),
+                    "accepted altered {key}"
+                );
+            }
+            for kind in ["nif", "dds", "pex"] {
+                let mut legacy = config.clone();
+                legacy.record_reader = crate::config::RecordReader::Legacy;
+                assert_eq!(
+                    asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, kind)
+                        .unwrap(),
+                    asset_configuration_hash_for_schema(&legacy, CONVERTER_SCHEMA_VERSION, kind)
+                        .unwrap()
+                );
+            }
+        }
+    }
+
+    /// Historical schema-15 hashes retain their explicit legacy reader and original settings.
+    #[test]
+    fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Legacy;
+        // Exact configuration hash in the protected original schema-15
+        // manifest and its metadata rebuild's retained producer provenance.
+        let recorded = "b23881a864cdcfe1609779a9a27fefab2de629b50ec339101d4e0ad592e7e435";
+        assert!(retained_configuration_matches(&config, 15, recorded).unwrap());
+        assert_eq!(
+            configuration_hash_for_schema(&config, 15).unwrap(),
+            "9a58fda00b27d0f2a8e46afb9334ea869602556393a35bffd7fcb39582a08a4f"
+        );
+        assert!(!retained_configuration_matches(&config, 16, recorded).unwrap());
+        assert!(!retained_configuration_matches(&config, 15, "different-hash").unwrap());
+        let mut changed = config.clone();
+        changed.texture_fallback_quality = 191;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+        let mut changed = config.clone();
+        changed.script_abi_version = 2;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+        let mut changed = config;
+        changed.texture_zstd_level = 7;
+        assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
+    }
+
+    #[test]
+    fn prior_producers_cannot_reuse_staged_meshes_or_textures() {
         let directory = tempfile::tempdir().unwrap();
         for name in ["old.glb", "old.ktx2"] {
             let path = directory.path().join(name);
             fs::write(&path, b"verified old bytes").unwrap();
-            for schema_version in [17, 18, 19, 20, 21, 22, 23] {
+            for schema_version in [17, 18, 19, 20, 21, 22, 23, 24, 25] {
                 let record = StagedOutput {
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
@@ -741,7 +1095,7 @@ mod tests {
             output_hash: hash_file(&path).unwrap(),
         };
         assert!(record.is_current(&path, "source", "config"));
-        for schema_version in [16, 17, 18, 19, 20, 21, 22, 23] {
+        for schema_version in [16, 17, 18, 19, 20, 21, 22, 23, 24, 25] {
             let stale = StagedOutput {
                 schema_version,
                 ..record.clone()
@@ -783,6 +1137,52 @@ mod tests {
         }
     }
 
+    /// Compatible published meshes keep original provenance; texture migration
+    /// still applies to metadata-only packs and impossible retained identities.
+    #[test]
+    fn database_only_migration_preserves_compatible_mesh_provenance() {
+        for (producer, retained, compatible) in [
+            (24, None, true),
+            (CONVERTER_SCHEMA_VERSION, Some(24), true),
+            (24, Some(CONVERTER_SCHEMA_VERSION), false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("conversion-manifest.json");
+            let mut manifest = ConversionManifest {
+                schema_version: producer,
+                retained_mesh_schema_version: retained,
+                retained_asset_configuration_hash: retained.map(|_| "original-config".into()),
+                configuration_hash: "producer-config".into(),
+                complete: true,
+                ..ConversionManifest::default()
+            };
+            for output in ["meshes/a.glb", "textures/a.ktx2", "scripts/a.luau"] {
+                manifest.entries.insert(
+                    output.into(),
+                    CacheEntry {
+                        source_hash: "source".into(),
+                        output: output.into(),
+                        output_size: 1,
+                        output_hash: "output".into(),
+                    },
+                );
+            }
+            manifest.save(&path).unwrap();
+            let migrated = ConversionManifest::load(&path).unwrap();
+            assert!(!migrated.complete);
+            assert_eq!(migrated.entries.contains_key("meshes/a.glb"), compatible);
+            assert!(!migrated.entries.contains_key("textures/a.ktx2"));
+            assert!(migrated.entries.contains_key("scripts/a.luau"));
+            assert_eq!(migrated.retained_mesh_schema_version, retained);
+            assert_eq!(migrated.configuration_hash, "producer-config");
+            assert_eq!(
+                migrated.retained_asset_configuration_hash,
+                manifest.retained_asset_configuration_hash
+            );
+        }
+    }
+
+    /// Unproven older contracts never gain the current mesh identity.
     #[test]
     fn current_metadata_never_promotes_an_older_or_unknown_mesh_contract() {
         for mesh_schema in [

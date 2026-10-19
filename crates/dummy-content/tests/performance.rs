@@ -1,7 +1,9 @@
 //! Release-mode performance budgets.
 //!
-//! CI calibration: BSA 2.88 ms, ESM 0.099 ms, layout 8.73 ms (seven-sample medians).
+//! Original CI calibration: BSA 2.88 ms, ESM 0.099 ms, layout 8.73 ms (seven-sample medians).
 //! CPU budgets retain about tenfold headroom; filesystem layout retains over fivefold.
+//! CI uses `TMPDIR=/dev/shm` so durable fixture writes do not benchmark the
+//! shared runner's disk-flush latency. All generation and file operations still run.
 //!
 //! These tests are ignored by default because they assert wall-clock budgets
 //! with generous headroom. Run them with:

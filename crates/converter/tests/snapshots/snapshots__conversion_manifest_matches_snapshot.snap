@@ -61,8 +61,13 @@ expression: manifest
       "source_hash": "[source_hash]"
     }
   },
+  "asset_configuration_hashes": {
+    "dds": "56b588cc8e2cc51e7fbdd4ee25f5b5db3bc9eeda24d7cc1c2d566329f513b760",
+    "nif": "57430a12a46f7610f7297f5513d6aa633dfa4c079ac40f01b96f251337dba01a",
+    "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
+  },
   "complete": true,
-  "configuration_hash": "cca2af2b67310e9bc99f97208cabb4edffbd5d04c007e01fb350fccc011a19a2",
+  "configuration_hash": "8b5b189175ee095ede0571ab1dc1ff8af88acfb58e3f55ca70fc269a325084d4",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -120,5 +125,6 @@ expression: manifest
     "pex": 2
   },
   "pruned_texture_references": {},
-  "schema_version": 24
+  "record_data_complete": true,
+  "schema_version": 26
 }
