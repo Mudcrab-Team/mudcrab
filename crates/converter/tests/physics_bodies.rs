@@ -1,7 +1,9 @@
 //! #104 phase (a): rigid-body dynamics extracted from NIFs into the GLB collision extras.
 
 use converter::mesh::MeshConverter;
-use dummy_content::nif::{BoxBody, StaticShape, static_shape_with_bodies};
+use dummy_content::nif::{
+    BoxBody, StaticShape, static_shape_with_bodies, static_shape_with_bodies_under_multibound,
+};
 use shared::collision::{BodyKind, COLLISION_ASSET_VERSION, CollisionAsset, CollisionShape};
 use std::{fs, path::Path};
 
@@ -220,6 +222,34 @@ fn bodies_on_nodes_sharing_a_name_keep_their_own_node() {
     assert!(asset.skipped.is_empty(), "{:?}", asset.skipped);
     let nodes: Vec<u32> = asset.bodies.iter().map(|body| body.node).collect();
     assert_eq!(nodes, [2, 3]);
+}
+
+/// Mudcrab #218: Skyrim's pine trees put `TrunkBone` below a `BSMultiBoundNode`
+/// ("FadeNode Anim"). The exporter writes that node into the glTF, so the body's node index
+/// must count it, or the body is rejected as "no matching glTF node" and the trunk loses it.
+#[test]
+fn a_body_below_a_multibound_node_keeps_its_node() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("tree.nif");
+    let output = directory.path().join("tree.glb");
+    let mut trunk = wall_body();
+    trunk.node_name = "TrunkBone";
+    fs::write(
+        &input,
+        static_shape_with_bodies_under_multibound(&QUAD, "FadeNode Anim", &[trunk]).unwrap(),
+    )
+    .unwrap();
+    MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+    let (gltf, asset) = read_glb(&output);
+
+    // glTF nodes: root, shape, the multibound node, then the body node.
+    assert_eq!(gltf["nodes"][2]["name"], "FadeNode Anim");
+    assert_eq!(gltf["nodes"][3]["name"], "TrunkBone");
+    assert!(asset.skipped.is_empty(), "{:?}", asset.skipped);
+    let [body] = asset.bodies.as_slice() else {
+        panic!("expected one body, got {:?}", asset.bodies);
+    };
+    assert_eq!((body.node, body.target.as_str()), (3, "TrunkBone"));
 }
 
 #[test]
