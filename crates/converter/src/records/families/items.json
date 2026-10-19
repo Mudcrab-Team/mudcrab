@@ -1,0 +1,2489 @@
+{
+  "version": 1,
+  "sources": {},
+  "definitions": {
+    "items_value_weight_signed": {
+      "name": "value_weight",
+      "kind": "struct",
+      "size": 8,
+      "members": [
+        {
+          "name": "value",
+          "kind": "i32",
+          "offset": 0
+        },
+        {
+          "name": "weight",
+          "kind": "f32",
+          "offset": 4
+        }
+      ],
+      "source": "xedit-tes5:ARMO6222;MISC10802;KEYM10368;INGR10334"
+    },
+    "items_value_weight_unsigned": {
+      "name": "value_weight",
+      "kind": "struct",
+      "size": 8,
+      "members": [
+        {
+          "name": "value",
+          "kind": "u32",
+          "offset": 0
+        },
+        {
+          "name": "weight",
+          "kind": "f32",
+          "offset": 4
+        }
+      ],
+      "source": "xedit-tes5:SLGM7742;SCRL12674;APPA10823"
+    },
+    "items_icons": {
+      "name": "icons",
+      "kind": "group",
+      "fields": [
+        {
+          "signature": "ICON",
+          "name": "large_icon",
+          "kind": "zstring"
+        },
+        {
+          "signature": "MICO",
+          "name": "small_icon",
+          "kind": "zstring"
+        }
+      ],
+      "source": "xedit-tes5:5386-5399"
+    },
+    "items_body_template": {
+      "name": "body_template",
+      "kind": "struct",
+      "size": 8,
+      "members": [
+        {
+          "name": "first_person_slots",
+          "kind": "u32",
+          "offset": 0
+        },
+        {
+          "name": "armor_type",
+          "kind": "u32",
+          "offset": 4,
+          "enum": {
+            "0": "light_armor",
+            "1": "heavy_armor",
+            "2": "clothing"
+          }
+        }
+      ],
+      "source": "xedit-tes5:4240-4284"
+    },
+    "items_legacy_body_template": {
+      "name": "legacy_body_template",
+      "kind": "struct",
+      "sizes": [
+        8,
+        12
+      ],
+      "members": [
+        {
+          "name": "first_person_slots",
+          "kind": "u32",
+          "offset": 0
+        },
+        {
+          "name": "general_flags",
+          "kind": "u8",
+          "offset": 4,
+          "flags": {
+            "1": "modulates_voice",
+            "16": "non_playable"
+          }
+        },
+        {
+          "name": "unused",
+          "kind": "bytes",
+          "offset": 5,
+          "size": 3
+        },
+        {
+          "name": "armor_type",
+          "kind": "u32",
+          "offset": 8,
+          "optional": true,
+          "enum": {
+            "0": "light_armor",
+            "1": "heavy_armor",
+            "2": "clothing"
+          }
+        }
+      ],
+      "source": "xedit-tes5:4240-4284"
+    },
+    "spell_data": {
+      "name": "spell_data",
+      "kind": "struct",
+      "size": 36,
+      "reject_record_on_error": true,
+      "source": "xedit-tes5:12603-12659 manually authored widths/order",
+      "members": [
+        {
+          "name": "base_cost",
+          "kind": "u32",
+          "offset": 0
+        },
+        {
+          "name": "spell_flags",
+          "kind": "u32",
+          "offset": 4,
+          "flags": {
+            "1": "manual_cost",
+            "131072": "player_start",
+            "524288": "ignore_area_line_of_sight",
+            "1048576": "ignore_resistance",
+            "2097152": "no_absorb_reflect",
+            "8388608": "no_dual_cast_modification"
+          }
+        },
+        {
+          "name": "spell_kind",
+          "kind": "u32",
+          "offset": 8
+        },
+        {
+          "name": "charge_time",
+          "kind": "f32",
+          "offset": 12
+        },
+        {
+          "name": "casting_kind",
+          "kind": "u32",
+          "offset": 16
+        },
+        {
+          "name": "delivery_kind",
+          "kind": "u32",
+          "offset": 20
+        },
+        {
+          "name": "casting_duration",
+          "kind": "f32",
+          "offset": 24
+        },
+        {
+          "name": "range",
+          "kind": "f32",
+          "offset": 28
+        },
+        {
+          "name": "half_cost_perk",
+          "kind": "form_id",
+          "offset": 32,
+          "targets": [
+            "PERK",
+            "NULL"
+          ]
+        }
+      ]
+    },
+    "effects": {
+      "name": "effects",
+      "kind": "group",
+      "repeat": true,
+      "source": "xedit-tes5:5904-5911;6114-6124 manually authored effect occurrences; conditions pending D",
+      "fields": [
+        {
+          "signature": "EFID",
+          "name": "effect",
+          "kind": "form_id",
+          "targets": [
+            "MGEF"
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "EFIT",
+          "name": "effect_parameters",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "magnitude",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "area",
+              "kind": "u32",
+              "offset": 4
+            },
+            {
+              "name": "duration",
+              "kind": "u32",
+              "offset": 8
+            }
+          ],
+          "reject_record_on_error": true,
+          "size": 12
+        },
+        {
+          "signature": "CTDA",
+          "name": "pending_condition",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        },
+        {
+          "signature": "CIS1",
+          "name": "pending_condition_string_a",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        },
+        {
+          "signature": "CIS2",
+          "name": "pending_condition_string_b",
+          "kind": "bytes",
+          "repeat": true,
+          "source": "pending-component:D"
+        }
+      ]
+    }
+  },
+  "records": [
+    {
+      "signature": "WEAP",
+      "source": "xedit-tes5:13017",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "signature": "EITM",
+          "name": "object_effect",
+          "kind": "form_id",
+          "targets": [
+            "ENCH",
+            "SPEL"
+          ]
+        },
+        {
+          "signature": "EAMT",
+          "name": "enchantment_amount",
+          "kind": "u16"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "ETYP",
+          "name": "equipment_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "BIDS",
+          "name": "bash_impact_set",
+          "kind": "form_id",
+          "targets": [
+            "IPDS"
+          ]
+        },
+        {
+          "signature": "BAMT",
+          "name": "alternate_block_material",
+          "kind": "form_id",
+          "targets": [
+            "MATT"
+          ]
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "name": "scope_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD3",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO3T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO3S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "signature": "NNAM",
+          "name": "unused_legacy_name",
+          "kind": "bytes"
+        },
+        {
+          "signature": "INAM",
+          "name": "impact_set",
+          "kind": "form_id",
+          "targets": [
+            "IPDS"
+          ]
+        },
+        {
+          "signature": "WNAM",
+          "name": "first_person_model",
+          "kind": "form_id",
+          "targets": [
+            "STAT"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "attack_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "XNAM",
+          "name": "attack_sound_2d",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "NAM7",
+          "name": "attack_loop_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "TNAM",
+          "name": "attack_fail_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "UNAM",
+          "name": "idle_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "NAM9",
+          "name": "equip_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "NAM8",
+          "name": "unequip_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "game_data",
+          "kind": "struct",
+          "size": 10,
+          "members": [
+            {
+              "name": "value",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "weight",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "damage",
+              "kind": "u16",
+              "offset": 8
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "DNAM",
+          "name": "weapon_data",
+          "kind": "struct",
+          "size": 100,
+          "members": [
+            {
+              "name": "animation_type",
+              "kind": "u8",
+              "offset": 0,
+              "enum": {
+                "0": "hand_to_hand",
+                "1": "one_hand_sword",
+                "2": "one_hand_dagger",
+                "3": "one_hand_axe",
+                "4": "one_hand_mace",
+                "5": "two_hand_sword",
+                "6": "two_hand_axe",
+                "7": "bow",
+                "8": "staff",
+                "9": "crossbow"
+              }
+            },
+            {
+              "name": "unused_01",
+              "kind": "bytes",
+              "offset": 1,
+              "size": 3
+            },
+            {
+              "name": "speed",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "reach",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "flags",
+              "kind": "u16",
+              "offset": 12,
+              "flags": {
+                "1": "ignores_weapon_resistance",
+                "2": "automatic_unused",
+                "4": "has_scope_unused",
+                "8": "cannot_drop",
+                "16": "hide_backpack_unused",
+                "32": "embedded_weapon_unused",
+                "64": "no_first_person_is_animation_unused",
+                "128": "non_playable"
+              }
+            },
+            {
+              "name": "unused_14",
+              "kind": "bytes",
+              "offset": 14,
+              "size": 2
+            },
+            {
+              "name": "sight_fov",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "unknown_20",
+              "kind": "bytes",
+              "offset": 20,
+              "size": 4
+            },
+            {
+              "name": "base_vats_hit_chance",
+              "kind": "u8",
+              "offset": 24
+            },
+            {
+              "name": "attack_animation",
+              "kind": "u8",
+              "offset": 25,
+              "enum": {
+                "26": "attack_left",
+                "32": "attack_right",
+                "38": "attack_3",
+                "44": "attack_4",
+                "50": "attack_5",
+                "56": "attack_6",
+                "62": "attack_7",
+                "68": "attack_8",
+                "74": "attack_loop",
+                "80": "attack_spin",
+                "86": "attack_spin_2",
+                "97": "place_mine",
+                "103": "place_mine_2",
+                "109": "attack_throw",
+                "115": "attack_throw_2",
+                "121": "attack_throw_3",
+                "127": "attack_throw_4",
+                "133": "attack_throw_5",
+                "255": "default"
+              }
+            },
+            {
+              "name": "projectile_count",
+              "kind": "u8",
+              "offset": 26
+            },
+            {
+              "name": "embedded_weapon_actor_value_unused",
+              "kind": "u8",
+              "offset": 27
+            },
+            {
+              "name": "range_min",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "range_max",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "on_hit",
+              "kind": "u32",
+              "offset": 36,
+              "enum": {
+                "0": "no_formula",
+                "1": "dismember_only",
+                "2": "explode_only",
+                "3": "no_dismember_explode"
+              }
+            },
+            {
+              "name": "flags_2",
+              "kind": "u32",
+              "offset": 40,
+              "flags": {
+                "1": "player_only",
+                "2": "npcs_use_ammo",
+                "4": "no_jam_unused",
+                "16": "minor_crime",
+                "32": "fixed_range",
+                "64": "not_normal_combat",
+                "256": "no_third_person_is_animation_unused",
+                "512": "burst_shot",
+                "1024": "rumble_alternate",
+                "2048": "long_bursts",
+                "4096": "non_hostile",
+                "8192": "bound_weapon"
+              }
+            },
+            {
+              "name": "animation_attack_multiplier",
+              "kind": "f32",
+              "offset": 44
+            },
+            {
+              "name": "unknown_float_48",
+              "kind": "f32",
+              "offset": 48
+            },
+            {
+              "name": "rumble_left_strength",
+              "kind": "f32",
+              "offset": 52
+            },
+            {
+              "name": "rumble_right_strength",
+              "kind": "f32",
+              "offset": 56
+            },
+            {
+              "name": "rumble_duration",
+              "kind": "f32",
+              "offset": 60
+            },
+            {
+              "name": "unknown_64",
+              "kind": "bytes",
+              "offset": 64,
+              "size": 12
+            },
+            {
+              "name": "skill",
+              "kind": "i32",
+              "offset": 76
+            },
+            {
+              "name": "unknown_80",
+              "kind": "bytes",
+              "offset": 80,
+              "size": 8
+            },
+            {
+              "name": "resistance_actor_value",
+              "kind": "i32",
+              "offset": 88
+            },
+            {
+              "name": "unknown_92",
+              "kind": "bytes",
+              "offset": 92,
+              "size": 4
+            },
+            {
+              "name": "stagger",
+              "kind": "f32",
+              "offset": 96
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "CRDT",
+          "name": "critical",
+          "kind": "union",
+          "decider": "size",
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "struct",
+              "size": 16,
+              "members": [
+                {
+                  "name": "damage",
+                  "kind": "u16",
+                  "offset": 0
+                },
+                {
+                  "name": "unused_02",
+                  "kind": "bytes",
+                  "offset": 2,
+                  "size": 2
+                },
+                {
+                  "name": "percent_multiplier",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 8,
+                  "flags": {
+                    "1": "on_death"
+                  }
+                },
+                {
+                  "name": "unused_09",
+                  "kind": "bytes",
+                  "offset": 9,
+                  "size": 3
+                },
+                {
+                  "name": "effect",
+                  "kind": "form_id",
+                  "offset": 12,
+                  "targets": [
+                    "SPEL"
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "sse",
+              "kind": "struct",
+              "size": 24,
+              "members": [
+                {
+                  "name": "damage",
+                  "kind": "u16",
+                  "offset": 0
+                },
+                {
+                  "name": "unused_02",
+                  "kind": "bytes",
+                  "offset": 2,
+                  "size": 2
+                },
+                {
+                  "name": "percent_multiplier",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 8,
+                  "flags": {
+                    "1": "on_death"
+                  }
+                },
+                {
+                  "name": "unused_09",
+                  "kind": "bytes",
+                  "offset": 9,
+                  "size": 7
+                },
+                {
+                  "name": "effect",
+                  "kind": "form_id",
+                  "offset": 16,
+                  "targets": [
+                    "SPEL"
+                  ]
+                },
+                {
+                  "name": "unused_20",
+                  "kind": "bytes",
+                  "offset": 20,
+                  "size": 4
+                }
+              ]
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "VNAM",
+          "name": "detection_sound_level",
+          "kind": "u32"
+        },
+        {
+          "signature": "CNAM",
+          "name": "template_weapon",
+          "kind": "form_id",
+          "targets": [
+            "WEAP"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "ARMO",
+      "source": "xedit-tes5:6222",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "EITM",
+          "name": "object_effect",
+          "kind": "form_id",
+          "targets": [
+            "ENCH",
+            "SPEL"
+          ]
+        },
+        {
+          "signature": "EAMT",
+          "name": "enchantment_amount",
+          "kind": "u16"
+        },
+        {
+          "name": "male_world_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD2",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO2T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO2S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "female_world_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD4",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO4T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO4S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "name": "female_icons",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "ICO2",
+              "name": "large_icon",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MIC2",
+              "name": "small_icon",
+              "kind": "zstring"
+            }
+          ]
+        },
+        {
+          "signature": "BODT",
+          "name": "legacy_body_template",
+          "definition": "items_legacy_body_template",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "BOD2",
+          "name": "body_template",
+          "definition": "items_body_template",
+          "reject_record_on_error": true
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "BMCT",
+          "name": "ragdoll_constraint_template",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ETYP",
+          "name": "equipment_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "BIDS",
+          "name": "bash_impact_set",
+          "kind": "form_id",
+          "targets": [
+            "IPDS"
+          ]
+        },
+        {
+          "signature": "BAMT",
+          "name": "alternate_block_material",
+          "kind": "form_id",
+          "targets": [
+            "MATT"
+          ]
+        },
+        {
+          "signature": "RNAM",
+          "name": "race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "MODL",
+          "name": "armature",
+          "kind": "form_id",
+          "targets": [
+            "ARMA"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_signed",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "DNAM",
+          "name": "armor_rating_hundredths",
+          "kind": "i32",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "TNAM",
+          "name": "template_armor",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "ARMA",
+      "source": "xedit-tes5:6260",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "BODT",
+          "name": "legacy_body_template",
+          "definition": "items_legacy_body_template",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "BOD2",
+          "name": "body_template",
+          "definition": "items_body_template",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "RNAM",
+          "name": "race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ]
+        },
+        {
+          "signature": "DNAM",
+          "name": "addon_data",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "male_priority",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "female_priority",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "male_weight_slider_flags",
+              "kind": "u8",
+              "offset": 2,
+              "flags": {
+                "2": "enabled"
+              }
+            },
+            {
+              "name": "female_weight_slider_flags",
+              "kind": "u8",
+              "offset": 3,
+              "flags": {
+                "2": "enabled"
+              }
+            },
+            {
+              "name": "unknown_04",
+              "kind": "bytes",
+              "offset": 4,
+              "size": 2
+            },
+            {
+              "name": "detection_sound_value",
+              "kind": "u8",
+              "offset": 6
+            },
+            {
+              "name": "unknown_07",
+              "kind": "bytes",
+              "offset": 7,
+              "size": 1
+            },
+            {
+              "name": "weapon_adjust",
+              "kind": "f32",
+              "offset": 8
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "name": "male_biped_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD2",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO2T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO2S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "name": "female_biped_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD3",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO3T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO3S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "name": "male_first_person_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD4",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO4T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO4S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "name": "female_first_person_model",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "MOD5",
+              "name": "path",
+              "definition": "model_path"
+            },
+            {
+              "signature": "MO5T",
+              "name": "information",
+              "definition": "model_information"
+            },
+            {
+              "signature": "MO5S",
+              "name": "alternate_textures",
+              "definition": "alternate_textures"
+            }
+          ]
+        },
+        {
+          "signature": "NAM0",
+          "name": "male_skin_texture",
+          "kind": "form_id",
+          "targets": [
+            "TXST"
+          ]
+        },
+        {
+          "signature": "NAM1",
+          "name": "female_skin_texture",
+          "kind": "form_id",
+          "targets": [
+            "TXST"
+          ]
+        },
+        {
+          "signature": "NAM2",
+          "name": "male_skin_swaps",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ]
+        },
+        {
+          "signature": "NAM3",
+          "name": "female_skin_swaps",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ]
+        },
+        {
+          "signature": "MODL",
+          "name": "additional_race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "SNDD",
+          "name": "footstep_sound",
+          "kind": "form_id",
+          "targets": [
+            "FSTS"
+          ]
+        },
+        {
+          "signature": "ONAM",
+          "name": "art_object",
+          "kind": "form_id",
+          "targets": [
+            "ARTO"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "AMMO",
+      "source": "xedit-tes5:6172",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "ammunition_data",
+          "kind": "struct",
+          "sizes": [
+            16,
+            20
+          ],
+          "members": [
+            {
+              "name": "projectile",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PROJ"
+              ]
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 4,
+              "flags": {
+                "1": "ignores_weapon_resistance",
+                "2": "non_playable",
+                "4": "non_bolt"
+              }
+            },
+            {
+              "name": "damage",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "value",
+              "kind": "u32",
+              "offset": 12
+            },
+            {
+              "name": "weight",
+              "kind": "f32",
+              "offset": 16,
+              "optional": true
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "ONAM",
+          "name": "short_name",
+          "kind": "zstring"
+        }
+      ]
+    },
+    {
+      "signature": "BOOK",
+      "source": "xedit-tes5:6294",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "signature": "DESC",
+          "name": "book_text",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "book_data",
+          "kind": "struct",
+          "size": 16,
+          "members": [
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 0,
+              "flags": {
+                "1": "teaches_skill",
+                "2": "cannot_take",
+                "4": "teaches_spell"
+              }
+            },
+            {
+              "name": "type",
+              "kind": "u8",
+              "offset": 1,
+              "enum": {
+                "0": "book_tome",
+                "255": "note_scroll"
+              }
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 2,
+              "size": 2
+            },
+            {
+              "name": "teaches",
+              "kind": "union",
+              "offset": 4,
+              "size": 4,
+              "decider": "book_teaching",
+              "fields": [
+                {
+                  "name": "skill",
+                  "kind": "i32"
+                },
+                {
+                  "name": "spell",
+                  "kind": "form_id",
+                  "targets": [
+                    "SPEL"
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "value",
+              "kind": "u32",
+              "offset": 8
+            },
+            {
+              "name": "weight",
+              "kind": "f32",
+              "offset": 12
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "INAM",
+          "name": "inventory_art",
+          "kind": "form_id",
+          "targets": [
+            "STAT"
+          ]
+        },
+        {
+          "signature": "CNAM",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        }
+      ]
+    },
+    {
+      "signature": "MISC",
+      "source": "xedit-tes5:10802",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_signed",
+          "reject_record_on_error": true
+        }
+      ]
+    },
+    {
+      "signature": "KEYM",
+      "source": "xedit-tes5:10368",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_signed",
+          "reject_record_on_error": true
+        }
+      ]
+    },
+    {
+      "signature": "INGR",
+      "source": "xedit-tes5:10334",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "ETYP",
+          "name": "equipment_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_signed",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "ENIT",
+          "name": "effect_data",
+          "kind": "struct",
+          "size": 8,
+          "members": [
+            {
+              "name": "ingredient_value",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 4,
+              "flags": {
+                "1": "no_auto_calculation",
+                "2": "food",
+                "256": "references_persist"
+              }
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "name": "effects",
+          "definition": "effects"
+        }
+      ]
+    },
+    {
+      "signature": "ALCH",
+      "source": "xedit-tes5:6126",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ETYP",
+          "name": "equipment_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "weight",
+          "kind": "f32",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "ENIT",
+          "name": "effect_data",
+          "kind": "struct",
+          "size": 20,
+          "members": [
+            {
+              "name": "value",
+              "kind": "i32",
+              "offset": 0
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 4,
+              "flags": {
+                "1": "no_auto_calculation",
+                "2": "food",
+                "65536": "medicine",
+                "131072": "poison"
+              }
+            },
+            {
+              "name": "addiction",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "*"
+              ]
+            },
+            {
+              "name": "addiction_chance",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "consume_sound",
+              "kind": "form_id",
+              "offset": 16,
+              "targets": [
+                "SNDR"
+              ]
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "name": "effects",
+          "definition": "effects"
+        }
+      ]
+    },
+    {
+      "signature": "SLGM",
+      "source": "xedit-tes5:7742",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_unsigned",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "SOUL",
+          "name": "contained_soul",
+          "kind": "u8",
+          "enum": {
+            "0": "none",
+            "1": "petty",
+            "2": "lesser",
+            "3": "common",
+            "4": "greater",
+            "5": "grand"
+          }
+        },
+        {
+          "signature": "SLCP",
+          "name": "capacity",
+          "kind": "u8",
+          "enum": {
+            "0": "none",
+            "1": "petty",
+            "2": "lesser",
+            "3": "common",
+            "4": "greater",
+            "5": "grand"
+          }
+        },
+        {
+          "signature": "NAM0",
+          "name": "linked_soul_gem",
+          "kind": "form_id",
+          "targets": [
+            "SLGM"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "SCRL",
+      "source": "xedit-tes5:12674",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "MDOB",
+          "name": "menu_display_object",
+          "kind": "form_id",
+          "targets": [
+            "*"
+          ]
+        },
+        {
+          "signature": "ETYP",
+          "name": "equipment_type",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_unsigned",
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "SPIT",
+          "name": "spell_data",
+          "definition": "spell_data",
+          "reject_record_on_error": true
+        },
+        {
+          "name": "effects",
+          "definition": "effects"
+        }
+      ]
+    },
+    {
+      "signature": "APPA",
+      "source": "xedit-tes5:10823",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "name": "icons",
+          "definition": "items_icons"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "YNAM",
+          "name": "pickup_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ZNAM",
+          "name": "putdown_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "QUAL",
+          "name": "quality",
+          "kind": "i32",
+          "enum": {
+            "0": "novice",
+            "1": "apprentice",
+            "2": "journeyman",
+            "3": "expert",
+            "4": "master"
+          }
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "DATA",
+          "name": "value_weight",
+          "definition": "items_value_weight_unsigned",
+          "reject_record_on_error": true
+        }
+      ]
+    },
+    {
+      "signature": "CONT",
+      "source": "xedit-tes5:6622",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "name": "scripts",
+          "definition": "vmad"
+        },
+        {
+          "signature": "OBND",
+          "name": "bounds",
+          "definition": "bounds"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "name": "model",
+          "definition": "model"
+        },
+        {
+          "signature": "COCT",
+          "name": "item_count",
+          "kind": "u32"
+        },
+        {
+          "name": "items",
+          "definition": "inventory_items"
+        },
+        {
+          "name": "destructible",
+          "definition": "destructible"
+        },
+        {
+          "signature": "DATA",
+          "name": "container_data",
+          "kind": "struct",
+          "size": 5,
+          "members": [
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 0,
+              "flags": {
+                "1": "allow_sounds_when_animation",
+                "2": "respawns",
+                "4": "show_owner"
+              }
+            },
+            {
+              "name": "weight",
+              "kind": "f32",
+              "offset": 1
+            }
+          ],
+          "reject_record_on_error": true
+        },
+        {
+          "signature": "SNAM",
+          "name": "open_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "QNAM",
+          "name": "close_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "COBJ",
+      "source": "xedit-tes5:10847",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "COCT",
+          "name": "item_count",
+          "kind": "u32"
+        },
+        {
+          "name": "items",
+          "definition": "inventory_items"
+        },
+        {
+          "name": "conditions",
+          "definition": "pending_conditions"
+        },
+        {
+          "signature": "CNAM",
+          "name": "created_object",
+          "kind": "form_id",
+          "targets": [
+            "*"
+          ]
+        },
+        {
+          "signature": "BNAM",
+          "name": "workbench_keyword",
+          "kind": "form_id",
+          "targets": [
+            "KYWD"
+          ]
+        },
+        {
+          "signature": "NAM1",
+          "name": "created_count",
+          "kind": "u16"
+        }
+      ]
+    },
+    {
+      "signature": "EQUP",
+      "source": "xedit-tes5:9714",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "PNAM",
+          "name": "slot_parents",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "slot",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "*"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "use_all_parents",
+          "kind": "u32",
+          "enum": {
+            "0": "false",
+            "1": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

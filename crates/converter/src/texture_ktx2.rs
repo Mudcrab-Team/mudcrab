@@ -1,6 +1,5 @@
 //! Writes UASTC KTX2 files with the same header and data format descriptor
-//! Basis Universal emits, so GPU- and CPU-encoded textures are
-//! interchangeable at runtime.
+//! Basis Universal emits; shared by the CPU atlas and GPU texture encoders.
 
 // KHR Data Format constants (KTX2 / Khronos Data Format spec).
 const KHR_DF_MODEL_UASTC: u32 = 166;
@@ -61,9 +60,10 @@ pub fn write_uastc(
     levels: &[Vec<u8>],
     srgb: bool,
     has_alpha: bool,
+    writer: &str,
 ) -> Vec<u8> {
     let dfd = uastc_dfd(srgb, has_alpha);
-    let kvd = kvd();
+    let kvd = kvd(writer);
     let total = levels.iter().map(Vec::len).sum::<usize>();
     let mut out = vec![0u8; HEADER_LEN + levels.len() * LEVEL_INDEX_LEN];
     out.reserve(dfd.len() + kvd.len() + total + 16 * levels.len());
@@ -97,10 +97,10 @@ pub fn write_uastc(
 }
 
 /// Key/value data: the writer name, padded to 4 bytes as the spec requires.
-fn kvd() -> Vec<u8> {
-    let entry = b"KTXwriter\0mudcrab texture_gpu\0";
+fn kvd(writer: &str) -> Vec<u8> {
+    let entry = format!("KTXwriter\0{writer}\0");
     let mut kvd = (entry.len() as u32).to_le_bytes().to_vec();
-    kvd.extend_from_slice(entry);
+    kvd.extend_from_slice(entry.as_bytes());
     while !kvd.len().is_multiple_of(4) {
         kvd.push(0);
     }
@@ -127,7 +127,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        let raw = write_uastc(8, 8, 6, &levels, true, true);
+        let raw = write_uastc(8, 8, 6, &levels, true, true, "mudcrab texture_gpu");
         let packed = supercompress_ktx2_levels(&raw, 3).unwrap();
         let metadata = inspect_ktx2(&packed, TextureEncoding::ColorSrgb).unwrap();
         assert_eq!(

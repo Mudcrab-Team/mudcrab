@@ -120,6 +120,13 @@ impl AssetSourceIndex {
     }
 }
 
+/// Authoring resources are not runtime assets, even when their extension is NIF/DDS/PEX.
+pub(crate) fn is_authoring_resource(path: &str) -> bool {
+    path.replace('\\', "/")
+        .split('/')
+        .any(|part| part.eq_ignore_ascii_case("calientetools"))
+}
+
 /// Canonicalizes a Bethesda asset path into a lowercase, root-relative key.
 /// Repeated `data/<kind>` or `<kind>` prefixes are collapsed by selecting the
 /// last kind component, which repairs paths leaked from authoring workspaces.
@@ -321,10 +328,33 @@ mod tests {
                 .starts_with(modded)
         );
 
-        if !cfg!(windows) {
-            fs::write(base.join("Landscape/ROCK.dds"), b"collision").unwrap();
-            assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
+        let collision = base.join("Landscape/ROCK.dds");
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&collision)
+        {
+            Ok(_) => {
+                fs::write(collision, b"collision").unwrap();
+                assert!(
+                    AssetSourceIndex::build(std::slice::from_ref(&base), AssetKind::Texture)
+                        .is_err()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                assert!(
+                    AssetSourceIndex::build(std::slice::from_ref(&base), AssetKind::Texture)
+                        .is_ok()
+                );
+            }
+            Err(error) => panic!("create case-collision fixture: {error}"),
         }
+
+        // Also create distinct files on case-insensitive volumes: canonicalization
+        // strips the redundant textures prefix and lowercases the asset path.
+        fs::create_dir_all(base.join("textures/landscape")).unwrap();
+        fs::write(base.join("textures/landscape/rock.dds"), b"collision").unwrap();
+        assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
     }
 
     #[test]

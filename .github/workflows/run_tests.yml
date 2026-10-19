@@ -62,7 +62,7 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '\.ps1$'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -98,6 +98,9 @@ jobs:
         with:
           clean: false
 
+      - name: Test repeated terrain startup runner
+        run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
@@ -110,6 +113,9 @@ jobs:
             fi
           done < <(git ls-files '*.ps1')
           exit "$failed"
+
+      - name: Verify LOD acceptance summary checks
+        run: python3 -m unittest discover -s scripts/tests -p test_lod_acceptance_summary.py -v
 
   clippy:
     needs: [orchestrate]
@@ -151,7 +157,8 @@ jobs:
     needs: [orchestrate]
     if: needs.orchestrate.outputs.check_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Cold test builds can take 26 minutes; leave time for the full suite.
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -166,6 +173,7 @@ jobs:
             libudev-dev \
             libwayland-dev \
             libxkbcommon-dev \
+            mesa-vulkan-drivers \
             pkg-config
 
       - name: Install Rust toolchain
@@ -190,6 +198,11 @@ jobs:
         run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
+
+      - name: Test GPU texture encoder on software Vulkan
+        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips)'
+        env:
+          WGPU_BACKEND: vulkan
 
   security:
     needs: [orchestrate]
@@ -234,6 +247,10 @@ jobs:
 
       - name: Run release performance budgets
         run: cargo test --locked --release -p dummy-content --test performance -- --ignored --nocapture --test-threads=1
+        env:
+          # Fixture generation syncs every file. Keep runner disk-flush latency
+          # out of the generator budgets without relaxing their thresholds.
+          TMPDIR: /dev/shm
 
   tests_pass:
     needs:

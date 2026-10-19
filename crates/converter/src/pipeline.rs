@@ -3,7 +3,8 @@ use crate::{
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, StagedOutput, StagingJournal,
-        can_reuse_scripts_and_archives, configuration_hash, configuration_hash_for_schema,
+        asset_configuration_hash_for_schema, can_reuse_meshes, can_reuse_scripts_and_archives,
+        configuration_hash, configuration_hash_for_schema, current_configuration_hash_for_schema,
         hash_bytes, hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
@@ -12,16 +13,18 @@ use crate::{
         cell_cache::write_cell_cache,
         exporter::validate_database,
         lodsettings::{LodSettings, sidecar_path},
-        read_plugins_txt,
+        plugins_txt::read_with_selection_diagnostics,
     },
-    integration::{IntegrationReport, finalize_world_database},
+    integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
-        albedo::TerrainTextures,
+        albedo::{TerrainTextureCache, TerrainTextures},
+        reuse::{LodManifest, LodReuse},
         terrain::{
-            compile_world_terrain, exterior_terrain_cells, publish_chunks, read_cached_heights,
+            TerrainCellCache, exterior_terrain_cells, publish_chunk, read_cached_heights,
+            terrain_jobs, validate_chunk_members,
         },
     },
-    mesh::{MeshConverter, nif_source_hash},
+    mesh::MeshConverter,
     progress::{AssetOutcome, ProgressEvent, ProgressStage},
     script::ScriptConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic, publish_ktx2_file},
@@ -36,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use shared::{
     asset_lock::{AssetLock, AssetLockMode, resolve_asset_path},
     lod::LodOrigin,
+    plugin_selection::CreationFallbackWarning,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -53,6 +57,10 @@ use tokio::{
 };
 use walkdir::WalkDir;
 
+#[cfg(test)]
+#[path = "pipeline/rv_b_tests.rs"]
+mod rv_b_tests;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineReport {
     pub complete: bool,
@@ -66,11 +74,14 @@ pub struct PipelineReport {
     /// separately from `skipped` and `warnings`: nothing failed to convert, so a
     /// prune never makes the run incomplete.
     pub pruned_texture_references: u64,
-    /// Terrain LOD chunks compiled this run. Zero when no worldspace had a
+    /// Terrain LOD chunks produced this run, including verified reused chunks. Zero when no worldspace had a
     /// valid origin or LOD was disabled; a world without one is recorded as an LOD omission, never
     /// given an assumed origin (GEOM-02).
     #[serde(default)]
     pub lod_chunks: u64,
+    /// Verified prior-package chunks reused without baking/encoding.
+    #[serde(default)]
+    pub lod_cache_hits: u64,
     /// Wall time spent compiling terrain LOD, excluding other conversion stages.
     #[serde(default)]
     pub lod_elapsed_ms: u128,
@@ -81,21 +92,37 @@ pub struct PipelineReport {
     #[serde(default)]
     pub lod_warnings: Vec<String>,
     pub warnings: Vec<String>,
-    /// advisory messages that do not affect completeness
+    /// Advisory messages, including successful reader compatibility remaps,
+    /// that do not affect completeness.
     #[serde(default)]
     pub notices: Vec<String>,
+    /// Original plugin filenames omitted by selection recovery, once each in selection order.
+    /// Full exclusions stay available without expanding the bounded user-facing warning summaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_plugins: Vec<String>,
+    /// Surviving original plugin filenames in the slot order published in the database.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_order: Vec<String>,
+    /// Input-policy warnings, distinct from failed asset conversions in `warnings`.
+    /// A Creation fallback is visible to the user without making usable output incomplete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selection_warnings: Vec<CreationFallbackWarning>,
     pub artifacts: Vec<PathBuf>,
     pub inputs_by_kind: BTreeMap<String, u64>,
     pub elapsed_ms: u128,
     pub integration: Option<IntegrationReport>,
 }
 
-/// A run is complete when nothing was skipped and nothing warned. Pruned dangling
+/// A run is complete when no asset conversion was skipped and no conversion warnings remain.
+/// Recoverable plugin-selection exclusions are advisory notices and `skipped_plugins` entries.
+/// Creation fallback warnings describe input policy; they do not indicate failed conversions.
+/// Pruned dangling
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
 /// convert. A failed archive, a mesh that will not convert or a failed integration
-/// still skip or warn, so they still land here.
-fn conversion_is_complete(report: &PipelineReport) -> bool {
+/// still skip or warn, so they still land here. Reader data-loss summaries warn
+/// while usable records still publish; successful compatibility remaps are notices.
+pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
@@ -236,12 +263,14 @@ impl AssetPipeline {
         Self::run_async_with_cancel(config, progress_tx, Cancellation::new()).await
     }
 
+    /// Freeze configuration inputs before staging and honor cancellation at publication.
     pub async fn run_async_with_cancel(
         mut config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
         config.validate()?;
+        config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
         config.output_dir =
             resolve_asset_path(&config.output_dir).wrap_err("failed to resolve asset output")?;
@@ -266,6 +295,11 @@ impl AssetPipeline {
             };
             color_eyre::Report::from(error).wrap_err(message)
         })?;
+        // Hold the runtime lock before repair-journal recovery can write the pack,
+        // and the distinct repair lock before directory recovery or publication.
+        // Both guards remain alive through cache cleanup; publication reuses output_lock.
+        let ownership = crate::repair::OutputOwnership::acquire(&config.output_dir)?;
+        config.output_dir = ownership.output().to_path_buf();
         recover_interrupted_publication(&config.output_dir)?;
         let started = Instant::now();
         send(
@@ -282,36 +316,7 @@ impl AssetPipeline {
         } else {
             ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))?
         };
-        let expected_configuration = configuration_hash(&config)?;
-        let metadata_configuration_is_compatible = loaded_manifest.configuration_hash
-            == expected_configuration
-            || ((can_reuse_scripts_and_archives(loaded_manifest.schema_version)
-                || loaded_manifest.schema_version == CONVERTER_SCHEMA_VERSION)
-                && loaded_manifest.configuration_hash
-                    == configuration_hash_for_schema(&config, loaded_manifest.schema_version)?);
-        let retained_configuration_is_compatible =
-            match &loaded_manifest.retained_asset_configuration_hash {
-                Some(recorded) => {
-                    recorded
-                        == &configuration_hash_for_schema(
-                            &config,
-                            loaded_manifest
-                                .retained_mesh_schema_version
-                                .unwrap_or(loaded_manifest.schema_version),
-                        )?
-                }
-                None => {
-                    loaded_manifest.retained_mesh_schema_version.is_none()
-                        && !config.output_dir.join("metadata-rebuild.json").exists()
-                }
-            };
-        let configuration_is_compatible =
-            metadata_configuration_is_compatible && retained_configuration_is_compatible;
-        let previous_manifest = if configuration_is_compatible {
-            loaded_manifest
-        } else {
-            ConversionManifest::default()
-        };
+        let previous_manifest = reusable_manifest(&config, loaded_manifest)?;
         let staging = config
             .resume_staging
             .clone()
@@ -386,8 +391,11 @@ impl AssetPipeline {
         Ok(report)
     }
 
-    /// Converts into staging, preserving usable outputs through texture repair, alias publication,
-    /// pruning, and artifact verification, and returns the report for pack publication.
+    /// Converts resolved inputs into staging, reusing valid cached outputs and reporting progress.
+    ///
+    /// Rebuilds MO2 input selection on resume and records conversion results in the staging manifest.
+    /// Preserves usable outputs through texture repair, alias publication, pruning, and artifact
+    /// verification, and returns the report for pack publication.
     async fn run_into(
         config: &PipelineConfig,
         staging: &Path,
@@ -417,24 +425,150 @@ impl AssetPipeline {
             retained_mesh_schema_version: None,
             retained_asset_configuration_hash: None,
             complete: false,
+            // A fresh run has no record losses when there are no selected plugins.
+            // The authoritative reader replaces this proof when plugins are converted.
+            record_data_complete: Some(true),
             configuration_hash: expected_configuration.clone(),
+            schema_addons: config.schemas()?.identities().to_vec(),
+            asset_configuration_hashes: ["nif", "dds", "pex"]
+                .into_iter()
+                .map(|kind| {
+                    Ok((
+                        kind.to_owned(),
+                        asset_configuration_hash_for_schema(
+                            config,
+                            CONVERTER_SCHEMA_VERSION,
+                            kind,
+                        )?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
             inputs_by_kind: Default::default(),
             failures: Default::default(),
+            excluded_inputs: Default::default(),
             pruned_texture_references: Default::default(),
             archives: Default::default(),
             entries: Default::default(),
         };
-        let files = discover(&config.data_dir)?;
-        let plugins = plugin_paths(config, &files, &mut report.notices)?;
+        let mut resolved_files = BTreeMap::new();
+        let mut mo2_plugins = None;
+        let mut mo2_candidates = Vec::new();
+        if let Some(selection) = &config.mo2 {
+            let instance = mo2::Instance::open(&selection.instance_path)?;
+            let data = config.data_dir.clone();
+            let profile = selection.profile.clone();
+            let stop = cancellation.clone();
+            let resolved = spawn_blocking(move || {
+                instance.resolve_with_cancel(&data, &profile, &|| stop.is_cancelled())
+            })
+            .await
+            .wrap_err("MO2 resolver worker panicked")?;
+            interrupt(cancellation)?;
+            let resolved = resolved?;
+            report.notices.extend(resolved.notices);
+            report
+                .selection_warnings
+                .extend(resolved.selection_warnings);
+            mo2_candidates = resolved.plugin_candidates;
+            // Rebuild archive-derived inputs on resume; loose assets are read directly from
+            // their winning source paths. Remove legacy copied inputs from older runs too.
+            for root in [staging.join(".mo2-input")] {
+                if root.exists() {
+                    fs::remove_dir_all(&root)?;
+                }
+            }
+            mo2_plugins = Some(
+                resolved
+                    .plugins
+                    .iter()
+                    .map(|name| resolved.files[name].clone())
+                    .collect::<Vec<_>>(),
+            );
+            resolved_files = resolved.files;
+        }
+        let files = if config.mo2.is_some() {
+            resolved_files.values().cloned().collect()
+        } else {
+            discover(&config.data_dir)?
+        };
+        let archive_keys: BTreeMap<_, _> = resolved_files
+            .iter()
+            .filter(|(_, source)| extension(source, &["bsa", "ba2"]))
+            .map(|(relative, source)| (source.clone(), relative.clone()))
+            .collect();
+        let plugins = match mo2_plugins {
+            Some(plugins) => {
+                let profile = &config.mo2.as_ref().unwrap().profile;
+                let mut recovery_notices = Vec::new();
+                let plugins = crate::esm::plugins_txt::recover_with_diagnostics(
+                    plugins,
+                    &mut recovery_notices,
+                    &mut report.skipped_plugins,
+                )?;
+                crate::esm::plugins_txt::record_recovery_skips(
+                    &mo2_candidates,
+                    &plugins,
+                    &mut report.skipped_plugins,
+                );
+                report.notices.extend(
+                    recovery_notices
+                        .into_iter()
+                        .map(|notice| format!("MO2 profile {profile}: {notice}")),
+                );
+                ensure!(
+                    !plugins.is_empty(),
+                    "MO2 profile {profile}: no usable active plugins remain"
+                );
+                crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
+                    format!(
+                        "MO2 profile {}: invalid plugin/master order",
+                        config.mo2.as_ref().unwrap().profile
+                    )
+                })?;
+                plugins
+            }
+            None => plugin_paths_with_diagnostics(
+                config,
+                &files,
+                &mut report.notices,
+                &mut report.skipped_plugins,
+                &mut report.selection_warnings,
+            )?,
+        };
+        report.load_order = plugins
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         // Notices go out on the progress channel, like the pruned-texture warnings, so the CLI
         // prints them without splicing into its status line and the launcher shows them in its
         // notice pane. They stay in `report.notices` for the summary and the JSON report.
+        // Automatic discovery with no usable plugins can only carry the subfolder note; once a
+        // plugin is selected, every selection notice reports a recovery and is a warning.
+        let selection_warns =
+            config.plugins_file.is_some() || config.mo2.is_some() || !plugins.is_empty();
         for notice in &report.notices {
             send_notice(
                 progress_tx,
                 ProgressStage::Discovering,
                 None,
-                &format!("note: {notice}"),
+                &format!(
+                    "{}: {notice}",
+                    if selection_warns { "warning" } else { "note" }
+                ),
+            )
+            .await;
+        }
+        for warning in &report.selection_warnings {
+            send_notice(
+                progress_tx,
+                ProgressStage::Discovering,
+                None,
+                &format!("warning: {warning}"),
             )
             .await;
         }
@@ -447,9 +581,22 @@ impl AssetPipeline {
             .filter(|path| extension(path, &["bsa", "ba2"]))
             .cloned()
             .collect();
+        let archive_owners = if config.mo2.is_some() {
+            mo2_installed_archive_owners(&resolved_files, &plugins)
+        } else {
+            installed_archive_owners(&config.data_dir, &files, &plugins)
+        };
         let mut enabled_archives: Vec<_> = archives
             .into_iter()
             .filter(|archive| !extension(archive, &["ba2"]) || config.enable_ba2)
+            .filter(|archive| {
+                if config.mo2.is_some() {
+                    mo2_archive_is_active(archive, &plugins)
+                        && non_mo2_archive_is_active(archive, &archive_owners)
+                } else {
+                    non_mo2_archive_is_active(archive, &archive_owners)
+                }
+            })
             .collect();
         sort_archives_by_load_order(&mut enabled_archives, &plugins);
         if !enabled_archives.is_empty() {
@@ -489,12 +636,14 @@ impl AssetPipeline {
             let vfs_for_worker = vfs_dir.clone();
             let previous_cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
             let cache_root = staging.join(".ingestion-cache");
-            let archive_key = archive
-                .strip_prefix(&config.data_dir)
-                .unwrap_or(archive)
-                .to_string_lossy()
-                .replace('\\', "/")
-                .to_ascii_lowercase();
+            let archive_key = archive_keys.get(archive).cloned().unwrap_or_else(|| {
+                archive
+                    .strip_prefix(&config.data_dir)
+                    .unwrap_or(archive)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .to_ascii_lowercase()
+            });
             let previous_entry = previous.archives.get(&archive_key).cloned();
             let verify_cache = config.verify_cache;
 
@@ -611,7 +760,9 @@ impl AssetPipeline {
             }
         }
 
-        overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
+        if config.mo2.is_none() {
+            overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
+        }
         interrupt(cancellation)?;
 
         if !plugins.is_empty() {
@@ -630,16 +781,116 @@ impl AssetPipeline {
             if db_path.is_file() {
                 fs::remove_file(&db_path)?;
             }
-            let merged = EsmParser::convert_plugins_with_records(&plugins, &db_path)?;
+            let strings_root = staging.join("vfs");
+            let string_sources = if config.mo2.is_some() {
+                crate::esm::inhouse::StringSources::EffectiveData {
+                    archive_root: &strings_root,
+                    loose_files: &resolved_files,
+                }
+            } else {
+                crate::esm::inhouse::StringSources::PluginLooseFirst(&strings_root)
+            };
+            let conversion =
+                EsmParser::convert_plugins_with_reader_and_schemas_with_string_sources(
+                    &plugins,
+                    &db_path,
+                    config.record_reader,
+                    string_sources,
+                    Some(config.schemas()?.as_ref()),
+                )?;
+            manifest.record_data_complete = Some(conversion.warnings.is_empty());
+            report.warnings.extend(conversion.warnings);
+            report.notices.extend(conversion.notices);
+            let merged = conversion.records;
             validate_database(&Connection::open(&db_path)?)?;
-            write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
+            } else {
+                write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+            }
+            crate::esm::inhouse::write_reader_identity_with_schemas(
+                staging,
+                config.record_reader,
+                config.schemas()?.as_ref(),
+            )?;
+            if config.record_reader == crate::config::RecordReader::Inhouse {
+                report
+                    .artifacts
+                    .push(PathBuf::from("inhouse-reader-diagnostics.json"));
+                report
+                    .artifacts
+                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
+            }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("record-reader.json"),
             ]);
         }
 
-        let vfs_files = discover(&staging.join("vfs"))?;
+        let vfs_root = staging.join("vfs");
+        let mut vfs_files: BTreeMap<PathBuf, PathBuf> = discover(&vfs_root)?
+            .into_iter()
+            .map(|path| (path.clone(), path))
+            .collect();
+        let mut loose_keys = BTreeSet::new();
+        for (relative, source) in &resolved_files {
+            if crate::asset_path::is_authoring_resource(relative) {
+                manifest.excluded_inputs.insert(
+                    relative.clone(),
+                    "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
+                );
+                continue;
+            }
+            let (kind, ext) = if extension(source, &["dds"]) {
+                (AssetKind::Texture, "dds")
+            } else if extension(source, &["nif"]) {
+                (AssetKind::Mesh, "nif")
+            } else if extension(source, &["pex"]) {
+                (AssetKind::Script, "pex")
+            } else {
+                continue;
+            };
+            let canonical = canonical_asset_path(relative, kind, ext)?;
+            ensure!(
+                loose_keys.insert(canonical.clone()),
+                "loose assets contain normalized path collision for {canonical}"
+            );
+            vfs_files.insert(vfs_root.join(canonical), source.clone());
+        }
+        vfs_files.retain(|path, _| {
+            let relative = path
+                .strip_prefix(&vfs_root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if crate::asset_path::is_authoring_resource(&relative) {
+                manifest.excluded_inputs.insert(
+                    relative,
+                    "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
+                );
+                false
+            } else {
+                true
+            }
+        });
+        let source_paths = vfs_files;
+        let vfs_files: Vec<_> = source_paths.keys().cloned().collect();
+        if config.mo2.is_some() {
+            prune_removed_mo2_outputs(staging, &vfs_files)?;
+            if plugins.is_empty() {
+                for name in [
+                    "skyrim_world.db",
+                    "cell_cache.rkyv",
+                    "integration-report.json",
+                ] {
+                    let path = staging.join(name);
+                    if path.is_file() {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
+        }
         // Canonical source texture keys, used to tell a failed publication from absent game data
         // and to detect a pruned texture whose source is back in the installed data.
         let source_textures = texture_source_keys(staging, &vfs_files);
@@ -651,7 +902,6 @@ impl AssetPipeline {
                 staging,
                 previous,
                 staged: Arc::clone(&staged_outputs),
-                expected_configuration: &expected_configuration,
                 journal: &mut journal,
                 manifest: &mut manifest,
                 report: &mut report,
@@ -661,6 +911,7 @@ impl AssetPipeline {
             batch
                 .convert_kind(
                     &vfs_files,
+                    &source_paths,
                     "nif",
                     ProgressStage::Meshes,
                     None,
@@ -685,7 +936,6 @@ impl AssetPipeline {
                 staging,
                 previous,
                 staged: Arc::clone(&staged_outputs),
-                expected_configuration: &expected_configuration,
                 journal: &mut journal,
                 manifest: &mut manifest,
                 report: &mut report,
@@ -695,6 +945,7 @@ impl AssetPipeline {
             batch
                 .convert_kind(
                     &vfs_files,
+                    &source_paths,
                     "dds",
                     ProgressStage::Textures,
                     Some(&texture_semantics),
@@ -844,6 +1095,7 @@ impl AssetPipeline {
             batch
                 .convert_kind(
                     &vfs_files,
+                    &source_paths,
                     "pex",
                     ProgressStage::Scripts,
                     None,
@@ -851,10 +1103,14 @@ impl AssetPipeline {
                 )
                 .await?;
         }
+        if config.mo2.is_some() && !config.no_lod && !plugins.is_empty() {
+            stage_mo2_lod_inputs(&staging.join("vfs"), &resolved_files)?;
+        }
         let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
             config,
             staging,
+            &config.output_dir,
             &plugins,
             &plugin_hashes,
             progress_tx,
@@ -864,7 +1120,22 @@ impl AssetPipeline {
         .await?;
         report.lod_elapsed_ms = lod_started.elapsed().as_millis();
         interrupt(cancellation)?;
-        if let Some(integration) = finalize_world_database(staging)? {
+        let integration_sources = source_paths
+            .iter()
+            .map(|(path, source)| {
+                (
+                    path.strip_prefix(staging.join("vfs"))
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                    source.clone(),
+                )
+            })
+            .collect();
+        if let Some(integration) =
+            finalize_world_database_with_sources(staging, &integration_sources)?
+        {
             if !integration.passed {
                 report.warnings.push(format!(
                     "asset integration failed: {} missing models, {} invalid models, {} missing textures, terrain/cache cells {}/{}",
@@ -932,6 +1203,106 @@ impl AssetPipeline {
     }
 }
 
+/// Keep raw archive candidates and select converted outputs using their original producer.
+/// Matching a retained metadata hash never upgrades the producer of the retained bytes.
+fn reusable_manifest(
+    config: &PipelineConfig,
+    mut manifest: ConversionManifest,
+) -> Result<ConversionManifest> {
+    let producer = manifest
+        .retained_mesh_schema_version
+        .unwrap_or(manifest.schema_version);
+    let unproven_retention = manifest.retained_mesh_schema_version.is_none()
+        && config.output_dir.join("metadata-rebuild.json").exists();
+    let provenance_is_consistent = producer <= manifest.schema_version && !unproven_retention;
+    let mut compatible = BTreeMap::new();
+    for kind in ["nif", "dds", "pex"] {
+        let producer_is_compatible = match kind {
+            "nif" => can_reuse_meshes(producer),
+            "dds" => producer == CONVERTER_SCHEMA_VERSION,
+            "pex" => {
+                producer == CONVERTER_SCHEMA_VERSION || can_reuse_scripts_and_archives(producer)
+            }
+            _ => unreachable!(),
+        };
+        let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
+            recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
+        } else {
+            // Older manifests have one combined proof. Require an exact known
+            // historical settings hash; an opaque stale schema cannot prove it.
+            let recorded = manifest
+                .retained_asset_configuration_hash
+                .as_deref()
+                .unwrap_or(&manifest.configuration_hash);
+            let mut settings = config.clone();
+            let mut matched = false;
+            for reader in [
+                crate::config::RecordReader::Legacy,
+                crate::config::RecordReader::Inhouse,
+            ] {
+                settings.record_reader = reader;
+                matched |= recorded == current_configuration_hash_for_schema(&settings, producer)?;
+                matched |= recorded == configuration_hash_for_schema(&settings, producer)?;
+                if reader == crate::config::RecordReader::Inhouse {
+                    for identity in [
+                        crate::cache::inhouse_adapter10_reader_identity(
+                            settings.schemas()?.as_ref(),
+                        ),
+                        crate::cache::inhouse_adapter11_reader_identity(
+                            settings.schemas()?.as_ref(),
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        matched |= crate::cache::retained_configuration_matches_for_reader(
+                            &settings, producer, recorded, &identity,
+                        )?;
+                    }
+                }
+                if reader == crate::config::RecordReader::Legacy {
+                    matched |= recorded
+                        == crate::cache::legacy_projection_v1_configuration_hash(
+                            &settings, producer,
+                        )?;
+                    matched |= recorded
+                        == crate::cache::legacy_projection_v2_configuration_hash(
+                            &settings, producer,
+                        )?;
+                }
+            }
+            matched
+        };
+        compatible.insert(
+            kind,
+            provenance_is_consistent && producer_is_compatible && settings_match,
+        );
+    }
+    manifest.entries.retain(|_, entry| {
+        let kind = match Path::new(&entry.output)
+            .extension()
+            .and_then(|ext| ext.to_str())
+        {
+            Some(ext) if ext.eq_ignore_ascii_case("glb") => "nif",
+            Some(ext) if ext.eq_ignore_ascii_case("ktx2") => "dds",
+            Some(ext) if ext.eq_ignore_ascii_case("luau") => "pex",
+            _ => return false,
+        };
+        compatible[kind]
+    });
+    let outputs: BTreeSet<_> = manifest
+        .entries
+        .values()
+        .map(|entry| entry.output.clone())
+        .collect();
+    manifest
+        .pruned_texture_references
+        .retain(|output, _| outputs.contains(output));
+    // Archive extraction checks source hashes and cached bytes independently.
+    // It remains available even when every generated-output proof was rejected.
+    Ok(manifest)
+}
+
 struct ConversionBatch<'a> {
     config: &'a PipelineConfig,
     staging: &'a Path,
@@ -939,7 +1310,6 @@ struct ConversionBatch<'a> {
     /// Provenance of the outputs already in `staging`, keyed by canonical
     /// source key; empty when the cache is invalidated.
     staged: Arc<BTreeMap<String, StagedOutput>>,
-    expected_configuration: &'a str,
     journal: &'a mut StagingJournal,
     manifest: &'a mut ConversionManifest,
     report: &'a mut PipelineReport,
@@ -975,6 +1345,7 @@ impl ConversionBatch<'_> {
     async fn convert_kind(
         &mut self,
         files: &[PathBuf],
+        source_paths: &BTreeMap<PathBuf, PathBuf>,
         source_ext: &str,
         stage: ProgressStage,
         texture_semantics: Option<&BTreeMap<String, BTreeSet<TextureSemantic>>>,
@@ -1021,6 +1392,7 @@ impl ConversionBatch<'_> {
             } else {
                 None
             };
+            let source = source_paths.get(&source).unwrap_or(&source).clone();
             let source_bytes = fs::metadata(&source).map_or(0, |metadata| metadata.len());
             bytes_total += source_bytes;
             source_sizes.insert(source_key.clone(), source_bytes);
@@ -1049,6 +1421,15 @@ impl ConversionBatch<'_> {
         let staging_root = self.staging.to_path_buf();
         let output_dir = self.config.output_dir.clone();
         let source_kind = source_ext.to_owned();
+        let mesh_sources = source_paths
+            .iter()
+            .map(|(path, source)| {
+                Ok((
+                    path.strip_prefix(&staging_vfs)?.to_path_buf(),
+                    source.clone(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let source_textures = texture_source_keys(self.staging, files);
         let etc1s_quality = self.config.texture_fallback_quality;
         let uastc_level = self.config.texture_uastc_level;
@@ -1057,7 +1438,9 @@ impl ConversionBatch<'_> {
         let cpu_jobs = self.config.cpu_jobs;
         let previous_entries = self.previous.entries.clone();
         let staged_outputs = Arc::clone(&self.staged);
-        let expected_configuration = self.expected_configuration.to_owned();
+        let expected_configuration =
+            asset_configuration_hash_for_schema(self.config, CONVERTER_SCHEMA_VERSION, source_ext)?;
+        let worker_configuration = expected_configuration.clone();
         let force_reconvert = force_reconvert.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
@@ -1201,11 +1584,8 @@ impl ConversionBatch<'_> {
                             force_reconvert.contains(target_rel.to_string_lossy().as_ref());
                         let target = staging_root.join(&target_rel);
 
-                        let source_hash = if source_kind == "nif" {
-                            nif_source_hash(&source, &key, &source_textures)
-                        } else {
-                            hash_file(&source)
-                        };
+                        // Dependencies come from the merged winners below, not physical neighbors.
+                        let source_hash = hash_file(&source);
                         let mut hash = match source_hash {
                             Ok(h) => h,
                             Err(err) => {
@@ -1239,6 +1619,46 @@ impl ConversionBatch<'_> {
                             {
                                 hash.push_str(label);
                             }
+                        }
+
+                        let skeleton = if source_kind == "nif" {
+                            crate::mesh::resolve_skeleton(&relative, &mesh_sources)
+                        } else {
+                            None
+                        };
+                        if source_kind == "nif"
+                            && let Some(dependency) = &skeleton
+                        {
+                            match hash_file(dependency) {
+                                Ok(dep_hash) => {
+                                    hash.push(':');
+                                    hash.push_str(&dep_hash);
+                                }
+                                Err(err) => {
+                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
+                                        Ok(()) => (err, false),
+                                        Err(remove_error) => (remove_error, true),
+                                    };
+                                    let _ = outcome_tx.send((
+                                        index,
+                                        key,
+                                        hash,
+                                        target_rel,
+                                        relative.clone(),
+                                        Err(err),
+                                        target,
+                                        fatal,
+                                    ));
+                                    return;
+                                }
+                            }
+                        }
+
+                        if source_kind == "nif"
+                            && let Some(suffix) =
+                                crate::mesh::volcanic_normal_cache_suffix(&key, &source_textures)
+                        {
+                            hash.push_str(&suffix);
                         }
 
                         // Check cache
@@ -1278,8 +1698,8 @@ impl ConversionBatch<'_> {
                         // A staged output survives from an earlier run, so it
                         // is reused only when the journal says it was produced
                         // from the current source under the current schema and
-                        // configuration and its bytes still match the recorded
-                        // size and hash, or the `previous_entries` fallback
+                        // asset-kind settings, and its bytes still match the
+                        // recorded size and hash, or the `previous_entries` fallback
                         // finds the previous manifest's entry for the same
                         // source and its recorded output hash matches the
                         // staged bytes (a staging tree copied from a published
@@ -1287,7 +1707,7 @@ impl ConversionBatch<'_> {
                         // converted again.
                         let staged_is_current = !forced
                             && (staged_outputs.get(&key).is_some_and(|record| {
-                                record.is_current(&target, &hash, &expected_configuration)
+                                record.is_current(&target, &hash, &worker_configuration)
                             }) || previous_entries.get(&key).is_some_and(|entry| {
                                 entry.source_hash == hash
                                     && entry.output_hash == hash_file(&target).unwrap_or_default()
@@ -1376,9 +1796,11 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => {
-                                            MeshConverter::convert_nif_to_glb(&source, &target)
-                                        }
+                                        "nif" => MeshConverter::convert_nif_to_glb_with_skeleton(
+                                            &source,
+                                            &target,
+                                            skeleton.as_deref(),
+                                        ),
                                         "pex" => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
@@ -1504,7 +1926,7 @@ impl ConversionBatch<'_> {
                         };
                         if let Err(error) = self
                             .journal
-                            .record(&key, &staged_output(&entry, self.expected_configuration))
+                            .record(&key, &staged_output(&entry, &expected_configuration))
                         {
                             stop_batch(&cancelled, &mut first_error, error);
                             continue;
@@ -1527,7 +1949,7 @@ impl ConversionBatch<'_> {
                             // published entry is its provenance.
                             if let Err(error) = self
                                 .journal
-                                .record(&key, &staged_output(&entry, self.expected_configuration))
+                                .record(&key, &staged_output(&entry, &expected_configuration))
                             {
                                 stop_batch(&cancelled, &mut first_error, error);
                                 continue;
@@ -1619,58 +2041,65 @@ impl ConversionBatch<'_> {
     }
 }
 
-/// Collects authored uses and the scoped replacement normal's encoding before DDS conversion.
-fn collect_texture_semantics(
+/// Collects texture usage from staged GLBs and the world database, including scoped replacement normals.
+pub(crate) fn collect_texture_semantics(
     staging: &Path,
     source_textures: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, BTreeSet<TextureSemantic>>> {
+    use rayon::prelude::*;
     let mut semantics = BTreeMap::<String, BTreeSet<TextureSemantic>>::new();
-    for entry in WalkDir::new(staging)
-        .follow_links(false)
+    let glbs: Vec<_> = discover(staging)?
         .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-    {
-        let glb = entry.path();
-        if !extension(glb, &["glb"]) {
-            continue;
-        }
-        for dependency in MeshConverter::glb_texture_dependencies(glb)? {
-            let resolved = resolve_asset_uri(staging, glb, &dependency.uri)?;
-            let relative = resolved.strip_prefix(staging)?;
-            let key = canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, "ktx2")
-                .and_then(|key| source_texture_key(&key))
-                .wrap_err_with(|| {
-                    format!(
-                        "invalid texture dependency {:?} resolved from {}",
-                        dependency.uri,
-                        glb.display()
+        .filter(|path| extension(path, &["glb"]))
+        .collect();
+    let dependencies = glbs
+        .par_iter()
+        .map(|glb| -> Result<Vec<_>> {
+            MeshConverter::glb_texture_dependencies(glb)?
+                .into_iter()
+                .map(|dependency| {
+                    let resolved = resolve_asset_uri(staging, glb, &dependency.uri)?;
+                    let relative = resolved.strip_prefix(staging)?;
+                    let key = canonical_asset_path(
+                        &relative.to_string_lossy(),
+                        AssetKind::Texture,
+                        "ktx2",
                     )
-                })?;
-            semantics
-                .entry(key.clone())
-                .or_default()
-                .insert(dependency.semantic);
-            if dependency.semantic == TextureSemantic::Normal {
-                let model = glb
-                    .strip_prefix(staging)
-                    .ok()
-                    .map(|path| path.to_string_lossy().replace('\\', "/"));
-                if let Some(replacement) = model.and_then(|model| {
-                    crate::mesh::volcanic_normal_replacement(&model, &key, source_textures)
-                }) {
-                    semantics
-                        .entry(replacement)
-                        .or_default()
-                        .insert(dependency.semantic);
-                }
-            }
+                    .and_then(|key| source_texture_key(&key))
+                    .wrap_err_with(|| {
+                        format!(
+                            "invalid texture dependency {:?} resolved from {}",
+                            dependency.uri,
+                            glb.display()
+                        )
+                    })?;
+                    let replacement = if dependency.semantic == TextureSemantic::Normal {
+                        let model = glb
+                            .strip_prefix(staging)
+                            .ok()
+                            .map(|path| path.to_string_lossy().replace('\\', "/"));
+                        model.and_then(|model| {
+                            crate::mesh::volcanic_normal_replacement(&model, &key, source_textures)
+                        })
+                    } else {
+                        None
+                    };
+                    Ok((key, dependency.semantic, replacement))
+                })
+                .collect()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (key, semantic, replacement) in dependencies.into_iter().flatten() {
+        semantics.entry(key).or_default().insert(semantic);
+        if let Some(replacement) = replacement {
+            semantics.entry(replacement).or_default().insert(semantic);
         }
     }
 
     let database = staging.join("skyrim_world.db");
     if database.is_file() {
-        let connection = Connection::open(&database)?;
+        let connection =
+            Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let columns = [
             ("diffuse_path", TextureSemantic::BaseColor),
             ("normal_path", TextureSemantic::Normal),
@@ -1771,12 +2200,18 @@ fn restored_mesh_outputs(
         .collect()
 }
 
-fn source_texture_key(runtime_key: &str) -> Result<String> {
+/// Resolves a runtime texture or alias to its source KTX2 key, rejecting invalid paths.
+pub(crate) fn source_texture_key(runtime_key: &str) -> Result<String> {
     crate::asset_path::runtime_texture_source(runtime_key)
         .ok_or_else(|| color_eyre::eyre::eyre!("invalid runtime texture path: {runtime_key}"))
 }
 
-fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) use publish_texture_aliases as publish_srgb_texture_aliases;
+
+/// Links or copies existing source textures to aliases referenced by staged GLBs.
+///
+/// Returns the published paths relative to staging; references without a source file are skipped.
+pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
     let mut aliases = BTreeSet::new();
     for entry in WalkDir::new(staging)
         .follow_links(false)
@@ -1821,13 +2256,14 @@ fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub(crate) fn discover(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files: Vec<_> = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .collect();
+    let mut files = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry =
+            entry.wrap_err_with(|| format!("failed to discover inputs in {}", root.display()))?;
+        if entry.file_type().is_file() {
+            files.push(entry.into_path());
+        }
+    }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
 }
@@ -1899,7 +2335,7 @@ pub(crate) fn validate_artifacts(
 
 /// Checks one generated artifact. `lua` is the compiler for Luau scripts, created on first use so
 /// a caller that never meets a script never builds one.
-fn validate_artifact(
+pub(crate) fn validate_artifact(
     staging: &Path,
     relative: &Path,
     texture_semantics: &BTreeMap<String, BTreeSet<TextureSemantic>>,
@@ -1995,13 +2431,45 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
 }
 
 /// Select explicit plugins or direct Data children, warning about nested-only discovery.
-fn plugin_paths(
+pub(crate) fn plugin_paths(
     config: &PipelineConfig,
     files: &[PathBuf],
     notices: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    let mut selection_warnings = Vec::new();
+    let result = plugin_paths_with_diagnostics(
+        config,
+        files,
+        notices,
+        &mut Vec::new(),
+        &mut selection_warnings,
+    );
+    notices.extend(
+        selection_warnings
+            .into_iter()
+            .map(|warning| warning.to_string()),
+    );
+    result
+}
+
+/// Select surviving plugin paths before hashes, archive priorities, merging and publication.
+fn plugin_paths_with_diagnostics(
+    config: &PipelineConfig,
+    files: &[PathBuf],
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+    selection_warnings: &mut Vec<CreationFallbackWarning>,
+) -> Result<Vec<PathBuf>> {
     if let Some(path) = &config.plugins_file {
-        return read_plugins_txt(path, &config.data_dir);
+        return read_with_selection_diagnostics(
+            path,
+            &config.data_dir,
+            config.skyrim_ccc_file.as_deref(),
+            config.skyrim_ini_file.as_deref(),
+            notices,
+            skipped_plugins,
+            selection_warnings,
+        );
     }
     let discovered: Vec<_> = files
         .iter()
@@ -2031,60 +2499,219 @@ fn plugin_paths(
         ));
     }
     plugins.sort_by_key(|path| {
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let rank = match name.as_str() {
-            "skyrim.esm" => 0,
-            "update.esm" => 1,
-            "dawnguard.esm" => 2,
-            "hearthfires.esm" => 3,
-            "dragonborn.esm" => 4,
-            _ => 10,
-        };
-        (rank, name)
+        let name = shared::plugin_selection::normalize_plugin_name(
+            &path.file_name().unwrap_or_default().to_string_lossy(),
+        );
+        let rank = crate::esm::OFFICIAL_MASTERS
+            .iter()
+            .position(|official| official.eq_ignore_ascii_case(&name))
+            .unwrap_or(10);
+        (rank, name, path.file_name().unwrap_or_default().to_owned())
     });
-    crate::esm::load_order::order_discovered_plugins(plugins)
+    let had_plugins = !plugins.is_empty();
+    let plugins = crate::esm::plugins_txt::recover_discovered(plugins, notices, skipped_plugins)?;
+    ensure!(
+        !had_plugins || !plugins.is_empty(),
+        "no usable plugins remain after automatic master/dependency/slot recovery: {}",
+        notices
+            .last()
+            .map(String::as_str)
+            .unwrap_or("empty selection"),
+    );
+    Ok(plugins)
 }
 
+/// Materializes winning loose LOD inputs for the compiler's filesystem-based VFS reads.
+fn stage_mo2_lod_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
+    for (relative, source) in sources {
+        if crate::asset_path::is_authoring_resource(relative) {
+            continue;
+        }
+        let relative = if extension(source, &["dds"]) {
+            PathBuf::from(canonical_asset_path(relative, AssetKind::Texture, "dds")?)
+        } else if relative.starts_with("lodsettings/") && extension(source, &["lod"]) {
+            crate::archive::safe_relative_path(relative)?
+        } else {
+            continue;
+        };
+        let destination = vfs.join(relative);
+        fs::create_dir_all(destination.parent().unwrap())?;
+        link_or_copy(source, &destination)?;
+    }
+    Ok(())
+}
+
+/// Removes staged mesh, texture, and script outputs absent from the current MO2 source selection.
+///
+/// Retains current resume work while preventing removed outputs from contributing stale references.
+fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> {
+    let mut current = BTreeSet::new();
+    for source in sources {
+        let (kind, output) = if extension(source, &["nif"]) {
+            (AssetKind::Mesh, "glb")
+        } else if extension(source, &["dds"]) {
+            (AssetKind::Texture, "ktx2")
+        } else if extension(source, &["pex"]) {
+            (AssetKind::Script, "luau")
+        } else {
+            continue;
+        };
+        current.insert(canonical_asset_path(
+            &source.strip_prefix(staging.join("vfs"))?.to_string_lossy(),
+            kind,
+            output,
+        )?);
+    }
+    for folder in ["meshes", "textures", "scripts"] {
+        let directory = staging.join(folder);
+        if !directory.is_dir() {
+            continue;
+        }
+        for path in discover(&directory)? {
+            if !extension(&path, &["glb", "ktx2", "luau"]) {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(staging)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let key = if extension(&path, &["ktx2"]) {
+                source_texture_key(&relative)?
+            } else {
+                relative
+            };
+            if !current.contains(&key) {
+                fs::remove_file(path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Record installed direct-Data archive owners, including disabled and recovered-away plugins.
+/// Plugins sharing a stem can share companions; any surviving plugin with that stem activates them.
+pub(crate) fn installed_archive_owners(
+    data_dir: &Path,
+    files: &[PathBuf],
+    plugins: &[PathBuf],
+) -> BTreeMap<String, bool> {
+    let active_stems: BTreeSet<_> = plugins
+        .iter()
+        .filter_map(|path| path.file_stem())
+        .map(|stem| shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy()))
+        .collect();
+    files
+        .iter()
+        .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .filter(|path| {
+            path.strip_prefix(data_dir)
+                .is_ok_and(|relative| relative.components().count() == 1)
+        })
+        .filter_map(|path| path.file_stem())
+        .map(|stem| {
+            let stem = shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy());
+            let active = active_stems.contains(&stem);
+            (stem, active)
+        })
+        .collect()
+}
+
+/// Keep all root plugin identities in the winning MO2 VFS, including unchecked and rejected owners.
+/// Physical sources can live outside Data; recovered winning source paths determine active status.
+pub(crate) fn mo2_installed_archive_owners(
+    files: &BTreeMap<String, PathBuf>,
+    plugins: &[PathBuf],
+) -> BTreeMap<String, bool> {
+    let active_sources: BTreeSet<_> = plugins.iter().cloned().collect();
+    let mut owners = BTreeMap::<String, bool>::new();
+    for (relative, source) in files {
+        let relative = Path::new(relative);
+        if relative.components().count() != 1 || !extension(relative, &["esm", "esp", "esl"]) {
+            continue;
+        }
+        let Some(stem) = relative.file_stem() else {
+            continue;
+        };
+        let stem = shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy());
+        let active = active_sources.contains(source);
+        // Distinct extensions can share a companion stem. An unchecked peer must not erase
+        // the activation contributed by a surviving plugin with that stem.
+        owners
+            .entry(stem)
+            .and_modify(|survives| *survives |= active)
+            .or_insert(active);
+    }
+    owners
+}
+
+/// Apply selection to owned companions while retaining unowned standalone and base archives.
+/// The longest matching installed stem owns the archive, so an active prefix cannot activate
+/// a more specifically named disabled or recovered-away plugin's companion.
+pub(crate) fn non_mo2_archive_is_active(archive: &Path, owners: &BTreeMap<String, bool>) -> bool {
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
+    owners
+        .iter()
+        .filter(|(owner, _)| archive_stem_matches_plugin(&stem, owner))
+        .max_by_key(|(owner, _)| owner.len())
+        .is_none_or(|(_, active)| *active)
+}
+
+/// Match an exact normalized stem or an owner followed by a space, dash or underscore.
+/// Ownership, MO2 activity and priority share this companion-name boundary.
+fn archive_stem_matches_plugin(stem: &str, plugin: &str) -> bool {
+    stem == plugin
+        || stem
+            .strip_prefix(plugin)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
+}
+
+/// Checks whether an archive stem matches an active plugin, including suffixed companion archives.
+pub(crate) fn mo2_archive_is_active(archive: &Path, plugins: &[PathBuf]) -> bool {
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
+    plugins
+        .iter()
+        .filter_map(|path| path.file_stem())
+        .any(|plugin| {
+            let plugin = shared::plugin_selection::normalize_plugin_name(&plugin.to_string_lossy());
+            archive_stem_matches_plugin(&stem, &plugin)
+        })
+}
+
+/// Sort archives by their longest matching active stem's load order, then lowercase stem.
+/// Priority retains the legacy space/dash/underscore suffixes; unmatched archives sort last
+/// and same-stem plugins retain the first owner's priority.
 pub(crate) fn sort_archives_by_load_order(archives: &mut [PathBuf], plugins: &[PathBuf]) {
     archives.sort_by_cached_key(|archive| {
         (
             archive_load_order_priority(archive, plugins).unwrap_or(usize::MAX),
-            archive
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_ascii_lowercase(),
+            crate::esm::load_order::normalize_plugin_name(
+                &archive.file_stem().unwrap_or_default().to_string_lossy(),
+            ),
         )
     });
 }
 
+/// Resolve the most specific active owner, retaining the first slot when owner stems are equal.
 pub(crate) fn archive_load_order_priority(archive: &Path, plugins: &[PathBuf]) -> Option<usize> {
     let plugin_stems = plugins
         .iter()
         .filter_map(|path| path.file_stem())
-        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .map(|stem| shared::plugin_selection::normalize_plugin_name(&stem.to_string_lossy()))
         .collect::<Vec<_>>();
-    let stem = archive
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let stem = shared::plugin_selection::normalize_plugin_name(
+        &archive.file_stem().unwrap_or_default().to_string_lossy(),
+    );
     plugin_stems
         .iter()
         .enumerate()
-        .filter(|(_, plugin)| {
-            stem == plugin.as_str()
-                || stem
-                    .strip_prefix(plugin.as_str())
-                    .and_then(|suffix| suffix.chars().next())
-                    .is_some_and(|separator| matches!(separator, ' ' | '-' | '_'))
-        })
+        .filter(|(_, plugin)| archive_stem_matches_plugin(&stem, plugin))
+        .max_by_key(|(index, plugin)| (plugin.len(), std::cmp::Reverse(*index)))
         .map(|(index, _)| index)
-        .next()
 }
 
 fn extension(path: &Path, expected: &[&str]) -> bool {
@@ -2139,6 +2766,9 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         "skyrim_world.db-wal",
         "skyrim_world.db-shm",
         "cell_cache.rkyv",
+        "cell_cache_preserved.rkyv",
+        "record-reader.json",
+        "inhouse-reader-diagnostics.json",
         "integration-report.json",
         "lod-manifest.json",
         "metadata-rebuild.json",
@@ -2422,6 +3052,7 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
 pub(crate) async fn compile_lod_chunks(
     config: &PipelineConfig,
     staging: &Path,
+    reuse_root: &Path,
     plugins: &[PathBuf],
     plugin_hashes: &[String],
     progress_tx: &Sender<ProgressEvent>,
@@ -2430,6 +3061,7 @@ pub(crate) async fn compile_lod_chunks(
     compile_lod_chunks_with_cancel(
         config,
         staging,
+        reuse_root,
         plugins,
         plugin_hashes,
         progress_tx,
@@ -2439,9 +3071,11 @@ pub(crate) async fn compile_lod_chunks(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compile_lod_chunks_with_cancel(
     config: &PipelineConfig,
     staging: &Path,
+    reuse_root: &Path,
     plugins: &[PathBuf],
     plugin_hashes: &[String],
     progress_tx: &Sender<ProgressEvent>,
@@ -2465,7 +3099,33 @@ async fn compile_lod_chunks_with_cancel(
     if plugins.is_empty() || !db_path.is_file() {
         return Ok(());
     }
+    use rayon::prelude::*;
     let connection = Connection::open(&db_path)?;
+    let prior_package = reuse_root.join("conversion-manifest.json").exists()
+        || reuse_root.join("lod-manifest.json").exists()
+        || reuse_root.join("skyrim_world.db").exists();
+    let reuse = if config.invalidate_cache || !prior_package {
+        None
+    } else {
+        match LodReuse::open(reuse_root) {
+            Ok(reuse) => Some(reuse),
+            Err(error) => {
+                let message = format!("Previous terrain LOD package refused: {error:#}");
+                report.notices.push(message.clone());
+                let _ = progress_tx
+                    .send(ProgressEvent::notice(
+                        ProgressStage::LodChunks,
+                        None,
+                        &message,
+                    ))
+                    .await;
+                None
+            }
+        }
+    };
+    let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
+    let mut texture_cache = TerrainTextureCache::default();
+    let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -2489,7 +3149,7 @@ async fn compile_lod_chunks_with_cancel(
         .num_threads(config.cpu_jobs)
         .build()
         .wrap_err("failed to create terrain LOD compiler pool")?;
-    for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
+    'world: for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
         interrupt(cancellation)?;
         let settings = match resolve_lod_settings(config, &staging.join("vfs"), editor_id) {
             Ok(Some(settings)) => settings,
@@ -2568,8 +3228,13 @@ async fn compile_lod_chunks_with_cancel(
             .iter()
             .map(|(grid_x, grid_y, cell_id)| (*cell_id, (*grid_x, *grid_y)))
             .collect();
-        let inputs = read_cached_heights(&staging.join("cell_cache.rkyv"), &lookup)?;
-        let textures = match TerrainTextures::load(&connection, &staging.join("vfs"), &inputs) {
+        let inputs = cell_cache.cells(&lookup)?;
+        let textures = match TerrainTextures::load_with_cache(
+            &connection,
+            &staging.join("vfs"),
+            &inputs,
+            &mut texture_cache,
+        ) {
             Ok(textures) => textures,
             Err(error) => {
                 report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid material inputs: {error:#}"));
@@ -2589,47 +3254,140 @@ async fn compile_lod_chunks_with_cancel(
                 continue;
             }
         };
-        let compiled = compiler_pool
-            .install(|| compile_world_terrain(*worldspace_id, origin, &inputs, &textures));
-        interrupt(cancellation)?;
-        textures.verify_sources(&staging.join("vfs"))?;
-        let chunks = match compiled {
-            Ok(chunks) => chunks,
-            Err(error) => {
-                report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid compiler content: {error:#}"));
-                if let Some(settings) = world_settings.last_mut() {
-                    settings["status"] = serde_json::json!("invalid_content");
-                    settings["compiler_error"] = serde_json::json!(format!("{error:#}"));
+        let jobs = terrain_jobs(*worldspace_id, origin, &inputs);
+        // Validate before fingerprinting: a cache hit cannot bypass source checks.
+        let validation = jobs
+            .iter()
+            .try_for_each(|job| validate_chunk_members(job.key, &job.members));
+        let mut cell_hashes = std::collections::HashMap::with_capacity(inputs.len());
+        if validation.is_ok() {
+            for cell in &inputs {
+                cell_hashes.insert(cell.cell_id, cell.fingerprint());
+            }
+        }
+        let (accepted, reused, refusals, content_error) = {
+            let tx = connection.unchecked_transaction()?;
+            let mut accepted = Vec::with_capacity(jobs.len());
+            let mut reused = 0u64;
+            let mut refusals = BTreeMap::<String, u64>::new();
+            let mut content_error = validation.err();
+            for batch in jobs.chunks(compiler_pool.current_num_threads()) {
+                if content_error.is_some() {
+                    break;
                 }
-                send(
-                    progress_tx,
+                interrupt(cancellation)?;
+                // Baking, mip generation and encoding finish together per chunk. Only
+                // this bounded batch holds GLB payloads; SQLite remains on this thread.
+                let compiled: Result<Vec<_>> = compiler_pool.install(|| {
+                    batch
+                        .par_iter()
+                        .map(|job| {
+                            let input_hash = job.fingerprint(origin, &cell_hashes, &textures)?;
+                            let refusal = if let Some(reuse) = &reuse {
+                                match reuse.chunk(job, origin, &input_hash) {
+                                    Ok(chunk) => return Ok((chunk, input_hash, true, None)),
+                                    Err(error) => Some(format!("{error:#}")),
+                                }
+                            } else {
+                                None
+                            };
+                            Ok((job.compile(origin, &textures)?, input_hash, false, refusal))
+                        })
+                        .collect()
+                });
+                let chunks = match compiled {
+                    Ok(chunks) => chunks,
+                    Err(error) => {
+                        content_error = Some(error);
+                        break;
+                    }
+                };
+                interrupt(cancellation)?;
+                for (chunk, input_hash, hit, refusal) in chunks {
+                    publish_chunk(&tx, staging, &chunk)?;
+                    let relative = shared::lod::chunk_payload_path(chunk.key);
+                    accepted.push((relative, input_hash, hash_bytes(&chunk.glb)));
+                    reused += u64::from(hit);
+                    if let Some(reason) = refusal {
+                        *refusals.entry(reason).or_default() += 1;
+                    }
+                }
+                // Batch updates are replaceable; the committed totals below are awaited.
+                // Awaiting here would hold a non-Send SQLite transaction across suspension.
+                let _ = progress_tx.try_send(ProgressEvent::new(
                     ProgressStage::LodChunks,
-                    (index + 1) as u64,
+                    index as u64,
                     worlds.len() as u64,
                     None,
-                    "Compiling terrain LOD chunks",
-                )
-                .await;
-                continue;
+                    &format!(
+                        "Terrain LOD {editor_id}: {}/{} chunks ({reused} reused)",
+                        accepted.len(),
+                        jobs.len()
+                    ),
+                ));
             }
+            textures.verify_sources(&staging.join("vfs"))?;
+            if content_error.is_some() {
+                tx.rollback()?;
+            } else {
+                tx.commit()?;
+            }
+            (accepted, reused, refusals, content_error)
         };
-        terrain_sources.extend(textures.source_hashes);
-        for chunk in &chunks {
-            chunk_hashes.push(format!(
-                "{}:{}",
-                shared::lod::chunk_payload_path(chunk.key),
-                hash_bytes(&chunk.glb)
-            ));
+        if let Some(error) = content_error {
+            let partial_world = staging.join(format!("lod/{worldspace_id:08x}"));
+            if partial_world.exists() {
+                fs::remove_dir_all(partial_world)?;
+            }
+            report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid compiler content: {error:#}"));
+            if let Some(settings) = world_settings.last_mut() {
+                settings["status"] = serde_json::json!("invalid_content");
+                settings["compiler_error"] = serde_json::json!(format!("{error:#}"));
+            }
+            send(
+                progress_tx,
+                ProgressStage::LodChunks,
+                (index + 1) as u64,
+                worlds.len() as u64,
+                None,
+                "Compiling terrain LOD chunks",
+            )
+            .await;
+            continue 'world;
         }
-        // Payloads and their index rows now; the single `lod_build` row
-        // after every world is compiled, once the identity is final.
-        publish_chunks(&connection, staging, None, &chunks)?;
-        report.lod_chunks += chunks.len() as u64;
-        report.artifacts.extend(
-            chunks
-                .iter()
-                .map(|chunk| PathBuf::from(shared::lod::chunk_payload_path(chunk.key))),
+        for (reason, count) in refusals {
+            let message =
+                format!("Terrain LOD {editor_id}: {count} cached chunks refused: {reason}");
+            report.notices.push(message.clone());
+            let _ = progress_tx
+                .send(ProgressEvent::notice(
+                    ProgressStage::LodChunks,
+                    None,
+                    &message,
+                ))
+                .await;
+        }
+        let message = format!(
+            "Terrain LOD {editor_id}: {reused} reused, {} rebuilt, {} total chunks",
+            accepted.len() as u64 - reused,
+            accepted.len()
         );
+        report.notices.push(message.clone());
+        let _ = progress_tx
+            .send(ProgressEvent::notice(
+                ProgressStage::LodChunks,
+                None,
+                &message,
+            ))
+            .await;
+        terrain_sources.extend(textures.source_hashes);
+        report.lod_chunks += accepted.len() as u64;
+        report.lod_cache_hits += reused;
+        for (relative, input_hash, output_hash) in accepted {
+            chunk_hashes.push(format!("{relative}:{output_hash}"));
+            report.artifacts.push(PathBuf::from(&relative));
+            chunk_inputs.insert(relative, input_hash);
+        }
         compiled_worlds += 1;
         send(
             progress_tx,
@@ -2640,6 +3398,19 @@ async fn compile_lod_chunks_with_cancel(
             "Compiling terrain LOD chunks",
         )
         .await;
+    }
+    for (path, hash) in &terrain_sources {
+        ensure!(
+            hash_file(&staging.join("vfs").join(path))? == *hash,
+            "terrain input changed during bake: {path}"
+        );
+    }
+    if report.lod_cache_hits > 0 {
+        let message = format!(
+            "Reused {}/{} terrain LOD chunks with verified inputs and payloads",
+            report.lod_cache_hits, report.lod_chunks
+        );
+        report.notices.push(message);
     }
     chunk_hashes.sort();
     let current_plugin_hashes = plugins
@@ -2670,6 +3441,8 @@ async fn compile_lod_chunks_with_cancel(
             chunks: report.lod_chunks,
             land_texture_repeats_per_cell: shared::LAND_TEXTURE_REPEATS_PER_CELL,
             terrain_sources,
+            compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
+            chunk_inputs,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
@@ -2762,6 +3535,7 @@ fn build_identity(
 ) -> Result<String> {
     let canonical = serde_json::json!({
         "converter_schema": CONVERTER_SCHEMA_VERSION,
+        "terrain_compiler": crate::lod::TERRAIN_COMPILER_VERSION,
         "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
         "configuration": configuration_hash,
         "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
@@ -2771,19 +3545,6 @@ fn build_identity(
         "terrain_sources": terrain_sources,
     });
     Ok(hash_bytes(&serde_json::to_vec(&canonical)?))
-}
-
-/// The published `lod-manifest.json`: the identity the runtime checks before
-/// trusting any chunk row or payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LodManifest {
-    build_identity: String,
-    converter_schema: u32,
-    world_database_schema: u32,
-    chunks: u64,
-    #[serde(default)]
-    land_texture_repeats_per_cell: f32,
-    terrain_sources: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -3337,6 +4098,7 @@ mod tests {
     fn legacy_report_without_lod_fields_deserializes() {
         let mut legacy = serde_json::to_value(super::PipelineReport::default()).unwrap();
         legacy.as_object_mut().unwrap().remove("lod_chunks");
+        legacy.as_object_mut().unwrap().remove("lod_cache_hits");
         legacy.as_object_mut().unwrap().remove("lod_warnings");
         legacy.as_object_mut().unwrap().remove("lod_elapsed_ms");
         legacy
@@ -3345,12 +4107,142 @@ mod tests {
             .remove("publication_elapsed_ms");
         let report: super::PipelineReport = serde_json::from_value(legacy).unwrap();
         assert_eq!(report.lod_chunks, 0);
+        assert_eq!(report.lod_cache_hits, 0);
         assert!(report.lod_warnings.is_empty());
         assert_eq!(report.lod_elapsed_ms, 0);
         assert_eq!(report.publication_elapsed_ms, 0);
+        assert!(report.skipped_plugins.is_empty());
+        assert!(report.load_order.is_empty());
+        assert!(report.selection_warnings.is_empty());
+        let serialized = serde_json::to_value(report).unwrap();
+        for field in ["skipped_plugins", "load_order", "selection_warnings"] {
+            assert!(
+                serialized.get(field).is_none(),
+                "empty {field} must stay optional"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_report_round_trips_original_names_and_typed_warning() {
+        let report = PipelineReport {
+            skipped_plugins: vec!["K.esp".into(), "\u{212a}.esp".into()],
+            load_order: vec!["Skyrim.esm".into(), "Good.esp".into()],
+            selection_warnings: vec![CreationFallbackWarning {
+                ccc_path: PathBuf::from("Game/Skyrim.ccc"),
+                reason: "file missing".into(),
+            }],
+            ..Default::default()
+        };
+        let decoded: PipelineReport =
+            serde_json::from_value(serde_json::to_value(&report).unwrap()).unwrap();
+        assert_eq!(decoded.skipped_plugins, report.skipped_plugins);
+        assert_eq!(decoded.load_order, report.load_order);
+        assert_eq!(decoded.selection_warnings, report.selection_warnings);
+        assert!(conversion_is_complete(&decoded));
     }
 
     use super::*;
+
+    /// A known adapter-10 combined settings proof preserves eligible producer-26 candidates.
+    #[test]
+    fn adapter10_combined_asset_proof_reuses_eligible_candidates_without_relabeling() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = PipelineConfig::new(
+            directory.path().join("Data"),
+            directory.path().join("output"),
+        );
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        let mut identity = crate::esm::inhouse::reader_identity(config.record_reader);
+        identity["adapter_version"] = serde_json::json!(10);
+        let historical = serde_json::json!({
+            "schema": CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode": "cpu"},
+            "script_abi_version": config.script_abi_version,
+            "record_reader": identity,
+        });
+        let recorded = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash: recorded.clone(),
+            entries: [
+                (
+                    "meshes/prior.nif".into(),
+                    CacheEntry {
+                        source_hash: "native-mesh-proof".into(),
+                        output: "meshes/prior.glb".into(),
+                        output_hash: "mesh-byte-proof".into(),
+                        output_size: 137,
+                    },
+                ),
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
+            .into(),
+            complete: true,
+            ..Default::default()
+        };
+        let reused = reusable_manifest(&config, manifest.clone()).unwrap();
+        assert_eq!(
+            reused.entries, manifest.entries,
+            "metadata-only adapter identity must preserve eligible asset candidates"
+        );
+        assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
+        assert_eq!(reused.configuration_hash, recorded);
+        assert_eq!(reused.retained_mesh_schema_version, None);
+        assert_eq!(reused.retained_asset_configuration_hash, None);
+        let mut changed = config.clone();
+        changed.texture_fallback_quality = 191;
+        assert!(
+            reusable_manifest(&changed, manifest.clone())
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        let mut unsupported = manifest;
+        let mut historical = historical;
+        historical["record_reader"]["adapter_version"] = serde_json::json!(8);
+        unsupported.configuration_hash = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        assert!(
+            reusable_manifest(&config, unsupported)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn discovery_rejects_missing_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let error = discover(&missing).unwrap_err();
+        assert!(error.to_string().contains(&missing.display().to_string()));
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<walkdir::Error>()
+                .and_then(walkdir::Error::io_error)
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        }));
+    }
 
     #[test]
     fn a_dotted_output_name_keeps_its_whole_name_in_the_staging_folder() {
@@ -3752,6 +4644,7 @@ mod tests {
         fs::remove_file(output.join("lod-manifest.json")).unwrap();
         let mut legacy = published_manifest(&output);
         legacy.schema_version = 16;
+        legacy.asset_configuration_hashes.clear();
         legacy
             .save(&output.join("conversion-manifest.json"))
             .unwrap();
@@ -3780,8 +4673,10 @@ mod tests {
         assert!(output.join("skyrim_world.db").is_file());
     }
 
+    /// Explicitly compatible producer-24 meshes reuse original proof; changed
+    /// NIF source bytes still regenerate instead of being hidden by migration.
     #[tokio::test]
-    async fn current24_meshes_reuse_but_changed_mesh_source_reconverts() {
+    async fn compatible_meshes_reuse_but_changed_mesh_source_reconverts() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let output = directory.path().join("assets");
@@ -3796,7 +4691,11 @@ mod tests {
         config.cpu_jobs = 2;
         run_without_progress(config.clone()).await;
         let path = output.join("conversion-manifest.json");
-        let old: ConversionManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old.schema_version = 24;
+        old.asset_configuration_hashes.clear();
+        old.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
         old.save(&path).unwrap();
         let meshes: BTreeMap<_, _> = old
             .entries
@@ -3811,10 +4710,21 @@ mod tests {
             .collect();
         assert!(!meshes.is_empty());
         let reused = run_without_progress(config.clone()).await;
-        assert_eq!(reused.converted, 0);
+        let textures = old
+            .entries
+            .values()
+            .filter(|entry| entry.output.ends_with(".ktx2"))
+            .count();
+        assert_eq!(reused.converted, textures as u64);
         for (relative, bytes) in &meshes {
             assert_eq!(fs::read(output.join(relative)).unwrap(), *bytes);
         }
+        let mut compatible: ConversionManifest =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        compatible.schema_version = 24;
+        compatible.asset_configuration_hashes.clear();
+        compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
+        compatible.save(&path).unwrap();
         fs::write(
             data.join("meshes/generated.nif"),
             dummy_content::nif::static_shape(&dummy_content::nif::StaticShape {
@@ -3873,9 +4783,17 @@ mod tests {
             .iter()
             .map(|path| hash_file(path).unwrap())
             .collect::<Vec<_>>();
-        compile_lod_chunks(&config, &staging, &plugins, &hashes, &tx, &mut report)
-            .await
-            .unwrap();
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &config.output_dir,
+            &plugins,
+            &hashes,
+            &tx,
+            &mut report,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.lod_chunks, 0);
         assert!(
             report
@@ -3916,9 +4834,17 @@ mod tests {
         .unwrap();
         config.lod_origins.insert("ValidWorld".into(), [0, 0]);
         let mut mixed = PipelineReport::default();
-        compile_lod_chunks(&config, &staging, &plugins, &hashes, &tx, &mut mixed)
-            .await
-            .unwrap();
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &config.output_dir,
+            &plugins,
+            &hashes,
+            &tx,
+            &mut mixed,
+        )
+        .await
+        .unwrap();
         assert!(mixed.lod_chunks > 0);
         assert!(
             mixed
@@ -3936,6 +4862,118 @@ mod tests {
             0
         );
         assert!(staging.join("lod-manifest.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn v121_late_batch_failure_rolls_back_entire_world() {
+        use dummy_content::{esm, layout};
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let staging = directory.path().join("staging");
+        layout::prepare_directory(&data, false).unwrap();
+        layout::generate(
+            &data,
+            layout::DEFAULT_SEED,
+            layout::Formats::parse("dds,esm,lodsettings").unwrap(),
+        )
+        .unwrap();
+        let cells = [
+            esm::Cell {
+                grid_x: 0,
+                grid_y: 0,
+            },
+            esm::Cell {
+                grid_x: 64,
+                grid_y: 0,
+            },
+        ];
+        fs::write(
+            data.join("Skyrim.esm"),
+            esm::plugin(&esm::Plugin {
+                author: layout::GENERATED_AUTHOR,
+                worldspace: layout::GENERATED_WORLDSPACE,
+                cells: &cells,
+                model_path: layout::GENERATED_MODEL_PATH,
+                diffuse: layout::GENERATED_DIFFUSE_PATH,
+                normal_texture: layout::GENERATED_NORMAL_PATH,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(staging.join("vfs")).unwrap();
+        overlay_loose_assets(&data, &staging.join("vfs"), &discover(&data).unwrap()).unwrap();
+        let plugins = vec![data.join("Skyrim.esm")];
+        let records =
+            EsmParser::convert_plugins_with_records(&plugins, &staging.join("skyrim_world.db"))
+                .unwrap();
+        write_cell_cache(&records, &staging.join("cell_cache.rkyv")).unwrap();
+        let mut cache = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(
+            &fs::read(staging.join("cell_cache.rkyv")).unwrap(),
+        )
+        .unwrap();
+        let last = cache
+            .cells
+            .iter_mut()
+            .max_by_key(|cell| cell.cell_id)
+            .unwrap();
+        last.layers.push(shared::TerrainLayer {
+            texture_form_id: last.layers[0].texture_form_id,
+            quadrant: 0,
+            layer: 1,
+            is_base: false,
+            weights: vec![shared::TerrainWeight {
+                vertex: 0,
+                opacity: f32::NAN,
+            }],
+        });
+        fs::write(
+            staging.join("cell_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        let mut config = PipelineConfig::new(&data, directory.path().join("output"));
+        config.cpu_jobs = 1;
+        let hashes = plugins
+            .iter()
+            .map(|path| hash_file(path).unwrap())
+            .collect::<Vec<_>>();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut report = PipelineReport::default();
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &config.output_dir,
+            &plugins,
+            &hashes,
+            &tx,
+            &mut report,
+        )
+        .await
+        .unwrap();
+        let mut first_batch_published = false;
+        while let Ok(event) = rx.try_recv() {
+            first_batch_published |= event.message.contains("1/6 chunks");
+        }
+        assert!(
+            first_batch_published,
+            "exercise a later failure after a successful batch"
+        );
+        assert_eq!(report.lod_chunks, 0);
+        assert_eq!(report.lod_cache_hits, 0);
+        assert_eq!(report.lod_warnings.len(), 1);
+        let database = Connection::open(staging.join("skyrim_world.db")).unwrap();
+        for table in ["lod_chunks", "lod_chunks_spatial"] {
+            assert_eq!(
+                database
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                        .get::<_, u64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        assert!(!staging.join("lod/00000001").exists());
+        assert!(!staging.join("lod-manifest.json").exists());
+        assert!(!report.artifacts.iter().any(|path| path.starts_with("lod")));
     }
 
     #[tokio::test]
@@ -4045,6 +5083,92 @@ mod tests {
         assert!(recover_interrupted_publication(&output).is_err());
         assert!(!output.exists());
         assert!(backup.exists());
+    }
+
+    #[test]
+    fn conversion_ownership_recovers_repairs_and_reuses_publication_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let staging = directory.path().join("staging");
+        let repair_backup = directory.path().join("repair-backup");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        fs::create_dir(&repair_backup).unwrap();
+        fs::write(output.join("sentinel"), b"interrupted repair").unwrap();
+        fs::write(repair_backup.join("sentinel"), b"last good").unwrap();
+        let journal = output.with_file_name("assets.repair-journal.json");
+        fs::write(
+            &journal,
+            serde_json::to_vec(&serde_json::json!({
+                "backup": repair_backup,
+                "paths": [["sentinel", true]],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let output_lock = AssetLock::acquire_exclusive(&output).unwrap();
+        let ownership = crate::repair::OutputOwnership::acquire(&output).unwrap();
+        recover_interrupted_publication(ownership.output()).unwrap();
+        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
+        assert!(!journal.exists());
+        assert!(crate::repair::OutputOwnership::acquire(&output).is_err());
+        assert!(AssetLock::acquire_shared(&output).is_err());
+        publish_directory_locked(&staging, ownership.output(), true, &output_lock).unwrap();
+        assert_eq!(published_manifest(&output).configuration_hash, "next");
+        assert!(crate::repair::OutputOwnership::acquire(&output).is_err());
+        drop(ownership);
+        drop(output_lock);
+        assert!(crate::repair::OutputOwnership::acquire(&output).is_ok());
+        assert!(AssetLock::acquire_exclusive(&output).is_ok());
+    }
+
+    #[test]
+    fn mo2_output_pruning_handles_missing_folders_and_keeps_current_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        prune_removed_mo2_outputs(staging, &[]).unwrap();
+
+        fs::create_dir_all(staging.join("meshes")).unwrap();
+        fs::write(staging.join("meshes/current.glb"), b"current").unwrap();
+        fs::write(staging.join("meshes/stale.glb"), b"stale").unwrap();
+        fs::write(staging.join("meshes/unrelated.txt"), b"unrelated").unwrap();
+        let sources = vec![staging.join("vfs/meshes/current.nif")];
+        prune_removed_mo2_outputs(staging, &sources).unwrap();
+        assert!(staging.join("meshes/current.glb").is_file());
+        assert!(!staging.join("meshes/stale.glb").exists());
+        assert!(staging.join("meshes/unrelated.txt").is_file());
+        assert!(!staging.join("textures").exists());
+        assert!(!staging.join("scripts").exists());
+    }
+
+    #[test]
+    fn mo2_lod_inputs_override_archive_textures_and_sidecars() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(vfs.join("textures/landscape")).unwrap();
+        fs::create_dir_all(vfs.join("lodsettings")).unwrap();
+        fs::write(vfs.join("textures/landscape/grass.dds"), b"archive").unwrap();
+        fs::write(vfs.join("lodsettings/tamriel.lod"), b"archive").unwrap();
+        let texture = directory.path().join("winner.dds");
+        let sidecar = directory.path().join("winner.lod");
+        fs::write(&texture, b"winning texture").unwrap();
+        fs::write(&sidecar, b"winning sidecar").unwrap();
+        let sources = BTreeMap::from([
+            ("textures/landscape/grass.dds".into(), texture.clone()),
+            ("lodsettings/tamriel.lod".into(), sidecar.clone()),
+        ]);
+        stage_mo2_lod_inputs(&vfs, &sources).unwrap();
+        assert_eq!(
+            fs::read(vfs.join("textures/landscape/grass.dds")).unwrap(),
+            b"winning texture"
+        );
+        assert_eq!(
+            fs::read(vfs.join("lodsettings/tamriel.lod")).unwrap(),
+            b"winning sidecar"
+        );
+        assert_eq!(fs::read(texture).unwrap(), b"winning texture");
+        assert_eq!(fs::read(sidecar).unwrap(), b"winning sidecar");
     }
 
     #[test]
@@ -4217,6 +5341,44 @@ mod tests {
         assert_eq!(fs::read(&previous_blob).unwrap(), b"archive bytes");
     }
 
+    /// MO2 activity accepts the same exact/space/dash/underscore boundary as installed ownership.
+    #[test]
+    fn mo2_archives_use_shared_owner_separator_rule() {
+        let plugins = vec![PathBuf::from("Example.esp")];
+        for name in [
+            "EXAMPLE.bsa",
+            "Example - Textures.bsa",
+            "Example - Meshes.ba2",
+            "Example Other.bsa",
+            "Example-Other.bsa",
+            "Example_Other.bsa",
+            "Example -Other.bsa",
+        ] {
+            assert!(mo2_archive_is_active(Path::new(name), &plugins), "{name}");
+        }
+        for name in ["Example2.bsa", "ExampleOther.bsa", "Other.bsa"] {
+            assert!(!mo2_archive_is_active(Path::new(name), &plugins), "{name}");
+        }
+    }
+
+    /// MO2 activation and final archive attachment share accented plugin-name keys.
+    #[test]
+    fn archive_attachment_and_mo2_activation_match_unicode_plugin_names() {
+        let plugins = vec![PathBuf::from("CAFÉ.esp")];
+        for name in ["café.bsa", "café - Textures.bsa"] {
+            assert!(mo2_archive_is_active(Path::new(name), &plugins));
+            assert_eq!(
+                archive_load_order_priority(Path::new(name), &plugins),
+                Some(0)
+            );
+        }
+        assert!(!mo2_archive_is_active(Path::new("caféElse.bsa"), &plugins));
+        assert_eq!(
+            archive_load_order_priority(Path::new("caféElse.bsa"), &plugins),
+            None
+        );
+    }
+
     #[test]
     fn orders_archives_by_plugin_load_order() {
         let plugins = vec![
@@ -4239,6 +5401,64 @@ mod tests {
                 PathBuf::from("Update.bsa"),
                 PathBuf::from("Example - Textures.bsa"),
             ]
+        );
+    }
+
+    /// Unicode-normalized owner names agree across ownership, activity and priority for every separator.
+    #[test]
+    fn unicode_plugin_archive_names_match_activation_and_priority() {
+        let plugins = [PathBuf::from("Skyrim.esm"), PathBuf::from("CAF\u{c9}.esp")];
+        let owners = BTreeMap::from([("caf\u{e9}".to_owned(), true)]);
+        for suffix in [" Textures", "-Textures", "_Textures", " - Textures"] {
+            let archive = PathBuf::from(format!("caf\u{e9}{suffix}.bsa"));
+            assert!(mo2_archive_is_active(&archive, &plugins));
+            assert!(non_mo2_archive_is_active(&archive, &owners));
+            assert_eq!(archive_load_order_priority(&archive, &plugins), Some(1));
+        }
+        assert!(!mo2_archive_is_active(
+            Path::new("caf\u{e9}Other.bsa"),
+            &plugins
+        ));
+    }
+
+    /// Expanded companion separators still defer to the longest installed owner and unowned policy.
+    #[test]
+    fn shared_archive_matcher_preserves_longest_owner_and_unowned_policies() {
+        let plugins = [PathBuf::from("Mod.esp")];
+        let owners = BTreeMap::from([
+            ("mod".to_owned(), true),
+            ("mod - expansion".to_owned(), false),
+        ]);
+        for suffix in [" Textures", "-Textures", "_Textures", " - Textures"] {
+            let archive = PathBuf::from(format!("Mod - Expansion{suffix}.bsa"));
+            assert!(!non_mo2_archive_is_active(&archive, &owners));
+        }
+        let standalone = Path::new("Standalone.bsa");
+        assert!(non_mo2_archive_is_active(standalone, &owners));
+        assert!(!mo2_archive_is_active(standalone, &plugins));
+        assert_eq!(archive_load_order_priority(standalone, &plugins), None);
+    }
+
+    /// Overlapping active names use the longest owner, while equal stems keep their first slot.
+    #[test]
+    fn archive_priority_preserves_specific_owner_and_same_stem_first_slot() {
+        let plugins = [
+            PathBuf::from("Good.esp"),
+            PathBuf::from("Middle.esp"),
+            PathBuf::from("Good - Expansion.esp"),
+            PathBuf::from("Good.esl"),
+        ];
+        assert_eq!(
+            archive_load_order_priority(Path::new("Good.bsa"), &plugins),
+            Some(0)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Good - Expansion - Textures.bsa"), &plugins),
+            Some(2)
+        );
+        assert_eq!(
+            archive_load_order_priority(Path::new("Standalone.bsa"), &plugins),
+            None
         );
     }
 
@@ -5030,6 +6250,7 @@ mod tests {
         let expected_texture = fs::read(&texture).unwrap();
         let mut manifest = published_manifest(&output);
         manifest.schema_version = 23;
+        manifest.asset_configuration_hashes.clear();
         manifest.configuration_hash = configuration_hash_for_schema(&config, 23).unwrap();
         let stale = b"pre-LOD23 omitted distant container";
         fs::write(output.join(PRUNED_MESH), stale).unwrap();
@@ -5070,6 +6291,7 @@ mod tests {
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest = published_manifest(&output);
             manifest.schema_version = old_schema;
+            manifest.asset_configuration_hashes.clear();
             manifest.configuration_hash =
                 configuration_hash_for_schema(&config, old_schema).unwrap();
             // A verified old GLB must still be rebuilt: its publication semantics changed.
@@ -5108,6 +6330,7 @@ mod tests {
             // Schema migration must not erase a real configuration change.
             let mut manifest = published_manifest(&output);
             manifest.schema_version = old_schema;
+            manifest.asset_configuration_hashes.clear();
             manifest.configuration_hash =
                 configuration_hash_for_schema(&config, old_schema).unwrap();
             manifest.save(&manifest_path).unwrap();

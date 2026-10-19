@@ -14,7 +14,8 @@ pub struct NifMaterialPlugin;
 
 impl Plugin for NifMaterialPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<NifSourceMaterial>();
+        app.register_type::<NifSourceMaterial>()
+            .register_type::<ExternalEmittance>();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
@@ -31,6 +32,27 @@ struct NativeMaterialHandler;
 #[derive(Component, Clone, Reflect)]
 #[reflect(Component)]
 struct NifSourceMaterial(Handle<StandardMaterial>);
+
+/// `SLSF1_External_Emittance` (`vendor/project-wormhole-nif/src/nif_flags.rs`, bit 29).
+const SLSF1_EXTERNAL_EMITTANCE: u64 = 1 << 29;
+
+/// Marks a primitive whose NIF shader takes its emission colour from outside the model: from the
+/// placing reference's `XEMI` light or region (`crate::emittance`). Reflected so the marker is
+/// cloned with the scene into every world instance.
+#[derive(Component, Clone, Copy, Default, Reflect)]
+#[reflect(Component, Default)]
+pub struct ExternalEmittance;
+
+/// Whether the converter published `SLSF1_External_Emittance` in the material's
+/// `extras.openSkyrim.shaderFlags1`.
+fn has_external_emittance(material: &gltf::Material<'_>) -> bool {
+    material
+        .extras()
+        .as_ref()
+        .and_then(|extras| serde_json::from_str::<serde_json::Value>(extras.get()).ok())
+        .and_then(|extras| extras["openSkyrim"]["shaderFlags1"].as_u64())
+        .is_some_and(|flags| flags & SLSF1_EXTERNAL_EMITTANCE != 0)
+}
 
 fn native_tag(material: &gltf::Material<'_>, name: &str, value: &str) -> bool {
     material
@@ -127,6 +149,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         entity: &mut EntityWorldMut,
         label: &str,
     ) {
+        if has_external_emittance(material) {
+            entity.insert(ExternalEmittance);
+        }
         if needs_native_material(material) {
             let source = entity
                 .get::<MeshMaterial3d<StandardMaterial>>()
@@ -225,6 +250,54 @@ mod tests {
         let (retained, rendered) = query.single(&cloned.world).unwrap();
         assert_eq!(retained.0, source);
         assert_eq!(rendered.0, native);
+    }
+
+    /// The flags are those of `architecture\farmhouse\inn01.nif`: its window, then its walls.
+    #[test]
+    fn external_emittance_needs_bit_29_of_shader_flags_1() {
+        for (extras, expected) in [
+            (
+                serde_json::json!({"openSkyrim": {"shaderFlags1": 0xA240_0301u32}}),
+                true,
+            ),
+            (
+                serde_json::json!({"openSkyrim": {"shaderFlags1": 0x8240_0301u32}}),
+                false,
+            ),
+            (
+                serde_json::json!({"openSkyrim": {"shaderFlags2": 0x2000_0000u32}}),
+                false,
+            ),
+            (serde_json::json!({}), false),
+        ] {
+            let document = gltf::Gltf::from_slice(
+                serde_json::to_string(&serde_json::json!({
+                    "asset": {"version": "2.0"}, "materials": [{"extras": extras}]
+                }))
+                .unwrap()
+                .as_bytes(),
+            )
+            .unwrap();
+            let material = document.materials().next().unwrap();
+            assert_eq!(has_external_emittance(&material), expected, "{extras}");
+        }
+    }
+
+    #[test]
+    fn scene_cloning_retains_the_external_emittance_marker() {
+        let mut app = App::new();
+        app.init_resource::<GltfExtensionHandlers>()
+            .add_plugins(NifMaterialPlugin);
+        let mut world = World::new();
+        world.spawn(ExternalEmittance);
+        let mut cloned = WorldAsset::new(world)
+            .clone_with(
+                app.world()
+                    .resource::<bevy::ecs::reflect::AppTypeRegistry>(),
+            )
+            .unwrap();
+        let mut query = cloned.world.query::<&ExternalEmittance>();
+        assert!(query.single(&cloned.world).is_ok());
     }
 
     #[test]

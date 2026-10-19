@@ -201,6 +201,7 @@ impl NifFile {
 }
 
 impl Parse<&[u8]> for NifFile {
+    /// Parses a NIF header and its size-delimited blocks using the declared Bethesda version.
     fn parse(i: &[u8]) -> nom::IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // Parse header first
         let (i, header) = NifHeader::parse(i)?;
@@ -216,8 +217,11 @@ impl Parse<&[u8]> for NifFile {
             let (i, raw) =
                 take::<u32, &[u8], nom::error::Error<&[u8]>>(header.block_size_index[index])(data)?;
             data = i;
-            let (_, block) =
-                NifBlock::parse(raw, header.get_block_type(index).unwrap().to_string())?;
+            let (_, block) = NifBlock::parse_with_version(
+                raw,
+                header.get_block_type(index).unwrap().to_string(),
+                header.bethesda_version,
+            )?;
             blocks.push(block);
         }
 
@@ -501,6 +505,7 @@ pub fn nif_to_static_model(nif: &NifFile) -> Result<Model, String> {
     Ok(model)
 }
 
+/// Adds supported NIF nodes and geometry to the static scene, retaining geometryless template nodes.
 fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String> {
     let supported_blocks: BTreeSet<u32> = nif
         .blocks
@@ -591,6 +596,22 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                 )?;
             }
             NifBlock::NiTriShape(shape) => {
+                if shape.data == u32::MAX {
+                    model.static_nodes.push(StaticSceneNode {
+                        block_index,
+                        name: nif
+                            .header
+                            .get_string(shape.name as usize)
+                            .ok()
+                            .map(str::to_owned),
+                        translation: shape.translation,
+                        rotation: shape.rotation,
+                        scale: shape.scale,
+                        children: Vec::new(),
+                        mesh: None,
+                    });
+                    continue;
+                }
                 let data = nif
                     .blocks
                     .get(shape.data as usize)
@@ -659,6 +680,7 @@ pub(crate) fn distant_lod_subtree_blocks(nif: &NifFile) -> Vec<bool> {
     reached
 }
 
+/// Adds an SSE shape to the static scene, recovering missing geometry from its skin partition.
 fn push_modern_static_shape(
     nif: &NifFile,
     model: &mut Model,
@@ -673,6 +695,7 @@ fn push_modern_static_shape(
         .map(str::to_owned);
     let mesh_index = model.static_meshes.len();
     let mut mesh = tri_shape_to_mesh(shape, name.clone());
+
     if preserve_vertex_colors {
         mesh.colors = shape
             .vertex_data
@@ -688,7 +711,7 @@ fn push_modern_static_shape(
             })
             .collect();
     }
-    if mesh.positions.is_empty() {
+    if mesh.positions.is_empty() || mesh.triangles.is_empty() {
         if let Some(partition) = nif
             .blocks
             .get(shape.skin as usize)
@@ -703,34 +726,36 @@ fn push_modern_static_shape(
                 _ => None,
             })
         {
-            mesh.positions = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.position)
-                .collect();
-            mesh.normals = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.normal)
-                .collect();
-            mesh.uvs = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.uv)
-                .collect();
-            mesh.colors = partition
-                .vertex_data
-                .iter()
-                .filter_map(|vertex| vertex.vertex_colors)
-                .map(|color| {
-                    BSVec4(glam::Vec4::new(
-                        f32::from(color.x) / 255.0,
-                        f32::from(color.y) / 255.0,
-                        f32::from(color.z) / 255.0,
-                        f32::from(color.w) / 255.0,
-                    ))
-                })
-                .collect();
+            if mesh.positions.is_empty() {
+                mesh.positions = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.position)
+                    .collect();
+                mesh.normals = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.normal)
+                    .collect();
+                mesh.uvs = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.uv)
+                    .collect();
+                mesh.colors = partition
+                    .vertex_data
+                    .iter()
+                    .filter_map(|vertex| vertex.vertex_colors)
+                    .map(|color| {
+                        BSVec4(glam::Vec4::new(
+                            f32::from(color.x) / 255.0,
+                            f32::from(color.y) / 255.0,
+                            f32::from(color.z) / 255.0,
+                            f32::from(color.w) / 255.0,
+                        ))
+                    })
+                    .collect();
+            }
             mesh.triangles = partition.triangles.clone();
         }
     }
@@ -1448,6 +1473,7 @@ impl NifFileV3 {
 }
 
 impl Parse<&[u8]> for NifFileV3 {
+    /// Parses version-aware NIF blocks and organizes nodes, skins, materials, and shapes into lookup maps.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         let (i, header) = NifHeader::parse(i)?;
 
@@ -1466,8 +1492,11 @@ impl Parse<&[u8]> for NifFileV3 {
             );
             let (i, raw) = nom::bytes::complete::take(header.block_size_index[index])(data)?;
             data = i;
-            let (_, block) =
-                NifBlock::parse(raw, header.get_block_type(index).unwrap().to_string())?;
+            let (_, block) = NifBlock::parse_with_version(
+                raw,
+                header.get_block_type(index).unwrap().to_string(),
+                header.bethesda_version,
+            )?;
             println!(
                 "Parsed block type: {:?}",
                 header.get_block_type(index).unwrap().to_string()

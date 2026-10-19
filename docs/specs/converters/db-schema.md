@@ -2,21 +2,65 @@
 
 This specification details the canonical DDL schema, tables, indices, and column constraints for `skyrim_world.db`, as implemented in [`crates/converter/src/esm/exporter.rs`](../../../crates/converter/src/esm/exporter.rs).
 
+The in-house reader is the default; `--record-reader legacy` selects the
+hand-written frontend. Both record frontends use the same runtime column contract and TXST slot
+interpretation: diffuse TX00, normal TX01, mask TX02, glow
+TX03, height TX04, environment TX05, detail TX06, and specular TX07. The existing
+`detail_path` column carries TX06 multilayer data; TX03 is the source's
+glow/detail-map slot and TX07 its backlight-mask/specular slot. These role names
+retain the runtime approximation and do not imply complete shader support.
+ARMO model projection uses MOD2 with MOD4 as the female world-model fallback
+for both frontends. MOD3 is an ARMA model slot, not an ARMO world-model path.
+
 ---
 
 ## 1. Schema Overview
 
-`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). When `PipelineConfig.plugins_file` is supplied, ESM-flagged plugins and `.esm`/`.esl` files take priority, keeping the listed order within each category except that regular dependencies are moved ahead of the master files that need them. The resulting order is validated before assigning full/light slots, ordering archive (BSA/BA2) priority, and merging database records and terrain caches. Unrelated regular plugins retain the user's order. This is not a general dependency sort: any inversions remaining after normalization, including a master file listed before another master it depends on, are rejected. The CLI and launcher currently use automatic discovery: only plugins directly in Data are selected, with dependencies ordered before dependents. Among available plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and case-insensitive filename order. The ESL header flag alone assigns a light slot; an ESL-flagged `.esp` stays among regular plugins. Missing masters and dependency cycles fail with diagnostics. This deterministic fallback cannot infer a user's intended override order between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
+`skyrim_world.db` is built by `crates/converter` by parsing master files (`Skyrim.esm`) and plugin files (`.esp`/`.esl`). With `PipelineConfig.plugins_file` (CLI `--plugins-file`), the converter reads Windows-1252 selection, keeps the last duplicate entry's position and checkbox, and matches installed filenames case-insensitively. Installed Skyrim, Update, Dawnguard, HearthFires and Dragonborn masters are always active in that fixed order, followed by installed entries of readable `Skyrim.ccc`. `skyrim_ccc_file` (`--skyrim-ccc-file`) overrides the default file beside Data. Only checked player entries load, including mod masters; official and Creation entries keep their implicit positions. An explicit `skyrim_ini_file` (`--skyrim-ini-file`) supplies General `sTestFile1` through `sTestFile10`: listed plugins retain their listed positions even if unchecked, while unlisted entries append by ascending file modification time (filename breaks ties). No ambient user profile is read. Missing entries and optional CCC/INI read errors warn and continue. Plugins with missing, disabled or unusable masters and their transitive dependents are omitted with bounded notices; an empty usable selection gives a clear error.
 
-The database stamps its version in `schema_info`; the current version is **7**
+MO2 profiles reuse the shared selection rules and the converter's header/missing-master closure recovery over winning overlay paths. Installed official masters and game-folder CCC entries remain implicitly active; other selected plugins follow `loadorder.txt`. Missing ordered entries append in last-occurrence `plugins.txt` order, with a warning. Both profile lists use Windows-1252 and retain only the last duplicate. Missing files and unusable dependency closures skip with profile-context notices, preserving usable neighbors. Classic Skyrim still activates bare profile entries. Plugin-name keys use the shared Unicode `normalize_plugin_name` function (`to_lowercase`) across player lists, MO2 lists, merged Data lookup, master matching and identity maps. Windows-1252 `CAFÉ.esp` and `café.esp` therefore match; Unicode normalization and full Unicode case folding are not implemented. Record signatures, EditorIDs and other asset keys retain their existing rules. MO2 preserves its existing final order validation rather than applying player-list priority normalization.
+
+The existing explicit-order normalization gives ESM-flagged plugins and `.esm`/`.esl` files priority, preserving listed order within each category except that regular dependencies are moved ahead of master files that need them. Cyclic plugins and all their dependents are omitted before normalization. The established final order admits at most 254 full and 4,096 light plugins; overflow and its transitive dependents are omitted without backfilling later entries or changing survivor order. One bounded warning summarizes each recovery cause; the conversion report's `skipped_plugins` retains every original filename removed by selection recovery, once each in pre-recovery selection order, including attempted ambiguous filenames, unusable headers and missing-master closures. Unchecked plugins are not skips. `load_order` records surviving original filenames in the same order as the published `plugins` table. Both vectors default to empty when absent from older reports. A plugin the normalized order still places before one of its masters is omitted with its dependents rather than moved. Surviving paths feed slot assignment, archive priority, database merging and terrain caches. An ESL-flagged `.esp` takes a light slot but stays among regular plugins.
+
+Player and MO2 selection use a shared fallback when `Skyrim.ccc` is missing or unreadable: the installed subset of `ccBGSSSE001-Fish.esm`, `ccQDRSSE001-SurvivalMode.esl`, `ccBGSSSE037-Curios.esl`, `ccBGSSSE025-AdvDSGS.esm` and `_ResourcePack.esl`, in that order after the five official masters. A readable CCC, even empty, stays authoritative. `selection_warnings` records the fallback's CCC path and read failure separately from conversion failures; CLI/progress/launcher display it as a warning without making usable output incomplete. The optional vector defaults to empty for older reports.
+
+Archive ownership and load-order priority share the same exact-or-space/dash/underscore stem matcher. The longest installed owner must survive recovery before a companion can contribute inputs, including repair and metadata rebuilds. Active `_` and `-` companions are admitted in MO2; unowned archives remain excluded there and admitted outside MO2. Equal active stems keep their first slot. Direct MO2 plugin-name ambiguity in the winning layer is recoverable; higher-layer unique replacements retain normal overlay behavior.
+
+Without `plugins_file` or an MO2 profile, only plugins directly in Data are selected and dependencies precede dependents. Among ready plugins, ESM-flagged plugins and `.esm`/`.esl` files take priority, followed by the five official files' conventional order and Unicode-normalized filename order. Unusable headers and missing-master closures are omitted with bounded notices, as in player selection, and this path shares cycle and slot-overflow recovery. A nonempty plugin selection reduced to no usable plugins fails clearly, while asset-only inputs retain their existing behavior. Automatic discovery cannot infer override priorities between unrelated mods; nested backup/optional plugins are ignored while nested assets remain discoverable.
+
+The database stamps its version in `schema_info`; the current version is **9**
 (`shared::WORLD_DATABASE_SCHEMA_VERSION`). Schema 4 added lights and
 `references.radius_override`. Schema 5 adds grass data in #152;
 the combined producer exports grass and LOD tables. Schema 6 adds LOD origins, chunk metadata,
-its spatial index, and a build identity. The engine, `world-inspect` and
-launcher accept world schemas **3 through 7**, using
+its spatial index, and a build identity. Schema 9 combines the corrected texture-set slot
+projection: `mask_path` comes from TX02, `glow_path` from TX03, `height_path`
+from TX04 and `environment_path` from TX05. TX00 and TX01 provide diffuse and
+normal paths. Both frontends project TX06 into `detail_path` and TX07 into
+`specular_path`, as documented above. Schema 9 also
+projects only XESP byte 4 into `enable_parent_flags`. Separate candidate fixes
+used producer 25/world 8 for different contracts; combined output uses 26/9.
+The engine, `world-inspect` and launcher accept world schemas **3 through 9**, using
 `shared::supports_runtime_world_database_schema`. Complete converter packages
-support schemas **15 through 24**. Legacy worlds render full detail without
+support schemas **15 through 26**. Legacy worlds render full detail without
 LOD; an advertised LOD package requires the current database contract.
+
+Converter producer 26 also corrects the texture encodings chosen from those
+columns. Normal conversion rebuilds every older KTX2, the database, cell cache
+and derived LOD outputs. Verified producer-24 GLBs, unchanged scripts and
+archive ingestion remain reusable with matching source/dependency,
+configuration and output-byte proof; producers 12-23 still rebuild GLBs.
+Metadata-only rebuilds preserve the original retained producer/configuration
+and texture bytes. Run normal conversion to repair those retained encodings.
+
+The legacy TX06/TX07 alignment changes the SQL role assignment while retaining
+the current texture-byte encoding: multilayer/detail and specular/backlight are
+both color uses in `TextureEncoding::from_semantics`. Exchanging those roles
+leaves the selected encoding unchanged, including normal/data precedence for
+textures with several uses. ARMO model-path alignment also changes the SQL
+projection; mesh conversion discovers NIF inputs independently of that column.
+These projection changes require rebuilding metadata. Any subsequent change to
+converted mesh or texture bytes must invalidate the affected asset cache key;
+metadata retention preserves the producer identity of the retained bytes.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -58,7 +102,18 @@ CREATE TABLE IF NOT EXISTS plugins (
 
 ### 2. Primary Record Database (`records`)
 
-Stores unparsed raw subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character record type codes.
+Stores subrecord byte payloads indexed by 32-bit Skyrim `FormID` and 4-character
+record type codes, encoded as rkyv `ArchivedRecordData`. Both frontends resolve
+known embedded links to load-order numbering. The in-house frontend projects
+validated decoded fields into this existing encoding. Its auxiliary experimental
+`inhouse_source_records(form_id, source_form_id, load_order, record_type, flags,
+payload)` table holds original
+decompressed source bytes, including file-relative IDs and unused framing. Those
+source bytes are provenance, not decoded runtime fields. `load_order` names the
+winning source plugin through `plugins.id`. Required movement and terrain
+semantics are validated before winner selection; rejected candidates leave an
+earlier usable winner intact and are counted in per-plugin diagnostics. The pack's
+`record-reader.json` identifies the frontend and schema.
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
@@ -73,6 +128,147 @@ CREATE INDEX IF NOT EXISTS idx_records_type ON records(record_type);
 ```
 
 ---
+
+### Draft: optional in-house override history (`record_overrides`)
+
+The prototype in-house producer adds a tooling table containing each physically
+framed source record, including singletons, deleted versions and rejected
+candidates. Runtime readers continue to query the existing winning-record
+tables. No losing payload or decoded field set is retained for history during
+conversion. Singletons are explicit: this makes complete physical-header audits
+and lazy version lookup uniform without a second implicit representation.
+
+`record_overrides` has a physical primary key `(plugin_id, source_record_offset)`
+and a `(form_id, chain_position)` lookup index. Columns are canonical `form_id`,
+zero-based `chain_position`, `plugin_id` naming `plugins.id`, native
+`source_form_id`, `deleted`, `record_type`, `flags`, `source_record_offset`,
+`source_record_size`, `status`, `reason`, native enclosing cell/world/topic IDs
+and topic-group offset. The preservation extension also stores proven
+`original_owner`, unmasked `full_local`, `source_identity_state`, exclusive
+`source_group_end`, `frame_complete`, and exact four-byte `record_signature`
+BLOB. A source lookup index covers `(original_owner,full_local,plugin_id,
+source_record_offset)`. The record signature does not create a separate source
+identity namespace; changing kinds at one owner/local remains a type conflict.
+`source_record_offset` points at the 24-byte native
+header; size is the declared on-disk payload length, including the compressed
+size word when present and excluding the header. Unmappable identities are NULL
+and remain identifiable by plugin, offset and native FormID. Positions follow
+load order, then physical source offset; duplicate physical IDs stay distinct.
+
+`accepted` versions participate in the existing winner/deletion policy;
+`skipped` versions retain a reason and do not displace usable predecessors.
+The last accepted version is the source winner unless it deletes the record.
+The existing torn-override rule skips an incomplete payload that would replace
+an earlier complete version; its physical history row retains that reason.
+GMST history uses the reader's canonical EditorID aliases, including an already
+decoded EditorID when a later mandatory field rejects that version. Broken
+EditorID framing retains the raw numeric alias; history does not guess an ID.
+Each TES4 row uses a NULL canonical identity
+and status `header`, and stores source path and the authored schema hash.
+`inhouse_plugin_masters(plugin_id,master_index,master_name)` stores original MAST
+order as scalar rows with contiguous zero-based indices; a header with no child
+rows has no masters. New snapshots have no `plugin_masters` JSON column.
+The history loader still accepts that column in retained packs when the child
+table is absent. These small metadata rows allow replay to reconstruct
+original full/light mapping without reading another missing or changed plugin.
+They are excluded from ordinary record-chain counts. Their deterministic positions
+in the NULL-identity group are header ordering, not a semantic record chain.
+
+`inhouse-records history <pack> <hex FormID> [--data DIR] [--json]` opens the
+database read-only and verifies each source against `plugins.checksum` before
+decoding the requested offset with the producing schema. Changed, missing,
+oversized or undecodable versions remain local diagnostics; other versions
+continue. The text view aligns authored field names and occurrences and marks
+differences. This is decoded source provenance, not a merge or patch format;
+partial decoding and unsupported semantic roles retain their existing limits.
+Retained 18-column history layouts remain queryable. If any of the three
+physical replay safety columns (group end, frame completeness or exact record
+signature) is absent or NULL, that version is reported as undecodable with its
+stored provenance; replay never invents missing bounds or reads unchecked bytes.
+Older ASCII-folded owner spellings are accepted only through an alias derived
+from the authenticated stored plugin basename and its original master list.
+
+These optional tooling tables do not change the runtime database
+contract, accepted version range or asset encodings. World and converter asset
+schema constants therefore remain unchanged. The existing committed history
+contribution uses in-house adapter 5; subsequent adapter identities cover the
+preservation extension and required-header master-index compatibility. The
+independent `diagnostics_version` in the reader identity covers complete scalar
+diagnostics and the normalization of stored tooling lists. Older
+in-house provenance output is invalidated through the existing reader/configuration
+identity. Runtime schema constants and reusable asset encodings remain unchanged,
+and older texture or mesh bytes are not relabeled. The broad configuration hash
+includes the reader identity for metadata provenance. Normal conversion can
+reuse compatible assets through separately recorded per-kind settings and source
+proofs. Adapter-11 metadata recognizes the exact adapter-10 combined settings
+proof for independently eligible asset producers, without changing retained
+bytes or their recorded producer. The metadata-only path accepts the current
+reader identity and that explicit adapter-10 retention contract with matching
+schema/add-on bytes and complete reader fields. Older in-house packs without
+`diagnostics_version` remain refused rather than relabeled with the new tooling
+contract; unknown adapter versions cannot authorize retained settings.
+Header rows bind the exact authored
+schema; a different schema is reported as undecodable rather than silently
+interpreting an old pack with new definitions. Deterministic sorted insertion
+and an explicit physical primary key make ordered history contents reproducible.
+
+`inhouse-records history-source <pack> <owner basename> <hex full local>
+[--data DIR]` also reaches nullable runtime identities. Proven source ownership
+comes only from the original supplier's MAST list: lower high-byte indices name
+masters, the equal index names self, and a generic greater index remains
+`master_index_out_of_range` with no invented self owner. The existing GMST
+greater-index convention is separately labelled `gmst_editor_id_convention`;
+its physical rows and decoded EDID/runtime aliases do not establish native
+owner proof. Source words of zero remain a separate null state, while nonzero
+self/master words with a local component of zero retain that exact source key.
+Missing-master load-order validation remains a producer limitation: this
+extension does not admit or scan a wholly rejected plugin sequence.
+
+`history-physical <pack> <decimal plugin id> <decimal source offset> [--data DIR]`
+reaches every stored header, including unproven owner words. Source/physical
+access requires the caller to authenticate the complete database against a
+trusted completed-producer receipt/pin and preserve that integrity through
+the call, retaining before/after bundle guards. Read-only SQL is not integrity
+validation. Original-file checksums prove read bytes, not edited stored MAST,
+slot, group-bound or candidate/winner context. These APIs do not independently
+verify arbitrary edited databases; their context authority is the authenticated
+producing bundle. Callers must consume/drop streamed versions to keep one-body
+memory, and must reject partial delivery without a successful complete summary.
+Both new commands
+emit one version JSONL row at a time followed by a summary. The Rust streaming
+callback exposes exact original 24-byte header and on-disk stored payload
+(including compression prefix) with full original-file checksum guards before
+and after reading through the same handle. It does not inflate, normalize,
+repair flags, mask locals, or manufacture typed/runtime decoding. Complete
+stored frames have a 64 MiB body access ceiling. A frame crossing its original
+containing-group end yields header-only material even when later outer siblings
+would satisfy its nominal size. Changed or unavailable originals remain local
+access failures. Source queries have an explicit 4096-version capacity; callback
+errors and exceeded query capacity return partial/error rather than claiming
+complete access. The caller must retain the emitted partial report. Files are
+not embedded or copied during conversion, so immutable originals are required
+for future body access, and each queried version entails whole-original
+checksum passes. The conversion retains header structs plus a sorted-reference
+vector; this is not a disk-bounded all-candidate conversion design.
+
+The report distinguishes the latest physical source candidate, latest
+reader-admitted candidate, current accepted-source winner, runtime presence,
+and surviving earlier runtime fallback. Deletions remain admitted history but
+do not become a live source/runtime winner. Wide light locals remain proven
+owner/full-local source keys with nullable runtime IDs and exact raw access;
+they never spill or mask into an adjacent light slot. Generic required header
+indices beyond the original MAST list use the existing supplier fallback for
+runtime mapping and increment a separate bounded compatibility diagnostic.
+Original ownership stays unresolved, and the full 24-bit local component is
+retained in source history. Optional links keep their existing clear-or-reject
+policy. Width and null-runtime checks still reject unusable candidates locally,
+with their header/reason retained and valid neighbors continuing.
+Full conversion atomically recreates only the owned
+tooling table within the provenance transaction, so its older optional schema
+does not silently survive with missing columns. There are no new sidecar files,
+asset conversions or runtime schema changes. Normal asset-cache identity
+invalidation remains an existing global adapter coupling for full conversion,
+despite unchanged reusable asset encodings.
 
 ### 3. Worldspace Registry (`worldspaces`)
 
@@ -128,7 +324,8 @@ CREATE TABLE IF NOT EXISTS references (
     radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, uninterpreted
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
-    enable_parent_flags INTEGER,        -- XESP flags; NULL when absent
+    enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
+    emittance_id INTEGER,               -- Remapped XEMI light or region FormID; NULL when absent
     data BLOB                           -- Subrecords payload
 );
 
@@ -137,29 +334,36 @@ CREATE INDEX IF NOT EXISTS idx_references_cell_id ON references(cell_id);
 ```
 
 The reference flag and enable-parent columns preserve winning raw-record
-metadata for later object LOD (#106). Current terrain LOD does not consume
-them. `header_flags` comes from the record header; `enable_parent_id` and
-`enable_parent_flags` are the two little-endian words of the eight-byte XESP
-subrecord, with the parent FormID resolved through plugin load order. The raw
-subrecord payload remains in `data`. An invalid parent link is published as
+metadata for later object LOD (#106) and enable-state support (#165). Current
+terrain LOD does not consume them; runtime parent enable-state behavior remains
+future work. `header_flags` comes from the record header. `enable_parent_id` is
+XESP's little-endian parent FormID (bytes 0-3), resolved through plugin load order;
+`enable_parent_flags` is byte 4 alone in both readers. Bit 0 inverts the parent's
+state and bit 1 enables pop-in. The three unused bytes (5-7) remain unchanged
+in the canonical subrecords serialized in `data`. Older legacy projections could
+include padding in the normalized flags value; reconversion corrects that
+projection. An invalid parent link is published as
 `enable_parent_id = 0` (no parent) with its flags kept; a malformed `XESP` is
 dropped, so both columns are NULL. See the remapped-field table below.
 
+`emittance_id` is the reference's `XEMI`: the light or region whose colour the
+`External_Emittance` surfaces of its model take (§16). A cleared link is stored as NULL.
+
 ---
 
-### 6. Hybrid Spatial Indexing (`refs_rtree` & Interior `cell_id` Index)
+### 6. Hybrid Spatial Indexing (`exterior_spatial` & Interior `cell_id` Index)
 
-To prevent `float32` single-precision accuracy loss at large exterior coordinates (e.g. Tamriel bounds $\pm 200,000$) and avoid coordinate collisions between interior local origins $(0,0,0)$ and exterior global space, Mudcrab uses a **Two-Tier Hybrid Spatial Strategy**:
+Exterior references use a spatial index with a worldspace filter; interior references use direct cell lookup:
 
-1. **Exterior Worldspace R-Tree (`refs_rtree`):** Coordinates inside the R-Tree virtual table are stored normalized relative to cell centers (values constrained between $-2048.0$ and $+2048.0$), keeping numbers small to guarantee high single-precision float accuracy.
+1. **Exterior Worldspace R-Tree (`exterior_spatial`):** Bounds are the reference's global X/Y/Z point position, with equal minimum and maximum values. The exporter does not constrain coordinate magnitudes. SQLite stores single-precision bounds; `cell_id` and `worldspace_id` are auxiliary columns, not spatial dimensions. Cell-local X/Y offsets remain separate columns in `references`.
 2. **Interior Cell Direct Lookup (`idx_references_cell_id`):** Interior dungeons and houses do not use R-Trees. All interior references are loaded directly by `cell_id` for instant $O(1)$ lookup upon entering interior doors.
 
 ```sql
 -- R-Tree virtual table for Exterior 3D bounding box spatial queries
-CREATE VIRTUAL TABLE IF NOT EXISTS refs_rtree USING rtree(
+CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(
     id,                                 -- Matches internal reference ID
-    minX, maxX,                         -- Local cell X offset (-2048.0 to +2048.0)
-    minY, maxY,                         -- Local cell Y offset (-2048.0 to +2048.0)
+    minX, maxX,                         -- Global reference X position
+    minY, maxY,                         -- Global reference Y position
     minZ, maxZ,                         -- World Z Height units
     +cell_id,                           -- Exterior CELL FormID
     +worldspace_id                      -- Parent WorldSpace FormID (e.g. 0x0000003C for Tamriel)
@@ -215,18 +419,38 @@ uses `lod_chunks` for indexing and external GLB files for payloads. See
 
 ---
 
-### 9. Compiled Scripts (`scripts`)
+### 9. Script attachments (`scripts`)
 
-Stores compiled Papyrus script bytecode and property bindings.
+In-house output stores attached Papyrus script names and canonical VMAD bytes.
+These are property bindings, not compiled PEX bytecode. Script status and
+authored order remain in VMAD. The last exact-name attachment for a record keeps
+the existing SQL overwrite behavior.
 
 ```sql
-CREATE TABLE IF NOT EXISTS scripts (
-    form_id INTEGER PRIMARY KEY,        -- Script FormID
-    script_name TEXT NOT NULL,          -- Script EDID name
-    bytecode BLOB NOT NULL,             -- Papyrus PEX binary bytecode
-    properties BLOB                     -- Script properties table
+CREATE TABLE scripts (
+    form_id INTEGER NOT NULL,
+    script_name TEXT NOT NULL,
+    vmad BLOB NOT NULL,
+    PRIMARY KEY (form_id, script_name)
 );
 ```
+
+`script_properties` has `(form_id,script_name,property_index)` as its primary key,
+with scalar property name, native `property_type`, status and `value_count`.
+`script_property_values` adds a zero-based `value_index` to that key and stores
+nullable `object_form_id`, `alias_id`, `string_value`, `integer_value`,
+`float_bits` and `boolean_value` columns. Scalar properties have one value row;
+arrays keep their authored element order. Native type zero and empty arrays
+have no value rows and remain distinguishable by their property headers. Float
+bits preserve all f32 representations without JSON or SQLite numeric coercion.
+
+These tables replace `scripts.properties_json` for in-house exports inside the
+existing record transaction. Complete exports refresh their owned script
+snapshot; record archives leave all three runtime script tables empty. The
+legacy reader's existing JSON projection remains separate. Runtime engine
+consumers continue using the canonical record/VMAD data. Public partial exports
+into a normalized database use scalar script rows without refreshing unrelated
+attachments; fresh legacy databases retain the legacy JSON projection.
 
 ---
 
@@ -237,8 +461,9 @@ ID. `plugin_name` is the lowercase owning filename, such as `skyrim.esm`;
 `internal_id` is the low 24 bits for full plugins or the low 12 bits for light
 plugins. Full and light slots are assigned independently. The pair
 `(plugin_name, internal_id)` survives changes to the load-order slots.
-`plugin_name` is the lowercase filename; join to `plugins` with
-`lower(plugins.name) = formid_map.plugin_name`.
+`plugin_name` uses the reader's shared Unicode lowercase filename key; join to
+`plugins` by applying that same normalization to `plugins.name`. SQLite's
+built-in `lower` alone does not normalize accented Windows-1252 case pairs.
 
 Ownership differs from override provenance: `records.load_order` identifies
 the winning plugin's priority. Game settings override by case-insensitive
@@ -269,6 +494,10 @@ reference and cell fields, validated against their expected sizes:
 | `XCIM`, `XCMO`, `XCAS` | CELL | image space, music type, acoustic space |
 | `XCCM` | CELL | region the cell takes its sky and weather from |
 | `XCLR` | CELL | regions (array) |
+| `RDWT` | REGN | each 12-byte entry's weather (bytes 0-3) and global (bytes 8-11); the chance is kept |
+| `XPOD` | REFR | the rooms a portal marker joins: an array of (origin, destination) pairs; every u32 a FormID (xEdit 4.1.5f defs) |
+| `XLRM` | REFR | linked room of a room marker |
+| `LNAM`, `INAM` | REFR | room marker lighting template, image space (other record types keep their own handling) |
 
 For blob remapping, placed references are REFR, ACHR, ACRE, PGRE, PMIS, PHZD,
 PARW, PBAR, PBEA, PCON and PFLA. This does not expand the record types exported
@@ -276,7 +505,7 @@ to the `references` table; the six newly covered types retain their blobs in
 `records` without adding `references` rows.
 Fields not covered may still hold plugin-local FormIDs. In particular, do not
 consume `WRLD.RNAM` large-reference lists, `XLOC` lock keys, `XPWR` water
-reflections, or `XPOD`/`XLRM` room and portal links as resolved IDs. Other
+reflections as resolved IDs. Other
 unconverted fields include `XLIB`, `XMBR`, `XATR`, `XTNM`, `PDTO`, `CELL.XILL`
 and `WRLD.ZNAM`. Check the converter's field-specific handling before using
 these payloads; this list is not exhaustive.
@@ -452,3 +681,240 @@ grass definitions. The subset export used by movement annotation preserves unrel
 grass rows; if it includes an LTEX, only that texture's association list is replaced.
 Movement annotation continues to accept schema 4 through the current schema and
 preserves the existing database version; it does not perform a full reconversion.
+
+---
+
+### 15. Interior Room Graph (`room_bounds`, `room_portals`, `room_links`, `reference_rooms`, `room_graph_stats`)
+
+Skyrim marks the rooms of an interior with `RoomMarker` references (base `0x1F`) and the
+doorways between them with `PortalMarker` references (base `0x20`). The converter decodes both
+and records which room boxes each placed object belongs to. The tables hold facts only: which
+objects to draw is the engine's policy (design: `docs/research/interior-room-graph-converter.md`,
+upstream issue #188). Only interior cells and only box rooms (`XPRM` shape 1) are written;
+exterior markers are skipped silently, and rooms of other shapes, and rooms or portals with a non-finite size or transform, are skipped and counted in the conversion report.
+All FormIDs are in load-order numbering, like `references.id`.
+The two marker base forms are the ones `Skyrim.esm` defines (always load-order slot 0, so the numbers do not change with the load order). A plugin that places rooms with a marker base of its own is not recognised and produces no rows; the conversion report does not count that case.
+
+```sql
+CREATE TABLE IF NOT EXISTS room_bounds (       -- one row per interior RoomMarker with a box XPRM
+    ref_id INTEGER PRIMARY KEY,                -- references.id of the marker
+    cell_id INTEGER NOT NULL,
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,   -- Creation units
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,   -- radians, as references
+    half_x REAL NOT NULL, half_y REAL NOT NULL, half_z REAL NOT NULL, -- XPRM[0..12]
+    lighting_template_id INTEGER,              -- LNAM, NULL when absent
+    image_space_id INTEGER,                    -- INAM, NULL when absent
+    flags INTEGER NOT NULL DEFAULT 0           -- XRMR flags byte | (XRMR u16 << 8), kept raw
+);
+CREATE INDEX IF NOT EXISTS idx_room_bounds_cell ON room_bounds(cell_id);
+
+CREATE TABLE IF NOT EXISTS room_portals (      -- one row per XPOD pair of an interior PortalMarker with an XPRM
+    ref_id INTEGER NOT NULL,                   -- references.id of the marker; NOT unique, see pair_index
+    pair_index INTEGER NOT NULL DEFAULT 0,     -- position of the (origin, destination) pair in XPOD
+    cell_id INTEGER NOT NULL,
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
+    half_x REAL NOT NULL, half_z REAL NOT NULL, -- doorway half-width and half-height
+    room_a INTEGER,                            -- the pair's origin; NULL when 0, absent or not a room of this cell
+    room_b INTEGER,                            -- the pair's destination; same
+    PRIMARY KEY (ref_id, pair_index)
+);
+CREATE INDEX IF NOT EXISTS idx_room_portals_cell ON room_portals(cell_id);
+
+CREATE TABLE IF NOT EXISTS room_links (        -- XLRM: rooms seen together without a portal
+    room_ref INTEGER NOT NULL,
+    linked_ref INTEGER NOT NULL,
+    PRIMARY KEY (room_ref, linked_ref)
+);
+
+CREATE TABLE IF NOT EXISTS reference_rooms (   -- room membership, interiors with rooms only
+    reference_id INTEGER NOT NULL,             -- references.id
+    room_ref INTEGER NOT NULL,                 -- room_bounds.ref_id
+    contained INTEGER NOT NULL,                -- 1: pivot inside the box; 0: only the bounds overlap it
+    PRIMARY KEY (reference_id, room_ref)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_reference_rooms_room ON reference_rooms(room_ref);
+
+CREATE TABLE IF NOT EXISTS room_graph_stats (  -- conversion report counters, one row per name
+    name TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+```
+
+Columns and rules:
+
+- **`room_bounds`**: the box is centred on the marker's position and oriented by its rotation
+  (the same Euler convention as any reference, `shared::coordinates`). `half_*` are the `XPRM`
+  half-extents in the room's own frame. `lighting_template_id` (`LNAM`) and `image_space_id`
+  (`INAM`) are decoded for the lighting work in #129-#135; nothing in the engine uses them yet.
+- **`room_portals`**: a portal's doorway is the marker's local X-Z rectangle (normal along local
+  +Y); `half_x`/`half_z` are its half-width and half-height. A portal marker without `XPRM`
+  has no size and gets no row. `XPOD` is an array of 8-byte (origin, destination) FormID pairs
+  (xEdit 4.1.5f defs, `Core/wbDefinitionsTES5.pas`: `wbArray(XPOD, 'Portal Data',
+  wbStruct('References', [wbFormIDCk('Origin', [REFR, NULL]), wbFormIDCk('Destination',
+  [REFR, NULL])]))`), so a portal gets **one row per pair**, numbered by `pair_index` from 0
+  in stored order; the geometry columns repeat on every row. A portal whose `XPOD` is absent,
+  empty or shorter than one pair gets one row with `pair_index` 0 and both sides NULL. Bytes
+  after the last whole pair are ignored. Every `XPOD` in the official masters is one pair, so
+  vanilla output has `pair_index` 0 only. **Readers must not assume `ref_id` is unique**: join
+  or group on `(ref_id, pair_index)`, or on `ref_id` and expect several rows. The key changed
+  from `ref_id` alone, and `create_tables` migrates an older-shaped `room_portals` (no
+  `pair_index`) in place, inside one savepoint: every row is kept with `pair_index` 0 until the
+  next full export rebuilds the table.
+  In the plugin remap `XPOD` is an array of FormIDs: every four bytes are remapped, and a
+  length that is not a multiple of four is dropped with a warning, like any other FormID array.
+- **`room_links`**: one row per `XLRM` as stored on the room, with no mirror rows. A link joins
+  rooms that may have no portal between them but must be seen together: if one is visible, so is
+  the other. The target is stored as written, even if it is not a `room_bounds` row.
+- **`reference_rooms`**: written for every placed object (`REFR`, `ACHR`, `ACRE`, `PGRE`,
+  `PMIS`) in an interior cell that has at least one room, except the room and portal markers
+  themselves. `contained = 1` rows come from the ESM export: the object's pivot (its position)
+  lies inside the box, edges included. `contained = 0` rows are added after model bounds are
+  known (the integration stage, once `statics.bounds_*` come from the converted GLBs): the
+  pivot is outside, but the object's bounds, placed with the reference's scale, rotation and
+  position, overlap the box. `statics.bounds_*` are glTF-axis (Y-up) numbers in Creation units,
+  with no metre scale. The test is conservative (the placed bounds' corners, taken into the room
+  frame, as an axis-aligned box against the half-extents), so it can report an overlap that does
+  not exist, which only makes the engine draw more. A `contained = 1` row is never also written
+  as `contained = 0`.
+  Overlap rows need a base with bounds in `statics`, which holds every base type with a world
+  model (`STAT`, `MSTT`, `FURN`, `TREE`, `FLOR`, `CONT`, `DOOR`, `ACTI`, placed items and armour,
+  and `LIGH` with a model). Placed references of other base types get pivot rows only: actors
+  (`NPC_`, which move and stay ordinary entities), lights without a model (their reach is a
+  lighting question, not geometry), decals (`TXST`), and bases with no geometry (`IDLM`, `SOUN`,
+  `ASPC`). In the all-plugins conversion these are 22,251 of 364,262 pivot rows.
+- **`room_graph_stats`**: the counters the conversion report shows in `integration-report.json`
+  under `room_graph`: `rooms`, `portals` (portal markers written, not rows), `links`,
+  `portals_with_missing_side` (`room_portals` rows with a NULL side, so a portal with several
+  pairs can add several), `portals_with_extra_pairs` (markers whose `XPOD` holds more than one
+  pair), `portals_with_trailing_xpod_bytes` (markers whose `XPOD` length is not a multiple of 8),
+  `non_box_rooms_skipped`, `portals_without_size_skipped`, `invalid_markers_skipped` (rooms and portals with a non-finite size or transform), `objects_in_no_room` and
+  `objects_in_several_rooms` (both by pivot), and `overlap_rows`.
+
+The tables are derived data: a full load-order export clears and rebuilds them from the winning
+records on every conversion, like the grass tables, and the subset export used by movement
+annotation leaves them alone. `create_tables` adds them to an older reused database.
+
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`.** No engine code reads
+them yet; a reader must probe for them first, as the engine does for `lights` and the additive
+`waters` columns, so a database without them behaves as before.
+
+| Case | Converter writes | Engine |
+|---|---|---|
+| Interior without room markers | no rows | draw everything, as today |
+| Old database, tables absent | n/a | feature off, no error |
+| Portal side 0, missing or not a room | `room_a`/`room_b` NULL | ignore that edge |
+| Object in no room / several | no `contained = 1` row / several | always drawn |
+| Camera outside every room | n/a | draw everything |
+| Non-box room shape | skipped, counted | its objects are in no room, so drawn |
+| Exterior markers | not written | out of scope (#106) |
+
+---
+
+### 16. Reference Emittance Sources (`emittance`)
+
+A NIF shader with `SLSF1_External_Emittance` (bit 29) takes its emission colour from outside the
+model: from the light or region the placing reference names in `XEMI`
+(`references.emittance_id`). Skyrim keeps building windows dark by day this way. The Sleeping Giant
+Inn's reference in Riverwood (`0002D763`) names `FXLightRegionInvertWindowWhiterun` (`0008277B`),
+whose one weather `FXWthrInvertWindowsWhiterun` (`0008277A`) has a black Effect Lighting colour by
+day and an amber one at night (#242).
+
+The complete load-order export rebuilds the table, writing one row per distinct `XEMI` target it can
+resolve, as 8-bit sRGB at sunrise, day, sunset and night:
+
+- `LIGH`: the `DATA` colour (bytes 8-10), the same at every time of day.
+- `REGN`: the `RDWT` weather with the highest chance (the first on a tie), and that weather's
+  `NAM0` Effect Lighting colour, the tenth colour type. `NAM0` holds 16 bytes per colour type
+  (sunrise, day, sunset and night, each RGB and an unused byte); the official plugins store 13,
+  14 or 17 types. A region changes weather with its climate, which the runtime does not model, so
+  its likeliest weather stands in.
+
+Effect Lighting rather than Sunlight: the inn's window shader has a white tint and a neutral grey
+glow map, so the warm colour of Skyrim's lit windows at night can only come from the source. Both
+colours are black by day for the window regions.
+
+A target that is missing, deleted, not a `LIGH` or `REGN`, or whose weather has no Effect Lighting
+colour gets no row and a warning; the runtime then keeps the model's own emission. The movement
+annotator's subset export does not touch this table.
+
+Measured on Skyrim SE with its official plugins: 9,655 references carry `XEMI`, naming 211
+sources. 166 lights and 31 regions resolve; 14 regions list no weather at all (the largest,
+`RiverwoodMountainsSnow` `0002E2CC`, is named by 479 references), and what Skyrim lends from such
+a region is unverified, so their 651 references keep the model's emission.
+
+```sql
+CREATE TABLE IF NOT EXISTS emittance (
+    id INTEGER PRIMARY KEY,        -- XEMI target: a LIGH or REGN FormID
+    source_type TEXT NOT NULL,     -- 'LIGH' or 'REGN'
+    weather_id INTEGER,            -- REGN: the WTHR its colours come from
+    sunrise_r INTEGER NOT NULL, sunrise_g INTEGER NOT NULL, sunrise_b INTEGER NOT NULL,
+    day_r INTEGER NOT NULL, day_g INTEGER NOT NULL, day_b INTEGER NOT NULL,
+    sunset_r INTEGER NOT NULL, sunset_g INTEGER NOT NULL, sunset_b INTEGER NOT NULL,
+    night_r INTEGER NOT NULL, night_g INTEGER NOT NULL, night_b INTEGER NOT NULL
+);
+```
+
+The engine reads the day columns, its one time of day; see
+[`color-pipeline.md`](../engine/color-pipeline.md#external-emittance-242).
+
+**The table and `references.emittance_id` are optional and did not bump
+`shared::WORLD_DATABASE_SCHEMA_VERSION`**, for the same reason as the room tables: they only add a
+table and a column, and the engine probes for both. `create_tables` adds `emittance_id` to an older
+reused `references` table. A database without them loads with every reference unlit by `XEMI`, so
+`External_Emittance` surfaces keep the model's own emission.
+
+---
+
+### 17. Load Door Links (`door_links`)
+
+A load door is a `REFR` of a `DOOR` base record that carries an `XTEL` subrecord. `XTEL` is 32
+bytes in Skyrim SE: the destination door reference (FormID, bytes 0..4), the arrival position
+(three `f32`, bytes 4..16), the arrival rotation (three `f32` radians, bytes 16..28) and a `u32`
+flags word (bytes 28..32, `1` = no alarm). The arrival frame is the one the player is placed in
+on this side's destination, not the position of the destination door. Both record readers keep
+the 32 bytes unchanged in `records.data` and remap the destination FormID with the load order
+(`form_id_layout` in `crates/converter/src/esm/mod.rs`; the in-house schema describes the
+subrecord as `teleport` in `crates/converter/src/records/schema.json`). The `door_links` table is
+projected from those canonical `records` and `references` rows, not from either reader, so the
+legacy and in-house frontends publish identical rows.
+
+```sql
+CREATE TABLE IF NOT EXISTS door_links (        -- one row per load door that can be followed
+    ref_id INTEGER PRIMARY KEY,                -- references.id of the door
+    destination_ref_id INTEGER NOT NULL,       -- XTEL[0..4], after FormID remapping
+    pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,   -- XTEL[4..16], Creation units
+    rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,   -- XTEL[16..28], radians
+    destination_cell_id INTEGER NOT NULL,      -- cells.id of the cell holding the destination door
+    destination_worldspace_id INTEGER,         -- that cell's worldspace, NULL for an interior
+    destination_name TEXT                      -- interior cell FULL (else EDID), or the worldspace EDID
+);
+```
+
+A door is skipped, with no row, when it has no `XTEL`, when the `XTEL` is not exactly 32 bytes,
+when the destination is `0`, when any arrival value is not finite, or when the destination door
+is not a placed `DOOR` reference in a stored cell (an exterior cell needs its grid). The winning
+record decides: an override that removes `XTEL` removes the link. The `XTEL` flags word is not
+projected; it stays in `records.data`.
+
+A full load-order export clears and rebuilds the table on every conversion, like the grass and
+room tables. The movement-annotation subset export leaves it alone, and a diagnostic archive
+(which defers every runtime view) leaves it empty. `create_tables` adds the table to an older
+reused database, and adds `destination_name` to a table that predates it.
+`door-links-annotate <skyrim_world.db>` rebuilds it in one transaction from a converted
+database's own winning records, with no plugin reparsed, so an existing package gains doors
+without a full conversion. It takes the asset lock exclusively (close the engine first), accepts
+schemas 4 through the current one, and leaves meshes, terrain, `schema_info`, reader identity and
+the other tables unchanged. A corrupt `records` row fails the rebuild and keeps the old table.
+
+**This table is optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**, for the same
+reason as the room tables: it only adds a table, and the engine probes for it. The engine reads
+it through a `LEFT JOIN` on `references`, only when the table exists with every column above.
+
+| Case | Converter writes | Engine |
+|---|---|---|
+| Old database, table absent | n/a | logs once, doors stay scenery |
+| Table of another shape (missing column) | n/a | warns, doors stay scenery |
+| Door without `XTEL`, or with a malformed one | no row | scenery |
+| Destination cell has no resolvable record | no row | scenery |
+| Row with a NULL arrival value | n/a | not a load door |

@@ -1,0 +1,2830 @@
+{
+  "version": 1,
+  "sources": {
+    "dialogue_xedit": {
+      "revision": "xedit-4.1.5f",
+      "facts_only": true,
+      "definition": "wbDefinitionsTES5.pas / wbDefinitionsCommon.pas"
+    }
+  },
+  "definitions": {},
+  "records": [
+    {
+      "signature": "QUST",
+      "source": "dialogue_xedit:TES5:11379-11650",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "DNAM",
+          "name": "quest_settings",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "flags",
+              "kind": "u16",
+              "offset": 0,
+              "flags": {
+                "1": "start_game_enabled",
+                "2": "completed",
+                "4": "add_idle_to_hello",
+                "8": "allow_repeated_stages",
+                "16": "starts_enabled",
+                "32": "display_in_hud",
+                "64": "failed",
+                "128": "stage_wait",
+                "256": "run_once",
+                "512": "exclude_dialogue_export",
+                "1024": "warn_alias_fill_failure",
+                "2048": "active",
+                "4096": "repeat_conditions",
+                "8192": "keep_instance",
+                "16384": "want_dormant",
+                "32768": "has_dialogue"
+              }
+            },
+            {
+              "name": "priority",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "form_version",
+              "kind": "u8",
+              "offset": 3
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 4,
+              "size": 4
+            },
+            {
+              "name": "quest_type",
+              "kind": "u32",
+              "offset": 8,
+              "enum": {
+                "0": "none",
+                "1": "main_quest",
+                "2": "mages_guild",
+                "3": "thieves_guild",
+                "4": "dark_brotherhood",
+                "5": "companions",
+                "6": "miscellaneous",
+                "7": "daedric",
+                "8": "side_quest",
+                "9": "civil_war",
+                "10": "dlc_vampire",
+                "11": "dlc_dragonborn"
+              }
+            }
+          ]
+        },
+        {
+          "signature": "ENAM",
+          "name": "quest_event",
+          "kind": "zstring",
+          "size": 4
+        },
+        {
+          "signature": "QTGL",
+          "name": "display_global",
+          "kind": "form_id",
+          "targets": [
+            "GLOB"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "FLTR",
+          "name": "object_window_filter",
+          "kind": "zstring"
+        },
+        {
+          "name": "dialogue_conditions",
+          "definition": "conditions"
+        },
+        {
+          "signature": "NEXT",
+          "name": "quest_condition_separator",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "name": "quest_conditions",
+          "definition": "conditions"
+        },
+        {
+          "name": "stages",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "INDX",
+              "name": "stage",
+              "kind": "struct",
+              "size": 4,
+              "members": [
+                {
+                  "name": "index",
+                  "kind": "u16",
+                  "offset": 0
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 2,
+                  "flags": {
+                    "2": "startup",
+                    "4": "shutdown",
+                    "8": "retain_instance"
+                  }
+                },
+                {
+                  "name": "unknown",
+                  "kind": "u8",
+                  "offset": 3
+                }
+              ]
+            },
+            {
+              "name": "log_entries",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "QSDT",
+                  "name": "log_flags",
+                  "kind": "u8",
+                  "flags": {
+                    "1": "complete_quest",
+                    "2": "fail_quest"
+                  }
+                },
+                {
+                  "name": "log_conditions",
+                  "definition": "conditions"
+                },
+                {
+                  "signature": "CNAM",
+                  "name": "log_text",
+                  "kind": "lstring",
+                  "string_table": "dlstrings"
+                },
+                {
+                  "signature": "NAM0",
+                  "name": "next_quest",
+                  "kind": "form_id",
+                  "targets": [
+                    "QUST"
+                  ]
+                },
+                {
+                  "signature": "SCHR",
+                  "name": "legacy_log_header",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCTX",
+                  "name": "legacy_log_script",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "QNAM",
+                  "name": "legacy_log_data",
+                  "kind": "bytes"
+                }
+              ],
+              "repeat": true
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "objectives",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "QOBJ",
+              "name": "objective_index",
+              "kind": "u16"
+            },
+            {
+              "signature": "FNAM",
+              "name": "objective_flags",
+              "kind": "u32",
+              "flags": {
+                "1": "or_with_previous"
+              }
+            },
+            {
+              "signature": "NNAM",
+              "name": "objective_text",
+              "kind": "lstring",
+              "string_table": "strings"
+            },
+            {
+              "name": "objective_targets",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "QSTA",
+                  "name": "objective_target",
+                  "kind": "struct",
+                  "size": 8,
+                  "members": [
+                    {
+                      "name": "alias",
+                      "kind": "i32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "flags",
+                      "kind": "u8",
+                      "offset": 4,
+                      "flags": {
+                        "1": "ignore_locks"
+                      }
+                    },
+                    {
+                      "name": "unused",
+                      "kind": "bytes",
+                      "offset": 5,
+                      "size": 3
+                    }
+                  ]
+                },
+                {
+                  "name": "objective_target_conditions",
+                  "definition": "conditions"
+                }
+              ],
+              "repeat": true
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "ANAM",
+          "name": "next_alias_id",
+          "kind": "u32"
+        },
+        {
+          "name": "aliases",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "ALST",
+              "name": "reference_alias_id",
+              "kind": "u32"
+            },
+            {
+              "signature": "ALLS",
+              "name": "location_alias_id",
+              "kind": "u32"
+            },
+            {
+              "signature": "ALID",
+              "name": "alias_name",
+              "kind": "zstring"
+            },
+            {
+              "signature": "FNAM",
+              "name": "alias_flags",
+              "kind": "struct",
+              "sizes": [
+                2,
+                4
+              ],
+              "members": [
+                {
+                  "name": "flags",
+                  "kind": "u16",
+                  "offset": 0,
+                  "flags": {
+                    "1": "reserve",
+                    "2": "optional",
+                    "4": "quest_object",
+                    "8": "allow_reuse",
+                    "16": "allow_dead",
+                    "32": "loaded_area",
+                    "64": "essential",
+                    "128": "allow_disabled",
+                    "256": "store_text",
+                    "512": "allow_reserved",
+                    "1024": "protected",
+                    "2048": "forced_by_aliases",
+                    "4096": "allow_destroyed",
+                    "8192": "closest_reference",
+                    "16384": "use_stored_text",
+                    "32768": "initially_disabled"
+                  }
+                },
+                {
+                  "name": "additional_flags",
+                  "kind": "u16",
+                  "offset": 2,
+                  "optional": true,
+                  "flags": {
+                    "1": "allow_cleared",
+                    "2": "clear_names_when_removed"
+                  }
+                }
+              ]
+            },
+            {
+              "signature": "ALFI",
+              "name": "force_into_alias",
+              "kind": "i32"
+            },
+            {
+              "signature": "ALFL",
+              "name": "specific_location",
+              "kind": "form_id",
+              "targets": [
+                "LCTN"
+              ]
+            },
+            {
+              "signature": "ALFR",
+              "name": "forced_reference",
+              "kind": "form_id",
+              "targets": [
+                "*"
+              ]
+            },
+            {
+              "signature": "ALUA",
+              "name": "unique_actor",
+              "kind": "form_id",
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "location_alias_reference",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ALFA",
+                  "name": "location_alias",
+                  "kind": "i32"
+                },
+                {
+                  "signature": "KNAM",
+                  "name": "location_keyword",
+                  "kind": "form_id",
+                  "targets": [
+                    "KYWD"
+                  ]
+                },
+                {
+                  "signature": "ALRT",
+                  "name": "location_reference_type",
+                  "kind": "form_id",
+                  "targets": [
+                    "LCRT"
+                  ]
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "external_alias_reference",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ALEQ",
+                  "name": "external_quest",
+                  "kind": "form_id",
+                  "targets": [
+                    "QUST"
+                  ]
+                },
+                {
+                  "signature": "ALEA",
+                  "name": "external_alias",
+                  "kind": "i32"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "created_reference",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ALCO",
+                  "name": "created_object",
+                  "kind": "form_id",
+                  "targets": [
+                    "*"
+                  ]
+                },
+                {
+                  "signature": "ALCA",
+                  "name": "creation_alias",
+                  "kind": "struct",
+                  "size": 4,
+                  "members": [
+                    {
+                      "name": "alias",
+                      "kind": "i16",
+                      "offset": 0
+                    },
+                    {
+                      "name": "create",
+                      "kind": "u16",
+                      "offset": 2,
+                      "enum": {
+                        "0": "at",
+                        "32768": "in"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "signature": "ALCL",
+                  "name": "creation_level",
+                  "kind": "u32",
+                  "enum": {
+                    "0": "easy",
+                    "1": "medium",
+                    "2": "hard",
+                    "3": "very_hard",
+                    "4": "none"
+                  }
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "near_alias",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ALNA",
+                  "name": "near_alias",
+                  "kind": "i32"
+                },
+                {
+                  "signature": "ALNT",
+                  "name": "near_alias_type",
+                  "kind": "u32"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "event_alias",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "ALFE",
+                  "name": "alias_event",
+                  "kind": "zstring",
+                  "size": 4
+                },
+                {
+                  "signature": "ALFD",
+                  "name": "alias_event_data",
+                  "kind": "bytes"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "alias_conditions",
+              "definition": "conditions"
+            },
+            {
+              "signature": "KSIZ",
+              "name": "alias_keyword_count",
+              "kind": "u32"
+            },
+            {
+              "signature": "KWDA",
+              "name": "alias_keywords",
+              "kind": "array",
+              "count": {
+                "kind": "remaining",
+                "stride": 4
+              },
+              "members": [
+                {
+                  "name": "value",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "KYWD"
+                  ]
+                }
+              ]
+            },
+            {
+              "signature": "COCT",
+              "name": "alias_item_count",
+              "kind": "u32"
+            },
+            {
+              "name": "alias_inventory",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "CNTO",
+                  "name": "alias_item",
+                  "kind": "struct",
+                  "size": 8,
+                  "members": [
+                    {
+                      "name": "item",
+                      "kind": "form_id",
+                      "offset": 0,
+                      "targets": [
+                        "*"
+                      ]
+                    },
+                    {
+                      "name": "count",
+                      "kind": "i32",
+                      "offset": 4
+                    }
+                  ]
+                },
+                {
+                  "signature": "COED",
+                  "definition": "inventory_extra"
+                }
+              ],
+              "repeat": true
+            },
+            {
+              "signature": "SPOR",
+              "name": "spectator_packages",
+              "kind": "form_id",
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "signature": "OCOR",
+              "name": "dead_body_packages",
+              "kind": "form_id",
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "signature": "GWOR",
+              "name": "guard_warning_packages",
+              "kind": "form_id",
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "signature": "ECOR",
+              "name": "combat_packages",
+              "kind": "form_id",
+              "targets": [
+                "FLST"
+              ]
+            },
+            {
+              "signature": "ALDN",
+              "name": "alias_display_name",
+              "kind": "form_id",
+              "targets": [
+                "MESG"
+              ]
+            },
+            {
+              "signature": "ALSP",
+              "name": "alias_spell",
+              "kind": "form_id",
+              "targets": [
+                "SPEL"
+              ],
+              "repeat": true
+            },
+            {
+              "signature": "ALFC",
+              "name": "alias_faction",
+              "kind": "form_id",
+              "targets": [
+                "FACT"
+              ],
+              "repeat": true
+            },
+            {
+              "signature": "ALPC",
+              "name": "alias_package",
+              "kind": "form_id",
+              "targets": [
+                "PACK"
+              ],
+              "repeat": true
+            },
+            {
+              "signature": "VTCK",
+              "name": "alias_voice_types",
+              "kind": "form_id",
+              "targets": [
+                "NPC_",
+                "FLST",
+                "NULL"
+              ]
+            },
+            {
+              "signature": "ALED",
+              "name": "alias_end",
+              "kind": "bytes",
+              "size": 0
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "NNAM",
+          "name": "quest_description",
+          "kind": "zstring"
+        },
+        {
+          "name": "quest_targets",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "QSTA",
+              "name": "quest_target",
+              "kind": "struct",
+              "size": 8,
+              "members": [
+                {
+                  "name": "reference",
+                  "kind": "form_id",
+                  "offset": 0,
+                  "targets": [
+                    "ACHR",
+                    "REFR",
+                    "PGRE",
+                    "PHZD",
+                    "PMIS",
+                    "PARW",
+                    "PBAR",
+                    "PBEA",
+                    "PCON",
+                    "PFLA"
+                  ]
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 4,
+                  "flags": {
+                    "1": "ignore_locks"
+                  }
+                },
+                {
+                  "name": "unknown",
+                  "kind": "bytes",
+                  "offset": 5,
+                  "size": 3
+                }
+              ]
+            },
+            {
+              "name": "quest_target_conditions",
+              "definition": "conditions"
+            }
+          ],
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "signature": "DIAL",
+      "source": "dialogue_xedit:TES5:6916-7068;Common:803-820",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "PNAM",
+          "name": "priority",
+          "kind": "f32"
+        },
+        {
+          "signature": "BNAM",
+          "name": "branch",
+          "kind": "form_id",
+          "targets": [
+            "DLBR",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "QNAM",
+          "name": "quest",
+          "kind": "form_id",
+          "targets": [
+            "QUST",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "topic_data",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 0,
+              "flags": {
+                "1": "all_before_repeating"
+              }
+            },
+            {
+              "name": "category",
+              "kind": "u8",
+              "offset": 1,
+              "enum": {
+                "0": "topic",
+                "1": "favor",
+                "2": "scene",
+                "3": "combat",
+                "4": "favors",
+                "5": "detection",
+                "6": "service",
+                "7": "miscellaneous"
+              }
+            },
+            {
+              "name": "subtype",
+              "kind": "u16",
+              "offset": 2,
+              "enum": {
+                "0": "custom",
+                "1": "force_greet",
+                "2": "rumors",
+                "3": "custom_variant",
+                "4": "intimidate",
+                "5": "flatter",
+                "6": "bribe",
+                "7": "ask_gift",
+                "8": "gift",
+                "9": "ask_favor",
+                "10": "favor",
+                "11": "show_relationships",
+                "12": "follow",
+                "13": "reject",
+                "14": "scene",
+                "15": "show",
+                "16": "agree",
+                "17": "refuse",
+                "18": "exit_favor_state",
+                "19": "moral_refusal",
+                "20": "flying_mount_land",
+                "21": "flying_mount_cancel_land",
+                "22": "flying_mount_accept_target",
+                "23": "flying_mount_reject_target",
+                "24": "flying_mount_no_target",
+                "25": "flying_mount_destination_reached",
+                "26": "attack",
+                "27": "power_attack",
+                "28": "bash",
+                "29": "hit",
+                "30": "flee",
+                "31": "bleedout",
+                "32": "avoid_threat",
+                "33": "death",
+                "34": "group_strategy",
+                "35": "block",
+                "36": "taunt",
+                "37": "ally_killed",
+                "38": "steal",
+                "39": "yield",
+                "40": "accept_yield",
+                "41": "pickpocket_combat",
+                "42": "assault",
+                "43": "murder",
+                "44": "assault_no_crime",
+                "45": "murder_no_crime",
+                "46": "pickpocket_no_crime",
+                "47": "steal_from_no_crime",
+                "48": "trespass_against_no_crime",
+                "49": "trespass",
+                "50": "werewolf_transform_crime",
+                "51": "voice_power_start_short",
+                "52": "voice_power_start_long",
+                "53": "voice_power_end_short",
+                "54": "voice_power_end_long",
+                "55": "alert_idle",
+                "56": "lost_idle",
+                "57": "normal_to_alert",
+                "58": "alert_to_combat",
+                "59": "normal_to_combat",
+                "60": "alert_to_normal",
+                "61": "combat_to_normal",
+                "62": "combat_to_lost",
+                "63": "lost_to_normal",
+                "64": "lost_to_combat",
+                "65": "detect_friend_die",
+                "66": "service_refusal",
+                "67": "repair",
+                "68": "travel",
+                "69": "training",
+                "70": "barter_exit",
+                "71": "repair_exit",
+                "72": "recharge",
+                "73": "recharge_exit",
+                "74": "training_exit",
+                "75": "observe_combat",
+                "76": "notice_corpse",
+                "77": "time_to_go",
+                "78": "goodbye",
+                "79": "hello",
+                "80": "swing_melee_weapon",
+                "81": "shoot_bow",
+                "82": "z_key_object",
+                "83": "jump",
+                "84": "knock_over_object",
+                "85": "destroy_object",
+                "86": "stand_on_furniture",
+                "87": "locked_object",
+                "88": "pickpocket_topic",
+                "89": "pursue_idle_topic",
+                "90": "shared_info",
+                "91": "player_cast_projectile_spell",
+                "92": "player_cast_self_spell",
+                "93": "player_shout",
+                "94": "idle",
+                "95": "enter_sprint_breath",
+                "96": "enter_bow_zoom_breath",
+                "97": "exit_bow_zoom_breath",
+                "98": "actor_collide_with_actor",
+                "99": "player_in_iron_sights",
+                "100": "out_of_breath",
+                "101": "combat_grunt",
+                "102": "leave_water_breath"
+              }
+            }
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "subtype_name",
+          "kind": "u32"
+        },
+        {
+          "signature": "TIFC",
+          "name": "info_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "INOM",
+          "name": "editor_master_info_order",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "global_info_id",
+              "kind": "u32",
+              "offset": 0
+            }
+          ],
+          "source": "dialogue_xedit:Common:803-811 editor-only nonserialized load-order IDs; not file-relative links"
+        },
+        {
+          "signature": "INOA",
+          "name": "editor_previous_info_order",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "global_info_id",
+              "kind": "u32",
+              "offset": 0
+            }
+          ],
+          "source": "dialogue_xedit:Common:812-820 editor-only nonserialized load-order IDs; not file-relative links"
+        }
+      ]
+    },
+    {
+      "signature": "INFO",
+      "source": "dialogue_xedit:TES5:10256-10332",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "DATA",
+          "name": "unknown_data",
+          "kind": "bytes"
+        },
+        {
+          "signature": "ENAM",
+          "name": "response_flags",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "flags",
+              "kind": "u16",
+              "offset": 0,
+              "flags": {
+                "1": "goodbye",
+                "2": "random",
+                "4": "say_once",
+                "8": "requires_player_activation",
+                "16": "refusal",
+                "32": "random_end",
+                "64": "invisible_continue",
+                "128": "walk_away",
+                "256": "walk_away_invisible_menu",
+                "512": "force_subtitle",
+                "1024": "move_while_greeting",
+                "2048": "no_lip_file",
+                "4096": "requires_post_processing",
+                "8192": "audio_output_override",
+                "16384": "spend_favor_points",
+                "32768": "unknown_16"
+              }
+            },
+            {
+              "name": "reset_hours_encoded",
+              "kind": "u16",
+              "offset": 2
+            }
+          ]
+        },
+        {
+          "signature": "TPIC",
+          "name": "topic",
+          "kind": "form_id",
+          "targets": [
+            "DIAL"
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "previous_info",
+          "kind": "form_id",
+          "targets": [
+            "INFO",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "CNAM",
+          "name": "favor_level",
+          "kind": "u8",
+          "enum": {
+            "0": "none",
+            "1": "small",
+            "2": "medium",
+            "3": "large"
+          }
+        },
+        {
+          "signature": "TCLT",
+          "name": "linked_response",
+          "kind": "form_id",
+          "targets": [
+            "DIAL",
+            "INFO",
+            "NULL"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "DNAM",
+          "name": "response_data",
+          "kind": "form_id",
+          "targets": [
+            "*"
+          ]
+        },
+        {
+          "name": "responses",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "TRDT",
+              "name": "response",
+              "kind": "struct",
+              "size": 24,
+              "members": [
+                {
+                  "name": "emotion_type",
+                  "kind": "u32",
+                  "offset": 0,
+                  "enum": {
+                    "0": "neutral",
+                    "1": "anger",
+                    "2": "disgust",
+                    "3": "fear",
+                    "4": "sadness",
+                    "5": "happiness",
+                    "6": "surprise",
+                    "7": "puzzled"
+                  }
+                },
+                {
+                  "name": "emotion_value",
+                  "kind": "u32",
+                  "offset": 4
+                },
+                {
+                  "name": "unused_a",
+                  "kind": "bytes",
+                  "offset": 8,
+                  "size": 4
+                },
+                {
+                  "name": "number",
+                  "kind": "u8",
+                  "offset": 12
+                },
+                {
+                  "name": "unused_b",
+                  "kind": "bytes",
+                  "offset": 13,
+                  "size": 3
+                },
+                {
+                  "name": "sound",
+                  "kind": "form_id",
+                  "offset": 16,
+                  "targets": [
+                    "SNDR",
+                    "NULL"
+                  ]
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 20,
+                  "flags": {
+                    "1": "use_emotion_animation"
+                  }
+                },
+                {
+                  "name": "unused_c",
+                  "kind": "bytes",
+                  "offset": 21,
+                  "size": 3
+                }
+              ]
+            },
+            {
+              "signature": "NAM1",
+              "name": "response_text",
+              "kind": "lstring",
+              "string_table": "ilstrings"
+            },
+            {
+              "signature": "NAM2",
+              "name": "script_notes",
+              "kind": "zstring"
+            },
+            {
+              "signature": "NAM3",
+              "name": "edits",
+              "kind": "zstring"
+            },
+            {
+              "signature": "SNAM",
+              "name": "speaker_idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            },
+            {
+              "signature": "LNAM",
+              "name": "listener_idle",
+              "kind": "form_id",
+              "targets": [
+                "IDLE"
+              ]
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "response_conditions",
+          "definition": "conditions"
+        },
+        {
+          "name": "legacy_response",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "SCHR",
+              "name": "legacy_response_header",
+              "kind": "bytes"
+            },
+            {
+              "signature": "QNAM",
+              "name": "legacy_response_link",
+              "kind": "form_id",
+              "targets": [
+                "*"
+              ]
+            },
+            {
+              "signature": "NEXT",
+              "name": "legacy_response_end",
+              "kind": "bytes",
+              "size": 0
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "RNAM",
+          "name": "prompt",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "ANAM",
+          "name": "speaker",
+          "kind": "form_id",
+          "targets": [
+            "NPC_"
+          ]
+        },
+        {
+          "signature": "TWAT",
+          "name": "walk_away_topic",
+          "kind": "form_id",
+          "targets": [
+            "DIAL"
+          ]
+        },
+        {
+          "signature": "ONAM",
+          "name": "audio_output",
+          "kind": "form_id",
+          "targets": [
+            "SOPM"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "DLBR",
+      "source": "dialogue_xedit:TES5:9634-9648",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "QNAM",
+          "name": "quest",
+          "kind": "form_id",
+          "targets": [
+            "QUST"
+          ]
+        },
+        {
+          "signature": "TNAM",
+          "name": "category",
+          "kind": "u32",
+          "enum": {
+            "0": "player",
+            "1": "command"
+          }
+        },
+        {
+          "signature": "DNAM",
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "top_level",
+            "2": "blocking",
+            "4": "exclusive"
+          }
+        },
+        {
+          "signature": "SNAM",
+          "name": "starting_topic",
+          "kind": "form_id",
+          "targets": [
+            "DIAL"
+          ]
+        }
+      ]
+    },
+    {
+      "signature": "DLVW",
+      "source": "dialogue_xedit:TES5:9671-9690",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "QNAM",
+          "name": "quest",
+          "kind": "form_id",
+          "targets": [
+            "QUST"
+          ]
+        },
+        {
+          "signature": "BNAM",
+          "name": "branch",
+          "kind": "form_id",
+          "targets": [
+            "DLBR"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "TNAM",
+          "name": "topic",
+          "kind": "form_id",
+          "targets": [
+            "DIAL"
+          ],
+          "repeat": true
+        },
+        {
+          "signature": "ENAM",
+          "name": "category",
+          "kind": "u32",
+          "enum": {
+            "0": "branches",
+            "7": "topics"
+          }
+        },
+        {
+          "signature": "DNAM",
+          "name": "show_all_text",
+          "kind": "u8"
+        }
+      ]
+    },
+    {
+      "signature": "SCEN",
+      "source": "dialogue_xedit:TES5:9754-9949",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "VMAD",
+          "definition": "vmad"
+        },
+        {
+          "signature": "FNAM",
+          "name": "scene_flags",
+          "kind": "u32",
+          "flags": {
+            "1": "begin_on_quest_start",
+            "2": "stop_quest_on_end",
+            "4": "show_all_text",
+            "8": "repeat_conditions",
+            "16": "interruptible"
+          }
+        },
+        {
+          "name": "phases",
+          "kind": "group",
+          "repeat_terminated": true,
+          "fields": [
+            {
+              "signature": "HNAM",
+              "name": "phase_start",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "signature": "NAM0",
+              "name": "phase_name",
+              "kind": "zstring"
+            },
+            {
+              "name": "phase_start_conditions",
+              "definition": "conditions"
+            },
+            {
+              "signature": "NEXT",
+              "name": "phase_condition_separator",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "name": "phase_completion_conditions",
+              "definition": "conditions"
+            },
+            {
+              "name": "legacy_phase_completion",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "SCHR",
+                  "name": "legacy_phase_completion_schr",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCDA",
+                  "name": "legacy_phase_completion_scda",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCTX",
+                  "name": "legacy_phase_completion_sctx",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "QNAM",
+                  "name": "legacy_phase_completion_qnam",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCRO",
+                  "name": "legacy_phase_completion_scro",
+                  "kind": "bytes"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "signature": "NEXT",
+              "name": "phase_script_separator",
+              "kind": "bytes",
+              "size": 0
+            },
+            {
+              "name": "legacy_phase_end",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "SCHR",
+                  "name": "legacy_phase_end_schr",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCDA",
+                  "name": "legacy_phase_end_scda",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCTX",
+                  "name": "legacy_phase_end_sctx",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "QNAM",
+                  "name": "legacy_phase_end_qnam",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCRO",
+                  "name": "legacy_phase_end_scro",
+                  "kind": "bytes"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "signature": "WNAM",
+              "name": "phase_editor_width",
+              "kind": "u32"
+            },
+            {
+              "signature": "HNAM",
+              "name": "phase_end",
+              "kind": "bytes",
+              "size": 0
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "actors",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "ALID",
+              "name": "actor_alias",
+              "kind": "u32"
+            },
+            {
+              "signature": "LNAM",
+              "name": "actor_flags",
+              "kind": "u32",
+              "flags": {
+                "1": "no_player_activation",
+                "2": "optional"
+              }
+            },
+            {
+              "signature": "DNAM",
+              "name": "actor_behavior_flags",
+              "kind": "u32",
+              "flags": {
+                "1": "death_pause_unused",
+                "2": "death_end",
+                "4": "combat_pause",
+                "8": "combat_end",
+                "16": "dialogue_pause",
+                "32": "dialogue_end",
+                "64": "observe_combat_pause",
+                "128": "observe_combat_end"
+              }
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "actions",
+          "kind": "group",
+          "repeat_terminated": true,
+          "fields": [
+            {
+              "signature": "ANAM",
+              "name": "action_type",
+              "kind": "u16",
+              "enum": {
+                "0": "dialogue",
+                "1": "package",
+                "2": "timer"
+              }
+            },
+            {
+              "signature": "NAM0",
+              "name": "action_name",
+              "kind": "zstring"
+            },
+            {
+              "signature": "ALID",
+              "name": "action_actor_alias",
+              "kind": "i32"
+            },
+            {
+              "signature": "LNAM",
+              "name": "action_unknown",
+              "kind": "bytes"
+            },
+            {
+              "signature": "INAM",
+              "name": "action_index",
+              "kind": "u32"
+            },
+            {
+              "signature": "FNAM",
+              "name": "action_flags",
+              "kind": "u32",
+              "flags": {
+                "32768": "face_target",
+                "65536": "loop",
+                "131072": "headtrack_player"
+              }
+            },
+            {
+              "signature": "SNAM",
+              "name": "action_start_phase",
+              "kind": "u32"
+            },
+            {
+              "signature": "ENAM",
+              "name": "action_end_phase",
+              "kind": "u32"
+            },
+            {
+              "name": "dialogue_action",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "DATA",
+                  "name": "action_topic",
+                  "kind": "form_id",
+                  "targets": [
+                    "DIAL",
+                    "NULL"
+                  ]
+                },
+                {
+                  "signature": "HTID",
+                  "name": "headtrack_actor_alias",
+                  "kind": "i32"
+                },
+                {
+                  "signature": "DMAX",
+                  "name": "loop_max",
+                  "kind": "f32"
+                },
+                {
+                  "signature": "DMIN",
+                  "name": "loop_min",
+                  "kind": "f32"
+                },
+                {
+                  "signature": "DEMO",
+                  "name": "action_emotion_type",
+                  "kind": "u32",
+                  "enum": {
+                    "0": "neutral",
+                    "1": "anger",
+                    "2": "disgust",
+                    "3": "fear",
+                    "4": "sadness",
+                    "5": "happiness",
+                    "6": "surprise",
+                    "7": "puzzled"
+                  }
+                },
+                {
+                  "signature": "DEVA",
+                  "name": "action_emotion_value",
+                  "kind": "u32"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "signature": "PNAM",
+              "name": "action_package",
+              "kind": "form_id",
+              "targets": [
+                "PACK"
+              ],
+              "repeat": true
+            },
+            {
+              "signature": "SNAM",
+              "name": "timer_duration",
+              "kind": "f32"
+            },
+            {
+              "name": "legacy_action_script",
+              "kind": "group",
+              "fields": [
+                {
+                  "signature": "SCHR",
+                  "name": "legacy_action_script_schr",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCDA",
+                  "name": "legacy_action_script_scda",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCTX",
+                  "name": "legacy_action_script_sctx",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "QNAM",
+                  "name": "legacy_action_script_qnam",
+                  "kind": "bytes"
+                },
+                {
+                  "signature": "SCRO",
+                  "name": "legacy_action_script_scro",
+                  "kind": "bytes"
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "signature": "ANAM",
+              "name": "action_end",
+              "kind": "bytes",
+              "size": 0
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "legacy_scene_begin",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "SCHR",
+              "name": "legacy_scene_begin_schr",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCDA",
+              "name": "legacy_scene_begin_scda",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCTX",
+              "name": "legacy_scene_begin_sctx",
+              "kind": "bytes"
+            },
+            {
+              "signature": "QNAM",
+              "name": "legacy_scene_begin_qnam",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCRO",
+              "name": "legacy_scene_begin_scro",
+              "kind": "bytes"
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "signature": "NEXT",
+          "name": "scene_script_separator",
+          "kind": "bytes",
+          "size": 0
+        },
+        {
+          "name": "legacy_scene_end",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "SCHR",
+              "name": "legacy_scene_end_schr",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCDA",
+              "name": "legacy_scene_end_scda",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCTX",
+              "name": "legacy_scene_end_sctx",
+              "kind": "bytes"
+            },
+            {
+              "signature": "QNAM",
+              "name": "legacy_scene_end_qnam",
+              "kind": "bytes"
+            },
+            {
+              "signature": "SCRO",
+              "name": "legacy_scene_end_scro",
+              "kind": "bytes"
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "signature": "PNAM",
+          "name": "quest",
+          "kind": "form_id",
+          "targets": [
+            "QUST"
+          ]
+        },
+        {
+          "signature": "INAM",
+          "name": "last_action_index",
+          "kind": "u32"
+        },
+        {
+          "signature": "VNAM",
+          "name": "actor_behavior_settings",
+          "kind": "struct",
+          "size": 16,
+          "members": [
+            {
+              "name": "death",
+              "kind": "u32",
+              "offset": 0,
+              "enum": {
+                "0": "normal",
+                "2": "end",
+                "3": "unchanged"
+              }
+            },
+            {
+              "name": "combat",
+              "kind": "u32",
+              "offset": 4,
+              "enum": {
+                "0": "normal",
+                "1": "pause",
+                "2": "end",
+                "3": "unchanged"
+              }
+            },
+            {
+              "name": "dialogue",
+              "kind": "u32",
+              "offset": 8,
+              "enum": {
+                "0": "normal",
+                "1": "pause",
+                "2": "end",
+                "3": "unchanged"
+              }
+            },
+            {
+              "name": "observe_combat",
+              "kind": "u32",
+              "offset": 12,
+              "enum": {
+                "0": "normal",
+                "1": "pause",
+                "2": "end",
+                "3": "unchanged"
+              }
+            }
+          ]
+        },
+        {
+          "name": "scene_conditions",
+          "definition": "conditions"
+        }
+      ]
+    },
+    {
+      "signature": "SMBN",
+      "source": "dialogue_xedit:TES5:9585-9593",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "PNAM",
+          "name": "parent_node",
+          "kind": "form_id",
+          "targets": [
+            "SMQN",
+            "SMBN",
+            "SMEN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "previous_sibling",
+          "kind": "form_id",
+          "targets": [
+            "SMQN",
+            "SMBN",
+            "SMEN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "CITC",
+          "name": "condition_count",
+          "kind": "u32"
+        },
+        {
+          "name": "node_conditions",
+          "definition": "conditions"
+        },
+        {
+          "signature": "DNAM",
+          "name": "node_flags",
+          "kind": "u32",
+          "flags": {
+            "1": "random",
+            "2": "warn_no_quest_started"
+          }
+        },
+        {
+          "signature": "XNAM",
+          "name": "max_concurrent_quests",
+          "kind": "u32"
+        }
+      ]
+    },
+    {
+      "signature": "SMQN",
+      "source": "dialogue_xedit:TES5:9595-9617",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "PNAM",
+          "name": "parent_node",
+          "kind": "form_id",
+          "targets": [
+            "SMQN",
+            "SMBN",
+            "SMEN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "previous_sibling",
+          "kind": "form_id",
+          "targets": [
+            "SMQN",
+            "SMBN",
+            "SMEN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "CITC",
+          "name": "condition_count",
+          "kind": "u32"
+        },
+        {
+          "name": "node_conditions",
+          "definition": "conditions"
+        },
+        {
+          "signature": "DNAM",
+          "name": "node_flags",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "node_flags",
+              "kind": "u16",
+              "offset": 0,
+              "flags": {
+                "1": "random",
+                "2": "warn_no_quest_started"
+              }
+            },
+            {
+              "name": "quest_flags",
+              "kind": "u16",
+              "offset": 2,
+              "flags": {
+                "1": "all_before_repeating",
+                "2": "shares_event",
+                "4": "number_to_run"
+              }
+            }
+          ]
+        },
+        {
+          "signature": "XNAM",
+          "name": "max_concurrent_quests",
+          "kind": "u32"
+        },
+        {
+          "signature": "MNAM",
+          "name": "quests_to_run",
+          "kind": "u32"
+        },
+        {
+          "signature": "QNAM",
+          "name": "quest_count",
+          "kind": "u32"
+        },
+        {
+          "name": "quests",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "NNAM",
+              "name": "quest",
+              "kind": "form_id",
+              "targets": [
+                "QUST"
+              ]
+            },
+            {
+              "signature": "FNAM",
+              "name": "quest_flags",
+              "kind": "u32"
+            },
+            {
+              "signature": "RNAM",
+              "name": "reset_hours",
+              "kind": "f32"
+            }
+          ],
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "signature": "SMEN",
+      "source": "dialogue_xedit:TES5:9619-9630",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "PNAM",
+          "name": "parent_node",
+          "kind": "form_id",
+          "targets": [
+            "SMQN",
+            "SMBN",
+            "SMEN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "previous_sibling",
+          "kind": "form_id",
+          "targets": [
+            "SMQN",
+            "SMBN",
+            "SMEN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "CITC",
+          "name": "condition_count",
+          "kind": "u32"
+        },
+        {
+          "name": "node_conditions",
+          "definition": "conditions"
+        },
+        {
+          "signature": "DNAM",
+          "name": "node_flags",
+          "kind": "u32",
+          "flags": {
+            "1": "random",
+            "2": "warn_no_quest_started"
+          }
+        },
+        {
+          "signature": "XNAM",
+          "name": "max_concurrent_quests",
+          "kind": "u32"
+        },
+        {
+          "signature": "ENAM",
+          "name": "event_type",
+          "kind": "u32"
+        }
+      ]
+    },
+    {
+      "signature": "MESG",
+      "source": "dialogue_xedit:TES5:9081-9103",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "INAM",
+          "name": "unused_icon",
+          "kind": "form_id",
+          "targets": [
+            "NULL"
+          ]
+        },
+        {
+          "signature": "QNAM",
+          "name": "owner_quest",
+          "kind": "form_id",
+          "targets": [
+            "QUST"
+          ]
+        },
+        {
+          "signature": "DNAM",
+          "name": "message_flags",
+          "kind": "u32",
+          "flags": {
+            "1": "message_box",
+            "2": "auto_display"
+          }
+        },
+        {
+          "signature": "TNAM",
+          "name": "display_time",
+          "kind": "u32"
+        },
+        {
+          "name": "buttons",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "ITXT",
+              "name": "button_text",
+              "kind": "lstring",
+              "string_table": "strings"
+            },
+            {
+              "name": "button_conditions",
+              "definition": "conditions"
+            }
+          ],
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "signature": "LCTN",
+      "source": "dialogue_xedit:TES5:8847-8955;Common:1291-1303",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "ACPR",
+          "name": "added_persistent",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 12
+          },
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "world_or_cell",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "WRLD",
+                "CELL"
+              ]
+            },
+            {
+              "name": "grid_y",
+              "kind": "i16",
+              "offset": 8
+            },
+            {
+              "name": "grid_x",
+              "kind": "i16",
+              "offset": 10
+            }
+          ]
+        },
+        {
+          "signature": "LCPR",
+          "name": "master_persistent",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 12
+          },
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "world_or_cell",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "WRLD",
+                "CELL"
+              ]
+            },
+            {
+              "name": "grid_y",
+              "kind": "i16",
+              "offset": 8
+            },
+            {
+              "name": "grid_x",
+              "kind": "i16",
+              "offset": 10
+            }
+          ]
+        },
+        {
+          "signature": "RCPR",
+          "name": "removed_persistent",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ACHR",
+                "REFR"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "ACUN",
+          "name": "added_unique",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 12
+          },
+          "members": [
+            {
+              "name": "npc",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "actor_reference",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "ACHR"
+              ]
+            },
+            {
+              "name": "location",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "LCTN",
+                "NULL"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "LCUN",
+          "name": "master_unique",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 12
+          },
+          "members": [
+            {
+              "name": "npc",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "actor_reference",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "ACHR"
+              ]
+            },
+            {
+              "name": "location",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "LCTN",
+                "NULL"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "RCUN",
+          "name": "removed_unique",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "NPC_"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "ACSR",
+          "name": "added_special",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 16
+          },
+          "members": [
+            {
+              "name": "reference_type",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            },
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "world_or_cell",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "WRLD",
+                "CELL"
+              ]
+            },
+            {
+              "name": "grid_y",
+              "kind": "i16",
+              "offset": 12
+            },
+            {
+              "name": "grid_x",
+              "kind": "i16",
+              "offset": 14
+            }
+          ]
+        },
+        {
+          "signature": "LCSR",
+          "name": "master_special",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 16
+          },
+          "members": [
+            {
+              "name": "reference_type",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "LCRT"
+              ]
+            },
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "world_or_cell",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "WRLD",
+                "CELL"
+              ]
+            },
+            {
+              "name": "grid_y",
+              "kind": "i16",
+              "offset": 12
+            },
+            {
+              "name": "grid_x",
+              "kind": "i16",
+              "offset": 14
+            }
+          ]
+        },
+        {
+          "signature": "RCSR",
+          "name": "removed_special",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ACHR",
+                "REFR"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "ACEC",
+          "name": "added_world_cells",
+          "kind": "struct",
+          "repeat": true,
+          "members": [
+            {
+              "name": "world",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "WRLD"
+              ]
+            },
+            {
+              "name": "cells",
+              "kind": "array",
+              "offset": 4,
+              "count": {
+                "kind": "remaining",
+                "stride": 4
+              },
+              "members": [
+                {
+                  "name": "grid_y",
+                  "kind": "i16",
+                  "offset": 0
+                },
+                {
+                  "name": "grid_x",
+                  "kind": "i16",
+                  "offset": 2
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "LCEC",
+          "name": "master_world_cells",
+          "kind": "struct",
+          "repeat": true,
+          "members": [
+            {
+              "name": "world",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "WRLD"
+              ]
+            },
+            {
+              "name": "cells",
+              "kind": "array",
+              "offset": 4,
+              "count": {
+                "kind": "remaining",
+                "stride": 4
+              },
+              "members": [
+                {
+                  "name": "grid_y",
+                  "kind": "i16",
+                  "offset": 0
+                },
+                {
+                  "name": "grid_x",
+                  "kind": "i16",
+                  "offset": 2
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "RCEC",
+          "name": "removed_world_cells",
+          "kind": "struct",
+          "repeat": true,
+          "members": [
+            {
+              "name": "world",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "WRLD"
+              ]
+            },
+            {
+              "name": "cells",
+              "kind": "array",
+              "offset": 4,
+              "count": {
+                "kind": "remaining",
+                "stride": 4
+              },
+              "members": [
+                {
+                  "name": "grid_y",
+                  "kind": "i16",
+                  "offset": 0
+                },
+                {
+                  "name": "grid_x",
+                  "kind": "i16",
+                  "offset": 2
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "ACID",
+          "name": "added_disabled",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "LCID",
+          "name": "master_disabled",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "ACEP",
+          "name": "added_enable_points",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 12
+          },
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "enable_parent",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 8,
+              "flags": {
+                "1": "opposite_parent",
+                "2": "pop_in"
+              }
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 9,
+              "size": 3
+            }
+          ]
+        },
+        {
+          "signature": "LCEP",
+          "name": "master_enable_points",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 12
+          },
+          "members": [
+            {
+              "name": "reference",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "enable_parent",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "PLYR",
+                "ACHR",
+                "REFR",
+                "PGRE",
+                "PHZD",
+                "PMIS",
+                "PARW",
+                "PBAR",
+                "PBEA",
+                "PCON",
+                "PFLA"
+              ]
+            },
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 8,
+              "flags": {
+                "1": "opposite_parent",
+                "2": "pop_in"
+              }
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 9,
+              "size": 3
+            }
+          ]
+        },
+        {
+          "signature": "FULL",
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "value",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "parent_location",
+          "kind": "form_id",
+          "targets": [
+            "LCTN",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "NAM1",
+          "name": "music",
+          "kind": "form_id",
+          "targets": [
+            "MUSC",
+            "NULL"
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "unreported_crime_faction",
+          "kind": "form_id",
+          "targets": [
+            "FACT"
+          ]
+        },
+        {
+          "signature": "MNAM",
+          "name": "world_marker",
+          "kind": "form_id",
+          "targets": [
+            "REFR",
+            "ACHR"
+          ]
+        },
+        {
+          "signature": "RNAM",
+          "name": "world_radius",
+          "kind": "f32"
+        },
+        {
+          "signature": "NAM0",
+          "name": "horse_marker",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ]
+        },
+        {
+          "signature": "CNAM",
+          "name": "color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "alpha",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

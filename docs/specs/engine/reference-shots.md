@@ -9,6 +9,14 @@ rather than a vague impression.
 engine --assets <converted assets> --shots review/riverwood.json [--shots-out review/out]
 ```
 
+Add `--hidden-window` to render and capture without displaying a game window.
+The primary window starts with visibility disabled and keeps rendering in the
+background; screenshots still read the same render target. This option also
+works with benchmark `--acceptance-screenshot` captures. It keeps an actual
+rendering window, whereas `--headless` normally removes that window. When both
+are supplied, `--hidden-window` retains the hidden render target. Hidden runs
+do not capture interactive mouse/controller input.
+
 ## The shots file
 
 ```json
