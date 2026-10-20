@@ -352,6 +352,18 @@ pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
     schema == current || matches!((schema, current), (24, 26) | (27, 28))
 }
 
+/// Named changes to converted mesh bytes made without advancing `CONVERTER_SCHEMA_VERSION`.
+/// Each name enters the current producer's mesh settings proof, so a normal conversion rebuilds
+/// meshes an earlier converter of the same producer wrote. Append a name per change, never
+/// rename or reorder one, and clear the list when the producer advances.
+pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[];
+
+/// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
+/// producers keep their recorded proofs; an empty list leaves every proof unchanged.
+pub(crate) fn mesh_output_contracts_apply(schema: u32) -> bool {
+    schema == CONVERTER_SCHEMA_VERSION && !MESH_OUTPUT_CONTRACTS.is_empty()
+}
+
 impl ConversionManifest {
     /// Load archive candidates independently of converted-output producer eligibility.
     pub fn load(path: &Path) -> Result<Self> {
@@ -581,7 +593,13 @@ pub fn asset_configuration_hash_for_schema(
     source_ext: &str,
 ) -> Result<String> {
     let mut relevant = match source_ext {
-        "nif" => serde_json::json!({"mesh_producer": schema}),
+        "nif" => {
+            let mut mesh = serde_json::json!({"mesh_producer": schema});
+            if mesh_output_contracts_apply(schema) {
+                mesh["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
+            }
+            mesh
+        }
         "dds" => serde_json::json!({
             "texture_producer": schema,
             "texture_etc1s_quality": config.texture_fallback_quality,
@@ -1952,6 +1970,49 @@ mod tests {
             assert!(!migrated.entries.contains_key("meshes/a.glb"));
             assert!(!migrated.entries.contains_key("textures/a.ktx2"));
             assert!(migrated.entries.contains_key("scripts/a.luau"));
+        }
+    }
+
+    /// The contract list is the only thing that may change a mesh proof at a fixed producer, so
+    /// an empty list has to leave the `nif` proof byte-identical and a historical producer's
+    /// proof untouched whatever the list says.
+    #[test]
+    fn mesh_output_contracts_enter_only_the_current_producers_mesh_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = crate::config::PipelineConfig::new(
+            directory.path().join("Data"),
+            directory.path().join("output"),
+        );
+        let plain = |schema: u32| {
+            hash_bytes(&serde_json::to_vec(&serde_json::json!({"mesh_producer": schema})).unwrap())
+        };
+        let nif =
+            |schema: u32| asset_configuration_hash_for_schema(&config, schema, "nif").unwrap();
+
+        assert_eq!(
+            mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION),
+            !MESH_OUTPUT_CONTRACTS.is_empty()
+        );
+        if MESH_OUTPUT_CONTRACTS.is_empty() {
+            assert_eq!(
+                nif(CONVERTER_SCHEMA_VERSION),
+                plain(CONVERTER_SCHEMA_VERSION),
+                "an empty contract list must not change the nif proof"
+            );
+        } else {
+            assert_ne!(
+                nif(CONVERTER_SCHEMA_VERSION),
+                plain(CONVERTER_SCHEMA_VERSION),
+                "a named contract must change the nif proof"
+            );
+        }
+        for schema in [12, 24, 26, 27] {
+            assert!(!mesh_output_contracts_apply(schema));
+            assert_eq!(
+                nif(schema),
+                plain(schema),
+                "schema {schema} gained a contract"
+            );
         }
     }
 
