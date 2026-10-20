@@ -9,7 +9,7 @@ use crate::{
         IngestionSelection, StagedOutput, StagingJournal, asset_configuration_hash_for_schema,
         can_reuse_meshes, can_reuse_scripts_and_archives, configuration_hash,
         configuration_hash_for_schema, current_configuration_hash_for_schema, hash_bytes,
-        hash_file, link_or_copy, load_staged_outputs,
+        hash_file, link_or_copy, load_staged_outputs, mesh_output_contracts_apply,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{
@@ -1539,6 +1539,9 @@ fn reusable_manifest(
         };
         let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
             recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
+        } else if kind == "nif" && mesh_output_contracts_apply(producer) {
+            // A combined proof predates the mesh output contracts and cannot establish them.
+            false
         } else {
             // Older manifests have one combined proof. Require an exact known
             // historical settings hash; an opaque stale schema cannot prove it.
@@ -4905,8 +4908,13 @@ mod tests {
             ..Default::default()
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
+        let mut eligible = manifest.entries.clone();
+        if crate::cache::mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION) {
+            // A combined proof cannot establish the current mesh output contracts.
+            eligible.remove("meshes/prior.nif");
+        }
         assert_eq!(
-            reused.entries, manifest.entries,
+            reused.entries, eligible,
             "metadata-only adapter identity must preserve eligible asset candidates"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
@@ -4931,6 +4939,66 @@ mod tests {
                 .entries
                 .is_empty()
         );
+    }
+
+    /// Meshes an earlier converter of the same producer wrote, before a mesh output contract,
+    /// rebuild from the published pack and from staging alike; textures and scripts stay reusable.
+    #[test]
+    fn meshes_from_before_a_mesh_output_contract_are_not_reused() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = PipelineConfig::new(
+            directory.path().join("Data"),
+            directory.path().join("output"),
+        );
+        assert!(!crate::cache::MESH_OUTPUT_CONTRACTS.is_empty());
+        let before = hash_bytes(
+            &serde_json::to_vec(&serde_json::json!({"mesh_producer": CONVERTER_SCHEMA_VERSION}))
+                .unwrap(),
+        );
+        let current = |kind| {
+            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, kind).unwrap()
+        };
+        assert_ne!(before, current("nif"));
+        let entry = |output: &str| CacheEntry {
+            source_hash: "source-proof".into(),
+            output: output.into(),
+            output_hash: "output-proof".into(),
+            output_size: 1,
+        };
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            entries: [
+                ("meshes/prior.nif".into(), entry("meshes/prior.glb")),
+                ("textures/prior.dds".into(), entry("textures/prior.ktx2")),
+                ("scripts/prior.pex".into(), entry("scripts/prior.luau")),
+            ]
+            .into(),
+            asset_configuration_hashes: [
+                ("nif".to_owned(), before.clone()),
+                ("dds".to_owned(), current("dds")),
+                ("pex".to_owned(), current("pex")),
+            ]
+            .into(),
+            complete: true,
+            ..Default::default()
+        };
+        let reused = reusable_manifest(&config, manifest).unwrap();
+        assert_eq!(
+            reused.entries.keys().collect::<Vec<_>>(),
+            ["scripts/prior.pex", "textures/prior.dds"]
+        );
+
+        let staged = directory.path().join("prior.glb");
+        fs::write(&staged, b"glb").unwrap();
+        let record = |configuration_hash: String| StagedOutput {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash,
+            source_hash: "source-proof".into(),
+            output_size: 3,
+            output_hash: hash_file(&staged).unwrap(),
+        };
+        assert!(!record(before).is_current(&staged, "source-proof", &current("nif")));
+        assert!(record(current("nif")).is_current(&staged, "source-proof", &current("nif")));
     }
 
     #[test]
