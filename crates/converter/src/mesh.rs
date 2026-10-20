@@ -92,6 +92,7 @@ impl MeshConverter {
     ) -> Result<()> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
+        let declares_skin = nif.declares_skin();
         let skeleton = if nif.has_skeleton() {
             let skeleton_path = skeleton_path.ok_or_else(|| {
                 color_eyre::eyre::eyre!(
@@ -112,6 +113,14 @@ impl MeshConverter {
                     Err(_) => format!("NIF model conversion panicked for {}", nif_path.display()),
                     Ok(Ok(_)) => unreachable!(),
                 };
+                // A declared skin is a contract with the renderer: publishing the
+                // static fallback instead would hand it a mesh that can never
+                // follow a bone. Surface the real conversion failure.
+                ensure!(
+                    !declares_skin,
+                    "NIF {} declares a skin, so the static fallback is not allowed: {primary_error}",
+                    nif_path.display()
+                );
                 let static_model = catch_unwind(AssertUnwindSafe(|| nif_to_static_model(&nif)))
                     .map_err(|_| color_eyre::eyre::eyre!("static NIF fallback panicked"))?
                     .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))
@@ -119,6 +128,18 @@ impl MeshConverter {
                 (static_model, true)
             }
         };
+        if declares_skin && model.skeletal_meshes.is_empty() {
+            let unclaimed = unclaimed_skin_instances(&nif, &model);
+            let detail = if unclaimed.is_empty() {
+                "no skin instance blocks are present".to_owned()
+            } else {
+                unclaimed.join("; ")
+            };
+            return Err(color_eyre::eyre::eyre!(
+                "NIF {} declares a skin but produced no skeletal mesh: {detail}; refusing to publish a static mesh",
+                nif_path.display()
+            ));
+        }
         model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
         model
             .validate()
@@ -131,12 +152,13 @@ impl MeshConverter {
             .into_owned();
         if model.static_meshes.is_empty() && model.skeletal_meshes.is_empty() {
             ensure!(
-                is_deferred_dynamic_mesh(nif_path)
-                    || is_geometry_template(&nif)
-                    || !diagnostics
-                        .block_types
-                        .keys()
-                        .any(|block_type| is_declared_geometry_block(block_type)),
+                !declares_skin
+                    && (is_deferred_dynamic_mesh(nif_path)
+                        || is_geometry_template(&nif)
+                        || !diagnostics
+                            .block_types
+                            .keys()
+                            .any(|block_type| is_declared_geometry_block(block_type))),
                 "NIF declares mesh geometry, but no supported geometry was converted"
             );
             let output = glb_output_path;
@@ -152,8 +174,16 @@ impl MeshConverter {
         }
         let output = glb_output_path;
         let mut glb = catch_unwind(AssertUnwindSafe(|| model.to_glb(name.clone())))
-            .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?;
+            .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?
+            .map_err(|error| {
+                color_eyre::eyre::eyre!("NIF {} GLB export failed: {error}", nif_path.display())
+            })?;
         if glb_bounds_from_bytes(&glb).is_err() && !used_static_fallback {
+            ensure!(
+                !declares_skin,
+                "NIF {} declares a skin but the exported GLB has invalid bounds; refusing the static fallback",
+                nif_path.display()
+            );
             let mut static_model = nif_to_static_model(&nif)
                 .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))?;
             static_model.scene_root_rotation =
@@ -164,7 +194,13 @@ impl MeshConverter {
                 "NIF contains no supported mesh geometry"
             );
             glb = catch_unwind(AssertUnwindSafe(|| static_model.to_glb(name)))
-                .map_err(|_| color_eyre::eyre::eyre!("static NIF GLB export panicked"))?;
+                .map_err(|_| color_eyre::eyre::eyre!("static NIF GLB export panicked"))?
+                .map_err(|error| {
+                    color_eyre::eyre::eyre!(
+                        "NIF {} static GLB export failed: {error}",
+                        nif_path.display()
+                    )
+                })?;
             model = static_model;
         }
         let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
@@ -207,7 +243,11 @@ impl MeshConverter {
             .map(|node| node.name.clone().unwrap_or_default())
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
-        write_glb_atomic(output, &embed_collision(glb, &collision)?)
+        let glb = embed_collision(glb, &collision)?;
+        if declares_skin {
+            validate_declared_skin_glb(&glb, nif_path)?;
+        }
+        write_glb_atomic(output, &glb)
     }
 
     /// Add NIF-authored collision to an already converted GLB without changing its render data.
@@ -887,6 +927,85 @@ fn empty_scene_glb(name: &str) -> Vec<u8> {
     glb
 }
 
+/// Fails when a NIF that declares a skin exports a GLB the renderer cannot bind:
+/// no `skins`, a skinned node with no mesh-bound skin, or a primitive missing the
+/// joint or weight attribute. This inspects the bytes actually written, not the
+/// in-memory model.
+fn validate_declared_skin_glb(glb: &[u8], path: &Path) -> Result<()> {
+    let document = glb_json_from_bytes(glb)
+        .wrap_err_with(|| format!("failed to inspect declared-skin GLB for {}", path.display()))?;
+    let skins = document
+        .get("skins")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    ensure!(
+        !skins.is_empty(),
+        "NIF {} declares a skin, but the exported GLB has no skins",
+        path.display()
+    );
+    let nodes = document
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let meshes = document
+        .get("meshes")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut skinned_meshes = BTreeSet::new();
+    for node in nodes {
+        if node.get("skin").is_none() {
+            continue;
+        }
+        let Some(mesh_index) = node.get("mesh").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        skinned_meshes.insert(mesh_index);
+        let mesh = meshes.get(mesh_index as usize).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "NIF {} declares a skin, but the exported GLB references missing mesh {mesh_index}",
+                path.display()
+            )
+        })?;
+        let primitives = mesh
+            .get("primitives")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        ensure!(
+            !primitives.is_empty(),
+            "NIF {} declares a skin, but exported mesh {mesh_index} has no primitives",
+            path.display()
+        );
+        for (primitive_index, primitive) in primitives.iter().enumerate() {
+            let attributes = primitive
+                .get("attributes")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "NIF {} declares a skin, but exported mesh {mesh_index} primitive {primitive_index} has no attributes",
+                        path.display()
+                    )
+                })?;
+            for semantic in ["JOINTS_0", "WEIGHTS_0"] {
+                ensure!(
+                    attributes.contains_key(semantic),
+                    "NIF {} declares a skin, but exported mesh {mesh_index} primitive {primitive_index} is missing {semantic}",
+                    path.display()
+                );
+            }
+        }
+    }
+    ensure!(
+        !skinned_meshes.is_empty(),
+        "NIF {} declares a skin, but no exported mesh is bound to a skin",
+        path.display()
+    );
+    Ok(())
+}
+
 fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
     ensure!(
         bytes.len() >= 20 && &bytes[..4] == b"glTF",
@@ -940,6 +1059,66 @@ fn glb_node_names(glb: &[u8]) -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// Names the skin instances no exported shape claimed, together with the
+/// geometry blocks that point at them. Built from the parsed blocks so a block
+/// type the exporter does not handle is named instead of hidden behind a
+/// generic "no skeletal mesh" message.
+fn unclaimed_skin_instances(
+    nif: &NifFile,
+    model: &project_wormhole_nif::model::all::Model,
+) -> Vec<String> {
+    let claimed: BTreeSet<u32> = model
+        .skeletal_meshes
+        .iter()
+        .filter_map(|mesh| mesh.source_block)
+        .collect();
+
+    let mut referencing: BTreeMap<u32, Vec<(u32, &'static str)>> = BTreeMap::new();
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let (skin, block_type) = match block {
+            NifBlock::BSTriShape(shape) => (shape.skin, "BSTriShape"),
+            NifBlock::BSDynamicTriShape(shape) => (shape.bs_tri_shape.skin, "BSDynamicTriShape"),
+            NifBlock::BSSubIndexTriShape(shape) => (shape.bs_tri_shape.skin, "BSSubIndexTriShape"),
+            NifBlock::BSLODTriShape(shape) => (shape.bs_tri_shape.skin, "BSLODTriShape"),
+            _ => continue,
+        };
+        referencing
+            .entry(skin)
+            .or_default()
+            .push((index as u32, block_type));
+    }
+
+    let mut unclaimed = Vec::new();
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let instance_type = match block {
+            NifBlock::BSSkinInstance(_) => "BSSkin::Instance",
+            NifBlock::NiSkinInstance(_) => "NiSkinInstance",
+            NifBlock::BsDismemberSkinInstance(_) => "BSDismemberSkinInstance",
+            _ => continue,
+        };
+        let index = index as u32;
+        if claimed.contains(&index) {
+            continue;
+        }
+        match referencing.get(&index) {
+            Some(shapes) if !shapes.is_empty() => {
+                let shapes = shapes
+                    .iter()
+                    .map(|(block, block_type)| format!("{block_type} {block}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                unclaimed.push(format!(
+                    "skin instance {index} ({instance_type}) is referenced by {shapes}, which the legacy exporter does not handle"
+                ));
+            }
+            _ => unclaimed.push(format!(
+                "skin instance {index} ({instance_type}) is not referenced by any shape block"
+            )),
+        }
+    }
+    unclaimed
+}
+
 fn exported_shape_blocks(
     nif: &NifFile,
     model: &project_wormhole_nif::model::all::Model,
@@ -961,28 +1140,59 @@ fn exported_shape_blocks(
         blocks.push(node.block_index);
     }
     if !model.skeletal_meshes.is_empty() {
-        let mut skeletal_blocks = Vec::new();
-        let predicates: [fn(&NifBlock) -> bool; 3] = [
-            |block: &NifBlock| matches!(block, NifBlock::BSTriShape(_)),
-            |block: &NifBlock| matches!(block, NifBlock::BSDynamicTriShape(_)),
-            |block: &NifBlock| matches!(block, NifBlock::BSSubIndexTriShape(_)),
-        ];
-        for predicate in predicates {
-            skeletal_blocks.extend(
-                nif.blocks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, block)| predicate(block))
-                    .map(|(index, _)| u32::try_from(index))
-                    .collect::<std::result::Result<Vec<_>, _>>()?,
-            );
-        }
-        ensure!(
-            skeletal_blocks.len() == model.skeletal_meshes.len(),
-            "skeletal mesh/material association is incomplete: {} meshes, {} source shapes",
-            model.skeletal_meshes.len(),
-            skeletal_blocks.len()
-        );
+        let source_blocks = model
+            .skeletal_meshes
+            .iter()
+            .map(|mesh| mesh.source_block)
+            .collect::<Option<Vec<_>>>();
+        let skeletal_blocks = match source_blocks {
+            Some(source_blocks) => {
+                let mut seen = BTreeSet::new();
+                for block in &source_blocks {
+                    ensure!(
+                        matches!(
+                            nif.blocks.get(*block as usize),
+                            Some(
+                                NifBlock::BSTriShape(_)
+                                    | NifBlock::BSDynamicTriShape(_)
+                                    | NifBlock::BSSubIndexTriShape(_)
+                            )
+                        ),
+                        "skeletal mesh source block {block} is not a skinned geometry block"
+                    );
+                    ensure!(
+                        seen.insert(*block),
+                        "two skeletal meshes claim source block {block}"
+                    );
+                }
+                source_blocks
+            }
+            None => {
+                let mut skeletal_blocks = Vec::new();
+                let predicates: [fn(&NifBlock) -> bool; 3] = [
+                    |block: &NifBlock| matches!(block, NifBlock::BSTriShape(_)),
+                    |block: &NifBlock| matches!(block, NifBlock::BSDynamicTriShape(_)),
+                    |block: &NifBlock| matches!(block, NifBlock::BSSubIndexTriShape(_)),
+                ];
+                for predicate in predicates {
+                    skeletal_blocks.extend(
+                        nif.blocks
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, block)| predicate(block))
+                            .map(|(index, _)| u32::try_from(index))
+                            .collect::<std::result::Result<Vec<_>, _>>()?,
+                    );
+                }
+                ensure!(
+                    skeletal_blocks.len() == model.skeletal_meshes.len(),
+                    "skeletal mesh/material association is incomplete: {} meshes, {} source shapes",
+                    model.skeletal_meshes.len(),
+                    skeletal_blocks.len()
+                );
+                skeletal_blocks
+            }
+        };
         blocks.extend(skeletal_blocks);
     }
     ensure!(
