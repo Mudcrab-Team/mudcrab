@@ -380,11 +380,12 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
     }
-    // Resolver values carry logical identity so shared content-addressed blobs
-    // cannot select the wrong archive provenance when verifying a dependency.
+    // Keys stay logical so the resolver returns a source identity, not a
+    // content-addressed blob two archives may share; values are readable paths
+    // so the skeleton index can parse them.
     let mesh_sources = sources
-        .keys()
-        .map(|key| (PathBuf::from(key), PathBuf::from(key)))
+        .iter()
+        .map(|(key, source)| (PathBuf::from(key), source.path.clone()))
         .collect();
     for extension in ["nif", "dds", "pex"] {
         let count = sources
@@ -730,20 +731,26 @@ fn attempt(
         let target = checked_destination(staged, &output)?;
         if ext == "nif" {
             let skeleton_key = crate::mesh::resolve_skeleton(Path::new(key), mesh_sources);
-            let skeleton = if let Some(dependency) = &skeleton_key {
-                let dependency_key = dependency
-                    .to_str()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("invalid skeleton key"))?;
-                let dependency_source = &sources[dependency_key];
-                source_hash.push(':');
-                source_hash.push_str(&verified_source_hash(
-                    dependency_source,
-                    dependency_key,
-                    verified,
-                )?);
-                Some(dependency_source.path.as_path())
-            } else {
-                None
+            let skeleton = match skeleton_key {
+                crate::mesh::SkeletonResolution::Skeleton(path) => {
+                    let dependency_key = path
+                        .to_str()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("invalid skeleton key"))?;
+                    let dependency_source = &sources[dependency_key];
+                    source_hash.push(':');
+                    source_hash.push_str(&verified_source_hash(
+                        dependency_source,
+                        dependency_key,
+                        verified,
+                    )?);
+                    Some(dependency_source.path.as_path())
+                }
+                crate::mesh::SkeletonResolution::SelfContained => None,
+                crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "NIF {key} declares skin joints no skeleton covers at 50% or more (best coverage {best_coverage:.2})"
+                    ));
+                }
             };
             MeshConverter::convert_nif_to_glb_with_skeleton(&source.path, &target, skeleton)?;
             MeshConverter::glb_texture_dependencies(&target)?;
@@ -1280,8 +1287,8 @@ mod tests {
             let staged = root.path().join(if loose { "loose" } else { "archived" });
             fs::create_dir(&staged).unwrap();
             let mesh_sources = sources
-                .keys()
-                .map(|key| (PathBuf::from(key), PathBuf::from(key)))
+                .iter()
+                .map(|(key, source)| (PathBuf::from(key), source.path.clone()))
                 .collect();
             let mut manifest = ConversionManifest::default();
             let mut report = RepairReport {

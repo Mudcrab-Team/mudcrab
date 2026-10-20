@@ -1822,6 +1822,10 @@ impl ConversionBatch<'_> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
+        // Parsing every skeleton once per run keeps the per-mesh resolution
+        // cheap; only the directory-union cache inside needs a lock.
+        let skeleton_index =
+            (source_kind == "nif").then(|| crate::mesh::SkeletonIndex::from_sources(&mesh_sources));
         let source_textures = texture_source_keys(self.staging, files);
         let etc1s_quality = self.config.texture_fallback_quality;
         let uastc_level = self.config.texture_uastc_level;
@@ -2014,7 +2018,42 @@ impl ConversionBatch<'_> {
                         }
 
                         let skeleton = if source_kind == "nif" {
-                            crate::mesh::resolve_skeleton(&relative, &mesh_sources)
+                            let resolution = crate::mesh::resolve_skeleton_with_index(
+                                &relative,
+                                &mesh_sources,
+                                skeleton_index
+                                    .as_ref()
+                                    .expect("a nif batch always builds a skeleton index"),
+                            );
+                            match resolution {
+                                crate::mesh::SkeletonResolution::Skeleton(key) => skeleton_index
+                                    .as_ref()
+                                    .and_then(|index| index.source_for(&key))
+                                    .map(Path::to_path_buf)
+                                    .or(Some(key)),
+                                crate::mesh::SkeletonResolution::SelfContained => None,
+                                crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
+                                    let err = eyre!(
+                                        "NIF {} declares skin joints no skeleton covers at 50% or more (best coverage {best_coverage:.2})",
+                                        relative.display()
+                                    );
+                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
+                                        Ok(()) => (err, false),
+                                        Err(remove_error) => (remove_error, true),
+                                    };
+                                    let _ = outcome_tx.send((
+                                        index,
+                                        key,
+                                        hash,
+                                        target_rel,
+                                        relative.clone(),
+                                        Err(err),
+                                        target,
+                                        fatal,
+                                    ));
+                                    return;
+                                }
+                            }
                         } else {
                             None
                         };

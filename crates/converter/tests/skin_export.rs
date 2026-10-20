@@ -1,7 +1,7 @@
 //! Legacy Skyrim skin export (#273 stage 1a): a NIF that declares a skin must
 //! either publish a skinned GLB or fail, never a static fallback.
 
-use converter::mesh::MeshConverter;
+use converter::mesh::{MeshConverter, SkeletonResolution, find_skeleton};
 use dummy_content::nif::{
     BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, StaticShape,
     legacy_dynamic_skinned_shape, legacy_lod_skinned_shape, legacy_nested_skinned_shape,
@@ -12,7 +12,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, Once, OnceLock},
 };
 
 const BONE_TRANSFORMS: [([f32; 3], [f32; 4], f32); 2] = [
@@ -724,6 +724,296 @@ fn legacy_skin_binds_missing_ancestors_under_the_skeleton_bone() {
 
 fn actor_root() -> Option<PathBuf> {
     std::env::var_os("MUDCRAB_ACTOR_NIF_DIR").map(PathBuf::from)
+}
+
+static CAPTURED_WARNINGS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn warning_slot() -> &'static Mutex<Vec<String>> {
+    CAPTURED_WARNINGS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+struct WarningCapture;
+
+impl log::Log for WarningCapture {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if record.level() <= log::Level::Warn
+            && let Ok(mut slot) = warning_slot().lock()
+        {
+            slot.push(format!("{}", record.args()));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn install_warning_capture() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = log::set_boxed_logger(Box::new(WarningCapture));
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+}
+
+fn take_captured_warnings() -> Vec<String> {
+    warning_slot()
+        .lock()
+        .map(|mut slot| std::mem::take(&mut *slot))
+        .unwrap_or_default()
+}
+
+#[test]
+#[ignore = "requires MUDCRAB_ACTOR_NIF_DIR pointing at a Skyrim meshes/actors tree"]
+fn retail_actor_skeleton_resolution_matches_reference_ranking() {
+    let Some(root) = actor_root() else {
+        return;
+    };
+    install_warning_capture();
+
+    // (mesh under actors/, expected skeleton under actors/ or None for a
+    // self-contained rig, whether the ranking must warn about a tie)
+    let rows: &[(&str, Option<&str>, bool)] = &[
+        (
+            "alduin/alduin.nif",
+            Some("dragon/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "alduin/farskin_alduin.nif",
+            Some("dragon/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc01/dragon/dragon_purple.nif",
+            Some("dragon/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc02/dragon/dragon_blackvariant.nif",
+            Some("dragon/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc01/character/hair/dlc1femaleseranahair.nif",
+            Some("character/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc01/ancientfrostatronach/ancientfrostatronach.nif",
+            Some("atronachfrost/character assets/skeleton.nif"),
+            true,
+        ),
+        (
+            "dlc01/soulwisp/character assets/dlcsoulcairnwisparmoraddon.nif",
+            Some("witchlight/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc01/chaurusfrozen/chaurusfrozen.nif",
+            Some("chaurus/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc02/spider_poison/characterassets/spider_zombie.nif",
+            Some("frostbitespider/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc02/ashman/ashman.nif",
+            Some("draugr/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc02/hulkingdraugr/hulkingdraugr.nif",
+            Some("draugr/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc02/dragonpriestacolyte/dragonpriestacolyte03.nif",
+            Some("dragonpriest/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dlc02/werebear/werebear.nif",
+            Some("werewolfbeast/character assets/skeleton.nif"),
+            false,
+        ),
+        (
+            "dog/character assets/mg07dog.nif",
+            Some("canine/character assets dog/skeleton.nif"),
+            true,
+        ),
+        (
+            "wolf/fox.nif",
+            Some("canine/character assets dog/skeleton.nif"),
+            true,
+        ),
+        (
+            "manekin/manekin.nif",
+            Some("character/character assets/skeleton.nif"),
+            true,
+        ),
+        (
+            "manekin/manekin_feet.nif",
+            Some("character/character assets/skeleton.nif"),
+            true,
+        ),
+        (
+            "manekin/manekinhands.nif",
+            Some("character/character assets/skeleton.nif"),
+            true,
+        ),
+        (
+            "manekin/manekinhead.nif",
+            Some("character/character assets/skeleton.nif"),
+            true,
+        ),
+        (
+            "male/greybeardstatic.nif",
+            Some("character/character assets/skeleton.nif"),
+            true,
+        ),
+        (
+            "character/character assets/maletailkhajiit.nif",
+            Some("character/character assets/skeletonbeast.nif"),
+            false,
+        ),
+        ("dog/character assets/fxmg07dogeyeglow.nif", None, false),
+        ("draugr/character assets/fxdraugrmaleeyes.nif", None, false),
+        (
+            "atronachflame/character assets/fxatronachfiretrail.nif",
+            None,
+            false,
+        ),
+        (
+            "witchlight/character assets/witchlightmesh.nif",
+            None,
+            false,
+        ),
+        (
+            "dlc02/spider_poison/characterassets/spiderinhandfxfire.nif",
+            None,
+            false,
+        ),
+        (
+            "character/character assets/malebody_1.nif",
+            Some("character/character assets/skeleton.nif"),
+            false,
+        ),
+    ];
+
+    for (mesh, expected, tie) in rows {
+        let nif_path = root.join(mesh);
+        assert!(nif_path.is_file(), "missing {}", nif_path.display());
+        let _ = take_captured_warnings();
+        let resolution = find_skeleton(&nif_path);
+        let warnings = take_captured_warnings();
+        let actual = match (&resolution, expected) {
+            (SkeletonResolution::Skeleton(path), Some(expected)) => {
+                let actual = path
+                    .strip_prefix(&root)
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                assert_eq!(&actual, expected, "{mesh}");
+                actual
+            }
+            (SkeletonResolution::SelfContained, None) => "<self-contained>".to_owned(),
+            _ => panic!("{mesh}: expected {expected:?}, got {resolution:?}; warnings={warnings:?}"),
+        };
+        if *tie {
+            let file_name = Path::new(mesh)
+                .file_name()
+                .expect("mesh has a file name")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                warnings.iter().any(|warning| {
+                    warning.contains(&file_name) && warning.to_ascii_lowercase().contains("tie")
+                }),
+                "{mesh} -> {actual}: expected a tie warning, got {warnings:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires MUDCRAB_ACTOR_NIF_DIR pointing at a Skyrim meshes/actors tree"]
+fn retail_pipeline_and_standalone_resolution_agree() {
+    let Some(root) = actor_root() else {
+        return;
+    };
+    let Some(meshes_root) = root.parent() else {
+        return;
+    };
+    let mut nifs = Vec::new();
+    collect_nif_paths(&root, &mut nifs);
+    assert!(nifs.len() > 1000, "expected a retail actor tree");
+    nifs.sort();
+
+    let mut sources = BTreeMap::new();
+    for path in &nifs {
+        if let Ok(relative) = path.strip_prefix(meshes_root) {
+            sources.insert(relative.to_path_buf(), path.clone());
+        }
+    }
+
+    // The pipeline index is rebuilt per call here, so a stride keeps the test bounded.
+    let mut checked = 0;
+    for (position, path) in nifs.iter().enumerate() {
+        if position % 41 != 0 {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(meshes_root) else {
+            continue;
+        };
+        let standalone = find_skeleton(path);
+        let pipeline = converter::mesh::resolve_skeleton(relative, &sources);
+        let describe = |resolution: &SkeletonResolution| match resolution {
+            SkeletonResolution::Skeleton(candidate) => {
+                let candidate = candidate.strip_prefix(meshes_root).unwrap_or(candidate);
+                format!(
+                    "skeleton:{}",
+                    candidate
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_lowercase()
+                )
+            }
+            SkeletonResolution::SelfContained => "self-contained".to_owned(),
+            SkeletonResolution::Unresolved { best_coverage } => {
+                format!("unresolved:{best_coverage:.3}")
+            }
+        };
+        assert_eq!(
+            describe(&standalone),
+            describe(&pipeline),
+            "{} resolves differently on the two paths",
+            relative.display()
+        );
+        checked += 1;
+    }
+    assert!(checked > 50, "only checked {checked} meshes");
+}
+
+fn collect_nif_paths(directory: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_nif_paths(&path, paths);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("nif"))
+        {
+            paths.push(path);
+        }
+    }
 }
 
 #[test]

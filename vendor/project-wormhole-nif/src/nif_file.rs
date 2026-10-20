@@ -233,6 +233,14 @@ impl NifFile {
             )
         })
     }
+
+    /// The unique node names every legacy skin instance binds, in joint order.
+    pub fn legacy_skin_joint_names(&self) -> BTreeSet<String> {
+        legacy_skin_joints(self)
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect()
+    }
 }
 
 impl Parse<&[u8]> for NifFile {
@@ -281,28 +289,32 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
         // Init skeletal mesh
         let mut mesh = SkeletalMesh::default();
 
-        // Check if skeleton is provided from another file
-        if let Some(skeleton) = skeleton {
-            // Get nodes from skeleton
-            let skel_nodes = skeleton.get_nodes();
+        // A provided skeleton supplies the bone tree. Without one the mesh is
+        // a self-contained rig: its own joints and their ancestors are the only
+        // bones it has. The resolver decides which case applies; an unresolved
+        // skin is rejected before it reaches the exporter.
+        match skeleton {
+            Some(skeleton) => {
+                // Get nodes from skeleton
+                let skel_nodes = skeleton.get_nodes();
 
-            // Loop through nodes and add them to the bone tree
-            for skel_node in skel_nodes {
-                // Get node name
-                let node_name = skeleton
-                    .header
-                    .get_string(skel_node.name() as usize)
-                    .unwrap();
+                // Loop through nodes and add them to the bone tree
+                for skel_node in skel_nodes {
+                    // Get node name
+                    let node_name = skeleton
+                        .header
+                        .get_string(skel_node.name() as usize)
+                        .unwrap();
 
-                // Get children names from string indices. Only the block
-                // variants `get_nodes` walks may become bones, so a child of
-                // any other type (and an unresolved block reference) is
-                // reported and dropped: naming it here would add a child
-                // without a matching bone entry, which the exporter cannot
-                // wire.
-                let children_names = skel_node
-                    .children
-                    .iter()
+                    // Get children names from string indices. Only the block
+                    // variants `get_nodes` walks may become bones, so a child of
+                    // any other type (and an unresolved block reference) is
+                    // reported and dropped: naming it here would add a child
+                    // without a matching bone entry, which the exporter cannot
+                    // wire.
+                    let children_names = skel_node
+                        .children
+                        .iter()
                     .filter_map(|index| {
                         let Some(child_block) = skeleton.blocks.get(*index as usize) else {
                             warn!(
@@ -332,61 +344,59 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     })
                     .collect::<Vec<String>>();
 
-                // Create bone data
-                let bone_data = BoneData {
-                    transform: BoneTransform::new(
-                        Some(skel_node.translation().0),
-                        Some(skel_node.rotation().0),
-                        Some(skel_node.scale().0),
-                    ),
-                    children: children_names.into_iter().collect(),
-                };
+                    // Create bone data
+                    let bone_data = BoneData {
+                        transform: BoneTransform::new(
+                            Some(skel_node.translation().0),
+                            Some(skel_node.rotation().0),
+                            Some(skel_node.scale().0),
+                        ),
+                        children: children_names.into_iter().collect(),
+                    };
 
-                // Add bone to bone tree. Retail skeletons repeat a few helper
-                // leaves, and no skin binds a duplicated name, so the first
-                // occurrence wins and the later copy is dropped whole (its
-                // children are duplicates too).
-                if mesh.bones.has_bone(node_name) {
-                    warn!(
-                        "skeleton node {node_name:?} appears more than once; keeping the first occurrence"
-                    );
-                    continue;
+                    // Add bone to bone tree. Retail skeletons repeat a few helper
+                    // leaves, and no skin binds a duplicated name, so the first
+                    // occurrence wins and the later copy is dropped whole (its
+                    // children are duplicates too).
+                    if mesh.bones.has_bone(node_name) {
+                        warn!(
+                            "skeleton node {node_name:?} appears more than once; keeping the first occurrence"
+                        );
+                        continue;
+                    }
+                    mesh.bones.add_bone(node_name, bone_data)?;
                 }
-                mesh.bones.add_bone(node_name, bone_data)?;
+
+                bind_mesh_local_legacy_joints(nif, &mut mesh.bones);
             }
-
-            bind_mesh_local_legacy_joints(nif, &mut mesh.bones);
-
-            let (meshes, material_indices) = if nif.get_skins().is_empty() {
-                legacy_skinned_meshes(nif, &mesh.bones)?
-            } else {
-                (bsskin_meshes(nif, &mesh), nif.get_mesh_materials_ids())
-            };
-
-            model.skeletal_meshes = meshes;
-
-            let material = nif.get_materials();
-
-            for mat in material {
-                let diffuse = mat.diffuse.clone();
-                let normal = mat.normal.clone();
-                let glow = mat.glow.clone();
-                let specular = mat.specular.clone();
-
-                model.materials.push(super::model::all::Material {
-                    diffuse,
-                    normal,
-                    glow,
-                    specular,
-                });
-            }
-
-            model.material_indices = material_indices;
+            None => bind_self_contained_joints(nif, &mut mesh.bones),
         }
-        // Use the nodes in the current file as the skeleton
-        else {
-            unimplemented!("No skeleton provided");
+
+        let (meshes, material_indices) = if nif.get_skins().is_empty() {
+            legacy_skinned_meshes(nif, &mesh.bones)?
+        } else {
+            (bsskin_meshes(nif, &mesh), nif.get_mesh_materials_ids())
+        };
+
+        model.skeletal_meshes = meshes;
+
+        let material = nif.get_materials();
+
+        for mat in material {
+            let diffuse = mat.diffuse.clone();
+            let normal = mat.normal.clone();
+            let glow = mat.glow.clone();
+            let specular = mat.specular.clone();
+
+            model.materials.push(super::model::all::Material {
+                diffuse,
+                normal,
+                glow,
+                specular,
+            });
         }
+
+        model.material_indices = material_indices;
     }
     // Proceed with static mesh conversion
     else {
@@ -657,14 +667,11 @@ fn nif_node_name(nif: &NifFile, block: u32) -> Option<&str> {
         .ok()
 }
 
-/// Adds the legacy skin joints the skeleton does not carry, together with the
-/// ancestors they need, from the mesh's own node hierarchy.
-///
-/// A legacy NIF copies its whole bone hierarchy, so binding every missing joint
-/// would also make a mesh bound to the wrong skeleton look resolved. Only a
-/// skeleton that already covers most joints is treated as the right one.
-fn bind_mesh_local_legacy_joints(nif: &NifFile, bones: &mut BoneTree) {
-    let mut joint_nodes = Vec::new();
+/// Every legacy skin joint across the mesh's instances, deduplicated by name in
+/// joint order.
+fn legacy_skin_joints(nif: &NifFile) -> Vec<(u32, String)> {
+    let mut seen = BTreeSet::new();
+    let mut joints = Vec::new();
     for (index, _) in nif.blocks.iter().enumerate() {
         let Some(instance) = nif.skin_instance_at(index as u32) else {
             continue;
@@ -677,16 +684,23 @@ fn bind_mesh_local_legacy_joints(nif: &NifFile, bones: &mut BoneTree) {
         let Ok(nodes) = legacy_skin_joint_nodes(nif, instance) else {
             continue;
         };
-        joint_nodes.extend(nodes);
-    }
-
-    let mut seen = BTreeSet::new();
-    let mut joints = Vec::new();
-    for (block, name) in joint_nodes {
-        if seen.insert(name.clone()) {
-            joints.push((block, name));
+        for (block, name) in nodes {
+            if seen.insert(name.clone()) {
+                joints.push((block, name));
+            }
         }
     }
+    joints
+}
+
+/// Adds the legacy skin joints the skeleton does not carry, together with the
+/// ancestors they need, from the mesh's own node hierarchy.
+///
+/// A legacy NIF copies its whole bone hierarchy, so binding every missing joint
+/// would also make a mesh bound to the wrong skeleton look resolved. Only a
+/// skeleton that already covers most joints is treated as the right one.
+fn bind_mesh_local_legacy_joints(nif: &NifFile, bones: &mut BoneTree) {
+    let joints = legacy_skin_joints(nif);
     let total = joints.len();
     let missing = joints
         .into_iter()
@@ -699,7 +713,37 @@ fn bind_mesh_local_legacy_joints(nif: &NifFile, bones: &mut BoneTree) {
     if (covered as f32 / total as f32) < MIN_SKELETON_COVERAGE {
         return;
     }
+    let bound = insert_mesh_local_joint_chains(nif, bones, missing);
+    if !bound.is_empty() {
+        warn!(
+            "legacy skin joints {bound:?} are missing from the skeleton and were bound from the mesh's own node hierarchy"
+        );
+    }
+}
 
+/// A self-contained rig has no skeleton to cover its joints, so its own
+/// hierarchy is the bone tree and every joint goes in without a coverage gate.
+fn bind_self_contained_joints(nif: &NifFile, bones: &mut BoneTree) {
+    let missing = legacy_skin_joints(nif)
+        .into_iter()
+        .filter(|(_, name)| !bones.has_bone(name))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return;
+    }
+    let bound = insert_mesh_local_joint_chains(nif, bones, missing);
+    if !bound.is_empty() {
+        warn!(
+            "legacy skin joints {bound:?} are bound from the mesh's own node hierarchy because no skeleton covers the rig"
+        );
+    }
+}
+
+fn insert_mesh_local_joint_chains(
+    nif: &NifFile,
+    bones: &mut BoneTree,
+    missing: Vec<(u32, String)>,
+) -> Vec<String> {
     let mut parents = BTreeMap::new();
     for (index, block) in nif.blocks.iter().enumerate() {
         let children = match block {
@@ -787,11 +831,7 @@ fn bind_mesh_local_legacy_joints(nif: &NifFile, bones: &mut BoneTree) {
         bound.push(name);
     }
 
-    if !bound.is_empty() {
-        warn!(
-            "legacy skin joints {bound:?} are missing from the skeleton and were bound from the mesh's own node hierarchy"
-        );
-    }
+    bound
 }
 
 fn legacy_skinned_mesh(

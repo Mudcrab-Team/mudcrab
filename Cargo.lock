@@ -2348,6 +2348,7 @@ dependencies = [
  "insta",
  "intel_tex_2",
  "ktx2",
+ "log",
  "lz4_flex",
  "memmap2",
  "mesh-tools",

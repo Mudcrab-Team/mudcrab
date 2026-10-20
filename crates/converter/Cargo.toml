@@ -26,6 +26,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
+log = "0.4"
 same-file = "1.0"
 lz4_flex.workspace = true
 image_dds.workspace = true
@@ -48,6 +49,7 @@ sha2 = { workspace = true, features = ["asm"] }
 gltf = { version = "1.4", default-features = false, features = ["utils"] }
 insta = { version = "1.48", features = ["json", "redactions"] }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
+log = "0.4"
 ruzstd = "0.9.1"
 dummy-content = { path = "../dummy-content" }
 
