@@ -36,6 +36,16 @@ struct WaterSettings {
 // Clamp on the distance the view travels through water; anything longer is treated as bottomless.
 const MAX_WATER_PATH: f32 = 16384.0;
 
+// Camera distance (world units) where ripple detail starts to fade, and where it is gone.
+// Past the end the surface is flat, which avoids the shimmer of sub-pixel ripples.
+const NORMAL_FADE_START: f32 = 2048.0;
+const NORMAL_FADE_END: f32 = 16384.0;
+// How far a ripple shifts the reflection lookup, in screen UV at one world unit of view depth;
+// divided by view depth so distant water distorts no more than near water.
+const REFLECTION_DISTORTION: f32 = 24.0;
+// Largest UV offset a ripple may apply, so grazing angles do not tear the reflection.
+const MAX_REFLECTION_OFFSET: f32 = 0.04;
+
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because there is no depth prepass.
 fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>, sample_index: u32) -> f32 {
@@ -98,14 +108,34 @@ fn fragment(
     let p = in.world_position.xz * scale + water.flow_direction.xy * phase;
     var dx = cos(p.x + sin(p.y * 1.7)) * strength;
     var dz = cos(p.y * 1.3 + sin(p.x)) * strength;
+    // A finer second octave moving against the first, so the surface does not read as one swell.
+    let p2 = in.world_position.xz * scale * 2.7 + vec2<f32>(-0.35, 0.8) * phase * 1.3;
+    dx += cos(p2.x * 1.1 + sin(p2.y * 0.9)) * strength * 0.5;
+    dz += cos(p2.y * 0.8 + sin(p2.x * 1.4)) * strength * 0.5;
     if water.flow_direction.w > 0.5 {
         let flow = textureSample(water_flow_normal, water_flow_normal_sampler, fract(p * 0.25)).xy * 2.0 - 1.0;
         dx += flow.x * strength;
         dz += flow.y * strength;
     }
+    let fade = 1.0 - smoothstep(NORMAL_FADE_START, NORMAL_FADE_END, distance(in.world_position.xyz, view.world_position));
+    dx *= fade;
+    dz *= fade;
     pbr_input.N = normalize(vec3<f32>(-dx, 1.0, -dz));
     let viewport_uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
-    let reflection_uv = clamp(vec2<f32>(viewport_uv.x, 1.0 - viewport_uv.y), vec2<f32>(0.0), vec2<f32>(1.0));
+    // Only the ripple's tilt moves the lookup: a flat surface's normal has a view-space component
+    // that changes with camera pitch, and using it would slide the whole reflection.
+    let tilt = (view.view_from_world * vec4<f32>(pbr_input.N.x, 0.0, pbr_input.N.z, 0.0)).xy;
+    let surface_depth = max(1.0, -position_world_to_view(in.world_position.xyz).z);
+    let offset = clamp(
+        tilt * (REFLECTION_DISTORTION / surface_depth),
+        vec2<f32>(-MAX_REFLECTION_OFFSET),
+        vec2<f32>(MAX_REFLECTION_OFFSET),
+    );
+    let reflection_uv = clamp(
+        vec2<f32>(viewport_uv.x, 1.0 - viewport_uv.y) + offset,
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
     let reflection_sample = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
     let reflection_color = vec4<f32>(
         mix(water.reflection_color.rgb, reflection_sample.rgb, reflection_sample.a),
