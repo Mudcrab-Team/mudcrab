@@ -1,7 +1,7 @@
 use crate::{
     archive::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
-        RawIngestionSession,
+        RawIngestionSession, prune_stale_reader_packs,
     },
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
@@ -36,7 +36,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail, ensure},
+    eyre::{WrapErr, bail, ensure, eyre},
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -121,6 +121,18 @@ pub struct PipelineReport {
     pub database_runtime_records_built: u64,
     #[serde(default)]
     pub lod_warnings: Vec<String>,
+    /// The merged terrain (#215) this run built, when `merged_terrain` is on: the land texture
+    /// arrays, one merged mesh per exterior cell, the chunk files, and every cell or texture
+    /// left out with its reason. `None` when the option is off or no world database was built.
+    #[serde(default)]
+    pub terrain: Option<crate::terrain_pipeline::TerrainReport>,
+    /// Wall time spent building merged terrain, excluding other conversion stages.
+    #[serde(default)]
+    pub terrain_elapsed_ms: u128,
+    /// Merged-terrain omissions. Like `lod_warnings`, these do not make the run incomplete: a
+    /// skipped land texture or cell falls back at runtime, and the full list is in `terrain`.
+    #[serde(default)]
+    pub terrain_warnings: Vec<String>,
     pub warnings: Vec<String>,
     /// Advisory messages, including successful reader compatibility remaps,
     /// that do not affect completeness.
@@ -901,6 +913,8 @@ impl AssetPipeline {
         );
         interrupt(cancellation)?;
 
+        let mut merged_terrain_records = None;
+        let mut merged_terrain_offsets = std::collections::HashMap::new();
         if !plugins.is_empty() {
             send(
                 progress_tx,
@@ -936,7 +950,8 @@ impl AssetPipeline {
             );
             let database_cache_root = config.ingestion_cache_dir().join(".database-cache");
             let lookup_started = Instant::now();
-            let mut restored = if !config.invalidate_cache {
+            // Merged terrain reads the records of a fresh conversion, so it never restores a database.
+            let mut restored = if !config.invalidate_cache && !config.merged_terrain {
                 match &cache_identity {
                     Some(identity) => database_cache::restore(
                         &database_cache_root,
@@ -1065,7 +1080,19 @@ impl AssetPipeline {
                 );
                 let database_artifacts_started = Instant::now();
                 crate::esm::inhouse::write_configured_reader_identity(staging, config)?;
-                drop(merged);
+                // Merged terrain (#215) keeps only the records its stage reads, and the LAND each
+                // cell keeps is checked before the texture, mesh and LOD stages run, so a bad load
+                // order fails in minutes. The positions are the ones the cell cache was ordered by.
+                if config.merged_terrain {
+                    merged_terrain_offsets = crate::terrain_pipeline::cell_cache_source_offsets(
+                        config.record_reader,
+                        &db_path,
+                    )?;
+                    crate::esm::cell_cache::merged_terrain_lands(&merged, &merged_terrain_offsets)?;
+                    merged_terrain_records = Some(crate::terrain_pipeline::terrain_records(merged));
+                } else {
+                    drop(merged);
+                }
                 report.phase_elapsed_ms.insert(
                     "database_artifacts_and_release".into(),
                     database_artifacts_started.elapsed().as_millis(),
@@ -1439,6 +1466,23 @@ impl AssetPipeline {
         .await?;
         report.lod_elapsed_ms = lod_started.elapsed().as_millis();
         interrupt(cancellation)?;
+        let terrain_started = Instant::now();
+        // Merged terrain (#215): the arrays, one mesh per exterior cell and the chunk files,
+        // once the world database and every converted texture are in staging. Off by default
+        // until the engine half that reads these outputs lands.
+        if config.merged_terrain {
+            crate::terrain_pipeline::run_merged_terrain_stage(
+                staging,
+                merged_terrain_records.take(),
+                std::mem::take(&mut merged_terrain_offsets),
+                &plugins,
+                &crate::terrain_pipeline::TerrainOptions::from_config(config),
+                progress_tx,
+                &mut report,
+            )
+            .await?;
+        }
+        report.terrain_elapsed_ms = terrain_started.elapsed().as_millis();
         let integration_started = Instant::now();
         let integration_sources = source_paths
             .iter()
@@ -2685,6 +2729,38 @@ pub(crate) fn validate_artifact(
 ) -> Result<()> {
     let path = staging.join(relative);
     match path.extension().and_then(|extension| extension.to_str()) {
+        // Land texture arrays (#215) are not converted source textures: they are KTX2 texture
+        // arrays whose class (usage, block format, size) the land texture table records, and
+        // their transfer function (sRGB diffuse, linear normal) is a property of that class, not
+        // of any source texture semantics. The stage that built them checked every layer and
+        // level against the class; here the file's own shape is checked.
+        Some("ktx2") if relative.starts_with("terrain") => {
+            // A class can be many gigabytes and validation runs on every CPU job at once, so only
+            // the header and the first level's index entry are read, never the pixel data.
+            let mut file = fs::File::open(&path)?;
+            let file_len = file.metadata()?.len();
+            let mut prefix = [0u8; 104];
+            std::io::Read::read_exact(&mut file, &mut prefix)
+                .map_err(|error| eyre!("invalid KTX2 array {}: {error}", path.display()))?;
+            let header_bytes: [u8; ktx2::Header::LENGTH] = prefix[..ktx2::Header::LENGTH]
+                .try_into()
+                .expect("the prefix is longer than the header");
+            let header = ktx2::Header::from_bytes(&header_bytes)
+                .map_err(|error| eyre!("invalid KTX2 array {}: {error:?}", path.display()))?;
+            let level_offset = u64::from_le_bytes(prefix[80..88].try_into().expect("eight bytes"));
+            let level_length = u64::from_le_bytes(prefix[88..96].try_into().expect("eight bytes"));
+            ensure!(
+                header.layer_count >= 2
+                    && header.level_count > 0
+                    && header.format.is_some()
+                    && level_length > 0
+                    && level_offset
+                        .checked_add(level_length)
+                        .is_some_and(|end| end <= file_len),
+                "invalid KTX2 array {}",
+                path.display()
+            );
+        }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
             let key = source_texture_key(&canonical_asset_path(
@@ -3130,6 +3206,13 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
     let lod_dir = staging.join("lod");
     if lod_dir.exists() {
         fs::remove_dir_all(&lod_dir)?;
+    }
+    // The merged terrain (#215) lives entirely under `terrain`: the arrays, the table and the
+    // chunk files. It is rebuilt from the current records, so a resume with the option off
+    // publishes an output without it rather than carrying a stale one.
+    let terrain_dir = staging.join("terrain");
+    if terrain_dir.exists() {
+        fs::remove_dir_all(&terrain_dir)?;
     }
     Ok(())
 }
@@ -4147,8 +4230,12 @@ fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest)
     }
     let mut live = BTreeSet::new();
     let mut live_sources = BTreeSet::new();
+    let mut live_reader_sources = BTreeMap::new();
     for entry in manifest.archives.values() {
         live_sources.insert(entry.source_hash.clone());
+        if entry.reader_version > 0 {
+            live_reader_sources.insert(entry.source_hash.clone(), entry.reader_version);
+        }
         for file in &entry.files {
             live.insert(file.hash.clone());
         }
@@ -4185,6 +4272,7 @@ fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest)
             }
         }
     }
+    prune_stale_reader_packs(cache_root, &live_reader_sources)?;
     Ok(())
 }
 
@@ -4934,6 +5022,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::esm::cell_cache::write_cell_cache;
 
     fn cpu_lod_config(data: impl Into<PathBuf>, output: impl Into<PathBuf>) -> PipelineConfig {
         let mut config = PipelineConfig::new(data, output);
@@ -5285,6 +5374,174 @@ mod tests {
         )
         .unwrap();
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn changed_default_bytes_change_persisted_lod_identity_and_only_defaulted_chunks() {
+        use crate::lod::{
+            albedo::TerrainTextures,
+            terrain::{TerrainCellInput, terrain_jobs},
+        };
+        use std::collections::HashMap;
+
+        struct Proof {
+            identity: String,
+            asset_identity: String,
+            manifest: crate::lod::reuse::LodManifest,
+            default_inputs: BTreeMap<String, String>,
+            grass_inputs: BTreeMap<String, String>,
+            default_outputs: BTreeMap<String, String>,
+            grass_outputs: BTreeMap<String, String>,
+            grass_source: String,
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path();
+        let default_path = vfs.join("textures/landscape/dirt02.dds");
+        let grass_path = vfs.join("textures/landscape/grass.dds");
+        fs::create_dir_all(default_path.parent().unwrap()).unwrap();
+        let grass_bytes = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(19),
+        )
+        .unwrap();
+        fs::write(&grass_path, grass_bytes).unwrap();
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets (id INTEGER PRIMARY KEY, diffuse_path TEXT);
+                 CREATE TABLE landscape_textures (id INTEGER PRIMARY KEY, texture_set_id INTEGER);
+                 INSERT INTO texture_sets VALUES (1, 'textures/landscape/grass.dds');
+                 INSERT INTO landscape_textures VALUES (2, 1);",
+            )
+            .unwrap();
+        let defaulted = TerrainCellInput {
+            cell_id: 1,
+            grid_x: 0,
+            grid_y: 0,
+            heights: vec![0.0; 33 * 33],
+            vertex_colors: vec![255; 33 * 33 * 3],
+            layers: Vec::new(),
+        };
+        let grass = TerrainCellInput {
+            cell_id: 2,
+            grid_x: 64,
+            grid_y: 0,
+            heights: vec![0.0; 33 * 33],
+            vertex_colors: vec![255; 33 * 33 * 3],
+            layers: (0..4)
+                .map(|quadrant| shared::TerrainLayer {
+                    texture_form_id: 2,
+                    quadrant,
+                    layer: 0,
+                    is_base: true,
+                    weights: Vec::new(),
+                })
+                .collect(),
+        };
+        let cells = [defaulted, grass];
+        let cell_hashes: HashMap<_, _> = cells
+            .iter()
+            .map(|cell| (cell.cell_id, cell.fingerprint()))
+            .collect();
+        let origin = shared::lod::LodOrigin::new(0, 0);
+        let asset_identity = configuration_hash(&cpu_lod_config("/data", "/output")).unwrap();
+
+        // Exercise production chunk fingerprints and build identity with synthetic cells. The
+        // persistence assertions use the same DB row and manifest field as compilation, without
+        // running archive ingestion or the full AssetPipeline.
+        let build = |seed| {
+            let default_bytes = dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+                &mut dummy_content::rng::Rng::new(seed),
+            )
+            .unwrap();
+            fs::write(&default_path, default_bytes).unwrap();
+            let textures = TerrainTextures::load(&connection, vfs, &cells).unwrap();
+            let mut chunk_inputs = BTreeMap::new();
+            let mut chunk_hashes = Vec::new();
+            let mut default_inputs = BTreeMap::new();
+            let mut grass_inputs = BTreeMap::new();
+            let mut default_outputs = BTreeMap::new();
+            let mut grass_outputs = BTreeMap::new();
+
+            for job in terrain_jobs(0x3c, origin, &cells) {
+                let path = shared::lod::chunk_payload_path(job.key);
+                let input_hash = job.fingerprint(origin, &cell_hashes, &textures).unwrap();
+                let output_hash =
+                    crate::cache::hash_bytes(&job.compile(origin, &textures).unwrap().glb);
+                chunk_inputs.insert(path.clone(), input_hash.clone());
+                chunk_hashes.push(format!("{path}:{output_hash}"));
+                if job.members.iter().any(|cell| cell.cell_id == 1) {
+                    default_inputs.insert(path.clone(), input_hash);
+                    default_outputs.insert(path, output_hash);
+                } else {
+                    grass_inputs.insert(path.clone(), input_hash);
+                    grass_outputs.insert(path, output_hash);
+                }
+            }
+            chunk_hashes.sort();
+            let terrain_sources = textures.source_hashes.clone();
+            let identity =
+                build_identity(&[], &chunk_hashes, &asset_identity, &[], &terrain_sources).unwrap();
+            let manifest = crate::lod::reuse::LodManifest {
+                build_identity: identity.clone(),
+                converter_schema: CONVERTER_SCHEMA_VERSION,
+                world_database_schema: shared::WORLD_DATABASE_SCHEMA_VERSION,
+                chunks: chunk_hashes.len() as u64,
+                land_texture_repeats_per_cell: shared::LAND_TEXTURE_REPEATS_PER_CELL,
+                terrain_sources,
+                compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
+                chunk_inputs,
+            };
+            Proof {
+                identity,
+                asset_identity: asset_identity.clone(),
+                manifest,
+                default_inputs,
+                grass_inputs,
+                default_outputs,
+                grass_outputs,
+                grass_source: textures.source_hashes["textures/landscape/grass.dds"].clone(),
+            }
+        };
+
+        let first = build(7);
+        let second = build(8);
+        assert_ne!(first.identity, second.identity);
+        assert_ne!(first.default_inputs, second.default_inputs);
+        assert_eq!(first.grass_inputs, second.grass_inputs);
+        assert_ne!(first.default_outputs, second.default_outputs);
+        assert_eq!(first.grass_outputs, second.grass_outputs);
+        assert_eq!(first.grass_source, second.grass_source);
+        assert_eq!(first.asset_identity, second.asset_identity);
+
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE lod_build (id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL);",
+            )
+            .unwrap();
+        for proof in [&first, &second] {
+            database
+                .execute(
+                    "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
+                    [&proof.identity],
+                )
+                .unwrap();
+            let stored: String = database
+                .query_row(
+                    "SELECT build_identity FROM lod_build WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&serde_json::to_vec(&proof.manifest).unwrap()).unwrap();
+            assert_eq!(stored, proof.identity);
+            assert_eq!(manifest["build_identity"], stored);
+        }
     }
 
     #[test]
@@ -8940,6 +9197,7 @@ mod tests {
                     size: 4,
                     hash: live.clone(),
                 }],
+                reader_version: 0,
             },
         );
         prune_stale_ingestion_blobs(

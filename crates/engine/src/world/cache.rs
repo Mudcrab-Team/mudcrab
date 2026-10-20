@@ -91,6 +91,11 @@ impl CellCache {
         })
     }
 
+    /// Whether the cache holds a LAND for `cell_id`, without reading it.
+    pub fn has_terrain(&self, cell_id: u32) -> bool {
+        self.index.contains_key(&cell_id)
+    }
+
     /// Height of the cell's centre sample (the one the start position and `coc`/`coe` stand on),
     /// or `None` for a cell with no terrain in the cache.
     pub fn centre_height(&self, cell_id: u32) -> Option<f32> {

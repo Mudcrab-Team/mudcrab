@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bug_report;
 mod capture_frame;
 pub mod cell_commands;
 pub mod color_pipeline;
@@ -36,6 +37,8 @@ pub mod streaming;
 mod streaming_gpu_metrics;
 mod streaming_preparation;
 mod streaming_trace;
+pub mod swap_bridge;
+pub mod terrain_merge;
 pub mod terrain_upload;
 pub mod visibility_optimization;
 pub mod world;

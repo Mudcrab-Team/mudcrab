@@ -26,6 +26,15 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+/// The landscape texture Skyrim paints where a quadrant names no texture of its own, as a
+/// Bethesda path. A null `BTXT` falls back to `dirt02.dds`, which Skyrim.ini's
+/// `[Landscape] sDefaultLandDiffuseTexture` also names.
+const DEFAULT_LAND_DIFFUSE: &str = "textures/landscape/Dirt02.dds";
+
+/// The key the default texture is stored under. Form id 0 is a null reference, so no landscape
+/// texture record can collide with it.
+const DEFAULT_TEXTURE_KEY: u32 = 0;
+
 const GUTTER: usize = 2;
 const WEIGHT_SIDE: usize = 17;
 const QUADRANT_ORIGINS: [(usize, usize); 4] = [(0, 0), (16, 0), (0, 16), (16, 16)];
@@ -41,11 +50,39 @@ fn diffuse_catalog(connection: &Connection) -> Result<BTreeMap<u32, String>> {
         }).collect()
 }
 
+fn default_diffuse_path() -> Result<String> {
+    canonical_asset_path(DEFAULT_LAND_DIFFUSE, AssetKind::Texture, "dds")
+}
+
+/// Every diffuse a terrain bake may read: each landscape texture's and the default one, so a
+/// conversion extracts the default even when no LTEX record names it.
 pub(crate) fn terrain_diffuse_paths(connection: &Connection) -> Result<BTreeSet<PathBuf>> {
-    Ok(diffuse_catalog(connection)?
+    let mut paths: BTreeSet<_> = diffuse_catalog(connection)?
         .into_values()
         .map(PathBuf::from)
-        .collect())
+        .collect();
+    paths.insert(PathBuf::from(default_diffuse_path()?));
+    Ok(paths)
+}
+
+/// Whether a quadrant is painted with the default texture: it has no layers at all, or its base
+/// layer names no texture (the converter writes a null `BTXT` as form id 0).
+fn quadrant_uses_default(cell: &TerrainCellInput, quadrant: u8) -> bool {
+    let mut layers = cell
+        .layers
+        .iter()
+        .filter(|layer| layer.quadrant == quadrant);
+    match layers.clone().next() {
+        None => true,
+        Some(_) => layers.any(|layer| layer.is_base && layer.texture_form_id == 0),
+    }
+}
+
+/// Whether any quadrant of any of `cells` is painted with the default texture.
+fn any_uses_default<'a>(cells: impl IntoIterator<Item = &'a TerrainCellInput>) -> bool {
+    cells
+        .into_iter()
+        .any(|cell| (0..4).any(|quadrant| quadrant_uses_default(cell, quadrant)))
 }
 
 #[derive(Default)]
@@ -74,17 +111,25 @@ impl TerrainTextures {
         cache: &mut TerrainTextureCache,
     ) -> Result<Self> {
         let catalog = diffuse_catalog(connection)?;
-        let ids: BTreeSet<_> = cells
+        let mut wanted = BTreeMap::new();
+        for id in cells
             .iter()
             .flat_map(|cell| &cell.layers)
             .map(|layer| layer.texture_form_id)
-            .filter(|id| *id != 0)
-            .collect();
-        let mut result = Self::default();
-        for id in ids {
+            .filter(|id| *id != DEFAULT_TEXTURE_KEY)
+            .collect::<BTreeSet<_>>()
+        {
             let path = catalog.get(&id).ok_or_else(|| {
                 color_eyre::eyre::eyre!("LAND texture {id:08X} has no diffuse image")
             })?;
+            wanted.insert(id, path.clone());
+        }
+        if any_uses_default(cells) {
+            wanted.insert(DEFAULT_TEXTURE_KEY, default_diffuse_path()?);
+        }
+        let mut result = Self::default();
+        for (id, path) in wanted {
+            let path = &path;
             if !cache.decoded.contains_key(path) {
                 let bytes = std::fs::read(vfs.join(path))
                     .wrap_err_with(|| format!("missing terrain diffuse {path}"))?;
@@ -113,15 +158,38 @@ impl TerrainTextures {
         &self,
         cells: &[&TerrainCellInput],
     ) -> BTreeMap<u32, &(String, String)> {
-        cells
+        // Zero IDs are never keyed by layer: a null base draws the default, which is keyed below.
+        let mut sources: BTreeMap<u32, _> = cells
             .iter()
             .flat_map(|cell| &cell.layers)
+            .filter(|layer| layer.texture_form_id != DEFAULT_TEXTURE_KEY)
             .filter_map(|layer| {
                 self.sources
                     .get(&layer.texture_form_id)
                     .map(|source| (layer.texture_form_id, source))
             })
-            .collect()
+            .collect();
+        if any_uses_default(cells.iter().copied())
+            && let Some(source) = self.sources.get(&DEFAULT_TEXTURE_KEY)
+        {
+            sources.insert(DEFAULT_TEXTURE_KEY, source);
+        }
+        sources
+    }
+
+    /// Textures holding only a flat default, for tests whose cells carry no layers.
+    #[cfg(test)]
+    pub(crate) fn with_flat_default(color: [f32; 3]) -> Self {
+        let mut result = Self::default();
+        result.textures.insert(
+            DEFAULT_TEXTURE_KEY,
+            Arc::new(std::array::from_fn(|_| LinearImage {
+                width: 1,
+                height: 1,
+                pixels: vec![color],
+            })),
+        );
+        result
     }
 
     pub fn verify_sources(&self, vfs: &Path) -> Result<()> {
@@ -293,6 +361,25 @@ impl<'a> QuadrantBlend<'a> {
         Ok(Self { layers, weights })
     }
 
+    /// The default texture where the quadrant at `origin` is at `(u, v)`, repeated across the cell
+    /// like any layer so the default reads as terrain rather than a flat colour.
+    fn default_sample(
+        textures: &TerrainTextures,
+        tier: usize,
+        origin: (usize, usize),
+        u: f32,
+        v: f32,
+    ) -> Result<[f32; 3]> {
+        let images = textures
+            .textures
+            .get(&DEFAULT_TEXTURE_KEY)
+            .ok_or_else(|| color_eyre::eyre::eyre!("the default terrain diffuse is not loaded"))?;
+        Ok(images[tier].sample(
+            (origin.0 as f32 + u * 16.0) / 32.0 * shared::LAND_TEXTURE_REPEATS_PER_CELL,
+            (origin.1 as f32 + v * 16.0) / 32.0 * shared::LAND_TEXTURE_REPEATS_PER_CELL,
+        ))
+    }
+
     fn sample(
         &self,
         textures: &TerrainTextures,
@@ -302,7 +389,7 @@ impl<'a> QuadrantBlend<'a> {
         origin: (usize, usize),
     ) -> Result<[f32; 3]> {
         if self.layers.is_empty() {
-            return Ok([1.0; 3]);
+            return Self::default_sample(textures, tier, origin, u, v);
         }
         let mut overlays = [0.0; 5];
         for (weight, grid) in overlays.iter_mut().zip(&self.weights) {
@@ -322,10 +409,14 @@ impl<'a> QuadrantBlend<'a> {
             } else {
                 overlays[index - 1]
             } / total;
-            // Zero IDs are neutral white placeholders in any layer slot.
+            // A null base paints the default texture. Zero overlays are neutral white placeholders.
             // Their weights still contribute to the same blend.
             let sample = if layer.texture_form_id == 0 {
-                [1.0; 3]
+                if layer.is_base {
+                    Self::default_sample(textures, tier, origin, u, v)?
+                } else {
+                    [1.0; 3]
+                }
             } else {
                 textures
                     .textures
@@ -1281,7 +1372,11 @@ mod tests {
 
     fn textures() -> TerrainTextures {
         let mut result = TerrainTextures::default();
-        for (id, color) in [(1, [1.0, 0.0, 0.0]), (2, [0.0, 0.0, 1.0])] {
+        for (id, color) in [
+            (1, [1.0, 0.0, 0.0]),
+            (2, [0.0, 0.0, 1.0]),
+            (DEFAULT_TEXTURE_KEY, [0.0, 1.0, 0.0]),
+        ] {
             result.textures.insert(
                 id,
                 Arc::new(std::array::from_fn(|_| LinearImage {
@@ -1291,6 +1386,13 @@ mod tests {
                 })),
             );
         }
+        result
+    }
+
+    /// `textures()` without the default, as a conversion that needs no default leaves it.
+    fn textures_without_default() -> TerrainTextures {
+        let mut result = textures();
+        result.textures.remove(&DEFAULT_TEXTURE_KEY);
         result
     }
 
@@ -1306,7 +1408,8 @@ mod tests {
     fn lod_zero_overlay_preserves_asymmetric_weighted_color_all_tiers() {
         let source = zero_overlay_source();
         let textures = textures();
-        assert!(!textures.textures.contains_key(&0));
+        // The default is loaded, so the white expected below proves a zero overlay never samples it.
+        assert!(textures.textures.contains_key(&DEFAULT_TEXTURE_KEY));
         let weights_before: Vec<_> = source.layers[1]
             .weights
             .iter()
@@ -1475,10 +1578,21 @@ mod tests {
         let path = directory.path().join("textures/shared.dds");
         std::fs::write(&path, test_dds()).unwrap();
         let mut cache = TerrainTextureCache::default();
+        let fully_painted = |id| {
+            cell(
+                (0..4)
+                    .map(|quadrant| {
+                        let mut base = layer(id, true, 0.0);
+                        base.quadrant = quadrant;
+                        base
+                    })
+                    .collect(),
+            )
+        };
         let first = TerrainTextures::load_with_cache(
             &connection,
             directory.path(),
-            &[cell(vec![layer(1, true, 0.0)])],
+            &[fully_painted(1)],
             &mut cache,
         )
         .unwrap();
@@ -1486,13 +1600,214 @@ mod tests {
         let second = TerrainTextures::load_with_cache(
             &connection,
             directory.path(),
-            &[cell(vec![layer(2, true, 0.0)])],
+            &[fully_painted(2)],
             &mut cache,
         )
         .unwrap();
         assert!(Arc::ptr_eq(&first.textures[&1], &second.textures[&2]));
         assert_eq!(first.source_hashes, second.source_hashes);
         assert!(second.verify_sources(directory.path()).is_err());
+    }
+
+    #[test]
+    fn a_null_base_paints_the_default_texture_where_no_overlay_covers_it() {
+        // The converter writes a null BTXT as a base with form id 0. Where the overlay's opacity is
+        // 0.5 the other half of the colour is the default texture, not white.
+        let source = cell(vec![layer(0, true, 0.0), layer(2, false, 0.5)]);
+        let blend = QuadrantBlend::new(&source, 0).unwrap();
+        assert_eq!(
+            blend.sample(&textures(), 0, 0.5, 0.5, (0, 0)).unwrap(),
+            [0.0, 0.5, 0.5]
+        );
+        assert!(
+            blend
+                .sample(&textures_without_default(), 0, 0.5, 0.5, (0, 0))
+                .is_err(),
+            "a missing default texture is an error, not a silent white"
+        );
+        assert!(quadrant_uses_default(&source, 0));
+        assert!(quadrant_uses_default(&source, 1), "no layers at all");
+        assert!(!quadrant_uses_default(&cell(vec![layer(1, true, 0.0)]), 0));
+    }
+
+    #[test]
+    fn a_layerless_or_null_only_quadrant_paints_the_default_texture_not_white() {
+        let textures = textures();
+        for source in [cell(Vec::new()), cell(vec![layer(0, true, 0.0)])] {
+            for tier in 0..3 {
+                let blend = QuadrantBlend::new(&source, 0).unwrap();
+                assert_eq!(
+                    blend.sample(&textures, tier, 0.25, 0.75, (0, 0)).unwrap(),
+                    [0.0, 1.0, 0.0],
+                    "tier {tier}"
+                );
+            }
+        }
+        assert!(
+            QuadrantBlend::new(&cell(Vec::new()), 0)
+                .unwrap()
+                .sample(&TerrainTextures::default(), 0, 0.0, 0.0, (0, 0))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_zero_overlay_never_samples_the_default_texture() {
+        // A zero overlay is a white placeholder, so the blend is red at half weight and white at
+        // half weight even though the default texture is loaded.
+        let source = cell(vec![layer(1, true, 0.0), layer(0, false, 0.5)]);
+        let blend = QuadrantBlend::new(&source, 0).unwrap();
+        assert_eq!(
+            blend.sample(&textures(), 0, 0.5, 0.5, (0, 0)).unwrap(),
+            [1.0, 0.5, 0.5]
+        );
+    }
+
+    #[test]
+    fn the_default_texture_is_decoded_once_and_shared_across_worlds() {
+        let connection = texture_database();
+        let vfs = tempfile::tempdir().unwrap();
+        let default_path = default_diffuse_path().unwrap();
+        let file = vfs.path().join(&default_path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, test_dds()).unwrap();
+
+        let mut cache = TerrainTextureCache::default();
+        let first = TerrainTextures::load_with_cache(
+            &connection,
+            vfs.path(),
+            &[cell(Vec::new())],
+            &mut cache,
+        )
+        .unwrap();
+        std::fs::remove_file(&file).unwrap();
+        // A second world that needs the default reuses the decoded image rather than re-reading it.
+        let second = TerrainTextures::load_with_cache(
+            &connection,
+            vfs.path(),
+            &[cell(vec![layer(0, true, 0.0)])],
+            &mut cache,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(
+            &first.textures[&DEFAULT_TEXTURE_KEY],
+            &second.textures[&DEFAULT_TEXTURE_KEY]
+        ));
+        assert_eq!(first.source_hashes, second.source_hashes);
+        assert!(second.verify_sources(vfs.path()).is_err());
+    }
+
+    #[test]
+    fn a_changed_default_texture_changes_only_the_cells_that_draw_it() {
+        let connection = texture_database();
+        let vfs = tempfile::tempdir().unwrap();
+        let default_file = vfs.path().join(default_diffuse_path().unwrap());
+        std::fs::create_dir_all(default_file.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(vfs.path().join("textures/landscape")).unwrap();
+        std::fs::write(vfs.path().join("textures/landscape/grass.dds"), test_dds()).unwrap();
+        // Each entry holds the (id, source) pairs that a cell's LOD fingerprint would hash.
+        let mut identities = Vec::new();
+        for seed in [7, 8] {
+            let bytes = dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+                &mut dummy_content::rng::Rng::new(seed),
+            )
+            .unwrap();
+            std::fs::write(&default_file, bytes).unwrap();
+            let grass = cell(
+                (0..4)
+                    .map(|quadrant| {
+                        let mut base = layer(2, true, 0.0);
+                        base.quadrant = quadrant;
+                        base
+                    })
+                    .collect(),
+            );
+            let cells = [cell(Vec::new()), grass];
+            let textures = TerrainTextures::load(&connection, vfs.path(), &cells).unwrap();
+            let defaulted_sources: BTreeMap<u32, (String, String)> = textures
+                .sources_for(&[&cells[0]])
+                .into_iter()
+                .map(|(id, source)| (id, source.clone()))
+                .collect();
+            let grass_sources: BTreeMap<u32, (String, String)> = textures
+                .sources_for(&[&cells[1]])
+                .into_iter()
+                .map(|(id, source)| (id, source.clone()))
+                .collect();
+            identities.push((defaulted_sources, grass_sources));
+        }
+        let [(default_a, grass_a), (default_b, grass_b)] = &identities[..] else {
+            unreachable!("two seeds")
+        };
+        assert_eq!(
+            default_a.keys().copied().collect::<Vec<_>>(),
+            [DEFAULT_TEXTURE_KEY]
+        );
+        assert_eq!(grass_a.keys().copied().collect::<Vec<_>>(), [2]);
+        assert_ne!(
+            default_a[&DEFAULT_TEXTURE_KEY],
+            default_b[&DEFAULT_TEXTURE_KEY]
+        );
+        assert_eq!(grass_a[&2], grass_b[&2]);
+    }
+
+    fn texture_database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets (id INTEGER PRIMARY KEY, diffuse_path TEXT);
+                 CREATE TABLE landscape_textures (id INTEGER PRIMARY KEY, texture_set_id INTEGER);
+                 INSERT INTO texture_sets VALUES (1, 'textures/landscape/grass.dds');
+                 INSERT INTO landscape_textures VALUES (2, 1);",
+            )
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn the_default_texture_is_extracted_loaded_and_hashed_only_when_a_quadrant_needs_it() {
+        let connection = texture_database();
+        let default_path = default_diffuse_path().unwrap();
+        assert!(
+            terrain_diffuse_paths(&connection)
+                .unwrap()
+                .contains(&PathBuf::from(&default_path)),
+            "the conversion extracts the default even though no LTEX names it"
+        );
+
+        let vfs = tempfile::tempdir().unwrap();
+        let bytes = test_dds();
+        let file = vfs.path().join(&default_path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, &bytes).unwrap();
+
+        let loaded =
+            TerrainTextures::load(&connection, vfs.path(), &[cell(vec![layer(0, true, 0.0)])])
+                .unwrap();
+        assert!(loaded.textures.contains_key(&DEFAULT_TEXTURE_KEY));
+        assert_eq!(loaded.source_hashes[&default_path], hash_bytes(&bytes));
+
+        // Cells whose quadrants all name a texture never read the default, so a data set without
+        // it still loads.
+        let mut covered = cell(Vec::new());
+        covered.layers = (0..4)
+            .map(|quadrant| TerrainLayer {
+                quadrant,
+                ..layer(2, true, 0.0)
+            })
+            .collect();
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(vfs.path().join("textures/landscape")).unwrap();
+        std::fs::write(vfs.path().join("textures/landscape/grass.dds"), &bytes).unwrap();
+        let loaded = TerrainTextures::load(&connection, vfs.path(), &[covered]).unwrap();
+        assert!(!loaded.textures.contains_key(&DEFAULT_TEXTURE_KEY));
+
+        // A quadrant that needs the default with the file missing fails naming the file.
+        let error = TerrainTextures::load(&connection, vfs.path(), &[cell(Vec::new())])
+            .err()
+            .expect("a missing default texture is an error");
+        assert!(format!("{error:#}").contains("dirt02.dds"), "{error:#}");
     }
 
     #[test]
@@ -1555,7 +1870,8 @@ mod tests {
         assert_eq!(&atlas.rgba[..4], &[255, 0, 0, 255]);
         assert_eq!(
             &atlas.rgba[atlas.tile_side * 4..atlas.tile_side * 4 + 4],
-            &[255; 4]
+            &[0, 255, 0, 255],
+            "a quadrant with no layers is painted with the default texture, not white"
         );
         assert!(atlas.uv(0, 1.0, 1.0)[0] < atlas.uv(1, 0.0, 0.0)[0]);
         assert!(

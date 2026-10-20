@@ -28,6 +28,7 @@ pub mod mmap_reader;
 pub mod plugins_txt;
 pub mod records;
 pub mod rooms;
+pub mod terrain_mesh;
 pub mod types;
 pub use plugins_txt::{
     OFFICIAL_MASTERS, read_plugins_txt, read_plugins_txt_with_options, read_skyrim_ccc,

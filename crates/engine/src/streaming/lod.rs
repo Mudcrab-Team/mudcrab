@@ -1,10 +1,11 @@
 use super::{
-    ActiveSpace, RenderOrigin, StreamingCommitBudget, StreamingMetrics, StreamingWorld,
-    TerrainCoverage, TerrainSurfaceReady, requests,
+    ActiveSpace, MergedTerrainCoverage, RenderOrigin, StreamingCommitBudget, StreamingMetrics,
+    StreamingWorld, TerrainCoverage, TerrainSurfaceReady, requests,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
+    swap_bridge::SwapWaiting,
     world::{
         components::{CELL_SIZE, StreamingCamera},
         database::{LodChunkMetadata, LodChunkQuery, WorldDatabase},
@@ -826,6 +827,13 @@ pub(super) fn track_lod_readiness(
     profiler.record_elapsed("lod/readiness", started);
 }
 
+/// A merged terrain cell the render world has confirmed drawn.
+type DrawnMergedTerrain = (
+    With<super::TerrainPatch>,
+    With<TerrainSurfaceReady>,
+    Without<SwapWaiting>,
+);
+
 /// Batching shares the streaming commit budget. Until its turn, a ready chunk keeps drawing its
 /// original quadrant meshes. One chunk is the smallest atomic conversion and can exceed the time
 /// allowance; its actual work is charged and reported before the frame's budget is finalized.
@@ -1090,6 +1098,7 @@ fn apply_quadrant_selection(
     apply: bool,
     distances: &TerrainLodDistances,
     batch_available: &HashMap<(IVec2, u8), u8, bevy::platform::hash::FixedHasher>,
+    merged_full: &HashSet<(IVec2, u8)>,
     patch_visibility: &mut Query<&mut Visibility, LodPatchFilter>,
     visible_total: &mut usize,
 ) -> bool {
@@ -1101,7 +1110,7 @@ fn apply_quadrant_selection(
         | batch_available.get(&key).copied().unwrap_or(0);
     let selected = select_terrain_lod_tier(
         chebyshev_grid_distance(key.0, camera_grid),
-        quadrant.full_detail_ready > 0,
+        quadrant.full_detail_ready > 0 || merged_full.contains(&key),
         available,
         distances,
     );
@@ -1137,11 +1146,18 @@ pub(super) fn update_terrain_lod_visibility(
     camera: Query<&Transform, With<StreamingCamera>>,
     mut removed_coverage: RemovedComponents<TerrainCoverage>,
     mut removed_readiness: RemovedComponents<TerrainSurfaceReady>,
+    mut removed_merged: RemovedComponents<MergedTerrainCoverage>,
+    mut drawn_swaps: RemovedComponents<SwapWaiting>,
     mut streaming: ParamSet<(Res<LodStreaming>, ResMut<LodStreaming>)>,
     ready_patches: Query<
         (Entity, &TerrainCoverage, Has<super::TerrainPatch>),
         Added<TerrainSurfaceReady>,
     >,
+    // A merged cell covers its grid once it is surface-ready *and* the render world has confirmed
+    // it drawn (the swap bridge removed its `SwapWaiting`): its arrays are validated
+    // before any cell commits, so it is surface-ready the frame it spawns, and hiding the tiles on
+    // that alone left the grid with neither drawn until the merged mesh reached the GPU.
+    merged_full_detail: Query<&MergedTerrainCoverage, DrawnMergedTerrain>,
     mut patch_visibility: Query<&mut Visibility, LodPatchFilter>,
     mut index: Local<TerrainLodIndex>,
     mut batches: terrain_batching::LodBatchVisibility,
@@ -1195,6 +1211,15 @@ pub(super) fn update_terrain_lod_visibility(
     };
     let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
     let upload_completed = batches.upload_completed();
+    let merged_removed = removed_merged.read().count() != 0;
+    // Every surface the bridge confirms drawn leaves the waiting set; only a merged cell's
+    // completion changes what this pass decides. Read in full, so no event is left for next frame.
+    let merged_drawn = drawn_swaps
+        .read()
+        .filter(|entity| merged_full_detail.contains(*entity))
+        .count()
+        != 0;
+    let merged_changed = merged_removed || merged_drawn;
     let (force_apply, camera_moved, radius_changed) = {
         let state = streaming.p0();
         (
@@ -1210,6 +1235,7 @@ pub(super) fn update_terrain_lod_visibility(
         || batches_removed
         || camera_moved
         || radius_changed
+        || merged_changed
         || !index.changed.is_empty();
     let submission_dirty = streaming.p0().submission_dirty;
     {
@@ -1240,6 +1266,12 @@ pub(super) fn update_terrain_lod_visibility(
             }
         }
 
+        // Every quadrant a drawn merged cell covers is full detail, whether or not it holds LOD
+        // patches of its own.
+        let merged_full: HashSet<(IVec2, u8)> = merged_full_detail
+            .iter()
+            .flat_map(|coverage| (0..4u8).map(move |quadrant| (coverage.grid, quadrant)))
+            .collect();
         let index = &mut *index;
         let changed = std::mem::take(&mut index.changed);
         let mut visible_patches = index.visible_lod_patches;
@@ -1247,9 +1279,11 @@ pub(super) fn update_terrain_lod_visibility(
         // selection changed, matching the index's external-mutation contract; an explicit
         // refresh (visibility_dirty) or a radius change corrects every patch unconditionally. A
         // batch removal also recomputes every quadrant (a held quadrant's tier bits may have
-        // come from the removed batch) but still writes only the ones whose selection moved.
-        let apply_all = force_apply || radius_changed;
-        if camera_moved || radius_changed || force_apply || batches_removed {
+        // come from the removed batch) but still writes only the ones whose selection moved. A
+        // merged cell's confirmed draw or removal can cover or uncover any quadrant, so it
+        // recomputes every quadrant too.
+        let apply_all = force_apply || radius_changed || merged_changed;
+        if camera_moved || radius_changed || force_apply || batches_removed || merged_changed {
             index.quadrants.retain(|key, quadrant| {
                 apply_quadrant_selection(
                     *key,
@@ -1258,6 +1292,7 @@ pub(super) fn update_terrain_lod_visibility(
                     apply_all || changed.contains(key),
                     &config.terrain_lod,
                     &batch_available,
+                    &merged_full,
                     &mut patch_visibility,
                     &mut visible_patches,
                 )
@@ -1274,6 +1309,7 @@ pub(super) fn update_terrain_lod_visibility(
                     true,
                     &config.terrain_lod,
                     &batch_available,
+                    &merged_full,
                     &mut patch_visibility,
                     &mut visible_patches,
                 ) {
@@ -1296,6 +1332,10 @@ pub(super) fn update_terrain_lod_visibility(
         );
         for (&key, &available) in &batch_available {
             selected.entry(key).or_insert_with(|| {
+                // A drawn merged cell's mesh draws over any retained batch of its quadrant.
+                if merged_full.contains(&key) {
+                    return None;
+                }
                 select_terrain_lod_tier(
                     chebyshev_grid_distance(key.0, camera_grid),
                     false,

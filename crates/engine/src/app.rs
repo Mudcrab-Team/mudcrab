@@ -149,6 +149,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             InitialCameraGroundHeight(ground_height),
         ))
     };
+    // The streamed world's merged terrain (#215): the land texture table of this conversion, if it
+    // has one. Opening it reads one small file; the arrays and chunks load as they are needed.
+    let terrain_merge = runtime_data
+        .is_some()
+        .then(|| crate::terrain_merge::TerrainMerge::open(&config.assets_dir));
     let movement_tuning = (interactive_world_physics
         && runtime_data.is_some()
         && !config.streaming_fixture)
@@ -220,6 +225,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 })
                 .set(LogPlugin {
                     level: Level::INFO,
+                    custom_layer: crate::bug_report::logging::report_log_layer,
                     ..default()
                 }),
         )
@@ -241,17 +247,28 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::mesh_residency_audit::MeshResidencyAuditPlugin,
             SkyPlugin,
             ConsolePlugin,
+            crate::bug_report::BugReportPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
         ))
+        // The render→main "prepared and drawable" bridge. Registered for every
+        // run: it is what publishes the render world's own answer to "is this surface drawn?" into
+        // the main world, and it changes nothing else about the frame.
+        .add_plugins(crate::swap_bridge::SwapBridgePlugin)
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
-        .add_systems(PostUpdate, keep_windows_hidden);
+        .add_systems(PostUpdate, keep_windows_hidden)
+        .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
+            terrain_merge.as_ref(),
+        ));
     if interactive_world_physics {
         app.add_plugins(crate::settings_ui::SettingsPlugin);
     }
     add_camera_and_capture_systems(&mut app);
+    if let Some(terrain_merge) = terrain_merge {
+        app.insert_resource(terrain_merge);
+    }
     if records_measurements {
         app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
     }

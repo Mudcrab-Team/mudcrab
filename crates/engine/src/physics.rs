@@ -2741,8 +2741,16 @@ fn cursor_lifecycle_system(
     // Focus loss or F3 releases; click recaptures (V6). The console and settings menu own capture
     // while open and on their closing frame; the cursor options below still follow that state.
     let focused = windows.iter().all(|window| window.focused);
-    let console_owns_capture = console.is_some_and(|console| console.open || console.closing)
+    let reporting_capture = console
+        .as_ref()
+        .is_some_and(|console| console.capture_suppressed);
+    let console_owns_capture = console
+        .is_some_and(|console| console.open || console.closing || console.capture_suppressed)
         || menu.is_some_and(|menu| menu.blocks_gameplay());
+    if reporting_capture {
+        *capture = CursorCapture::Released;
+        clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+    }
     if !console_owns_capture {
         if !focused || keyboard.just_pressed(KeyCode::F3) {
             if *capture == CursorCapture::Captured {
@@ -4266,6 +4274,60 @@ mod console_tests {
         send_state(&mut app, KeyCode::Backquote, Released);
         send_state(&mut app, KeyCode::KeyV, Pressed);
         assert_eq!(mode(&app), MoveMode::Walk);
+    }
+
+    #[test]
+    fn bug_report_capture_keeps_input_blocked_after_console_dismissal() {
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut app = console_fixture();
+        app.insert_resource(CursorCapture::Captured);
+        send_state(&mut app, KeyCode::Backquote, Pressed);
+        send_state(&mut app, KeyCode::Backquote, Released);
+        app.world_mut()
+            .resource_mut::<ConsoleState>()
+            .capture_suppressed = true;
+        send_state(&mut app, KeyCode::Backquote, Pressed);
+        send_state(&mut app, KeyCode::Backquote, Released);
+        assert!(!app.world().resource::<ConsoleState>().open);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        let camera_before = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&Transform, With<ControlledCamera>>();
+            *query.single(app.world()).unwrap()
+        };
+        send_key(&mut app, KeyCode::KeyW);
+        send_key(&mut app, KeyCode::KeyV);
+        app.world_mut()
+            .write_message(bevy::input::mouse::MouseButtonInput {
+                button: MouseButton::Left,
+                state: Pressed,
+                window: Entity::PLACEHOLDER,
+            });
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(40.0, 10.0),
+        });
+        app.update();
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert_eq!(mode(&app), MoveMode::Noclip);
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Transform, With<ControlledCamera>>();
+        assert_eq!(*query.single(app.world()).unwrap(), camera_before);
+        send_state(&mut app, KeyCode::KeyW, Released);
+        send_state(&mut app, KeyCode::KeyV, Released);
+        app.world_mut()
+            .resource_mut::<ConsoleState>()
+            .capture_suppressed = false;
+        app.update();
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Captured
+        );
+        assert!(!app.world().resource::<ConsoleState>().open);
     }
 
     #[test]
