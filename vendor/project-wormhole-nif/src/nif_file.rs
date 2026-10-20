@@ -20,7 +20,7 @@ use project_wormhole_ba2::dev::ensure_texture_parent;
 use project_wormhole_ba2::dev::normalize_esm_path;
 use project_wormhole_esm::structs::geometry::Quaternion;
 use project_wormhole_shared::glam;
-use project_wormhole_shared::glam::{Mat4, Vec3};
+use project_wormhole_shared::glam::{Mat4, U8Vec4, Vec3, Vec4};
 use zerocopy::IntoBytes;
 
 use crate::model::all::*;
@@ -31,6 +31,18 @@ use super::dev::*;
 pub struct NifFile {
     pub header: NifHeader,
     pub blocks: Vec<NifBlock>,
+}
+
+/// The skin-instance blocks a shape can point at through `BSTriShape::skin`.
+///
+/// Skyrim SE actor meshes use `BSDismemberSkinInstance`, older content uses the
+/// plain `NiSkinInstance`, and Fallout 4 uses `BSSkinInstance`. The three carry
+/// different payloads, so the caller matches on the variant it actually needs.
+#[derive(Debug, Clone, Copy)]
+pub enum SkinInstanceRef<'a> {
+    Bs(&'a BSSkinInstance),
+    Ni(&'a NiSkinInstance),
+    Dismember(&'a BsDismemberSkinInstance),
 }
 
 impl NifFile {
@@ -74,6 +86,15 @@ impl NifFile {
                 _ => None,
             })
             .collect()
+    }
+
+    pub fn skin_instance_at(&self, block: u32) -> Option<SkinInstanceRef<'_>> {
+        match self.blocks.get(block as usize)? {
+            NifBlock::BSSkinInstance(skin) => Some(SkinInstanceRef::Bs(skin)),
+            NifBlock::NiSkinInstance(skin) => Some(SkinInstanceRef::Ni(skin)),
+            NifBlock::BsDismemberSkinInstance(skin) => Some(SkinInstanceRef::Dismember(skin)),
+            _ => None,
+        }
     }
 
     pub fn get_shapes(&self) -> Vec<&BSTriShape> {
@@ -143,6 +164,15 @@ impl NifFile {
             .collect()
     }
 
+    /// Material id per exported mesh, in block order.
+    ///
+    /// Only `BSSubIndexTriShape` contributes an entry. `BSTriShape` materials are
+    /// not tracked by this parsed-block view — the raw-block view
+    /// (`RawNifFile::get_mesh_materials_ids`) does track them — so a file whose
+    /// geometry is all `BSTriShape` yields an empty list. A caller that emits one
+    /// mesh per shape must not index the result without accounting for the
+    /// missing entries; `to_glb` binds `material_indices[mesh]` for skeletal
+    /// meshes, so a short list panics there rather than falling back to material 0.
     pub fn get_mesh_materials_ids(&self) -> Vec<u8> {
         let mut positions = Vec::new();
         let mut mat_index = 1;
@@ -190,13 +220,18 @@ impl NifFile {
     }
 
     pub fn has_skeleton(&self) -> bool {
-        for block in &self.blocks {
-            match block {
-                NifBlock::BSSkinInstance(_) => return true,
-                _ => {}
-            }
-        }
-        false
+        self.declares_skin()
+    }
+
+    pub fn declares_skin(&self) -> bool {
+        self.blocks.iter().any(|block| {
+            matches!(
+                block,
+                NifBlock::BSSkinInstance(_)
+                    | NifBlock::NiSkinInstance(_)
+                    | NifBlock::BsDismemberSkinInstance(_)
+            )
+        })
     }
 }
 
@@ -293,112 +328,15 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                 mesh.bones.add_bone(node_name, bone_data).unwrap();
             }
 
-            // Get meshes from nif
-            let shapes = nif.get_shapes();
-            let dynamic_shapes = nif.get_dynamic_shapes();
-            let seg_shapes = nif.get_seg_shapes();
-
-            // Init empty mesh vector
-            let mut meshes: Vec<SkeletalMesh> = Vec::new();
-
-            // Loop through shapes and add them to the mesh vector
-            for shape in shapes {
-                let name = Some(
-                    nif.header
-                        .get_string(shape.av.object.name as usize)
-                        .unwrap()
-                        .to_string(),
-                );
-                mesh.mesh = Some(tri_shape_to_mesh(shape, name));
-
-                let weights = shape.get_vertex_weights();
-                let joints = shape.get_vertex_joints();
-
-                mesh.weights = weights.clone();
-                mesh.joints = joints.clone();
-
-                meshes.push(mesh.clone());
-            }
-
-            for shape in dynamic_shapes {
-                let shape = &shape.bs_tri_shape;
-                let name = Some(
-                    nif.header
-                        .get_string(shape.av.object.name as usize)
-                        .unwrap()
-                        .to_string(),
-                );
-                mesh.mesh = Some(tri_shape_to_mesh(shape, name));
-                mesh.weights = shape.get_vertex_weights();
-                mesh.joints = shape.get_vertex_joints();
-                meshes.push(mesh.clone());
-            }
-
-            // Loop through seg shapes and add them to the mesh vector
-            for shape in seg_shapes {
-                let name = Some(
-                    nif.header
-                        .get_string(shape.bs_tri_shape.av.object.name as usize)
-                        .unwrap()
-                        .to_string(),
-                );
-                mesh.mesh = Some(tri_shape_to_mesh(&shape.bs_tri_shape, name));
-
-                let weights = shape.bs_tri_shape.get_vertex_weights();
-                let joints = shape.bs_tri_shape.get_vertex_joints();
-
-                mesh.weights = weights.clone();
-                mesh.joints = joints.clone();
-
-                meshes.push(mesh.clone());
-            }
-
-            for (skin_index, skin) in nif.get_skins().iter().enumerate() {
-                let mut inverse_bind_matrices = Vec::new();
-
-                // Get the inverse position matrices
-                match &nif.blocks[skin.data as usize] {
-                    NifBlock::BSSkinBoneData(bone_data) => {
-                        for bone_transform in &bone_data.bone_list {
-                            inverse_bind_matrices.push(bone_transform.into_matrix4());
-                        }
-                    }
-                    _ => {
-                        panic!("Inverse position block is not a BSSkinBoneData")
-                    }
-                }
-
-                let mut joint_names = Vec::new();
-                warn!("{:?}", skin.bones.len());
-
-                for joint_index in &skin.bones {
-                    match &nif.blocks[*joint_index as usize] {
-                        NifBlock::NiNode(node) => {
-                            joint_names.push(
-                                nif.header
-                                    .get_string(node.name() as usize)
-                                    .unwrap()
-                                    .to_string(),
-                            );
-                        }
-                        _ => {
-                            panic!("Skin bone is not a NiNode")
-                        }
-                    }
-                }
-
-                debug!("Joint names: {:?}", joint_names);
-
-                meshes[skin_index].skin = joint_names;
-                meshes[skin_index].inverse_bind_matrices = inverse_bind_matrices;
-
-                //debug!("{:?}", meshes[skin_index].skin);
-            }
+            let (meshes, material_indices) = if nif.get_skins().is_empty() {
+                legacy_skinned_meshes(nif, &mesh.bones)?
+            } else {
+                (bsskin_meshes(nif, &mesh), nif.get_mesh_materials_ids())
+            };
 
             model.skeletal_meshes = meshes;
 
             let material = nif.get_materials();
-            let mat_indices = nif.get_mesh_materials_ids();
 
             for mat in material {
                 let diffuse = mat.diffuse.clone();
@@ -414,7 +352,7 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                 });
             }
 
-            model.material_indices = mat_indices.clone();
+            model.material_indices = material_indices;
         }
         // Use the nodes in the current file as the skeleton
         else {
@@ -444,6 +382,587 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
     }
 
     Ok(model)
+}
+
+/// Builds the Fallout 4 `BSSkinInstance` mesh list.
+fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
+    let mut mesh = mesh.clone();
+
+    // Init empty mesh vector
+    let mut meshes: Vec<SkeletalMesh> = Vec::new();
+
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let NifBlock::BSTriShape(shape) = block else {
+            continue;
+        };
+        let name = Some(
+            nif.header
+                .get_string(shape.av.object.name as usize)
+                .unwrap()
+                .to_string(),
+        );
+        mesh.mesh = Some(tri_shape_to_mesh(shape, name));
+        mesh.source_block = Some(index as u32);
+        mesh.weights = shape.get_vertex_weights();
+        mesh.joints = shape.get_vertex_joints();
+        meshes.push(mesh.clone());
+    }
+
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let NifBlock::BSDynamicTriShape(dynamic) = block else {
+            continue;
+        };
+        let shape = &dynamic.bs_tri_shape;
+        let name = Some(
+            nif.header
+                .get_string(shape.av.object.name as usize)
+                .unwrap()
+                .to_string(),
+        );
+        mesh.mesh = Some(tri_shape_to_mesh(shape, name));
+        mesh.source_block = Some(index as u32);
+        mesh.weights = shape.get_vertex_weights();
+        mesh.joints = shape.get_vertex_joints();
+        meshes.push(mesh.clone());
+    }
+
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let NifBlock::BSSubIndexTriShape(seg) = block else {
+            continue;
+        };
+        let shape = &seg.bs_tri_shape;
+        let name = Some(
+            nif.header
+                .get_string(shape.av.object.name as usize)
+                .unwrap()
+                .to_string(),
+        );
+        mesh.mesh = Some(tri_shape_to_mesh(shape, name));
+        mesh.source_block = Some(index as u32);
+        mesh.weights = shape.get_vertex_weights();
+        mesh.joints = shape.get_vertex_joints();
+        meshes.push(mesh.clone());
+    }
+
+    for (skin_index, skin) in nif.get_skins().iter().enumerate() {
+        let mut inverse_bind_matrices = Vec::new();
+
+        // Get the inverse position matrices
+        match &nif.blocks[skin.data as usize] {
+            NifBlock::BSSkinBoneData(bone_data) => {
+                for bone_transform in &bone_data.bone_list {
+                    inverse_bind_matrices.push(bone_transform.into_matrix4());
+                }
+            }
+            _ => {
+                panic!("Inverse position block is not a BSSkinBoneData")
+            }
+        }
+
+        let mut joint_names = Vec::new();
+        warn!("{:?}", skin.bones.len());
+
+        for joint_index in &skin.bones {
+            match &nif.blocks[*joint_index as usize] {
+                NifBlock::NiNode(node) => {
+                    joint_names.push(
+                        nif.header
+                            .get_string(node.name() as usize)
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+                _ => {
+                    panic!("Skin bone is not a NiNode")
+                }
+            }
+        }
+
+        debug!("Joint names: {:?}", joint_names);
+
+        meshes[skin_index].skin = joint_names;
+        meshes[skin_index].inverse_bind_matrices = inverse_bind_matrices;
+    }
+
+    meshes
+}
+
+fn legacy_skinned_meshes(
+    nif: &NifFile,
+    bones: &BoneTree,
+) -> Result<(Vec<SkeletalMesh>, Vec<u8>), String> {
+    let mut meshes = Vec::new();
+    let mut material_indices = Vec::new();
+
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let (shape, block_type) = match block {
+            NifBlock::BSTriShape(shape) => (shape, "BSTriShape"),
+            NifBlock::BSDynamicTriShape(dynamic) => (&dynamic.bs_tri_shape, "BSDynamicTriShape"),
+            _ => continue,
+        };
+        let shape_index = index as u32;
+        let name = nif
+            .header
+            .get_string(shape.av.object.name as usize)
+            .ok()
+            .map(str::to_owned);
+
+        let instance_block = shape.skin;
+        let Some(instance) = nif.skin_instance_at(instance_block) else {
+            // A skinned file may still contain an unskinned shape (an effect or
+            // editor helper). A SkeletalMesh cannot carry an unskinned
+            // primitive, and emitting a second static model would duplicate the
+            // whole scene, so the shape is left out and reported.
+            warn!(
+                "shape block {shape_index} ({block_type}, {name:?}) references no skin instance (block {instance_block}); leaving it out of the skeletal mesh set"
+            );
+            continue;
+        };
+
+        let instance = match instance {
+            SkinInstanceRef::Ni(instance) => instance,
+            SkinInstanceRef::Dismember(instance) => &instance.skin_instance,
+            SkinInstanceRef::Bs(_) => {
+                warn!(
+                    "shape block {shape_index} ({block_type}, {name:?}) references BSSkinInstance block {instance_block}; the SSE BSSkin path handles those shapes"
+                );
+                continue;
+            }
+        };
+
+        meshes.push(legacy_skinned_mesh(
+            nif,
+            shape_index,
+            block_type,
+            shape,
+            name,
+            instance,
+            instance_block,
+            bones,
+        )?);
+        material_indices.push(shape_material_index(
+            nif,
+            shape_index,
+            block_type,
+            shape.shader_property,
+        ));
+    }
+
+    Ok((meshes, material_indices))
+}
+
+/// Material index for one emitted shape, counted in `NifFile::get_materials`
+/// order (`BSShaderTextureSet` block order). Falls back to material 0 when the
+/// shape has no lighting shader or its texture set is not in the file.
+fn shape_material_index(
+    nif: &NifFile,
+    shape_index: u32,
+    block_type: &str,
+    shader_property: u32,
+) -> u8 {
+    let texture_set = match nif.blocks.get(shader_property as usize) {
+        Some(NifBlock::BSLightingShaderProperty(property)) => property.texture_set,
+        _ => {
+            debug!(
+                "shape block {shape_index} ({block_type}) has no BSLightingShaderProperty at block {shader_property}; binding material 0"
+            );
+            return 0;
+        }
+    };
+
+    let mut material = 0u8;
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let NifBlock::BSShaderTextureSet(_) = block else {
+            continue;
+        };
+        if index as u32 == texture_set {
+            return material;
+        }
+        match material.checked_add(1) {
+            Some(next) => material = next,
+            None => break,
+        }
+    }
+
+    debug!(
+        "shape block {shape_index} ({block_type}) references texture set block {texture_set}, which is not in the material list; binding material 0"
+    );
+    0
+}
+
+fn legacy_skinned_mesh(
+    nif: &NifFile,
+    shape_index: u32,
+    block_type: &str,
+    shape: &BSTriShape,
+    name: Option<String>,
+    instance: &NiSkinInstance,
+    instance_block: u32,
+    bones: &BoneTree,
+) -> Result<SkeletalMesh, String> {
+    let skin_data = match nif.blocks.get(instance.data as usize) {
+        Some(NifBlock::NiSkinData(data)) => data,
+        _ => {
+            return Err(format!(
+                "shape block {shape_index} ({block_type}): skin instance block {instance_block} references block {} which is not NiSkinData",
+                instance.data
+            ))
+        }
+    };
+
+    if skin_data.bones.len() != instance.bones.len() {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}): skin instance block {instance_block} lists {} bones but NiSkinData block {} has {} inverse bind transforms",
+            instance.bones.len(),
+            instance.data,
+            skin_data.bones.len()
+        ));
+    }
+
+    let mut joint_names = Vec::with_capacity(instance.bones.len());
+    for joint in &instance.bones {
+        let node = match nif.blocks.get(*joint as usize) {
+            Some(NifBlock::NiNode(node)) => node,
+            _ => {
+                return Err(format!(
+                    "shape block {shape_index} ({block_type}): skin instance block {instance_block} bone reference {joint} is not a NiNode"
+                ))
+            }
+        };
+        let joint_name = nif
+            .header
+            .get_string(node.name() as usize)
+            .map_err(|error| {
+                format!(
+                    "shape block {shape_index} ({block_type}): skin instance block {instance_block} bone block {joint} has an invalid name: {error}"
+                )
+            })?;
+        joint_names.push(joint_name.to_string());
+    }
+
+    let inverse_bind_matrices = skin_data
+        .bones
+        .iter()
+        .map(|bone| bone.skin_transform.into_matrix4())
+        .collect();
+
+    let partition = match nif.blocks.get(instance.skin_partition as usize) {
+        Some(NifBlock::NiSkinPartition(partition)) => partition,
+        _ => {
+            return Err(format!(
+                "shape block {shape_index} ({block_type}): skin instance block {instance_block} references block {} which is not NiSkinPartition",
+                instance.skin_partition
+            ))
+        }
+    };
+
+    let mesh = legacy_shape_mesh(shape, partition, name.clone());
+    let position_count = mesh.positions.len();
+    if position_count == 0 {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}) is skinned but has no vertex positions in the shape, its dynamic vertex array or NiSkinPartition block {}",
+            instance.skin_partition
+        ));
+    }
+
+    let influences = vertex_influences(
+        shape_index,
+        block_type,
+        shape,
+        instance.skin_partition,
+        partition,
+        position_count,
+    )?;
+    if influences.len() != position_count {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}) has {} weighted vertices but {position_count} positions",
+            influences.len()
+        ));
+    }
+
+    let mut joints = Vec::with_capacity(position_count);
+    let mut weights = Vec::with_capacity(position_count);
+    for (vertex_index, (raw_joints, raw_weights)) in influences.into_iter().enumerate() {
+        let (vertex_joints, vertex_weights) = normalize_vertex_influences(
+            raw_joints,
+            raw_weights,
+            &partition.bone_palette,
+            instance.bones.len(),
+            shape_index,
+            vertex_index,
+        )?;
+        joints.push(vertex_joints);
+        weights.push(vertex_weights);
+    }
+
+    Ok(SkeletalMesh {
+        name,
+        source_block: Some(shape_index),
+        mesh: Some(mesh),
+        weights,
+        joints,
+        bones: bones.clone(),
+        skin: joint_names,
+        inverse_bind_matrices,
+    })
+}
+
+/// Fills each vertex channel from the shape buffer, then from the partition
+/// buffer only for channels the shape does not carry. A dynamic shape stores
+/// live positions in its trailing array (parsed into `vertex_data.position`)
+/// while normals, UVs and triangles come from the partition.
+fn legacy_shape_mesh(
+    shape: &BSTriShape,
+    partition: &NiSkinPartition,
+    name: Option<String>,
+) -> StaticMesh {
+    let mut mesh = tri_shape_to_mesh(shape, name);
+    if mesh.positions.is_empty() {
+        mesh.positions = partition
+            .vertex_data
+            .iter()
+            .filter_map(|vertex| vertex.position)
+            .collect();
+    }
+    if mesh.normals.is_empty() {
+        mesh.normals = partition
+            .vertex_data
+            .iter()
+            .filter_map(|vertex| vertex.normal)
+            .collect();
+    }
+    if mesh.uvs.is_empty() {
+        mesh.uvs = partition
+            .vertex_data
+            .iter()
+            .filter_map(|vertex| vertex.uv)
+            .collect();
+    }
+    if mesh.colors.is_empty() {
+        mesh.colors = partition
+            .vertex_data
+            .iter()
+            .filter_map(|vertex| vertex.vertex_colors)
+            .map(|color| {
+                BSVec4(glam::Vec4::new(
+                    f32::from(color.x) / 255.0,
+                    f32::from(color.y) / 255.0,
+                    f32::from(color.z) / 255.0,
+                    f32::from(color.w) / 255.0,
+                ))
+            })
+            .collect();
+    }
+    if mesh.triangles.is_empty() {
+        mesh.triangles = partition.triangles.clone();
+    }
+    mesh
+}
+
+type RawInfluences = Vec<([u8; 4], [f32; 4])>;
+
+fn vertex_influences(
+    shape_index: u32,
+    block_type: &str,
+    shape: &BSTriShape,
+    partition_block: u32,
+    partition: &NiSkinPartition,
+    position_count: usize,
+) -> Result<RawInfluences, String> {
+    let buffer = if shape
+        .vertex_data
+        .iter()
+        .any(|vertex| vertex.bone_indices.is_some() || vertex.bone_weights.is_some())
+    {
+        &shape.vertex_data
+    } else {
+        &partition.vertex_data
+    };
+
+    if buffer
+        .iter()
+        .any(|vertex| vertex.bone_indices.is_some() || vertex.bone_weights.is_some())
+    {
+        let mut influences = Vec::with_capacity(buffer.len());
+        for (vertex_index, vertex) in buffer.iter().enumerate() {
+            let indices = vertex.bone_indices.ok_or_else(|| {
+                format!(
+                    "shape block {shape_index} ({block_type}) vertex {vertex_index} has skin weights in its vertex buffer but no bone indices"
+                )
+            })?;
+            let weights = vertex.bone_weights.ok_or_else(|| {
+                format!(
+                    "shape block {shape_index} ({block_type}) vertex {vertex_index} has bone indices in its vertex buffer but no skin weights"
+                )
+            })?;
+            influences.push((
+                [indices.x, indices.y, indices.z, indices.w],
+                [weights.x, weights.y, weights.z, weights.w],
+            ));
+        }
+        return Ok(influences);
+    }
+
+    if partition.weights.is_empty() || partition.bone_indices.is_empty() {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}) has no vertex-buffer skin data and NiSkinPartition block {partition_block} has no per-vertex arrays"
+        ));
+    }
+    if partition.weights.len() != partition.bone_indices.len() {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}): NiSkinPartition block {partition_block} has {} weight rows but {} bone-index rows",
+            partition.weights.len(),
+            partition.bone_indices.len()
+        ));
+    }
+
+    let mut influences = Vec::with_capacity(position_count);
+    if partition.weights.len() == position_count {
+        for (vertex_index, (row_weights, row_indices)) in partition
+            .weights
+            .iter()
+            .zip(&partition.bone_indices)
+            .enumerate()
+        {
+            influences.push(influence_from_row(
+                shape_index,
+                block_type,
+                partition_block,
+                vertex_index,
+                row_weights,
+                row_indices,
+            )?);
+        }
+        return Ok(influences);
+    }
+
+    // Partitions may repeat shared vertices: their row count then exceeds the
+    // shape's vertex count, and the concatenated vertex map is what ties each
+    // row back to a position.
+    if let Some(vertex_map) = partition.vertex_map.as_ref() {
+        if vertex_map.len() == partition.weights.len() {
+            let mut merged: Vec<Option<([u8; 4], [f32; 4])>> = vec![None; position_count];
+            for (row, (row_weights, row_indices)) in partition
+                .weights
+                .iter()
+                .zip(&partition.bone_indices)
+                .enumerate()
+            {
+                let target = usize::from(vertex_map[row]);
+                if target >= position_count {
+                    return Err(format!(
+                        "shape block {shape_index} ({block_type}): NiSkinPartition block {partition_block} vertex map entry {row} points at vertex {target} but the shape has {position_count} positions"
+                    ));
+                }
+                merged[target] = Some(influence_from_row(
+                    shape_index,
+                    block_type,
+                    partition_block,
+                    row,
+                    row_weights,
+                    row_indices,
+                )?);
+            }
+            let mut influences = Vec::with_capacity(position_count);
+            for (vertex_index, row) in merged.into_iter().enumerate() {
+                let Some(row) = row else {
+                    return Err(format!(
+                        "shape block {shape_index} ({block_type}): NiSkinPartition block {partition_block} vertex map leaves vertex {vertex_index} without skin data"
+                    ));
+                };
+                influences.push(row);
+            }
+            return Ok(influences);
+        }
+    }
+
+    Err(format!(
+        "shape block {shape_index} ({block_type}): NiSkinPartition block {partition_block} has {} weighted vertices, {} vertex-map entries and the shape has {position_count} positions",
+        partition.weights.len(),
+        partition.vertex_map.as_ref().map_or(0, Vec::len)
+    ))
+}
+
+fn influence_from_row(
+    shape_index: u32,
+    block_type: &str,
+    partition_block: u32,
+    vertex_index: usize,
+    row_weights: &[f32],
+    row_indices: &[u8],
+) -> Result<([u8; 4], [f32; 4]), String> {
+    if row_weights.len() != row_indices.len() {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}): NiSkinPartition block {partition_block} vertex {vertex_index} has {} weights but {} bone indices",
+            row_weights.len(),
+            row_indices.len()
+        ));
+    }
+    if row_weights.len() > 4 {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}): NiSkinPartition block {partition_block} vertex {vertex_index} has {} influences but glTF stores at most 4",
+            row_weights.len()
+        ));
+    }
+    let mut indices = [0u8; 4];
+    indices[..row_indices.len()].copy_from_slice(row_indices);
+    let mut weights = [0.0f32; 4];
+    weights[..row_weights.len()].copy_from_slice(row_weights);
+    Ok((indices, weights))
+}
+
+fn normalize_vertex_influences(
+    raw_joints: [u8; 4],
+    raw_weights: [f32; 4],
+    palette: &[u16],
+    bone_count: usize,
+    shape_index: u32,
+    vertex_index: usize,
+) -> Result<(U8Vec4, Vec4), String> {
+    let total: f32 = raw_weights.iter().sum();
+    if !total.is_finite() || total <= 0.0 {
+        return Err(format!(
+            "shape block {shape_index} vertex {vertex_index} has a skin weight sum of {total}; a zero-weight vertex cannot be skinned"
+        ));
+    }
+
+    let mut joints = [0u8; 4];
+    let mut weights = [0.0f32; 4];
+    for slot in 0..4 {
+        let weight = raw_weights[slot];
+        // Zero-weight slots carry junk indices in retail vertex buffers, so
+        // only the influences that actually move the vertex are validated.
+        if weight == 0.0 {
+            continue;
+        }
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(format!(
+                "shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"
+            ));
+        }
+        let palette_index = usize::from(raw_joints[slot]);
+        let bone = palette.get(palette_index).copied().ok_or_else(|| {
+            format!(
+                "shape block {shape_index} vertex {vertex_index} references palette entry {palette_index} but the palette has {} entries",
+                palette.len()
+            )
+        })?;
+        let joint = usize::from(bone);
+        if joint >= bone_count {
+            return Err(format!(
+                "shape block {shape_index} vertex {vertex_index} maps to joint {joint} but the skin instance has {bone_count} bones"
+            ));
+        }
+        let joint = u8::try_from(joint).map_err(|_| {
+            format!(
+                "shape block {shape_index} vertex {vertex_index} maps to joint {joint} which does not fit a U8 glTF joint index"
+            )
+        })?;
+        joints[slot] = joint;
+        weights[slot] = weight / total;
+    }
+
+    Ok((U8Vec4::from_array(joints), Vec4::from_array(weights)))
 }
 
 pub fn tri_shape_to_mesh(tri_shape: &BSTriShape, name: Option<String>) -> StaticMesh {

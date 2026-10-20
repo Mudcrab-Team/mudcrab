@@ -5,6 +5,10 @@ use crate::dev::*;
 #[derive(Debug, Clone)]
 pub struct SkeletalMesh {
     pub name: Option<String>,
+    /// Block index of the shape this mesh was built from. The exporter records
+    /// it so a consumer can associate the mesh with its source block instead of
+    /// guessing from shape-type enumeration order.
+    pub source_block: Option<u32>,
     pub mesh: Option<super::all::StaticMesh>,
     pub weights: Vec<glam::Vec4>,
     pub joints: Vec<glam::u8::U8Vec4>,
@@ -79,6 +83,7 @@ impl Default for SkeletalMesh {
     fn default() -> Self {
         Self {
             name: None,
+            source_block: None,
             mesh: None,
             weights: Vec::new(),
             joints: Vec::new(),

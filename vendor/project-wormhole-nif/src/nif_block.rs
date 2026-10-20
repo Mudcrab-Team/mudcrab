@@ -55,6 +55,7 @@ pub enum NifBlock {
     BSWaterShaderProperty(BSWaterShaderProperty),
     BSWindModifier(BSWindModifier),
     BSXFlags(BSXFlags),
+    BsDismemberSkinInstance(BsDismemberSkinInstance),
     NiAlphaProperty(NiAlphaProperty),
     NiBillboardNode(NiBillboardNode),
     NiBinaryExtraData(NiBinaryExtraData),
@@ -109,6 +110,7 @@ pub enum NifBlock {
     NiPoint3Interpolator(NiPoint3Interpolator),
     NiPointLight(NiPointLight),
     NiPosData(NiPosData),
+    NiSkinData(NiSkinData),
     NiSkinInstance(NiSkinInstance),
     NiSkinPartition(NiSkinPartition),
     NiStringExtraData(NiStringExtraData),
@@ -194,6 +196,7 @@ impl std::fmt::Debug for NifBlock {
             NifBlock::BSWaterShaderProperty(_) => write!(f, "BSWaterShaderProperty"),
             NifBlock::BSWindModifier(_) => write!(f, "BSWindModifier"),
             NifBlock::BSXFlags(_) => write!(f, "BSXFlags"),
+            NifBlock::BsDismemberSkinInstance(_) => write!(f, "BsDismemberSkinInstance"),
             NifBlock::NiAlphaProperty(_) => write!(f, "NiAlphaProperty"),
             NifBlock::NiBillboardNode(_) => write!(f, "NiBillboardNode"),
             NifBlock::NiBinaryExtraData(_) => write!(f, "NiBinaryExtraData"),
@@ -254,6 +257,7 @@ impl std::fmt::Debug for NifBlock {
             NifBlock::NiPoint3Interpolator(_) => write!(f, "NiPoint3Interpolator"),
             NifBlock::NiPointLight(_) => write!(f, "NiPointLight"),
             NifBlock::NiPosData(_) => write!(f, "NiPosData"),
+            NifBlock::NiSkinData(_) => write!(f, "NiSkinData"),
             NifBlock::NiSkinInstance(_) => write!(f, "NiSkinInstance"),
             NifBlock::NiSkinPartition(_) => write!(f, "NiSkinPartition"),
             NifBlock::NiStringExtraData(_) => write!(f, "NiStringExtraData"),
@@ -415,9 +419,28 @@ impl NifBlock {
                 Ok((i, NifBlock::BSMultiBoundOBB(result)))
             }
 
-            "NiSkinInstance" | "BSDismemberSkinInstance" => {
+            "NiSkinInstance" => {
                 let (i, result) = NiSkinInstance::parse(i)?;
                 Ok((i, NifBlock::NiSkinInstance(result)))
+            }
+
+            "BSDismemberSkinInstance" => {
+                let (i, result) = BsDismemberSkinInstance::parse(i)?;
+                if i.len() > 0 {
+                    warn!(
+                        "{} bytes left over after parsing BSDismemberSkinInstance",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::BsDismemberSkinInstance(result)))
+            }
+
+            "NiSkinData" => {
+                let (i, result) = NiSkinData::parse(i)?;
+                if i.len() > 0 {
+                    warn!("{} bytes left over after parsing NiSkinData", i.len());
+                }
+                Ok((i, NifBlock::NiSkinData(result)))
             }
 
             "NiSkinPartition" => {

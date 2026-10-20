@@ -55,8 +55,25 @@ impl Model {
         Ok(())
     }
 
-    pub fn to_gltf(&self, name: String) -> (gltf::json::Root, Vec<u8>) {
+    pub fn to_gltf(&self, name: String) -> Result<(gltf::json::Root, Vec<u8>), String> {
         use gltf::json::*;
+
+        let mut unresolved = Vec::new();
+        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
+            for joint in &smesh.skin {
+                if !smesh.bones.bones.contains_key(joint.as_str()) {
+                    unresolved.push(format!("{joint}:{index}"));
+                }
+            }
+        }
+        if !unresolved.is_empty() {
+            unresolved.sort();
+            unresolved.dedup();
+            return Err(format!(
+                "skin joints could not be resolved against the bone tree: {}",
+                unresolved.join(", ")
+            ));
+        }
 
         let mut root = gltf::json::Root::default();
 
@@ -407,7 +424,9 @@ impl Model {
                     joints.push(Index::new(bone as u32));
                     //warn!("Joint {}:{} found", joint, index);
                 } else {
-                    panic!("Joint {}:{} not found", joint, index);
+                    return Err(format!(
+                        "skin joint {joint}:{index} is missing from the exported node tree"
+                    ));
                 }
             }
 
@@ -951,11 +970,11 @@ impl Model {
 
         root.buffers[0].byte_length = USize64(bin_data.len() as u64);
 
-        (root, bin_data)
+        Ok((root, bin_data))
     }
 
-    pub fn to_glb(&self, name: String) -> Vec<u8> {
-        let (mut root, bin_data) = self.to_gltf(name);
+    pub fn to_glb(&self, name: String) -> Result<Vec<u8>, String> {
+        let (mut root, bin_data) = self.to_gltf(name)?;
 
         root.buffers[0].uri = None;
 
@@ -985,7 +1004,7 @@ impl Model {
         glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
         glb.extend_from_slice(b"BIN\0");
         glb.extend_from_slice(&bin);
-        glb
+        Ok(glb)
     }
 }
 
