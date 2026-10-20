@@ -9,7 +9,7 @@ use crate::{
         IngestionSelection, StagedOutput, StagingJournal, asset_configuration_hash_for_schema,
         can_reuse_meshes, can_reuse_scripts_and_archives, configuration_hash,
         configuration_hash_for_schema, current_configuration_hash_for_schema, hash_bytes,
-        hash_file, link_or_copy, load_staged_outputs, mesh_output_contracts_apply,
+        hash_file, link_or_copy, load_staged_outputs,
     },
     config::{PipelineConfig, TextureEncoder},
     esm::{
@@ -1539,9 +1539,6 @@ fn reusable_manifest(
         };
         let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
             recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
-        } else if kind == "nif" && mesh_output_contracts_apply(producer) {
-            // A combined proof predates the mesh output contracts and cannot establish them.
-            false
         } else {
             // Older manifests have one combined proof. Require an exact known
             // historical settings hash; an opaque stale schema cannot prove it.
@@ -4908,13 +4905,8 @@ mod tests {
             ..Default::default()
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
-        let mut eligible = manifest.entries.clone();
-        if crate::cache::mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION) {
-            // A combined proof cannot establish the current mesh output contracts.
-            eligible.remove("meshes/prior.nif");
-        }
         assert_eq!(
-            reused.entries, eligible,
+            reused.entries, manifest.entries,
             "metadata-only adapter identity must preserve eligible asset candidates"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
