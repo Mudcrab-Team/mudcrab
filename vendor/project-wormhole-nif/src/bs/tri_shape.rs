@@ -80,13 +80,100 @@ pub struct NiSkinPartition {
     pub triangles: Vec<U16Vec3>,
 }
 
+impl NiSkinPartition {
+    /// Legacy Skyrim stores geometry in NiTriShapeData, not an SSE vertex buffer.
+    pub fn parse_legacy(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (mut i, partition_count) = le_u32(i)?;
+        if partition_count as usize > i.len() / 16 {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                i,
+                nom::error::ErrorKind::Count,
+            )));
+        }
+        let mut triangles = Vec::new();
+        for _ in 0..partition_count {
+            let (next, num_vertices) = le_u16(i)?;
+            let (next, num_triangles) = le_u16(next)?;
+            let (next, num_bones) = le_u16(next)?;
+            let (next, num_strips) = le_u16(next)?;
+            let (next, weights_per_vertex) = le_u16(next)?;
+            let (next, _) = take(usize::from(num_bones) * 2)(next)?;
+            let (mut next, has_vertex_map) = le_u8(next)?;
+            let vertex_map = if has_vertex_map != 0 {
+                let (rest, raw) = take(usize::from(num_vertices) * 2)(next)?;
+                next = rest;
+                Some(raw)
+            } else {
+                None
+            };
+            let (rest, has_weights) = le_u8(next)?;
+            next = rest;
+            if has_weights != 0 {
+                (next, _) =
+                    take(usize::from(num_vertices) * usize::from(weights_per_vertex) * 4)(next)?;
+            }
+            let (next, strip_lengths) = take(usize::from(num_strips) * 2)(next)?;
+            let (mut next, has_faces) = le_u8(next)?;
+            if has_faces != 0 {
+                if num_strips == 0 {
+                    for _ in 0..num_triangles {
+                        let (rest, mut triangle) = parse_u16_vec3(next)?;
+                        next = rest;
+                        for index in 0..3 {
+                            if triangle[index] >= num_vertices {
+                                return Err(nom::Err::Failure(nom::error::Error::new(
+                                    next,
+                                    nom::error::ErrorKind::Verify,
+                                )));
+                            }
+                            if let Some(map) = vertex_map {
+                                let offset = usize::from(triangle[index]) * 2;
+                                triangle[index] =
+                                    u16::from_le_bytes([map[offset], map[offset + 1]]);
+                            }
+                        }
+                        triangles.push(triangle);
+                    }
+                } else {
+                    // Legacy render geometry already carries its triangles in NiTriShapeData.
+                    for length in strip_lengths.chunks_exact(2) {
+                        let length = u16::from_le_bytes([length[0], length[1]]);
+                        (next, _) = take(usize::from(length) * 2)(next)?;
+                    }
+                }
+            }
+            let (rest, has_bone_indices) = le_u8(next)?;
+            next = rest;
+            if has_bone_indices != 0 {
+                (next, _) =
+                    take(usize::from(num_vertices) * usize::from(weights_per_vertex))(next)?;
+            }
+            (i, _) = le_u16(next)?; // Bethesda partition flags
+        }
+        let (_, vertex_desc) = BSVertexDesc::parse(&[0; 8])?;
+        Ok((
+            i,
+            Self {
+                vertex_desc,
+                vertex_data: Vec::new(),
+                triangles,
+            },
+        ))
+    }
+}
+
 impl Parse<&[u8]> for NiSkinPartition {
+    /// Parses an SSE skin partition, validating vertex-buffer sizes before reading vertices and triangles.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         let (i, partition_count) = le_u32(i)?;
         let (i, data_size) = le_u32(i)?;
         let (i, vertex_size) = le_u32(i)?;
         let (mut i, vertex_desc) = BSVertexDesc::parse(i)?;
-        if vertex_size == 0 || data_size % vertex_size != 0 {
+        if vertex_size == 0
+            || data_size % vertex_size != 0
+            || data_size as usize > i.len()
+            || vertex_size as usize != usize::from(vertex_desc.vertex_data_size) * 4
+        {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 i,
                 nom::error::ErrorKind::Verify,
@@ -197,6 +284,7 @@ impl Parse<&[u8]> for BSLODTriShape {
 }
 
 impl Parse<&[u8]> for BSDynamicTriShape {
+    /// Parses an SSE dynamic triangle shape and applies its full-precision vertex positions.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
         // BSDynamicTriShape extends the ordinary SSE BSTriShape payload; its
         // dynamic vertex array follows the base payload directly.
@@ -204,6 +292,7 @@ impl Parse<&[u8]> for BSDynamicTriShape {
         let (mut data, dynamic_data_size) = le_u32(i)?;
         let vertex_count = dynamic_data_size as usize / 16;
         if dynamic_data_size as usize % 16 != 0
+            || dynamic_data_size as usize > data.len()
             || vertex_count != bs_tri_shape.num_vertices as usize
         {
             return Err(nom::Err::Failure(nom::error::Error::new(
@@ -242,6 +331,7 @@ impl Parse<&[u8]> for BSTriShape {
     }
 }
 
+/// Parses a triangle shape with the given bounds extension and validates its declared geometry size.
 fn parse_tri_shape(
     i: &[u8],
     bound_extension_size: usize,
@@ -288,7 +378,7 @@ fn parse_tri_shape(
 
     // SSE stores a secondary particle payload after ordinary geometry. Its
     // size is expressed as a count of 16-bit values.
-    let data = if bound_extension_size > 0 && data.len() >= 4 {
+    let data = if data.len() >= 4 {
         let (data, particle_data_size) = le_u32(data)?;
         let particle_bytes = (particle_data_size as usize).saturating_mul(2);
         let (data, _) = take(particle_bytes)(data)?;
@@ -599,5 +689,58 @@ impl BSTriShape {
         }
 
         joints
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn particle_size_counts_u16_values_and_preserves_following_data() {
+        for particle_size in [0u32, 3] {
+            // Counted NiAVObject with an identity transform and no extra data.
+            let mut fixture = Vec::new();
+            for value in [0u32, 0, u32::MAX, 0] {
+                fixture.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [
+                0.0f32, 0.0, 0.0, // translation
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, // rotation
+                1.0, // scale
+            ] {
+                fixture.extend_from_slice(&value.to_le_bytes());
+            }
+            fixture.extend_from_slice(&u32::MAX.to_le_bytes()); // collision object
+            fixture.extend_from_slice(&[0; 16]); // bounding sphere
+
+            for _ in 0..3 {
+                fixture.extend_from_slice(&u32::MAX.to_le_bytes());
+            }
+            fixture.extend_from_slice(&0u64.to_le_bytes()); // vertex descriptor
+            fixture.extend_from_slice(&0u16.to_le_bytes()); // triangles
+            fixture.extend_from_slice(&0u16.to_le_bytes()); // vertices
+            fixture.extend_from_slice(&0u32.to_le_bytes()); // geometry size
+            fixture.extend_from_slice(&particle_size.to_le_bytes());
+            let particle_start = fixture.len();
+            fixture.extend_from_slice(
+                &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66][..particle_size as usize * 2],
+            );
+            let particle_end = fixture.len();
+            fixture.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+
+            let (rest, shape) = BSTriShape::parse(&fixture).unwrap();
+            assert_eq!(rest, &[0xaa, 0xbb, 0xcc, 0xdd]);
+            assert_eq!(shape.data_size, 0);
+            assert!(shape.vertex_data.is_empty());
+            assert!(shape.triangles.is_empty());
+            assert!(BSTriShape::parse(&fixture[..particle_end])
+                .unwrap()
+                .0
+                .is_empty());
+            for end in particle_start..particle_end {
+                assert!(BSTriShape::parse(&fixture[..end]).is_err());
+            }
+        }
     }
 }

@@ -61,8 +61,13 @@ expression: manifest
       "source_hash": "[source_hash]"
     }
   },
+  "asset_configuration_hashes": {
+    "dds": "a219a7c650f50a442d6a12b19c965feed2eb480b534474f516a0ee4187feec40",
+    "nif": "2378d459ee153ec2dba792300e620bbd599ca389e9e62e1df5597ffff8962f16",
+    "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
+  },
   "complete": true,
-  "configuration_hash": "cca2af2b67310e9bc99f97208cabb4edffbd5d04c007e01fb350fccc011a19a2",
+  "configuration_hash": "9a2926b704ad4c96d1987300d983a4d0bc23070e31dea991bd711ac08c3dc5ee",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -73,13 +78,13 @@ expression: manifest
     "scripts/generated.pex": {
       "output": "scripts/generated.luau",
       "output_hash": "[output_hash]",
-      "output_size": 992,
+      "output_size": 1110,
       "source_hash": "[source_hash]"
     },
     "scripts/second.pex": {
       "output": "scripts/second.luau",
       "output_hash": "[output_hash]",
-      "output_size": 989,
+      "output_size": 1107,
       "source_hash": "[source_hash]"
     },
     "textures/generated_color.dds": {
@@ -120,5 +125,6 @@ expression: manifest
     "pex": 2
   },
   "pruned_texture_references": {},
-  "schema_version": 24
+  "record_data_complete": true,
+  "schema_version": 27
 }

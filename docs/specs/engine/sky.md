@@ -100,7 +100,8 @@ comparison; the output correction does not validate those assumptions.
 ## Not yet
 
 - Weather and climate records from the world database, time of day and weather transitions: the
-  fog density and colour are the built-in clear-day ones.
+  fog density and colour are the built-in clear-day ones. External emittance (#242) already stores
+  its sources' colours at sunrise, day, sunset and night, and the engine applies the day colour.
 - The cloud layers (including layer 28, the fog band that straddles the horizon), stars, sun and
   glare, moons and aurora.
 - A calibrated sky brightness against lit surfaces; the scale is 1.0 until it is measured on

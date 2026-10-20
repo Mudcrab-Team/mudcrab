@@ -1,0 +1,4794 @@
+{
+  "version": 1,
+  "sources": {
+    "actors_xedit": {
+      "revision": "xedit-4.1.5f",
+      "facts_only": true,
+      "definition": "wbDefinitionsTES5.pas / wbDefinitionsCommon.pas"
+    }
+  },
+  "definitions": {
+    "actors_attack": {
+      "name": "attacks",
+      "kind": "group",
+      "fields": [
+        {
+          "name": "attack_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "damage_multiplier",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "chance",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "spell",
+              "kind": "form_id",
+              "offset": 8,
+              "targets": [
+                "SPEL",
+                "SHOU"
+              ]
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 12,
+              "flags": {
+                "1": "ignore_weapon",
+                "2": "bash",
+                "4": "power",
+                "8": "left",
+                "16": "rotating",
+                "2147483648": "override_data"
+              }
+            },
+            {
+              "name": "attack_angle",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "strike_angle",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "stagger",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "attack_type",
+              "kind": "form_id",
+              "offset": 28,
+              "targets": [
+                "KYWD"
+              ]
+            },
+            {
+              "name": "knockdown",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "recovery_time",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "stamina_multiplier",
+              "kind": "f32",
+              "offset": 40
+            }
+          ],
+          "signature": "ATKD",
+          "size": 44
+        },
+        {
+          "name": "attack_event",
+          "kind": "zstring",
+          "signature": "ATKE"
+        }
+      ],
+      "repeat": true,
+      "source": "xedit-tes5:4959-5010"
+    },
+    "actors_sound_types": {
+      "name": "sound_types",
+      "kind": "group",
+      "fields": [
+        {
+          "name": "sound_type",
+          "kind": "u32",
+          "enum": {
+            "0": "left_foot",
+            "1": "right_foot",
+            "2": "left_back_foot",
+            "3": "right_back_foot",
+            "4": "idle",
+            "5": "aware",
+            "6": "attack",
+            "7": "hit",
+            "8": "death",
+            "9": "weapon",
+            "10": "movement_loop",
+            "11": "conscious_loop",
+            "12": "auxiliary_1",
+            "13": "auxiliary_2",
+            "14": "auxiliary_3",
+            "15": "auxiliary_4",
+            "16": "auxiliary_5",
+            "17": "auxiliary_6",
+            "18": "auxiliary_7",
+            "19": "auxiliary_8",
+            "20": "jump",
+            "21": "random_or_loop"
+          },
+          "signature": "CSDT"
+        },
+        {
+          "name": "sounds",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "sound",
+              "kind": "form_id",
+              "targets": [
+                "SNDR"
+              ],
+              "signature": "CSDI"
+            },
+            {
+              "name": "chance",
+              "kind": "u8",
+              "signature": "CSDC"
+            }
+          ],
+          "repeat": true
+        }
+      ],
+      "repeat": true,
+      "source": "xedit-tes5:6644-6680; xedit-common:705-717"
+    },
+    "actors_ai": {
+      "name": "ai_data",
+      "kind": "struct",
+      "members": [
+        {
+          "name": "aggression",
+          "kind": "u8",
+          "offset": 0,
+          "enum": {
+            "0": "unaggressive",
+            "1": "aggressive",
+            "2": "very_aggressive",
+            "3": "frenzied"
+          }
+        },
+        {
+          "name": "confidence",
+          "kind": "u8",
+          "offset": 1,
+          "enum": {
+            "0": "cowardly",
+            "1": "cautious",
+            "2": "average",
+            "3": "brave",
+            "4": "foolhardy"
+          }
+        },
+        {
+          "name": "energy",
+          "kind": "u8",
+          "offset": 2
+        },
+        {
+          "name": "morality",
+          "kind": "u8",
+          "offset": 3,
+          "enum": {
+            "0": "any_crime",
+            "1": "violence_against_enemies",
+            "2": "property_crime",
+            "3": "no_crime"
+          }
+        },
+        {
+          "name": "mood",
+          "kind": "u8",
+          "offset": 4,
+          "enum": {
+            "0": "neutral",
+            "1": "angry",
+            "2": "fear",
+            "3": "happy",
+            "4": "sad",
+            "5": "surprised",
+            "6": "puzzled",
+            "7": "disgusted"
+          }
+        },
+        {
+          "name": "assistance",
+          "kind": "u8",
+          "offset": 5,
+          "enum": {
+            "0": "nobody",
+            "1": "allies",
+            "2": "friends_and_allies"
+          }
+        },
+        {
+          "name": "aggro_radius_behavior",
+          "kind": "u8",
+          "offset": 6,
+          "enum": {
+            "0": "false",
+            "1": "true"
+          }
+        },
+        {
+          "name": "unused",
+          "kind": "bytes",
+          "offset": 7,
+          "size": 1
+        },
+        {
+          "name": "warn_radius",
+          "kind": "u32",
+          "offset": 8
+        },
+        {
+          "name": "warn_attack_radius",
+          "kind": "u32",
+          "offset": 12
+        },
+        {
+          "name": "attack_radius",
+          "kind": "u32",
+          "offset": 16
+        }
+      ],
+      "source": "xedit-tes5:6682-6730",
+      "size": 20
+    },
+    "actors_phoneme_weights": {
+      "name": "phoneme_weights",
+      "kind": "struct",
+      "members": [
+        {
+          "name": "aah_or_lip_big_aah",
+          "kind": "f32",
+          "offset": 0
+        },
+        {
+          "name": "big_aah_or_lip_dst",
+          "kind": "f32",
+          "offset": 4
+        },
+        {
+          "name": "bmp_or_lip_eee",
+          "kind": "f32",
+          "offset": 8
+        },
+        {
+          "name": "ch_jsh_or_lip_fv",
+          "kind": "f32",
+          "offset": 12
+        },
+        {
+          "name": "dst_or_lip_k",
+          "kind": "f32",
+          "offset": 16
+        },
+        {
+          "name": "eee_or_lip_l",
+          "kind": "f32",
+          "offset": 20
+        },
+        {
+          "name": "eh_or_lip_r",
+          "kind": "f32",
+          "offset": 24
+        },
+        {
+          "name": "fv_or_lip_th",
+          "kind": "f32",
+          "offset": 28
+        },
+        {
+          "name": "i",
+          "kind": "f32",
+          "offset": 32,
+          "optional": true
+        },
+        {
+          "name": "k",
+          "kind": "f32",
+          "offset": 36,
+          "optional": true
+        },
+        {
+          "name": "n",
+          "kind": "f32",
+          "offset": 40,
+          "optional": true
+        },
+        {
+          "name": "oh",
+          "kind": "f32",
+          "offset": 44,
+          "optional": true
+        },
+        {
+          "name": "ooh_q",
+          "kind": "f32",
+          "offset": 48,
+          "optional": true
+        },
+        {
+          "name": "r",
+          "kind": "f32",
+          "offset": 52,
+          "optional": true
+        },
+        {
+          "name": "th",
+          "kind": "f32",
+          "offset": 56,
+          "optional": true
+        },
+        {
+          "name": "w",
+          "kind": "f32",
+          "offset": 60,
+          "optional": true
+        }
+      ],
+      "sizes": [
+        32,
+        36,
+        40,
+        44,
+        48,
+        52,
+        56,
+        60,
+        64
+      ],
+      "source": "xedit-tes5:11820-11840 (eight required float members)"
+    }
+  },
+  "records": [
+    {
+      "signature": "CLAS",
+      "source": "xedit-tes5:6515-6573",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "FULL"
+        },
+        {
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings",
+          "signature": "DESC"
+        },
+        {
+          "name": "icon",
+          "kind": "zstring",
+          "signature": "ICON"
+        },
+        {
+          "name": "class_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "training_skill",
+              "kind": "i8",
+              "offset": 4,
+              "enum": {
+                "0": "one_handed",
+                "1": "two_handed",
+                "2": "archery",
+                "3": "block",
+                "4": "smithing",
+                "5": "heavy_armor",
+                "6": "light_armor",
+                "7": "pickpocket",
+                "8": "lockpicking",
+                "9": "sneak",
+                "10": "alchemy",
+                "11": "speech",
+                "12": "alteration",
+                "13": "conjuration",
+                "14": "destruction",
+                "15": "illusion",
+                "16": "restoration",
+                "17": "enchanting"
+              }
+            },
+            {
+              "name": "maximum_training_level",
+              "kind": "u8",
+              "offset": 5
+            },
+            {
+              "name": "skill_weights",
+              "kind": "array",
+              "members": [
+                {
+                  "name": "weight",
+                  "kind": "u8",
+                  "offset": 0
+                }
+              ],
+              "count": {
+                "kind": "fixed",
+                "stride": 1,
+                "value": 18
+              },
+              "offset": 6,
+              "size": 18
+            },
+            {
+              "name": "bleedout_default",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "voice_points",
+              "kind": "u32",
+              "offset": 28
+            },
+            {
+              "name": "attribute_weights",
+              "kind": "array",
+              "members": [
+                {
+                  "name": "weight",
+                  "kind": "u8",
+                  "offset": 0
+                }
+              ],
+              "count": {
+                "kind": "fixed",
+                "stride": 1,
+                "value": 4
+              },
+              "offset": 32,
+              "size": 4
+            }
+          ],
+          "reject_record_on_error": true,
+          "signature": "DATA",
+          "size": 36
+        }
+      ]
+    },
+    {
+      "signature": "CSTY",
+      "source": "xedit-tes5:6750-6809",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "general",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "offensive_multiplier",
+              "kind": "f32",
+              "offset": 0,
+              "optional": true
+            },
+            {
+              "name": "defensive_multiplier",
+              "kind": "f32",
+              "offset": 4,
+              "optional": true
+            },
+            {
+              "name": "group_offensive_multiplier",
+              "kind": "f32",
+              "offset": 8,
+              "optional": true
+            },
+            {
+              "name": "melee_score",
+              "kind": "f32",
+              "offset": 12,
+              "optional": true
+            },
+            {
+              "name": "magic_score",
+              "kind": "f32",
+              "offset": 16,
+              "optional": true
+            },
+            {
+              "name": "ranged_score",
+              "kind": "f32",
+              "offset": 20,
+              "optional": true
+            },
+            {
+              "name": "shout_score",
+              "kind": "f32",
+              "offset": 24,
+              "optional": true
+            },
+            {
+              "name": "unarmed_score",
+              "kind": "f32",
+              "offset": 28,
+              "optional": true
+            },
+            {
+              "name": "staff_score",
+              "kind": "f32",
+              "offset": 32,
+              "optional": true
+            },
+            {
+              "name": "avoid_threat_chance",
+              "kind": "f32",
+              "offset": 36,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            0,
+            4,
+            8,
+            12,
+            16,
+            20,
+            24,
+            28,
+            32,
+            36,
+            40
+          ],
+          "signature": "CSGD"
+        },
+        {
+          "name": "unknown_melee_data",
+          "kind": "bytes",
+          "source": "xedit-tes5:6769 explicitly unknown",
+          "signature": "CSMD"
+        },
+        {
+          "name": "melee",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "attack_staggered",
+              "kind": "f32",
+              "offset": 0,
+              "optional": true
+            },
+            {
+              "name": "power_attack_staggered",
+              "kind": "f32",
+              "offset": 4,
+              "optional": true
+            },
+            {
+              "name": "power_attack_blocking",
+              "kind": "f32",
+              "offset": 8,
+              "optional": true
+            },
+            {
+              "name": "bash",
+              "kind": "f32",
+              "offset": 12,
+              "optional": true
+            },
+            {
+              "name": "bash_recoil",
+              "kind": "f32",
+              "offset": 16,
+              "optional": true
+            },
+            {
+              "name": "bash_attack",
+              "kind": "f32",
+              "offset": 20,
+              "optional": true
+            },
+            {
+              "name": "bash_power_attack",
+              "kind": "f32",
+              "offset": 24,
+              "optional": true
+            },
+            {
+              "name": "special_attack",
+              "kind": "f32",
+              "offset": 28,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            0,
+            4,
+            8,
+            12,
+            16,
+            20,
+            24,
+            28,
+            32
+          ],
+          "signature": "CSME"
+        },
+        {
+          "name": "close_range",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "circle_multiplier",
+              "kind": "f32",
+              "offset": 0,
+              "optional": true
+            },
+            {
+              "name": "fallback_multiplier",
+              "kind": "f32",
+              "offset": 4,
+              "optional": true
+            },
+            {
+              "name": "flank_distance",
+              "kind": "f32",
+              "offset": 8,
+              "optional": true
+            },
+            {
+              "name": "stalk_time",
+              "kind": "f32",
+              "offset": 12,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            0,
+            4,
+            8,
+            12,
+            16
+          ],
+          "signature": "CSCR"
+        },
+        {
+          "name": "long_range",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "strafe_multiplier",
+              "kind": "f32",
+              "offset": 0
+            }
+          ],
+          "sizes": [
+            4
+          ],
+          "signature": "CSLR"
+        },
+        {
+          "name": "flight",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "hover_chance",
+              "kind": "f32",
+              "offset": 0,
+              "optional": true
+            },
+            {
+              "name": "dive_bomb_chance",
+              "kind": "f32",
+              "offset": 4,
+              "optional": true
+            },
+            {
+              "name": "ground_attack_chance",
+              "kind": "f32",
+              "offset": 8,
+              "optional": true
+            },
+            {
+              "name": "hover_time",
+              "kind": "f32",
+              "offset": 12,
+              "optional": true
+            },
+            {
+              "name": "ground_attack_time",
+              "kind": "f32",
+              "offset": 16,
+              "optional": true
+            },
+            {
+              "name": "perch_attack_chance",
+              "kind": "f32",
+              "offset": 20,
+              "optional": true
+            },
+            {
+              "name": "perch_attack_time",
+              "kind": "f32",
+              "offset": 24,
+              "optional": true
+            },
+            {
+              "name": "flying_attack_chance",
+              "kind": "f32",
+              "offset": 28,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            0,
+            4,
+            8,
+            12,
+            16,
+            20,
+            24,
+            28,
+            32
+          ],
+          "signature": "CSFL"
+        },
+        {
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "dueling",
+            "2": "flanking",
+            "4": "dual_wielding"
+          },
+          "signature": "DATA"
+        }
+      ]
+    },
+    {
+      "signature": "EYES",
+      "source": "xedit-tes5:7297-7316",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "FULL"
+        },
+        {
+          "name": "texture",
+          "kind": "zstring",
+          "signature": "ICON"
+        },
+        {
+          "name": "flags",
+          "kind": "u8",
+          "flags": {
+            "1": "playable",
+            "2": "not_male",
+            "4": "not_female"
+          },
+          "reject_record_on_error": true,
+          "signature": "DATA"
+        }
+      ]
+    },
+    {
+      "signature": "VTYP",
+      "source": "xedit-tes5:8759-8766",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "flags",
+          "kind": "u8",
+          "flags": {
+            "1": "allow_default_dialogue",
+            "2": "female"
+          },
+          "reject_record_on_error": true,
+          "signature": "DNAM"
+        }
+      ]
+    },
+    {
+      "signature": "LCRT",
+      "source": "xedit-tes5:7522-7525; xedit-common:1291-1302",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "color",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "alpha",
+              "kind": "u8",
+              "offset": 3
+            }
+          ],
+          "signature": "CNAM",
+          "size": 4
+        }
+      ]
+    },
+    {
+      "signature": "ASTP",
+      "source": "xedit-tes5:9949-9959",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "male_parent_title",
+          "kind": "zstring",
+          "signature": "MPRT"
+        },
+        {
+          "name": "female_parent_title",
+          "kind": "zstring",
+          "signature": "FPRT"
+        },
+        {
+          "name": "male_child_title",
+          "kind": "zstring",
+          "signature": "MCHT"
+        },
+        {
+          "name": "female_child_title",
+          "kind": "zstring",
+          "signature": "FCHT"
+        },
+        {
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "family_association"
+          },
+          "signature": "DATA"
+        }
+      ]
+    },
+    {
+      "signature": "OTFT",
+      "source": "xedit-tes5:9964-9967",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "items",
+          "kind": "array",
+          "members": [
+            {
+              "name": "item",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ARMO",
+                "LVLI"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "signature": "INAM"
+        }
+      ]
+    },
+    {
+      "signature": "RELA",
+      "source": "xedit-tes5:9720-9749",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "relationship",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "parent",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "child",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "NPC_"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "u16",
+              "offset": 8,
+              "enum": {
+                "0": "lover",
+                "1": "ally",
+                "2": "confidant",
+                "3": "friend",
+                "4": "acquaintance",
+                "5": "rival",
+                "6": "foe",
+                "7": "enemy",
+                "8": "archnemesis"
+              }
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 10,
+              "size": 1
+            },
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 11,
+              "flags": {
+                "128": "secret"
+              }
+            },
+            {
+              "name": "association",
+              "kind": "form_id",
+              "offset": 12,
+              "targets": [
+                "ASTP"
+              ]
+            }
+          ],
+          "reject_record_on_error": true,
+          "signature": "DATA",
+          "size": 16
+        }
+      ]
+    },
+    {
+      "signature": "HDPT",
+      "source": "xedit-tes5:7553-7600",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "FULL"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "name": "flags",
+          "kind": "u8",
+          "flags": {
+            "1": "playable",
+            "2": "male",
+            "4": "female",
+            "8": "extra_part",
+            "16": "solid_tint"
+          },
+          "reject_record_on_error": true,
+          "signature": "DATA"
+        },
+        {
+          "name": "type",
+          "kind": "u32",
+          "enum": {
+            "0": "misc",
+            "1": "face",
+            "2": "eyes",
+            "3": "hair",
+            "4": "facial_hair",
+            "5": "scar",
+            "6": "eyebrows"
+          },
+          "signature": "PNAM"
+        },
+        {
+          "name": "extra_part",
+          "kind": "form_id",
+          "targets": [
+            "HDPT"
+          ],
+          "repeat": true,
+          "signature": "HNAM"
+        },
+        {
+          "name": "morph_files",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "morph_file_type",
+              "kind": "u32",
+              "enum": {
+                "0": "race_morph",
+                "1": "tri",
+                "2": "chargen_morph"
+              },
+              "signature": "NAM0"
+            },
+            {
+              "name": "morph_file",
+              "kind": "zstring",
+              "signature": "NAM1"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "texture_set",
+          "kind": "form_id",
+          "targets": [
+            "TXST"
+          ],
+          "signature": "TNAM"
+        },
+        {
+          "name": "color",
+          "kind": "form_id",
+          "targets": [
+            "CLFM"
+          ],
+          "signature": "CNAM"
+        },
+        {
+          "name": "valid_races",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "RNAM"
+        }
+      ]
+    },
+    {
+      "signature": "MOVT",
+      "source": "xedit-tes5:10023-10047",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "name",
+          "kind": "zstring",
+          "signature": "MNAM"
+        },
+        {
+          "name": "speeds",
+          "kind": "union",
+          "decider": "movement_speeds",
+          "reject_record_on_error": true,
+          "fields": [
+            {
+              "name": "legacy",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "left_walk",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "left_run",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "right_walk",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "right_run",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "forward_walk",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "forward_run",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "back_walk",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "back_run",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "rotate_in_place_walk",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "rotate_in_place_run",
+                  "kind": "f32",
+                  "offset": 36
+                }
+              ],
+              "sizes": [
+                40
+              ]
+            },
+            {
+              "name": "extended",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "left_walk",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "left_run",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "right_walk",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "right_run",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "forward_walk",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "forward_run",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "back_walk",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "back_run",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "rotate_in_place_walk",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "rotate_in_place_run",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "rotate_while_moving_run",
+                  "kind": "f32",
+                  "offset": 40
+                }
+              ],
+              "sizes": [
+                44
+              ]
+            }
+          ],
+          "signature": "SPED"
+        },
+        {
+          "name": "animation_thresholds",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "directional_radians",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "movement_speed",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "rotation_speed_radians",
+              "kind": "f32",
+              "offset": 8
+            }
+          ],
+          "sizes": [
+            12
+          ],
+          "signature": "INAM"
+        }
+      ]
+    },
+    {
+      "signature": "FACT",
+      "source": "xedit-tes5:7324-7400; PLVD5029-5055; xedit-common:553-570",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "FULL"
+        },
+        {
+          "name": "relation",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "faction_or_race",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "FACT",
+                "RACE"
+              ]
+            },
+            {
+              "name": "modifier",
+              "kind": "i32",
+              "offset": 4
+            },
+            {
+              "name": "reaction",
+              "kind": "u32",
+              "offset": 8,
+              "enum": {
+                "0": "neutral",
+                "1": "enemy",
+                "2": "ally",
+                "3": "friend"
+              }
+            }
+          ],
+          "repeat": true,
+          "signature": "XNAM",
+          "size": 12
+        },
+        {
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "hidden_from_npc",
+            "2": "special_combat",
+            "64": "track_crime",
+            "128": "ignore_murder",
+            "256": "ignore_assault",
+            "512": "ignore_stealing",
+            "1024": "ignore_trespass",
+            "2048": "do_not_report_against_members",
+            "4096": "crime_use_defaults",
+            "8192": "ignore_pickpocket",
+            "16384": "vendor",
+            "32768": "can_be_owner",
+            "65536": "ignore_werewolf"
+          },
+          "reject_record_on_error": true,
+          "signature": "DATA"
+        },
+        {
+          "name": "jail_marker",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "signature": "JAIL"
+        },
+        {
+          "name": "follower_wait_marker",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "signature": "WAIT"
+        },
+        {
+          "name": "stolen_goods_container",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "signature": "STOL"
+        },
+        {
+          "name": "player_inventory_container",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "signature": "PLCN"
+        },
+        {
+          "name": "shared_crime_factions",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "CRGR"
+        },
+        {
+          "name": "jail_outfit",
+          "kind": "form_id",
+          "targets": [
+            "OTFT"
+          ],
+          "signature": "JOUT"
+        },
+        {
+          "name": "crime_values",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "arrest",
+              "kind": "u8",
+              "offset": 0,
+              "enum": {
+                "0": "false",
+                "1": "true"
+              }
+            },
+            {
+              "name": "attack_on_sight",
+              "kind": "u8",
+              "offset": 1,
+              "enum": {
+                "0": "false",
+                "1": "true"
+              }
+            },
+            {
+              "name": "murder",
+              "kind": "u16",
+              "offset": 2
+            },
+            {
+              "name": "assault",
+              "kind": "u16",
+              "offset": 4
+            },
+            {
+              "name": "trespass",
+              "kind": "u16",
+              "offset": 6
+            },
+            {
+              "name": "pickpocket",
+              "kind": "u16",
+              "offset": 8
+            },
+            {
+              "name": "unknown",
+              "kind": "u16",
+              "offset": 10
+            },
+            {
+              "name": "steal_multiplier",
+              "kind": "f32",
+              "offset": 12,
+              "optional": true
+            },
+            {
+              "name": "escape",
+              "kind": "u16",
+              "offset": 16,
+              "optional": true
+            },
+            {
+              "name": "werewolf",
+              "kind": "u16",
+              "offset": 18,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            12,
+            16,
+            18,
+            20
+          ],
+          "signature": "CRVA"
+        },
+        {
+          "name": "ranks",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "rank",
+              "kind": "u32",
+              "signature": "RNAM"
+            },
+            {
+              "name": "male_title",
+              "kind": "lstring",
+              "string_table": "strings",
+              "signature": "MNAM"
+            },
+            {
+              "name": "female_title",
+              "kind": "lstring",
+              "string_table": "strings",
+              "signature": "FNAM"
+            },
+            {
+              "name": "unused_insignia",
+              "kind": "zstring",
+              "signature": "INAM"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "vendor_list",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "VEND"
+        },
+        {
+          "name": "merchant_container",
+          "kind": "form_id",
+          "targets": [
+            "REFR"
+          ],
+          "signature": "VENC"
+        },
+        {
+          "name": "vendor_values",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "start_hour",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "end_hour",
+              "kind": "u16",
+              "offset": 2
+            },
+            {
+              "name": "radius",
+              "kind": "u16",
+              "offset": 4
+            },
+            {
+              "name": "unknown_1",
+              "kind": "bytes",
+              "offset": 6,
+              "size": 2
+            },
+            {
+              "name": "only_buys_stolen",
+              "kind": "u8",
+              "offset": 8,
+              "enum": {
+                "0": "false",
+                "1": "true"
+              }
+            },
+            {
+              "name": "not_sell_buy",
+              "kind": "u8",
+              "offset": 9,
+              "enum": {
+                "0": "false",
+                "1": "true"
+              }
+            },
+            {
+              "name": "unknown_2",
+              "kind": "bytes",
+              "offset": 10,
+              "size": 2
+            }
+          ],
+          "signature": "VENV",
+          "size": 12
+        },
+        {
+          "name": "vendor_location",
+          "kind": "union",
+          "decider": "actors_vendor_location",
+          "fields": [
+            {
+              "name": "location_kind_0",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "DOOR",
+                    "PLYR",
+                    "ACHR",
+                    "REFR",
+                    "PGRE",
+                    "PHZD",
+                    "PMIS",
+                    "PARW",
+                    "PBAR",
+                    "PBEA",
+                    "PCON",
+                    "PFLA"
+                  ]
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_1",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "CELL"
+                  ]
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_2",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_3",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_4",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "ACTI",
+                    "DOOR",
+                    "STAT",
+                    "MSTT",
+                    "FURN",
+                    "SPEL",
+                    "SCRL",
+                    "NPC_",
+                    "CONT",
+                    "ARMO",
+                    "AMMO",
+                    "MISC",
+                    "WEAP",
+                    "BOOK",
+                    "KEYM",
+                    "ALCH",
+                    "INGR",
+                    "LIGH",
+                    "FACT",
+                    "FLST",
+                    "IDLM",
+                    "SHOU"
+                  ]
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_5",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "object_type",
+                  "kind": "u32",
+                  "offset": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_6",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "form_id",
+                  "offset": 4,
+                  "targets": [
+                    "KYWD"
+                  ]
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_7",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_8",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "alias",
+                  "kind": "i32",
+                  "offset": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_9",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "alias",
+                  "kind": "i32",
+                  "offset": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_10",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_11",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            },
+            {
+              "name": "location_kind_12",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "type",
+                  "kind": "i32",
+                  "offset": 0
+                },
+                {
+                  "name": "value",
+                  "kind": "bytes",
+                  "offset": 4,
+                  "size": 4
+                },
+                {
+                  "name": "radius",
+                  "kind": "i32",
+                  "offset": 8
+                }
+              ],
+              "size": 12
+            }
+          ],
+          "signature": "PLVD"
+        },
+        {
+          "name": "condition_count",
+          "kind": "u32",
+          "signature": "CITC"
+        },
+        {
+          "definition": "pending_conditions"
+        }
+      ]
+    },
+    {
+      "signature": "NPC_",
+      "source": "xedit-tes5:10863-11096",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "definition": "vmad",
+          "source": "phase1 primary-link hook retained; full VMAD semantics pending E",
+          "signature": "VMAD",
+          "name": "scripts_pending_e"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "name": "configuration",
+          "kind": "union",
+          "decider": "actors_npc_configuration",
+          "reject_record_on_error": true,
+          "fields": [
+            {
+              "name": "fixed_level",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "flags",
+                  "kind": "u32",
+                  "offset": 0,
+                  "flags": {
+                    "1": "female",
+                    "2": "essential",
+                    "4": "chargen_preset",
+                    "8": "respawn",
+                    "16": "auto_calc_stats",
+                    "32": "unique",
+                    "64": "no_stealth_meter",
+                    "128": "level_multiplier",
+                    "256": "use_template",
+                    "2048": "protected",
+                    "16384": "summonable",
+                    "65536": "does_not_bleed",
+                    "262144": "bleedout_override",
+                    "524288": "opposite_gender_animations",
+                    "1048576": "simple_actor",
+                    "536870912": "ghost",
+                    "2147483648": "invulnerable"
+                  }
+                },
+                {
+                  "name": "magicka_offset",
+                  "kind": "i16",
+                  "offset": 4
+                },
+                {
+                  "name": "stamina_offset",
+                  "kind": "i16",
+                  "offset": 6
+                },
+                {
+                  "name": "level",
+                  "kind": "i16",
+                  "offset": 8
+                },
+                {
+                  "name": "minimum_level",
+                  "kind": "u16",
+                  "offset": 10
+                },
+                {
+                  "name": "maximum_level",
+                  "kind": "u16",
+                  "offset": 12
+                },
+                {
+                  "name": "speed_multiplier",
+                  "kind": "u16",
+                  "offset": 14
+                },
+                {
+                  "name": "unused_disposition",
+                  "kind": "i16",
+                  "offset": 16
+                },
+                {
+                  "name": "template_flags",
+                  "kind": "u16",
+                  "offset": 18,
+                  "flags": {
+                    "1": "traits",
+                    "2": "stats",
+                    "4": "factions",
+                    "8": "spells",
+                    "16": "ai_data",
+                    "32": "ai_packages",
+                    "64": "model_animation",
+                    "128": "base_data",
+                    "256": "inventory",
+                    "512": "script",
+                    "1024": "default_packages",
+                    "2048": "attack_data",
+                    "4096": "keywords"
+                  }
+                },
+                {
+                  "name": "health_offset",
+                  "kind": "i16",
+                  "offset": 20
+                },
+                {
+                  "name": "bleedout_override",
+                  "kind": "u16",
+                  "offset": 22
+                }
+              ],
+              "size": 24
+            },
+            {
+              "name": "level_multiplier",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "flags",
+                  "kind": "u32",
+                  "offset": 0,
+                  "flags": {
+                    "1": "female",
+                    "2": "essential",
+                    "4": "chargen_preset",
+                    "8": "respawn",
+                    "16": "auto_calc_stats",
+                    "32": "unique",
+                    "64": "no_stealth_meter",
+                    "128": "level_multiplier",
+                    "256": "use_template",
+                    "2048": "protected",
+                    "16384": "summonable",
+                    "65536": "does_not_bleed",
+                    "262144": "bleedout_override",
+                    "524288": "opposite_gender_animations",
+                    "1048576": "simple_actor",
+                    "536870912": "ghost",
+                    "2147483648": "invulnerable"
+                  }
+                },
+                {
+                  "name": "magicka_offset",
+                  "kind": "i16",
+                  "offset": 4
+                },
+                {
+                  "name": "stamina_offset",
+                  "kind": "i16",
+                  "offset": 6
+                },
+                {
+                  "name": "level_multiplier_thousandths",
+                  "kind": "i16",
+                  "offset": 8
+                },
+                {
+                  "name": "minimum_level",
+                  "kind": "u16",
+                  "offset": 10
+                },
+                {
+                  "name": "maximum_level",
+                  "kind": "u16",
+                  "offset": 12
+                },
+                {
+                  "name": "speed_multiplier",
+                  "kind": "u16",
+                  "offset": 14
+                },
+                {
+                  "name": "unused_disposition",
+                  "kind": "i16",
+                  "offset": 16
+                },
+                {
+                  "name": "template_flags",
+                  "kind": "u16",
+                  "offset": 18,
+                  "flags": {
+                    "1": "traits",
+                    "2": "stats",
+                    "4": "factions",
+                    "8": "spells",
+                    "16": "ai_data",
+                    "32": "ai_packages",
+                    "64": "model_animation",
+                    "128": "base_data",
+                    "256": "inventory",
+                    "512": "script",
+                    "1024": "default_packages",
+                    "2048": "attack_data",
+                    "4096": "keywords"
+                  }
+                },
+                {
+                  "name": "health_offset",
+                  "kind": "i16",
+                  "offset": 20
+                },
+                {
+                  "name": "bleedout_override",
+                  "kind": "u16",
+                  "offset": 22
+                }
+              ],
+              "size": 24
+            }
+          ],
+          "signature": "ACBS"
+        },
+        {
+          "name": "faction",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "faction",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "FACT"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "i8",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 5,
+              "size": 3
+            }
+          ],
+          "repeat": true,
+          "source": "xedit-common:542-551",
+          "signature": "SNAM",
+          "size": 8
+        },
+        {
+          "name": "death_item",
+          "kind": "form_id",
+          "targets": [
+            "LVLI"
+          ],
+          "signature": "INAM"
+        },
+        {
+          "name": "voice",
+          "kind": "form_id",
+          "targets": [
+            "VTYP"
+          ],
+          "signature": "VTCK"
+        },
+        {
+          "name": "template",
+          "kind": "form_id",
+          "targets": [
+            "LVLN",
+            "NPC_"
+          ],
+          "signature": "TPLT"
+        },
+        {
+          "name": "race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ],
+          "signature": "RNAM"
+        },
+        {
+          "name": "actor_effect_count",
+          "kind": "u32",
+          "signature": "SPCT"
+        },
+        {
+          "name": "actor_effect",
+          "kind": "form_id",
+          "targets": [
+            "SPEL",
+            "SHOU",
+            "LVSP"
+          ],
+          "repeat": true,
+          "signature": "SPLO"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "name": "worn_armor",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ],
+          "signature": "WNAM"
+        },
+        {
+          "name": "far_model_armor",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ],
+          "signature": "ANAM"
+        },
+        {
+          "name": "attack_race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ],
+          "signature": "ATKR"
+        },
+        {
+          "definition": "actors_attack"
+        },
+        {
+          "name": "spectator_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "SPOR"
+        },
+        {
+          "name": "observe_corpse_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "OCOR"
+        },
+        {
+          "name": "guard_warning_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "GWOR"
+        },
+        {
+          "name": "combat_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "ECOR"
+        },
+        {
+          "name": "perk_count",
+          "kind": "u32",
+          "signature": "PRKZ"
+        },
+        {
+          "name": "perk",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "perk",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "PERK"
+              ]
+            },
+            {
+              "name": "rank",
+              "kind": "u8",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 5,
+              "size": 3
+            }
+          ],
+          "repeat": true,
+          "signature": "PRKR",
+          "size": 8
+        },
+        {
+          "name": "inventory_count",
+          "kind": "u32",
+          "signature": "COCT"
+        },
+        {
+          "definition": "inventory_items"
+        },
+        {
+          "definition": "actors_ai",
+          "signature": "AIDT"
+        },
+        {
+          "name": "package",
+          "kind": "form_id",
+          "targets": [
+            "PACK"
+          ],
+          "repeat": true,
+          "signature": "PKID"
+        },
+        {
+          "name": "keyword_count",
+          "kind": "u32",
+          "signature": "KSIZ"
+        },
+        {
+          "name": "keywords",
+          "kind": "array",
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "signature": "KWDA"
+        },
+        {
+          "name": "class",
+          "kind": "form_id",
+          "targets": [
+            "CLAS"
+          ],
+          "signature": "CNAM"
+        },
+        {
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "FULL"
+        },
+        {
+          "name": "short_name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "SHRT"
+        },
+        {
+          "name": "data_marker",
+          "kind": "bytes",
+          "size": 0,
+          "signature": "DATA"
+        },
+        {
+          "name": "player_skills",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "skill_values",
+              "kind": "array",
+              "members": [
+                {
+                  "name": "skill",
+                  "kind": "u8",
+                  "offset": 0
+                }
+              ],
+              "count": {
+                "kind": "fixed",
+                "stride": 1,
+                "value": 18
+              },
+              "offset": 0,
+              "size": 18
+            },
+            {
+              "name": "skill_offsets",
+              "kind": "array",
+              "members": [
+                {
+                  "name": "offset",
+                  "kind": "u8",
+                  "offset": 0
+                }
+              ],
+              "count": {
+                "kind": "fixed",
+                "stride": 1,
+                "value": 18
+              },
+              "offset": 18,
+              "size": 18
+            },
+            {
+              "name": "health",
+              "kind": "u16",
+              "offset": 36
+            },
+            {
+              "name": "magicka",
+              "kind": "u16",
+              "offset": 38
+            },
+            {
+              "name": "stamina",
+              "kind": "u16",
+              "offset": 40
+            },
+            {
+              "name": "unused_1",
+              "kind": "bytes",
+              "offset": 42,
+              "size": 2
+            },
+            {
+              "name": "far_model_distance",
+              "kind": "f32",
+              "offset": 44
+            },
+            {
+              "name": "geared_weapons",
+              "kind": "u8",
+              "offset": 48
+            },
+            {
+              "name": "unused_2",
+              "kind": "bytes",
+              "offset": 49,
+              "size": 3
+            }
+          ],
+          "reject_record_on_error": true,
+          "signature": "DNAM",
+          "size": 52
+        },
+        {
+          "name": "head_part",
+          "kind": "form_id",
+          "targets": [
+            "HDPT"
+          ],
+          "repeat": true,
+          "signature": "PNAM"
+        },
+        {
+          "name": "hair_color",
+          "kind": "form_id",
+          "targets": [
+            "CLFM"
+          ],
+          "signature": "HCLF"
+        },
+        {
+          "name": "combat_style",
+          "kind": "form_id",
+          "targets": [
+            "CSTY"
+          ],
+          "signature": "ZNAM"
+        },
+        {
+          "name": "gift_filter",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "GNAM"
+        },
+        {
+          "name": "unknown_nam5",
+          "kind": "bytes",
+          "source": "xedit-tes5:11024 explicitly unknown",
+          "signature": "NAM5"
+        },
+        {
+          "name": "height",
+          "kind": "f32",
+          "signature": "NAM6"
+        },
+        {
+          "name": "weight",
+          "kind": "f32",
+          "signature": "NAM7"
+        },
+        {
+          "name": "sound_level",
+          "kind": "u32",
+          "enum": {
+            "0": "loud",
+            "1": "normal",
+            "2": "silent",
+            "3": "very_loud"
+          },
+          "signature": "NAM8"
+        },
+        {
+          "definition": "actors_sound_types"
+        },
+        {
+          "name": "inherits_sounds_from",
+          "kind": "form_id",
+          "targets": [
+            "NPC_"
+          ],
+          "signature": "CSCR"
+        },
+        {
+          "name": "default_outfit",
+          "kind": "form_id",
+          "targets": [
+            "OTFT"
+          ],
+          "signature": "DOFT"
+        },
+        {
+          "name": "sleeping_outfit",
+          "kind": "form_id",
+          "targets": [
+            "OTFT"
+          ],
+          "signature": "SOFT"
+        },
+        {
+          "name": "default_packages",
+          "kind": "form_id",
+          "targets": [
+            "FLST"
+          ],
+          "signature": "DPLT"
+        },
+        {
+          "name": "crime_faction",
+          "kind": "form_id",
+          "targets": [
+            "FACT"
+          ],
+          "signature": "CRIF"
+        },
+        {
+          "name": "head_texture",
+          "kind": "form_id",
+          "targets": [
+            "TXST"
+          ],
+          "signature": "FTST"
+        },
+        {
+          "name": "texture_lighting",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "red",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "blue",
+              "kind": "f32",
+              "offset": 8
+            }
+          ],
+          "sizes": [
+            12
+          ],
+          "signature": "QNAM"
+        },
+        {
+          "name": "face_morph",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "nose_long_short",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "nose_up_down",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "jaw_up_down",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "jaw_narrow_wide",
+              "kind": "f32",
+              "offset": 12
+            },
+            {
+              "name": "jaw_forward_back",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "cheeks_up_down",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "cheeks_forward_back",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "eyes_up_down",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "eyes_in_out",
+              "kind": "f32",
+              "offset": 32
+            },
+            {
+              "name": "brows_up_down",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "brows_in_out",
+              "kind": "f32",
+              "offset": 40
+            },
+            {
+              "name": "brows_forward_back",
+              "kind": "f32",
+              "offset": 44
+            },
+            {
+              "name": "lips_up_down",
+              "kind": "f32",
+              "offset": 48
+            },
+            {
+              "name": "lips_in_out",
+              "kind": "f32",
+              "offset": 52
+            },
+            {
+              "name": "chin_narrow_wide",
+              "kind": "f32",
+              "offset": 56
+            },
+            {
+              "name": "chin_up_down",
+              "kind": "f32",
+              "offset": 60
+            },
+            {
+              "name": "chin_underbite_overbite",
+              "kind": "f32",
+              "offset": 64
+            },
+            {
+              "name": "eyes_forward_back",
+              "kind": "f32",
+              "offset": 68
+            },
+            {
+              "name": "unknown",
+              "kind": "f32",
+              "offset": 72
+            }
+          ],
+          "sizes": [
+            76
+          ],
+          "signature": "NAM9"
+        },
+        {
+          "name": "face_parts",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "nose",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "unknown",
+              "kind": "i32",
+              "offset": 4
+            },
+            {
+              "name": "eyes",
+              "kind": "u32",
+              "offset": 8
+            },
+            {
+              "name": "mouth",
+              "kind": "u32",
+              "offset": 12
+            }
+          ],
+          "signature": "NAMA",
+          "size": 16
+        },
+        {
+          "name": "tint_layers",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "tint_index",
+              "kind": "u16",
+              "signature": "TINI"
+            },
+            {
+              "name": "tint_color",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "red",
+                  "kind": "u8",
+                  "offset": 0
+                },
+                {
+                  "name": "green",
+                  "kind": "u8",
+                  "offset": 1
+                },
+                {
+                  "name": "blue",
+                  "kind": "u8",
+                  "offset": 2
+                },
+                {
+                  "name": "alpha",
+                  "kind": "u8",
+                  "offset": 3
+                }
+              ],
+              "signature": "TINC",
+              "size": 4
+            },
+            {
+              "name": "interpolation_hundredths",
+              "kind": "u32",
+              "signature": "TINV"
+            },
+            {
+              "name": "tint_preset",
+              "kind": "i16",
+              "signature": "TIAS"
+            }
+          ],
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "signature": "BPTD",
+      "source": "xedit-tes5:8589-8647",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "name": "body_parts",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "part_name",
+              "kind": "lstring",
+              "string_table": "strings",
+              "signature": "BPTN"
+            },
+            {
+              "name": "pose_matching",
+              "kind": "zstring",
+              "signature": "PNAM"
+            },
+            {
+              "name": "part_node",
+              "kind": "zstring",
+              "signature": "BPNN"
+            },
+            {
+              "name": "vats_target",
+              "kind": "zstring",
+              "signature": "BPNT"
+            },
+            {
+              "name": "ik_start_node",
+              "kind": "zstring",
+              "signature": "BPNI"
+            },
+            {
+              "name": "body_part_data",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "damage_multiplier",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "flags",
+                  "kind": "u8",
+                  "offset": 4,
+                  "flags": {
+                    "1": "severable",
+                    "2": "ik_data",
+                    "4": "ik_biped",
+                    "8": "explodable",
+                    "16": "ik_head",
+                    "32": "headtracking",
+                    "64": "absolute_hit_chance"
+                  }
+                },
+                {
+                  "name": "part_type",
+                  "kind": "u8",
+                  "offset": 5,
+                  "enum": {
+                    "0": "torso",
+                    "1": "head",
+                    "2": "eye",
+                    "3": "look_at",
+                    "4": "fly_grab",
+                    "5": "saddle"
+                  }
+                },
+                {
+                  "name": "health_percent",
+                  "kind": "u8",
+                  "offset": 6
+                },
+                {
+                  "name": "actor_value",
+                  "kind": "i8",
+                  "offset": 7
+                },
+                {
+                  "name": "hit_chance",
+                  "kind": "u8",
+                  "offset": 8
+                },
+                {
+                  "name": "explosion_chance",
+                  "kind": "u8",
+                  "offset": 9
+                },
+                {
+                  "name": "explodable_debris_count",
+                  "kind": "u16",
+                  "offset": 10
+                },
+                {
+                  "name": "explodable_debris",
+                  "kind": "form_id",
+                  "offset": 12,
+                  "targets": [
+                    "DEBR"
+                  ]
+                },
+                {
+                  "name": "explodable_explosion",
+                  "kind": "form_id",
+                  "offset": 16,
+                  "targets": [
+                    "EXPL"
+                  ]
+                },
+                {
+                  "name": "tracking_max_angle",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "explodable_debris_scale",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "severable_debris_count",
+                  "kind": "i32",
+                  "offset": 28
+                },
+                {
+                  "name": "severable_debris",
+                  "kind": "form_id",
+                  "offset": 32,
+                  "targets": [
+                    "DEBR"
+                  ]
+                },
+                {
+                  "name": "severable_explosion",
+                  "kind": "form_id",
+                  "offset": 36,
+                  "targets": [
+                    "EXPL"
+                  ]
+                },
+                {
+                  "name": "severable_debris_scale",
+                  "kind": "f32",
+                  "offset": 40
+                },
+                {
+                  "name": "gore_pos_x",
+                  "kind": "f32",
+                  "offset": 44
+                },
+                {
+                  "name": "gore_pos_y",
+                  "kind": "f32",
+                  "offset": 48
+                },
+                {
+                  "name": "gore_pos_z",
+                  "kind": "f32",
+                  "offset": 52
+                },
+                {
+                  "name": "gore_rot_x",
+                  "kind": "f32",
+                  "offset": 56
+                },
+                {
+                  "name": "gore_rot_y",
+                  "kind": "f32",
+                  "offset": 60
+                },
+                {
+                  "name": "gore_rot_z",
+                  "kind": "f32",
+                  "offset": 64
+                },
+                {
+                  "name": "severable_impact",
+                  "kind": "form_id",
+                  "offset": 68,
+                  "targets": [
+                    "IPDS"
+                  ]
+                },
+                {
+                  "name": "explodable_impact",
+                  "kind": "form_id",
+                  "offset": 72,
+                  "targets": [
+                    "IPDS"
+                  ]
+                },
+                {
+                  "name": "severable_decal_count",
+                  "kind": "u8",
+                  "offset": 76
+                },
+                {
+                  "name": "explodable_decal_count",
+                  "kind": "u8",
+                  "offset": 77
+                },
+                {
+                  "name": "unknown",
+                  "kind": "bytes",
+                  "offset": 78,
+                  "size": 2
+                },
+                {
+                  "name": "replacement_scale",
+                  "kind": "f32",
+                  "offset": 80
+                }
+              ],
+              "reject_record_on_error": true,
+              "signature": "BPND",
+              "size": 84
+            },
+            {
+              "name": "replacement_model",
+              "kind": "zstring",
+              "signature": "NAM1"
+            },
+            {
+              "name": "gore_target_bone",
+              "kind": "zstring",
+              "signature": "NAM4"
+            },
+            {
+              "definition": "model_information",
+              "signature": "NAM5",
+              "name": "replacement_model_information"
+            }
+          ],
+          "repeat": true
+        }
+      ]
+    },
+    {
+      "signature": "RACE",
+      "source": "xedit-tes5:11953-12145; helpers11772-11950; xedit-common:1339-1368",
+      "fields": [
+        {
+          "name": "editor_id",
+          "kind": "zstring",
+          "signature": "EDID"
+        },
+        {
+          "name": "name",
+          "kind": "lstring",
+          "string_table": "strings",
+          "signature": "FULL"
+        },
+        {
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings",
+          "signature": "DESC"
+        },
+        {
+          "name": "actor_effect_count",
+          "kind": "u32",
+          "signature": "SPCT"
+        },
+        {
+          "name": "actor_effect",
+          "kind": "form_id",
+          "targets": [
+            "SPEL",
+            "SHOU",
+            "LVSP"
+          ],
+          "repeat": true,
+          "signature": "SPLO"
+        },
+        {
+          "name": "skin",
+          "kind": "form_id",
+          "targets": [
+            "ARMO"
+          ],
+          "signature": "WNAM"
+        },
+        {
+          "name": "biped_template",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "slots",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "armor_type",
+              "kind": "u32",
+              "offset": 4,
+              "enum": {
+                "0": "light",
+                "1": "heavy",
+                "2": "clothing"
+              }
+            }
+          ],
+          "signature": "BOD2",
+          "size": 8
+        },
+        {
+          "name": "legacy_biped_template",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "slots",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "general_flags",
+              "kind": "u8",
+              "offset": 4
+            },
+            {
+              "name": "unused",
+              "kind": "bytes",
+              "offset": 5,
+              "size": 3
+            },
+            {
+              "name": "armor_type",
+              "kind": "u32",
+              "offset": 8,
+              "optional": true
+            }
+          ],
+          "sizes": [
+            8,
+            12
+          ],
+          "signature": "BODT"
+        },
+        {
+          "name": "keyword_count",
+          "kind": "u32",
+          "signature": "KSIZ"
+        },
+        {
+          "name": "keywords",
+          "kind": "array",
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "signature": "KWDA"
+        },
+        {
+          "name": "race_data",
+          "kind": "struct",
+          "members": [
+            {
+              "name": "skill_boosts",
+              "kind": "array",
+              "members": [
+                {
+                  "name": "skill_boost",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "skill",
+                      "kind": "i8",
+                      "offset": 0
+                    },
+                    {
+                      "name": "boost",
+                      "kind": "i8",
+                      "offset": 1
+                    }
+                  ],
+                  "size": 2
+                }
+              ],
+              "count": {
+                "kind": "fixed",
+                "stride": 2,
+                "value": 7
+              },
+              "offset": 0,
+              "size": 14
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 14,
+              "size": 2
+            },
+            {
+              "name": "male_height",
+              "kind": "f32",
+              "offset": 16
+            },
+            {
+              "name": "female_height",
+              "kind": "f32",
+              "offset": 20
+            },
+            {
+              "name": "male_weight",
+              "kind": "f32",
+              "offset": 24
+            },
+            {
+              "name": "female_weight",
+              "kind": "f32",
+              "offset": 28
+            },
+            {
+              "name": "flags",
+              "kind": "u32",
+              "offset": 32,
+              "flags": {
+                "1": "playable",
+                "2": "facegen_head",
+                "4": "child",
+                "8": "tilt_front_back",
+                "16": "tilt_left_right",
+                "32": "no_shadow",
+                "64": "swims",
+                "128": "flies",
+                "256": "walks",
+                "512": "immobile",
+                "1024": "not_pushable",
+                "2048": "no_combat_in_water",
+                "4096": "no_headtrack_rotation",
+                "8192": "no_blood_spray",
+                "16384": "no_blood_decal",
+                "32768": "headtrack_animations",
+                "65536": "spells_align_magic_node",
+                "131072": "world_raycast_foot_ik",
+                "262144": "ragdoll_collision",
+                "524288": "combat_health_regen",
+                "1048576": "cannot_open_doors",
+                "2097152": "pc_dialogue",
+                "4194304": "no_knockdowns",
+                "8388608": "pickpocket",
+                "16777216": "proxy_controller",
+                "33554432": "no_weapon_blood",
+                "67108864": "overlay_head_parts",
+                "134217728": "override_head_parts",
+                "268435456": "pickup_items",
+                "536870912": "multiple_membrane_shaders",
+                "1073741824": "dual_wield",
+                "2147483648": "avoid_roads"
+              }
+            },
+            {
+              "name": "starting_health",
+              "kind": "f32",
+              "offset": 36
+            },
+            {
+              "name": "starting_magicka",
+              "kind": "f32",
+              "offset": 40
+            },
+            {
+              "name": "starting_stamina",
+              "kind": "f32",
+              "offset": 44
+            },
+            {
+              "name": "carry_weight",
+              "kind": "f32",
+              "offset": 48
+            },
+            {
+              "name": "mass",
+              "kind": "f32",
+              "offset": 52
+            },
+            {
+              "name": "acceleration",
+              "kind": "f32",
+              "offset": 56
+            },
+            {
+              "name": "deceleration",
+              "kind": "f32",
+              "offset": 60
+            },
+            {
+              "name": "size",
+              "kind": "u32",
+              "offset": 64,
+              "enum": {
+                "0": "small",
+                "1": "medium",
+                "2": "large",
+                "3": "extra_large"
+              }
+            },
+            {
+              "name": "head_biped",
+              "kind": "i32",
+              "offset": 68
+            },
+            {
+              "name": "hair_biped",
+              "kind": "i32",
+              "offset": 72
+            },
+            {
+              "name": "injured_health_percent",
+              "kind": "f32",
+              "offset": 76
+            },
+            {
+              "name": "shield_biped",
+              "kind": "i32",
+              "offset": 80
+            },
+            {
+              "name": "health_regen",
+              "kind": "f32",
+              "offset": 84
+            },
+            {
+              "name": "magicka_regen",
+              "kind": "f32",
+              "offset": 88
+            },
+            {
+              "name": "stamina_regen",
+              "kind": "f32",
+              "offset": 92
+            },
+            {
+              "name": "unarmed_damage",
+              "kind": "f32",
+              "offset": 96
+            },
+            {
+              "name": "unarmed_reach",
+              "kind": "f32",
+              "offset": 100
+            },
+            {
+              "name": "body_biped",
+              "kind": "i32",
+              "offset": 104
+            },
+            {
+              "name": "aim_angle_tolerance",
+              "kind": "f32",
+              "offset": 108
+            },
+            {
+              "name": "flight_radius",
+              "kind": "f32",
+              "offset": 112
+            },
+            {
+              "name": "angular_acceleration",
+              "kind": "f32",
+              "offset": 116
+            },
+            {
+              "name": "angular_tolerance",
+              "kind": "f32",
+              "offset": 120
+            },
+            {
+              "name": "flags_2",
+              "kind": "u32",
+              "offset": 124,
+              "optional": true,
+              "flags": {
+                "1": "advanced_avoidance",
+                "2": "non_hostile",
+                "16": "mounted_combat"
+              }
+            },
+            {
+              "name": "mount_data",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "mount_offset_x",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "mount_offset_y",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "mount_offset_z",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "dismount_offset_x",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "dismount_offset_y",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "dismount_offset_z",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "camera_offset_x",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "camera_offset_y",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "camera_offset_z",
+                  "kind": "f32",
+                  "offset": 32
+                }
+              ],
+              "offset": 128,
+              "optional": true,
+              "size": 36
+            }
+          ],
+          "sizes": [
+            124,
+            128,
+            164
+          ],
+          "reject_record_on_error": true,
+          "signature": "DATA"
+        },
+        {
+          "name": "male_skeleton_marker",
+          "kind": "bytes",
+          "size": 0,
+          "signature": "MNAM"
+        },
+        {
+          "definition": "model_path",
+          "signature": "ANAM",
+          "name": "male_skeleton_path"
+        },
+        {
+          "definition": "model_information",
+          "signature": "MODT",
+          "name": "male_skeleton_information"
+        },
+        {
+          "name": "female_skeleton_marker",
+          "kind": "bytes",
+          "size": 0,
+          "signature": "FNAM"
+        },
+        {
+          "definition": "model_path",
+          "signature": "ANAM",
+          "name": "female_skeleton_path"
+        },
+        {
+          "definition": "model_information",
+          "signature": "MODT",
+          "name": "female_skeleton_information"
+        },
+        {
+          "name": "marker_nam2_first",
+          "kind": "bytes",
+          "size": 0,
+          "signature": "NAM2"
+        },
+        {
+          "name": "movement_type_name",
+          "kind": "zstring",
+          "size": 4,
+          "repeat": true,
+          "signature": "MTNM"
+        },
+        {
+          "name": "voices",
+          "kind": "array",
+          "members": [
+            {
+              "name": "voice",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "VTYP"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "fixed",
+            "stride": 4,
+            "value": 2
+          },
+          "size": 8,
+          "signature": "VTCK"
+        },
+        {
+          "name": "decapitation_armors",
+          "kind": "array",
+          "members": [
+            {
+              "name": "armor",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "ARMO"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "fixed",
+            "stride": 4,
+            "value": 2
+          },
+          "size": 8,
+          "signature": "DNAM"
+        },
+        {
+          "name": "default_hair_colors",
+          "kind": "array",
+          "members": [
+            {
+              "name": "color",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "CLFM"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "fixed",
+            "stride": 4,
+            "value": 2
+          },
+          "size": 8,
+          "signature": "HCLF"
+        },
+        {
+          "name": "tint_count",
+          "kind": "u16",
+          "signature": "TINL"
+        },
+        {
+          "name": "main_clamp",
+          "kind": "f32",
+          "signature": "PNAM"
+        },
+        {
+          "name": "face_clamp",
+          "kind": "f32",
+          "signature": "UNAM"
+        },
+        {
+          "name": "attack_race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ],
+          "signature": "ATKR"
+        },
+        {
+          "definition": "actors_attack"
+        },
+        {
+          "name": "body_data",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "body_marker",
+              "kind": "bytes",
+              "size": 0,
+              "signature": "NAM1"
+            },
+            {
+              "name": "male_body",
+              "kind": "group",
+              "fields": [
+                {
+                  "name": "male_body_marker",
+                  "kind": "bytes",
+                  "size": 0,
+                  "signature": "MNAM"
+                },
+                {
+                  "name": "parts",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "name": "male_body_part_index",
+                      "kind": "u32",
+                      "signature": "INDX"
+                    },
+                    {
+                      "name": "male_body_part_model",
+                      "kind": "group",
+                      "fields": [
+                        {
+                          "definition": "model_path",
+                          "signature": "MODL",
+                          "name": "male_body_part_model_path"
+                        },
+                        {
+                          "definition": "model_information",
+                          "signature": "MODT",
+                          "name": "male_body_part_model_information"
+                        },
+                        {
+                          "definition": "alternate_textures",
+                          "signature": "MODS",
+                          "name": "male_body_part_model_alternate_textures"
+                        }
+                      ],
+                      "repeat": false
+                    }
+                  ],
+                  "repeat": true
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "female_body",
+              "kind": "group",
+              "fields": [
+                {
+                  "name": "female_body_marker",
+                  "kind": "bytes",
+                  "size": 0,
+                  "signature": "FNAM"
+                },
+                {
+                  "name": "parts",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "name": "female_body_part_index",
+                      "kind": "u32",
+                      "signature": "INDX"
+                    },
+                    {
+                      "name": "female_body_part_model",
+                      "kind": "group",
+                      "fields": [
+                        {
+                          "definition": "model_path",
+                          "signature": "MODL",
+                          "name": "female_body_part_model_path"
+                        },
+                        {
+                          "definition": "model_information",
+                          "signature": "MODT",
+                          "name": "female_body_part_model_information"
+                        },
+                        {
+                          "definition": "alternate_textures",
+                          "signature": "MODS",
+                          "name": "female_body_part_model_alternate_textures"
+                        }
+                      ],
+                      "repeat": false
+                    }
+                  ],
+                  "repeat": true
+                }
+              ],
+              "repeat": false
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "hairs",
+          "kind": "array",
+          "members": [
+            {
+              "name": "hair",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "HDPT"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "signature": "HNAM"
+        },
+        {
+          "name": "eyes",
+          "kind": "array",
+          "members": [
+            {
+              "name": "eye",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "EYES"
+              ]
+            }
+          ],
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "signature": "ENAM"
+        },
+        {
+          "name": "body_part_data",
+          "kind": "form_id",
+          "targets": [
+            "BPTD"
+          ],
+          "signature": "GNAM"
+        },
+        {
+          "name": "marker_nam2_second",
+          "kind": "bytes",
+          "size": 0,
+          "signature": "NAM2"
+        },
+        {
+          "name": "behavior_marker",
+          "kind": "bytes",
+          "size": 0,
+          "signature": "NAM3"
+        },
+        {
+          "name": "male_behavior",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "male_behavior_marker",
+              "kind": "bytes",
+              "size": 0,
+              "signature": "MNAM"
+            },
+            {
+              "name": "male_behavior_model",
+              "kind": "group",
+              "fields": [
+                {
+                  "definition": "model_path",
+                  "signature": "MODL",
+                  "name": "male_behavior_model_path"
+                },
+                {
+                  "definition": "model_information",
+                  "signature": "MODT",
+                  "name": "male_behavior_model_information"
+                },
+                {
+                  "definition": "alternate_textures",
+                  "signature": "MODS",
+                  "name": "male_behavior_model_alternate_textures"
+                }
+              ],
+              "repeat": false
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "female_behavior",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "female_behavior_marker",
+              "kind": "bytes",
+              "size": 0,
+              "signature": "FNAM"
+            },
+            {
+              "name": "female_behavior_model",
+              "kind": "group",
+              "fields": [
+                {
+                  "definition": "model_path",
+                  "signature": "MODL",
+                  "name": "female_behavior_model_path"
+                },
+                {
+                  "definition": "model_information",
+                  "signature": "MODT",
+                  "name": "female_behavior_model_information"
+                },
+                {
+                  "definition": "alternate_textures",
+                  "signature": "MODS",
+                  "name": "female_behavior_model_alternate_textures"
+                }
+              ],
+              "repeat": false
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "material",
+          "kind": "form_id",
+          "targets": [
+            "MATT"
+          ],
+          "signature": "NAM4"
+        },
+        {
+          "name": "impact_data_set",
+          "kind": "form_id",
+          "targets": [
+            "IPDS"
+          ],
+          "signature": "NAM5"
+        },
+        {
+          "name": "decapitation_effect",
+          "kind": "form_id",
+          "targets": [
+            "ARTO"
+          ],
+          "signature": "NAM7"
+        },
+        {
+          "name": "open_loot_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ],
+          "signature": "ONAM"
+        },
+        {
+          "name": "close_loot_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ],
+          "signature": "LNAM"
+        },
+        {
+          "name": "biped_object_name",
+          "kind": "zstring",
+          "repeat": true,
+          "signature": "NAME"
+        },
+        {
+          "name": "movement_overrides",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "movement_type",
+              "kind": "form_id",
+              "targets": [
+                "MOVT"
+              ],
+              "signature": "MTYP"
+            },
+            {
+              "name": "movement_override",
+              "kind": "struct",
+              "members": [
+                {
+                  "name": "left_walk",
+                  "kind": "f32",
+                  "offset": 0
+                },
+                {
+                  "name": "left_run",
+                  "kind": "f32",
+                  "offset": 4
+                },
+                {
+                  "name": "right_walk",
+                  "kind": "f32",
+                  "offset": 8
+                },
+                {
+                  "name": "right_run",
+                  "kind": "f32",
+                  "offset": 12
+                },
+                {
+                  "name": "forward_walk",
+                  "kind": "f32",
+                  "offset": 16
+                },
+                {
+                  "name": "forward_run",
+                  "kind": "f32",
+                  "offset": 20
+                },
+                {
+                  "name": "back_walk",
+                  "kind": "f32",
+                  "offset": 24
+                },
+                {
+                  "name": "back_run",
+                  "kind": "f32",
+                  "offset": 28
+                },
+                {
+                  "name": "rotate_walk",
+                  "kind": "f32",
+                  "offset": 32
+                },
+                {
+                  "name": "rotate_run",
+                  "kind": "f32",
+                  "offset": 36
+                },
+                {
+                  "name": "unknown",
+                  "kind": "f32",
+                  "offset": 40
+                }
+              ],
+              "sizes": [
+                44
+              ],
+              "signature": "SPED"
+            }
+          ],
+          "repeat": true
+        },
+        {
+          "name": "equipment_flags",
+          "kind": "u32",
+          "signature": "VNAM"
+        },
+        {
+          "name": "equip_slot",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ],
+          "repeat": true,
+          "signature": "QNAM"
+        },
+        {
+          "name": "unarmed_slot",
+          "kind": "form_id",
+          "targets": [
+            "EQUP"
+          ],
+          "signature": "UNES"
+        },
+        {
+          "name": "phoneme_target_name",
+          "kind": "zstring",
+          "repeat": true,
+          "signature": "PHTN"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_iy"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ih"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_eh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ey"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ae"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_aa"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_aw"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ay"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ah"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ao"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_oy"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ow"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_uh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_uw"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_er"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ax"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_s"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_sh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_z"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_zh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_f"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_th"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_v"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_dh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_m"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_n"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ng"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_l"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_r"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_w"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_y"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_hh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_b"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_d"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_jh"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_g"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_p"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_t"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_k"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_ch"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_sil"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_shotsil"
+        },
+        {
+          "definition": "actors_phoneme_weights",
+          "signature": "PHWT",
+          "name": "phoneme_flap"
+        },
+        {
+          "name": "base_movement_walk",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ],
+          "signature": "WKMV"
+        },
+        {
+          "name": "base_movement_run",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ],
+          "signature": "RNMV"
+        },
+        {
+          "name": "base_movement_swim",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ],
+          "signature": "SWMV"
+        },
+        {
+          "name": "base_movement_fly",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ],
+          "signature": "FLMV"
+        },
+        {
+          "name": "base_movement_sneak",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ],
+          "signature": "SNMV"
+        },
+        {
+          "name": "base_movement_sprint",
+          "kind": "form_id",
+          "targets": [
+            "MOVT"
+          ],
+          "signature": "SPMV"
+        },
+        {
+          "name": "head_data",
+          "kind": "group",
+          "fields": [
+            {
+              "name": "head_marker",
+              "kind": "bytes",
+              "size": 0,
+              "signature": "NAM0"
+            },
+            {
+              "name": "male_head_data",
+              "kind": "group",
+              "fields": [
+                {
+                  "name": "male_head_gender_marker",
+                  "kind": "bytes",
+                  "size": 0,
+                  "signature": "MNAM"
+                },
+                {
+                  "name": "head_parts",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "name": "male_head_part_number",
+                      "kind": "u32",
+                      "signature": "INDX"
+                    },
+                    {
+                      "name": "male_head_part",
+                      "kind": "form_id",
+                      "targets": [
+                        "HDPT"
+                      ],
+                      "signature": "HEAD"
+                    }
+                  ],
+                  "repeat": true
+                },
+                {
+                  "name": "male_nose_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "male_nose_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 4,
+                      "size": 28
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "male_brow_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "male_brow_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 4,
+                      "size": 28
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "male_eye_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "male_eye_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags_1",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "flags_2",
+                      "kind": "u8",
+                      "offset": 4
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 5,
+                      "size": 27
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "male_lip_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "male_lip_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 4,
+                      "size": 28
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "male_preset_npc",
+                  "kind": "form_id",
+                  "targets": [
+                    "NPC_"
+                  ],
+                  "repeat": true,
+                  "signature": "RPRM"
+                },
+                {
+                  "name": "male_hair_color",
+                  "kind": "form_id",
+                  "targets": [
+                    "CLFM"
+                  ],
+                  "repeat": true,
+                  "signature": "AHCM"
+                },
+                {
+                  "name": "male_face_texture",
+                  "kind": "form_id",
+                  "targets": [
+                    "TXST"
+                  ],
+                  "repeat": true,
+                  "signature": "FTSM"
+                },
+                {
+                  "name": "male_default_face_texture",
+                  "kind": "form_id",
+                  "targets": [
+                    "TXST"
+                  ],
+                  "signature": "DFTM"
+                },
+                {
+                  "name": "tint_assets",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "name": "layers",
+                      "kind": "group",
+                      "fields": [
+                        {
+                          "name": "male_tint_index",
+                          "kind": "u16",
+                          "signature": "TINI"
+                        },
+                        {
+                          "name": "male_tint_texture",
+                          "kind": "zstring",
+                          "signature": "TINT"
+                        },
+                        {
+                          "name": "male_tint_mask_type",
+                          "kind": "u16",
+                          "signature": "TINP"
+                        },
+                        {
+                          "name": "male_tint_default",
+                          "kind": "form_id",
+                          "targets": [
+                            "CLFM"
+                          ],
+                          "signature": "TIND"
+                        }
+                      ],
+                      "repeat": true
+                    },
+                    {
+                      "name": "presets",
+                      "kind": "group",
+                      "fields": [
+                        {
+                          "name": "male_tint_color",
+                          "kind": "form_id",
+                          "targets": [
+                            "CLFM"
+                          ],
+                          "signature": "TINC"
+                        },
+                        {
+                          "name": "male_tint_default_value",
+                          "kind": "f32",
+                          "signature": "TINV"
+                        },
+                        {
+                          "name": "male_tint_preset_index",
+                          "kind": "u16",
+                          "signature": "TIRS"
+                        }
+                      ],
+                      "repeat": true
+                    }
+                  ],
+                  "repeat": true
+                },
+                {
+                  "name": "male_head_model",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "definition": "model_path",
+                      "signature": "MODL",
+                      "name": "male_head_model_path"
+                    },
+                    {
+                      "definition": "model_information",
+                      "signature": "MODT",
+                      "name": "male_head_model_information"
+                    },
+                    {
+                      "definition": "alternate_textures",
+                      "signature": "MODS",
+                      "name": "male_head_model_alternate_textures"
+                    }
+                  ],
+                  "repeat": false
+                }
+              ],
+              "repeat": false
+            },
+            {
+              "name": "female_head_data",
+              "kind": "group",
+              "fields": [
+                {
+                  "name": "female_head_marker",
+                  "kind": "bytes",
+                  "size": 0,
+                  "signature": "NAM0"
+                },
+                {
+                  "name": "female_head_gender_marker",
+                  "kind": "bytes",
+                  "size": 0,
+                  "signature": "FNAM"
+                },
+                {
+                  "name": "head_parts",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "name": "female_head_part_number",
+                      "kind": "u32",
+                      "signature": "INDX"
+                    },
+                    {
+                      "name": "female_head_part",
+                      "kind": "form_id",
+                      "targets": [
+                        "HDPT"
+                      ],
+                      "signature": "HEAD"
+                    }
+                  ],
+                  "repeat": true
+                },
+                {
+                  "name": "female_nose_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "female_nose_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 4,
+                      "size": 28
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "female_brow_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "female_brow_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 4,
+                      "size": 28
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "female_eye_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "female_eye_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags_1",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "flags_2",
+                      "kind": "u8",
+                      "offset": 4
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 5,
+                      "size": 27
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "female_lip_morph_unknown",
+                  "kind": "bytes",
+                  "signature": "MPAI"
+                },
+                {
+                  "name": "female_lip_morph_variants",
+                  "kind": "struct",
+                  "members": [
+                    {
+                      "name": "flags",
+                      "kind": "u32",
+                      "offset": 0
+                    },
+                    {
+                      "name": "unknown",
+                      "kind": "bytes",
+                      "offset": 4,
+                      "size": 28
+                    }
+                  ],
+                  "signature": "MPAV",
+                  "size": 32
+                },
+                {
+                  "name": "female_preset_npc",
+                  "kind": "form_id",
+                  "targets": [
+                    "NPC_"
+                  ],
+                  "repeat": true,
+                  "signature": "RPRF"
+                },
+                {
+                  "name": "female_hair_color",
+                  "kind": "form_id",
+                  "targets": [
+                    "CLFM"
+                  ],
+                  "repeat": true,
+                  "signature": "AHCF"
+                },
+                {
+                  "name": "female_face_texture",
+                  "kind": "form_id",
+                  "targets": [
+                    "TXST"
+                  ],
+                  "repeat": true,
+                  "signature": "FTSF"
+                },
+                {
+                  "name": "female_default_face_texture",
+                  "kind": "form_id",
+                  "targets": [
+                    "TXST"
+                  ],
+                  "signature": "DFTF"
+                },
+                {
+                  "name": "tint_assets",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "name": "layers",
+                      "kind": "group",
+                      "fields": [
+                        {
+                          "name": "female_tint_index",
+                          "kind": "u16",
+                          "signature": "TINI"
+                        },
+                        {
+                          "name": "female_tint_texture",
+                          "kind": "zstring",
+                          "signature": "TINT"
+                        },
+                        {
+                          "name": "female_tint_mask_type",
+                          "kind": "u16",
+                          "signature": "TINP"
+                        },
+                        {
+                          "name": "female_tint_default",
+                          "kind": "form_id",
+                          "targets": [
+                            "CLFM"
+                          ],
+                          "signature": "TIND"
+                        }
+                      ],
+                      "repeat": true
+                    },
+                    {
+                      "name": "presets",
+                      "kind": "group",
+                      "fields": [
+                        {
+                          "name": "female_tint_color",
+                          "kind": "form_id",
+                          "targets": [
+                            "CLFM"
+                          ],
+                          "signature": "TINC"
+                        },
+                        {
+                          "name": "female_tint_default_value",
+                          "kind": "f32",
+                          "signature": "TINV"
+                        },
+                        {
+                          "name": "female_tint_preset_index",
+                          "kind": "u16",
+                          "signature": "TIRS"
+                        }
+                      ],
+                      "repeat": true
+                    }
+                  ],
+                  "repeat": true
+                },
+                {
+                  "name": "female_head_model",
+                  "kind": "group",
+                  "fields": [
+                    {
+                      "definition": "model_path",
+                      "signature": "MODL",
+                      "name": "female_head_model_path"
+                    },
+                    {
+                      "definition": "model_information",
+                      "signature": "MODT",
+                      "name": "female_head_model_information"
+                    },
+                    {
+                      "definition": "alternate_textures",
+                      "signature": "MODS",
+                      "name": "female_head_model_alternate_textures"
+                    }
+                  ],
+                  "repeat": false
+                }
+              ],
+              "repeat": false
+            }
+          ],
+          "repeat": false
+        },
+        {
+          "name": "morph_race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ],
+          "signature": "NAM8"
+        },
+        {
+          "name": "armor_race",
+          "kind": "form_id",
+          "targets": [
+            "RACE"
+          ],
+          "signature": "RNAM"
+        }
+      ]
+    }
+  ]
+}

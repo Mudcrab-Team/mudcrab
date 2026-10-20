@@ -18,7 +18,7 @@ use shared::collision::CollisionAsset;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
-    io::Write,
+    io::{Read, Write},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
 };
@@ -73,18 +73,33 @@ impl MeshConverter {
         find_skeleton(nif_path).into_iter().collect()
     }
 
+    /// Converts a NIF into a GLB with collision and material metadata, using static geometry as a fallback.
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
+        let skeleton = find_skeleton(nif_path);
+        Self::convert_nif_to_glb_with_skeleton(
+            nif_path,
+            glb_output_path.as_ref(),
+            skeleton.as_deref(),
+        )
+    }
+
+    /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
+    pub fn convert_nif_to_glb_with_skeleton(
+        nif_path: &Path,
+        glb_output_path: &Path,
+        skeleton_path: Option<&Path>,
+    ) -> Result<()> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let skeleton = if nif.has_skeleton() {
-            let skeleton_path = find_skeleton(nif_path).ok_or_else(|| {
+            let skeleton_path = skeleton_path.ok_or_else(|| {
                 color_eyre::eyre::eyre!(
                     "skinned NIF requires a skeleton, but none was found near {}",
                     nif_path.display()
                 )
             })?;
-            Some(open_nif_resilient(&skeleton_path)?.0)
+            Some(open_nif_resilient(skeleton_path)?.0)
         } else {
             None
         };
@@ -117,13 +132,14 @@ impl MeshConverter {
         if model.static_meshes.is_empty() && model.skeletal_meshes.is_empty() {
             ensure!(
                 is_deferred_dynamic_mesh(nif_path)
+                    || is_geometry_template(&nif)
                     || !diagnostics
                         .block_types
                         .keys()
                         .any(|block_type| is_declared_geometry_block(block_type)),
                 "NIF declares mesh geometry, but no supported geometry was converted"
             );
-            let output = glb_output_path.as_ref();
+            let output = glb_output_path;
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -134,7 +150,7 @@ impl MeshConverter {
                 &embed_collision(empty_scene_glb(&name), &collision)?,
             );
         }
-        let output = glb_output_path.as_ref();
+        let output = glb_output_path;
         let mut glb = catch_unwind(AssertUnwindSafe(|| model.to_glb(name.clone())))
             .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?;
         if glb_bounds_from_bytes(&glb).is_err() && !used_static_fallback {
@@ -215,6 +231,11 @@ impl MeshConverter {
         open_nif_resilient(path).map(|(_, diagnostics, _)| diagnostics)
     }
 
+    /// Loads a NIF and reports whether its declared geometry consists only of empty overlay templates.
+    pub fn is_geometry_template(path: &Path) -> Result<bool> {
+        open_nif_resilient(path).map(|(nif, _, _)| is_geometry_template(&nif))
+    }
+
     /// Extracts the validated per-shape NIF material contract without
     /// publishing glTF/PBR decisions that belong to the next pipeline stage.
     pub fn inspect_nif_materials(path: &Path) -> Result<Vec<NifShapeMaterial>> {
@@ -255,10 +276,24 @@ impl MeshConverter {
     /// textures are mandatory; auxiliary maps remain explicitly optional until
     /// the shader contract requires them.
     pub fn glb_texture_dependencies(path: &Path) -> Result<Vec<TextureDependency>> {
-        let bytes =
-            fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-        let document = glb_json_from_bytes(&bytes)
-            .wrap_err_with(|| format!("failed to inspect textures in {}", path.display()))?;
+        let mut file = fs::File::open(path)?;
+        let mut header = [0u8; 20];
+        file.read_exact(&mut header)?;
+        let length = u32::from_le_bytes(header[8..12].try_into().unwrap());
+        let json_length = u32::from_le_bytes(header[12..16].try_into().unwrap());
+        ensure!(
+            &header[..4] == b"glTF"
+                && &header[16..20] == b"JSON"
+                && u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2
+                && u64::from(length) == file.metadata()?.len()
+                && u64::from(json_length) + 20 <= u64::from(length),
+            "invalid GLB JSON chunk in {}",
+            path.display()
+        );
+        // Dependency scans need JSON only, not potentially gigabytes of geometry.
+        let document =
+            serde_json::from_reader(std::io::BufReader::new(file.take(u64::from(json_length))))
+                .wrap_err_with(|| format!("failed to inspect textures in {}", path.display()))?;
         Ok(texture_dependencies(&document))
     }
 
@@ -799,6 +834,25 @@ fn is_declared_geometry_block(block_type: &str) -> bool {
     )
 }
 
+/// Returns whether all declared geometry blocks are NiTriShape templates without geometry data.
+fn is_geometry_template(nif: &NifFile) -> bool {
+    let mut templates = 0;
+    for (index, block) in nif.blocks.iter().enumerate() {
+        if !nif
+            .header
+            .get_block_type(index)
+            .is_ok_and(is_declared_geometry_block)
+        {
+            continue;
+        }
+        match block {
+            NifBlock::NiTriShape(shape) if shape.data == u32::MAX => templates += 1,
+            _ => return false,
+        }
+    }
+    templates > 0
+}
+
 fn is_deferred_dynamic_mesh(path: &Path) -> bool {
     let normalized = path
         .to_string_lossy()
@@ -1006,6 +1060,9 @@ fn apply_vertex_color_contract(
     Ok(())
 }
 
+/// Loads Skyrim NIF blocks within their declared sizes, recording parse failures as unhandled blocks.
+///
+/// Returns the parsed file, diagnostics, and validated material contract.
 fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
@@ -1048,7 +1105,7 @@ fn open_nif_resilient(
             .entry(block_type.clone())
             .or_default() += 1;
         let parsed = catch_unwind(AssertUnwindSafe(|| {
-            NifBlock::parse(raw, block_type.clone())
+            NifBlock::parse_with_version(raw, block_type.clone(), header.bethesda_version)
         }));
         let block = match parsed {
             Ok(Ok((_, NifBlock::Unhandled))) => {
@@ -1209,6 +1266,9 @@ fn nif_scene_depth(blocks: &[NifBlock]) -> usize {
         .unwrap_or(0)
 }
 
+/// Parses a little-endian Skyrim NIF header for Bethesda versions 83 or 100.
+///
+/// Returns the remaining block bytes and header, rejecting unsupported versions and excessive counts.
 pub(crate) fn parse_skyrim_header<'a>(
     bytes: &'a [u8],
     path: &Path,
@@ -1228,6 +1288,11 @@ pub(crate) fn parse_skyrim_header<'a>(
         path.display()
     );
     let user_version = cursor.u32()?;
+    ensure!(
+        nif_version == 0x1402_0007 && user_version == 12,
+        "unsupported NIF version {nif_version:#010x}, user version {user_version} in {}",
+        path.display()
+    );
     let block_count = cursor.u32()?;
     ensure!(
         block_count <= 1_000_000,
@@ -1235,6 +1300,11 @@ pub(crate) fn parse_skyrim_header<'a>(
         path.display()
     );
     let bethesda_version = cursor.u32()?;
+    ensure!(
+        matches!(bethesda_version, 83 | 100),
+        "unsupported Bethesda NIF version {bethesda_version} in {}",
+        path.display()
+    );
     let author = cursor.sized_string8_optional()?;
     let process_script = cursor.sized_string8_optional()?;
     let export_script = cursor.sized_string8_optional()?;
@@ -1824,8 +1894,38 @@ fn texture_uri(document: &serde_json::Value, texture_index: usize) -> Option<&st
         .as_str()
 }
 
-fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
-    let parent = nif_path.parent()?;
+/// Resolves skeletons in a canonical, relative-path winning asset index.
+/// Repair callers must include archive assets and overlay winning loose files before resolving.
+pub fn resolve_skeleton(
+    relative: &Path,
+    sources: &std::collections::BTreeMap<PathBuf, PathBuf>,
+) -> Option<PathBuf> {
+    let relative = PathBuf::from(
+        relative
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase(),
+    );
+    for candidate in skeleton_candidates(&relative) {
+        if let Some(source) = sources.get(&candidate) {
+            return Some(source.clone());
+        }
+    }
+    let (root, actor) = actor_root(&relative)?;
+    let actor_dir = root.join(actor);
+    sources.iter().find_map(|(path, source)| {
+        let suffix = path.strip_prefix(&actor_dir).ok()?;
+        (suffix.components().count() <= 4
+            && path.file_name()?.to_string_lossy().starts_with("skeleton")
+            && path.extension()?.eq_ignore_ascii_case("nif"))
+        .then(|| source.clone())
+    })
+}
+
+fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
+    let Some(parent) = nif_path.parent() else {
+        return Vec::new();
+    };
     let mut candidates = vec![
         parent.join("skeleton.nif"),
         parent.join("skeleton_female.nif"),
@@ -1845,6 +1945,14 @@ fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
                 .join("character assets female")
                 .join("skeleton_female.nif"),
         ]);
+    }
+    candidates
+}
+
+fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
+    let mut candidates = skeleton_candidates(nif_path);
+    if let Some((actors_root, actor_name)) = actor_root(nif_path) {
+        let actor_dir = actors_root.join(actor_name);
         if let Some(found) = WalkDir::new(&actor_dir)
             .max_depth(4)
             .follow_links(false)
@@ -2011,6 +2119,35 @@ mod tests {
         assert_eq!(check(Some(Vec::new())), 0);
     }
 
+    /// Verifies legacy skin partitions parse without an SSE vertex buffer and fail under the wrong layout.
+    #[test]
+    fn skin_partition_uses_legacy_layout_and_rejects_oversized_sse_buffer() {
+        // Counts from the KS Hairdos file that previously requested 56,716,014,720 bytes.
+        let mut bytes = 1u32.to_le_bytes().to_vec();
+        for count in [9938u16, 13522, 2, 0, 4] {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0; 4]); // two bones
+        bytes.extend_from_slice(&[0, 0, 1]); // no vertex map/weights; faces present
+        for _ in 0..13522 {
+            bytes.extend_from_slice(&[0, 0, 1, 0, 2, 0]);
+        }
+        bytes.extend_from_slice(&[0, 0, 0]); // no bone indices; partition flags
+        let (remaining, block) =
+            NifBlock::parse_with_version(&bytes, "NiSkinPartition".into(), 83).unwrap();
+        assert!(remaining.is_empty());
+        let NifBlock::NiSkinPartition(partition) = block else {
+            panic!("wrong block type")
+        };
+        assert_eq!(partition.triangles.len(), 13522);
+        assert!(partition.vertex_data.is_empty());
+        assert!(NifBlock::parse_with_version(&bytes, "NiSkinPartition".into(), 100).is_err());
+        let mut sse = vec![0; 8]; // zero partitions and zero vertex bytes
+        sse.extend_from_slice(&4u32.to_le_bytes());
+        sse.extend_from_slice(&1u64.to_le_bytes()); // four-byte vertex stride
+        assert!(NifBlock::parse_with_version(&sse, "NiSkinPartition".into(), 100).is_ok());
+    }
+
     #[test]
     fn rejects_invalid_nif_without_panicking() {
         let dir = tempfile::tempdir().unwrap();
@@ -2055,6 +2192,21 @@ mod tests {
         let output = directory.path().join("static-fallback.glb");
         MeshConverter::convert_nif_to_glb(&path, &output).unwrap();
         MeshConverter::glb_bounds(&output).unwrap();
+    }
+
+    #[test]
+    fn merged_skeleton_uses_winner_not_physical_neighbor() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("low/skeleton.nif");
+        let winner = dir.path().join("overwrite/skeleton.nif");
+        let relative = Path::new("meshes/actors/character/armor/body.nif");
+        let key = PathBuf::from("meshes/actors/character/character assets/skeleton.nif");
+        let mut sources = std::collections::BTreeMap::from([(key.clone(), lower.clone())]);
+        assert_eq!(resolve_skeleton(relative, &sources), Some(lower));
+        sources.insert(key.clone(), winner.clone());
+        assert_eq!(resolve_skeleton(relative, &sources), Some(winner));
+        sources.remove(&key);
+        assert_eq!(resolve_skeleton(relative, &sources), None);
     }
 
     #[test]

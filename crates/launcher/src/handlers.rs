@@ -220,6 +220,7 @@ mod tests {
         }
     }
 
+    /// Play requires a ready output and no active conversion.
     #[test]
     fn play_needs_a_complete_output_and_no_run_going() {
         let finished = ConversionState::Finished(RunReport {
@@ -228,6 +229,7 @@ mod tests {
             cache_hits: 0,
             skipped: 0,
             warnings: Vec::new(),
+            notices: Vec::new(),
             lod_chunks: 0,
             lod_warnings: Vec::new(),
             artifacts: 1,

@@ -21,6 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::Cursor,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 
 const GUTTER: usize = 2;
@@ -47,13 +48,29 @@ pub(crate) fn terrain_diffuse_paths(connection: &Connection) -> Result<BTreeSet<
 
 #[derive(Default)]
 pub struct TerrainTextures {
-    textures: BTreeMap<u32, [LinearImage; 3]>,
+    textures: BTreeMap<u32, Arc<[LinearImage; 3]>>,
+    sources: BTreeMap<u32, (String, String)>,
     /// Exact winning DDS bytes, included in the LOD build identity.
     pub source_hashes: BTreeMap<String, String>,
 }
 
+/// Stage-owned decoded images, shared by every world and FormID using a path.
+#[derive(Default)]
+pub(crate) struct TerrainTextureCache {
+    decoded: BTreeMap<String, (Arc<[LinearImage; 3]>, String)>,
+}
+
 impl TerrainTextures {
     pub fn load(connection: &Connection, vfs: &Path, cells: &[TerrainCellInput]) -> Result<Self> {
+        Self::load_with_cache(connection, vfs, cells, &mut TerrainTextureCache::default())
+    }
+
+    pub(crate) fn load_with_cache(
+        connection: &Connection,
+        vfs: &Path,
+        cells: &[TerrainCellInput],
+        cache: &mut TerrainTextureCache,
+    ) -> Result<Self> {
         let catalog = diffuse_catalog(connection)?;
         let ids: BTreeSet<_> = cells
             .iter()
@@ -61,13 +78,12 @@ impl TerrainTextures {
             .map(|layer| layer.texture_form_id)
             .filter(|id| *id != 0)
             .collect();
-        let mut decoded = BTreeMap::new();
         let mut result = Self::default();
         for id in ids {
             let path = catalog.get(&id).ok_or_else(|| {
                 color_eyre::eyre::eyre!("LAND texture {id:08X} has no diffuse image")
             })?;
-            if !decoded.contains_key(path) {
+            if !cache.decoded.contains_key(path) {
                 let bytes = std::fs::read(vfs.join(path))
                     .wrap_err_with(|| format!("missing terrain diffuse {path}"))?;
                 let dds = Dds::read(Cursor::new(&bytes))
@@ -78,16 +94,32 @@ impl TerrainTextures {
                         && !dds.header.caps2.contains(Caps2::CUBEMAP),
                     "terrain diffuse {path} must be a 2D image"
                 );
-                let images = [32, 16, 8].map(|size| LinearImage::decode(&dds, size));
-                let [a, b, c] = images;
-                decoded.insert(path.clone(), [a?, b?, c?]);
-                result
-                    .source_hashes
-                    .insert(path.clone(), hash_bytes(&bytes));
+                let images = LinearImage::decode_tiers(&dds)?;
+                cache
+                    .decoded
+                    .insert(path.clone(), (Arc::new(images), hash_bytes(&bytes)));
             }
-            result.textures.insert(id, decoded[path].clone());
+            let (images, hash) = &cache.decoded[path];
+            result.textures.insert(id, Arc::clone(images));
+            result.source_hashes.insert(path.clone(), hash.clone());
+            result.sources.insert(id, (path.clone(), hash.clone()));
         }
         Ok(result)
+    }
+
+    pub(crate) fn sources_for(
+        &self,
+        cells: &[&TerrainCellInput],
+    ) -> BTreeMap<u32, &(String, String)> {
+        cells
+            .iter()
+            .flat_map(|cell| &cell.layers)
+            .filter_map(|layer| {
+                self.sources
+                    .get(&layer.texture_form_id)
+                    .map(|source| (layer.texture_form_id, source))
+            })
+            .collect()
     }
 
     pub fn verify_sources(&self, vfs: &Path) -> Result<()> {
@@ -109,33 +141,54 @@ struct LinearImage {
 }
 
 impl LinearImage {
-    fn decode(dds: &Dds, size: u32) -> Result<Self> {
-        let mut mip = 0;
-        while mip + 1 < dds.get_num_mipmap_levels()
-            && (dds.get_width() >> (mip + 1)).max(dds.get_height() >> (mip + 1)) >= size
-        {
-            mip += 1;
-        }
-        let surface = image_dds::SurfaceRgba8::decode_layers_mipmaps_dds(dds, 0..1, mip..mip + 1)
-            .wrap_err("terrain DDS mip cannot be decoded")?;
-        let image = surface
-            .get_image(0, 0, 0)
-            .ok_or_else(|| color_eyre::eyre::eyre!("terrain DDS mip is truncated"))?;
-        let linear =
-            ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(image.width(), image.height(), |x, y| {
-                let pixel = image.get_pixel(x, y);
-                Rgb([
-                    srgb_to_linear(pixel[0]),
-                    srgb_to_linear(pixel[1]),
-                    srgb_to_linear(pixel[2]),
-                ])
-            });
-        let image = resize(&linear, size, size, FilterType::Triangle);
-        Ok(Self {
-            width: image.width() as usize,
-            height: image.height() as usize,
-            pixels: image.pixels().map(|pixel| pixel.0).collect(),
+    fn decode_tiers(dds: &Dds) -> Result<[Self; 3]> {
+        Self::decode_tiers_with(dds, |mip| {
+            image_dds::SurfaceRgba8::decode_layers_mipmaps_dds(dds, 0..1, mip..mip + 1)
+                .wrap_err("terrain DDS mip cannot be decoded")
         })
+    }
+
+    fn decode_tiers_with(
+        dds: &Dds,
+        mut decode: impl FnMut(u32) -> Result<image_dds::SurfaceRgba8<Vec<u8>>>,
+    ) -> Result<[Self; 3]> {
+        let mut linear_mips = BTreeMap::new();
+        let mut images = Vec::with_capacity(3);
+        for size in [32, 16, 8] {
+            let mut mip = 0;
+            while mip + 1 < dds.get_num_mipmap_levels()
+                && (dds.get_width() >> (mip + 1)).max(dds.get_height() >> (mip + 1)) >= size
+            {
+                mip += 1;
+            }
+            if let std::collections::btree_map::Entry::Vacant(entry) = linear_mips.entry(mip) {
+                let surface = decode(mip)?;
+                let image = surface
+                    .get_image(0, 0, 0)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("terrain DDS mip is truncated"))?;
+                entry.insert(ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(
+                    image.width(),
+                    image.height(),
+                    |x, y| {
+                        let pixel = image.get_pixel(x, y);
+                        Rgb([
+                            srgb_to_linear(pixel[0]),
+                            srgb_to_linear(pixel[1]),
+                            srgb_to_linear(pixel[2]),
+                        ])
+                    },
+                ));
+            }
+            let image = resize(&linear_mips[&mip], size, size, FilterType::Triangle);
+            images.push(Self {
+                width: image.width() as usize,
+                height: image.height() as usize,
+                pixels: image.pixels().map(|pixel| pixel.0).collect(),
+            });
+        }
+        Ok(images
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("three tier images")))
     }
 
     fn sample(&self, u: f32, v: f32) -> [f32; 3] {
@@ -165,12 +218,17 @@ impl LinearImage {
 }
 
 fn srgb_to_linear(byte: u8) -> f32 {
-    let color = f32::from(byte) / 255.0;
-    if color <= 0.04045 {
-        color / 12.92
-    } else {
-        ((color + 0.055) / 1.055).powf(2.4)
-    }
+    static COLORS: OnceLock<[f32; 256]> = OnceLock::new();
+    COLORS.get_or_init(|| {
+        std::array::from_fn(|byte| {
+            let color = byte as f32 / 255.0;
+            if color <= 0.04045 {
+                color / 12.92
+            } else {
+                ((color + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    })[usize::from(byte)]
 }
 
 fn linear_to_srgb(color: f32) -> u8 {
@@ -262,7 +320,9 @@ impl<'a> QuadrantBlend<'a> {
             } else {
                 overlays[index - 1]
             } / total;
-            let sample = if layer.is_base && layer.texture_form_id == 0 {
+            // Zero IDs are neutral white placeholders in any layer slot.
+            // Their weights still contribute to the same blend.
+            let sample = if layer.texture_form_id == 0 {
                 [1.0; 3]
             } else {
                 textures
@@ -413,25 +473,25 @@ impl TerrainAtlas {
         ]
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(self) -> Result<Vec<u8>> {
         TextureConverter::encode_rgba_mips(
             self.size as u32,
             self.size as u32,
-            &self.mip_chain(),
+            &mip_chain(self.size, self.rgba),
             TextureEncoding::ColorSrgb,
         )
     }
+}
 
-    fn mip_chain(&self) -> Vec<Vec<u8>> {
-        let mut levels = Vec::with_capacity(3);
-        levels.push(self.rgba.clone());
-        for _ in 1..3 {
-            let previous = levels.last().expect("base atlas mip exists");
-            let side = (self.size >> (levels.len() - 1)).max(1);
-            levels.push(downsample_srgb_rgba(previous, side, side));
-        }
-        levels
+fn mip_chain(size: usize, rgba: Vec<u8>) -> Vec<Vec<u8>> {
+    let mut levels = Vec::with_capacity(3);
+    levels.push(rgba);
+    for _ in 1..3 {
+        let previous = levels.last().expect("base atlas mip exists");
+        let side = (size >> (levels.len() - 1)).max(1);
+        levels.push(downsample_srgb_rgba(previous, side, side));
     }
+    levels
 }
 
 fn downsample_srgb_rgba(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -502,14 +562,215 @@ mod tests {
         for (id, color) in [(1, [1.0, 0.0, 0.0]), (2, [0.0, 0.0, 1.0])] {
             result.textures.insert(
                 id,
-                std::array::from_fn(|_| LinearImage {
+                Arc::new(std::array::from_fn(|_| LinearImage {
                     width: 1,
                     height: 1,
                     pixels: vec![color],
-                }),
+                })),
             );
         }
         result
+    }
+
+    fn zero_overlay_source() -> TerrainCellInput {
+        let mut source = cell(vec![layer(1, true, 0.0), layer(0, false, 0.0)]);
+        source.layers[1].weights.iter_mut().for_each(|weight| {
+            weight.opacity = 0.25 + f32::from(weight.vertex % 17) / 32.0;
+        });
+        source
+    }
+
+    #[test]
+    fn lod_zero_overlay_preserves_asymmetric_weighted_color_all_tiers() {
+        let source = zero_overlay_source();
+        let textures = textures();
+        assert!(!textures.textures.contains_key(&0));
+        let weights_before: Vec<_> = source.layers[1]
+            .weights
+            .iter()
+            .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+            .collect();
+        for (tier_index, tier) in LodTier::ALL.into_iter().enumerate() {
+            let blend = QuadrantBlend::new(&source, 0).unwrap();
+            for (u, opacity) in [(0.0, 0.25), (0.5, 0.5), (1.0, 0.75)] {
+                let actual = blend
+                    .sample(&textures, tier_index, u, 0.0, (0, 0))
+                    .unwrap_or_else(|error| panic!("zero overlay at {tier:?}: {error:#}"));
+                assert_eq!(actual, [1.0, opacity, opacity]);
+            }
+            let atlas = TerrainAtlas::bake(tier, &[&source], &textures)
+                .unwrap_or_else(|error| panic!("zero overlay atlas at {tier:?}: {error:#}"));
+            for (x, expected) in [
+                (GUTTER, [255, 137, 137, 255]),
+                (atlas.tile_side - GUTTER - 1, [255, 225, 225, 255]),
+            ] {
+                let offset = (GUTTER * atlas.size + x) * 4;
+                assert_eq!(&atlas.rgba[offset..offset + 4], &expected);
+            }
+        }
+        assert_eq!(source.layers.len(), 2);
+        assert_eq!(source.layers[0].texture_form_id, 1);
+        assert!(source.layers[0].is_base);
+        assert_eq!(source.layers[1].texture_form_id, 0);
+        assert!(!source.layers[1].is_base);
+        assert_eq!(source.layers[1].weights.len(), 289);
+        let weights_after: Vec<_> = source.layers[1]
+            .weights
+            .iter()
+            .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+            .collect();
+        assert_eq!(weights_after, weights_before);
+    }
+
+    #[test]
+    fn lod_nonzero_missing_overlay_still_rejected_all_tiers() {
+        let mut source = zero_overlay_source();
+        source.layers[1].texture_form_id = 0x844;
+        let textures = textures();
+        assert!(!textures.textures.contains_key(&0x844));
+        for (tier_index, tier) in LodTier::ALL.into_iter().enumerate() {
+            let blend = QuadrantBlend::new(&source, 0).unwrap();
+            let error = blend
+                .sample(&textures, tier_index, 0.0, 0.0, (0, 0))
+                .expect_err("nonzero unresolved overlay must remain an error");
+            assert!(format!("{error:#}").contains("unresolved terrain diffuse 00000844"));
+            assert!(TerrainAtlas::bake(tier, &[&source], &textures).is_err());
+        }
+    }
+
+    #[test]
+    fn lod_configured_origin_compiles_zero_overlay_all_tiers() {
+        let mut source = zero_overlay_source();
+        source.cell_id = 0xabc;
+        source.grid_x = -95;
+        source.grid_y = -95;
+        let sources = [source];
+        let snapshot: Vec<_> = sources[0]
+            .layers
+            .iter()
+            .map(|layer| {
+                (
+                    layer.texture_form_id,
+                    layer.quadrant,
+                    layer.layer,
+                    layer.is_base,
+                    layer
+                        .weights
+                        .iter()
+                        .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let chunks = crate::lod::terrain::compile_world_terrain(
+            0x77,
+            shared::lod::LodOrigin::new(-96, -96),
+            &sources,
+            &textures(),
+        )
+        .unwrap_or_else(|error| panic!("configured-origin zero overlay compiler: {error:#}"));
+        assert_eq!(chunks.len(), 3);
+        for (chunk, tier) in chunks.iter().zip(LodTier::ALL) {
+            assert_eq!(chunk.key.worldspace_id, 0x77);
+            assert_eq!(chunk.key.tier, tier);
+            assert_eq!(chunk.key.anchor, shared::lod::ChunkAnchor::new(0, 0));
+            assert_eq!(chunk.cells, vec![(-95, -95)]);
+            assert_eq!(&chunk.glb[..4], b"glTF");
+            let json_length = u32::from_le_bytes(chunk.glb[12..16].try_into().unwrap()) as usize;
+            let document: serde_json::Value =
+                serde_json::from_slice(&chunk.glb[20..20 + json_length]).unwrap();
+            let cell_ids: Vec<_> = document["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|node| node["extras"]["cell_id"].as_u64())
+                .collect();
+            assert_eq!(cell_ids, vec![0xabc]);
+        }
+        let after: Vec<_> = sources[0]
+            .layers
+            .iter()
+            .map(|layer| {
+                (
+                    layer.texture_form_id,
+                    layer.quadrant,
+                    layer.layer,
+                    layer.is_base,
+                    layer
+                        .weights
+                        .iter()
+                        .map(|weight| (weight.vertex, weight.opacity.to_bits()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(after, snapshot);
+    }
+
+    #[test]
+    fn srgb_lookup_preserves_every_source_byte() {
+        for byte in 0..=u8::MAX {
+            let color = f32::from(byte) / 255.0;
+            let expected = if color <= 0.04045 {
+                color / 12.92
+            } else {
+                ((color + 0.055) / 1.055).powf(2.4)
+            };
+            assert_eq!(srgb_to_linear(byte).to_bits(), expected.to_bits());
+        }
+    }
+
+    fn test_dds() -> Vec<u8> {
+        dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(7),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn v122_selected_dds_mip_is_decoded_once_for_all_tiers() {
+        let dds = Dds::read(Cursor::new(test_dds())).unwrap();
+        let mut calls = Vec::new();
+        let images = LinearImage::decode_tiers_with(&dds, |mip| {
+            calls.push(mip);
+            Ok(
+                image_dds::SurfaceRgba8::decode_layers_mipmaps_dds(&dds, 0..1, mip..mip + 1)
+                    .unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(calls, [0]);
+        assert_eq!(images.map(|image| image.width), [32, 16, 8]);
+    }
+
+    #[test]
+    fn v122_diffuse_images_shared_across_formids_and_worlds_keep_source_proof() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE landscape_textures(id INTEGER, texture_set_id INTEGER); CREATE TABLE texture_sets(id INTEGER, diffuse_path TEXT); INSERT INTO texture_sets VALUES(1,'textures/shared.dds'); INSERT INTO landscape_textures VALUES(1,1),(2,1);").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("textures")).unwrap();
+        let path = directory.path().join("textures/shared.dds");
+        std::fs::write(&path, test_dds()).unwrap();
+        let mut cache = TerrainTextureCache::default();
+        let first = TerrainTextures::load_with_cache(
+            &connection,
+            directory.path(),
+            &[cell(vec![layer(1, true, 0.0)])],
+            &mut cache,
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let second = TerrainTextures::load_with_cache(
+            &connection,
+            directory.path(),
+            &[cell(vec![layer(2, true, 0.0)])],
+            &mut cache,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&first.textures[&1], &second.textures[&2]));
+        assert_eq!(first.source_hashes, second.source_hashes);
+        assert!(second.verify_sources(directory.path()).is_err());
     }
 
     #[test]
@@ -636,7 +897,7 @@ mod tests {
             tiles_axis,
             rgba,
         };
-        let mips = atlas.mip_chain();
+        let mips = mip_chain(atlas.size, atlas.rgba.clone());
         assert_eq!(mips.len(), 3);
 
         for (mip, rgba) in mips.iter().enumerate() {
