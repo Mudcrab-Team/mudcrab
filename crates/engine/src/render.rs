@@ -50,10 +50,30 @@ pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
 /// DefaultWater's Reflection Color after Update.esm (`#778C9D`): what the water reflects where the
 /// reflection image holds nothing, and what a water with no decoded colours falls back to.
 pub const DEFAULT_WATER_REFLECTION_COLOR: [u8; 3] = [0x77, 0x8C, 0x9D];
+/// DefaultWater's Shallow Color (WATR DNAM): the fallback for a water with no decoded colours.
+pub const DEFAULT_WATER_SHALLOW_COLOR: [u8; 3] = [0x26, 0x27, 0x18];
+/// DefaultWater's opacity (WATR ANAM, 0-100).
+pub const DEFAULT_WATER_OPACITY: u8 = 50;
+/// DefaultWater's above-water fog (WATR DNAM): the distance through water, in world units, at
+/// which the view into the water starts to cloud and at which it is opaque, and the exponent of
+/// the curve between them (0 keeps the water clear). Every water uses these until the converter
+/// exports its own.
+pub(crate) const DEFAULT_WATER_FOG_NEAR: f32 = -10.0;
+pub(crate) const DEFAULT_WATER_FOG_FAR: f32 = 150.0;
+pub(crate) const DEFAULT_WATER_FOG_AMOUNT: f32 = 0.7;
 
-fn water_reflection_color(rgb: [u8; 3]) -> Vec4 {
+fn linear_rgb(rgb: [u8; 3]) -> Vec4 {
     let linear = Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear();
     Vec4::new(linear.red, linear.green, linear.blue, 0.0)
+}
+
+fn default_water_body() -> Vec4 {
+    Vec4::new(
+        f32::from(DEFAULT_WATER_OPACITY) / 100.0,
+        DEFAULT_WATER_FOG_NEAR,
+        DEFAULT_WATER_FOG_FAR,
+        DEFAULT_WATER_FOG_AMOUNT,
+    )
 }
 
 /// One rendering layer per role, so no view list is a bare literal.
@@ -678,6 +698,12 @@ struct WaterSettings {
     /// The water's Reflection Color (WATR DNAM), linear. What the reflection fades to where the
     /// reflection image has no coverage; alpha unused.
     reflection_color: Vec4,
+    /// The water's Shallow Color (WATR DNAM), linear; alpha unused. The deep colour is the
+    /// StandardMaterial base colour.
+    shallow_color: Vec4,
+    /// x = opacity 0..1 (WATR ANAM / 100), used where the depth is unknown; y, z = above-water fog
+    /// near and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
+    body: Vec4,
 }
 
 impl Default for WaterExtension {
@@ -692,7 +718,9 @@ impl Default for WaterExtension {
                     1.0,
                     0.0,
                 ),
-                reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
+                reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
+                shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
+                body: default_water_body(),
             },
             reflection: None,
             flow_normal: None,
@@ -734,14 +762,23 @@ impl WaterExtension {
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
                 // z gates the reflection strength; 1.0 keeps reflections on until settings set it.
                 fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
-                reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
+                reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
+                shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
+                body: default_water_body(),
             },
         }
     }
 
     /// Sets the water's own Reflection Color (WATR DNAM, as stored bytes).
     pub fn with_reflection_color(mut self, rgb: [u8; 3]) -> Self {
-        self.settings.reflection_color = water_reflection_color(rgb);
+        self.settings.reflection_color = linear_rgb(rgb);
+        self
+    }
+
+    /// Sets the water's Shallow Color (stored sRGB bytes) and opacity (0-100).
+    pub fn with_body(mut self, shallow: [u8; 3], opacity: u8) -> Self {
+        self.settings.shallow_color = linear_rgb(shallow);
+        self.settings.body.x = f32::from(opacity.min(100)) / 100.0;
         self
     }
 }
@@ -749,6 +786,21 @@ impl WaterExtension {
 impl MaterialExtension for WaterExtension {
     fn fragment_shader() -> ShaderRef {
         "embedded://engine/shaders/water.wgsl".into()
+    }
+}
+
+/// The wave phase every water material carries this frame: `--water-time` when the run pins it,
+/// the fixture's fixed phase when that fixture is running, and the clock otherwise.
+fn water_phase(config: Option<&crate::config::EngineConfig>, elapsed: f32) -> f32 {
+    match config {
+        Some(config) => config
+            .water_time
+            .unwrap_or(if config.terrain_water_fixture {
+                1.0
+            } else {
+                elapsed
+            }),
+        None => elapsed,
     }
 }
 
@@ -760,11 +812,7 @@ fn animate_water_materials(
     settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
-    let elapsed = if config.is_some_and(|config| config.terrain_water_fixture) {
-        1.0
-    } else {
-        time.elapsed_secs()
-    };
+    let elapsed = water_phase(config.as_deref(), time.elapsed_secs());
     for (_, material) in materials.iter_mut() {
         material.extension.settings.wave_scale_speed_strength.w = elapsed;
         if let Some(settings) = settings.as_deref() {
@@ -1952,6 +2000,50 @@ mod tests {
             .get(&handle)
             .unwrap();
         assert_eq!(material.extension.settings.wave_scale_speed_strength.w, 2.0);
+    }
+
+    #[test]
+    fn water_phase_pins_only_when_asked() {
+        use crate::config::EngineConfig;
+        assert_eq!(water_phase(None, 12.5), 12.5);
+        let fixture = EngineConfig {
+            terrain_water_fixture: true,
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&fixture), 12.5), 1.0);
+        let pinned = EngineConfig {
+            water_time: Some(3.25),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned), 12.5), 3.25);
+        // An explicit capture time outranks the fixture's own phase.
+        let pinned_fixture = EngineConfig {
+            terrain_water_fixture: true,
+            water_time: Some(3.25),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned_fixture), 12.5), 3.25);
+    }
+
+    #[test]
+    fn with_body_sets_the_shallow_colour_and_clamps_opacity() {
+        let water = WaterExtension::default().with_body(DEFAULT_WATER_SHALLOW_COLOR, 50);
+        assert_eq!(water.settings.body.x, 0.5);
+        assert_eq!(
+            water.settings.body.yzw(),
+            Vec3::new(
+                DEFAULT_WATER_FOG_NEAR,
+                DEFAULT_WATER_FOG_FAR,
+                DEFAULT_WATER_FOG_AMOUNT
+            )
+        );
+        assert_eq!(
+            water.settings.shallow_color,
+            linear_rgb(DEFAULT_WATER_SHALLOW_COLOR)
+        );
+        // A WATR ANAM above 100 must not push the body past fully opaque.
+        let clamped = WaterExtension::default().with_body(DEFAULT_WATER_SHALLOW_COLOR, 250);
+        assert_eq!(clamped.settings.body.x, 1.0);
     }
 
     #[test]

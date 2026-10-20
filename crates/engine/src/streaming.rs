@@ -1442,12 +1442,12 @@ fn spawn_cell(
                             .load(path.to_owned())
                     });
                 // Skyrim's DefaultWater deep colour after Update.esm, used when this water has no
-                // decoded colours yet (a database converted before the WATR colour export). Skyrim
-                // thins water to show the bed where it is shallow; without depth fog a 60% cover
-                // keeps river beds visible.
-                let base_color = water_colors.map_or(Color::srgba_u8(5, 14, 18, 153), |colors| {
+                // decoded colours yet (a database converted before the WATR colour export). The
+                // shader mixes the shallow colour in and writes the body alpha itself from the
+                // water's opacity and the depth behind it, so the material alpha stays opaque.
+                let base_color = water_colors.map_or(Color::srgb_u8(5, 14, 18), |colors| {
                     let [r, g, b] = colors.deep;
-                    Color::srgba_u8(r, g, b, 153)
+                    Color::srgb_u8(r, g, b)
                 });
                 let (fresnel, reflectivity) = water_colors.map_or(
                     (
@@ -1476,6 +1476,14 @@ fn spawn_cell(
                             .map_or(crate::render::DEFAULT_WATER_REFLECTION_COLOR, |colors| {
                                 colors.reflection
                             }),
+                    )
+                    .with_body(
+                        water_colors.map_or(crate::render::DEFAULT_WATER_SHALLOW_COLOR, |colors| {
+                            colors.shallow
+                        }),
+                        water_colors.map_or(crate::render::DEFAULT_WATER_OPACITY, |colors| {
+                            colors.opacity
+                        }),
                     ),
                 });
                 parent.spawn((
