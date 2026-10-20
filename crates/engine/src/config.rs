@@ -190,6 +190,10 @@ pub struct EngineConfig {
     pub profile_hardware: String,
     pub acceptance_screenshot: Option<PathBuf>,
     pub screenshot_camera_offset: Option<(f32, f32, f32)>,
+    /// `--water-time <seconds>`: pins the water's wave phase at this time, so two capture runs at
+    /// the same pose draw the same waves. `None` lets the waves run on the clock, or on the
+    /// terrain/water fixture's fixed phase.
+    pub water_time: Option<f32>,
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
@@ -303,6 +307,7 @@ impl Default for EngineConfig {
             profile_hardware: "unspecified".into(),
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
+            water_time: None,
             shots: None,
             matched_route: None,
             shots_out: None,
@@ -404,6 +409,7 @@ Benchmark and profiling:
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
+  --water-time <seconds>                pin the water's wave phase so captures match
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
@@ -1241,6 +1247,14 @@ impl EngineConfig {
                     config.shots_out = Some(take_value(
                         "--shots-out",
                         "a directory for the shots' images and log",
+                        args.next(),
+                    )?);
+                }
+                "--water-time" => {
+                    config.water_time = Some(take_number(
+                        "--water-time",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
                         args.next(),
                     )?);
                 }
@@ -2667,6 +2681,26 @@ mod tests {
                         option: "--sun-position",
                         ..
                     }
+                ),
+                "{value} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_a_pinned_water_time() {
+        assert_eq!(run_config(&["--water-time", "1.5"]).water_time, Some(1.5));
+        assert_eq!(run_config(&["--water-time", "0"]).water_time, Some(0.0));
+        assert_eq!(EngineConfig::default().water_time, None);
+    }
+
+    #[test]
+    fn a_negative_or_non_finite_water_time_is_refused() {
+        for value in ["-1", "NaN", "inf"] {
+            assert!(
+                matches!(
+                    parse_error(&["--water-time", value]),
+                    ConfigError::InvalidValue { .. }
                 ),
                 "{value} was accepted"
             );

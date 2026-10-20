@@ -223,6 +223,9 @@ pub struct WaterColors {
     pub reflection: [u8; 3],
     pub fresnel: f32,
     pub reflectivity: f32,
+    /// The water's `ANAM` opacity, 0-100: how much of the surface covers the bed. A water row with
+    /// no opacity reads as Skyrim's DefaultWater 50.
+    pub opacity: u8,
 }
 
 fn unpack_color(value: u32) -> [u8; 3] {
@@ -286,7 +289,7 @@ impl AssetCatalog {
         // the same as no water colours at all instead of refusing to open the catalog.
         let water_colors = connection
             .prepare(
-                "SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity FROM waters \
+                "SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity,COALESCE(opacity,50) FROM waters \
                  WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL \
                  AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL",
             )
@@ -302,6 +305,7 @@ impl AssetCatalog {
                                 reflection: unpack_color(row.get::<_, u32>(3)?),
                                 fresnel: row.get::<_, f32>(4)?,
                                 reflectivity: row.get::<_, f32>(5)?,
+                                opacity: row.get::<_, i64>(6)?.clamp(0, 100) as u8,
                             },
                         ))
                     })
@@ -2082,7 +2086,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
-                 CREATE TABLE waters(id INTEGER PRIMARY KEY,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT);",
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT);",
             )
             .unwrap();
         let shallow = u32::from_le_bytes([38, 39, 24, 0]);
@@ -2090,8 +2094,20 @@ mod tests {
         let reflection = u32::from_le_bytes([119, 140, 157, 0]);
         connection
             .execute(
-                "INSERT INTO waters(id,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,?2,?3,?4,?5,?6,NULL)",
-                params![18u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+                "INSERT INTO waters(id,opacity,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,?2,?3,?4,?5,?6,?7,NULL)",
+                params![18u32, 35u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO waters(id,opacity,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,NULL,?2,?3,?4,?5,?6,NULL)",
+                params![19u32, shallow, deep, reflection, 0.10f32, 0.8f32],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO waters(id,opacity,shallow_color,deep_color,reflection_color,fresnel,reflectivity,flow_normal_path) VALUES (?1,140,?2,?3,?4,?5,?6,NULL)",
+                params![20u32, shallow, deep, reflection, 0.10f32, 0.8f32],
             )
             .unwrap();
         drop(connection);
@@ -2104,7 +2120,18 @@ mod tests {
                 reflection: [119, 140, 157],
                 fresnel: 0.10,
                 reflectivity: 0.8,
+                opacity: 35,
             })
+        );
+        // A waters row with no ANAM reads as DefaultWater's 50, and an out-of-range one clamps
+        // rather than wrapping to a shifted alpha.
+        assert_eq!(
+            catalog.water_colors(19).map(|colors| colors.opacity),
+            Some(50)
+        );
+        assert_eq!(
+            catalog.water_colors(20).map(|colors| colors.opacity),
+            Some(100)
         );
     }
 
