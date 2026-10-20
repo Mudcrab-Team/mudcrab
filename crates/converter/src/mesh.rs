@@ -120,6 +120,7 @@ impl MeshConverter {
             }
         };
         model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+        clear_root_transform(&mut model);
         model
             .validate()
             .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
@@ -158,6 +159,7 @@ impl MeshConverter {
                 .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))?;
             static_model.scene_root_rotation =
                 Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+            clear_root_transform(&mut static_model);
             apply_vertex_color_contract(&mut static_model, &nif, &material_contract)?;
             ensure!(
                 !static_model.static_meshes.is_empty(),
@@ -832,6 +834,22 @@ fn is_declared_geometry_block(block_type: &str) -> bool {
             | "NiTriShape"
             | "NiTriStrips"
     )
+}
+
+/// The NIF root block. Skyrim places a model by replacing this node's local transform with the
+/// reference's, so the root's own translation, rotation and scale never reach the world.
+/// `clutter/counterset/countercornerin01.nif` authors a 90 degree root rotation and only lines up
+/// with its neighbouring counter pieces without it.
+pub(crate) const NIF_ROOT_BLOCK: u32 = 0;
+
+fn clear_root_transform(model: &mut project_wormhole_nif::model::all::Model) {
+    for node in &mut model.static_nodes {
+        if node.block_index == NIF_ROOT_BLOCK {
+            node.translation = project_wormhole_shared::glam::Vec3::ZERO;
+            node.rotation = project_wormhole_shared::glam::Mat3::IDENTITY;
+            node.scale = 1.0;
+        }
+    }
 }
 
 /// Returns whether all declared geometry blocks are NiTriShape templates without geometry data.

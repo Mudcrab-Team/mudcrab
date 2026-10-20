@@ -370,11 +370,17 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
                 &raw_av
             }
         };
-        let local = Mat4::from_scale_rotation_translation(
-            Vec3::splat(av.scale.0),
-            Quat::from_mat3(&av.rotation.0.0),
-            av.translation.0.0,
-        );
+        // The placing reference replaces the root's transform, as for the render nodes
+        // (`crate::mesh::NIF_ROOT_BLOCK`).
+        let local = if index == crate::mesh::NIF_ROOT_BLOCK as usize {
+            Mat4::IDENTITY
+        } else {
+            Mat4::from_scale_rotation_translation(
+                Vec3::splat(av.scale.0),
+                Quat::from_mat3(&av.rotation.0.0),
+                av.translation.0.0,
+            )
+        };
         let mut parent = None;
         for (candidate, block) in nif.blocks.iter().enumerate() {
             if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block
