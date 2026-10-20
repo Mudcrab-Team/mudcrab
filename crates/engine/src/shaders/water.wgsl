@@ -48,6 +48,9 @@ const MAX_REFLECTION_OFFSET: f32 = 0.04;
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because there is no depth prepass.
+// The ratio below is a perspective identity - surface and bed share a ray from the camera - so
+// this and the vertical depth in the fragment assume a perspective view. The engine's world and
+// reflection cameras are always perspective; an orthographic view would need parallel rays.
 fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>, sample_index: u32) -> f32 {
 #ifdef DEPTH_PREPASS
     let ndc = prepass_depth(frag_coord, sample_index);
