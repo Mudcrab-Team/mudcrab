@@ -218,6 +218,10 @@ impl MeshConverter {
         let (nif, _, _) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let glb = fs::read(glb_path)?;
+        if collision::gltf_node_index(&nif, NIF_ROOT_BLOCK as usize).is_ok_and(|node| node == 0) {
+            ensure_untransformed_root_node(&glb)
+                .wrap_err_with(|| format!("cannot annotate {}", glb_path.display()))?;
+        }
         retain_bodies_for_written_glb(&mut collision, &glb, None)?;
         write_glb_atomic(glb_path, &embed_collision(glb, &collision)?)?;
         Ok(collision)
@@ -940,6 +944,40 @@ fn retain_bodies_for_written_glb(
     let same_order =
         source_order.is_some_and(|order| !order.is_empty() && node_names.starts_with(order));
     retain_bodies_with_nodes(collision, &node_names, !same_order);
+    Ok(())
+}
+
+/// A GLB written before the root-transform rule keeps the NIF root's transform on glTF node 0,
+/// the root block, while collision now starts from an identity root. Annotating such a GLB
+/// would part its collision from its render nodes, so it has to be reconverted instead.
+fn ensure_untransformed_root_node(glb: &[u8]) -> Result<()> {
+    const IDENTITY_MATRIX: [f64; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let document = glb_json_from_bytes(glb)?;
+    let Some(root) = document.get("nodes").and_then(|nodes| nodes.get(0)) else {
+        return Ok(());
+    };
+    let is_identity = |field: &str, identity: &[f64]| {
+        root.get(field).is_none_or(|value| {
+            value.as_array().is_some_and(|values| {
+                values.len() == identity.len()
+                    && values.iter().zip(identity).all(|(value, expected)| {
+                        value
+                            .as_f64()
+                            .is_some_and(|value| (value - expected).abs() <= 1.0e-6)
+                    })
+            })
+        })
+    };
+    ensure!(
+        is_identity("translation", &[0.0; 3])
+            && is_identity("rotation", &[0.0, 0.0, 0.0, 1.0])
+            && is_identity("scale", &[1.0; 3])
+            && is_identity("matrix", &IDENTITY_MATRIX),
+        "its root node keeps the NIF root transform, which collision no longer applies; \
+         reconvert the model instead"
+    );
     Ok(())
 }
 

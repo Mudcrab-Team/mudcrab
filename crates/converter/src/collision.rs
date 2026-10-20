@@ -195,7 +195,7 @@ fn classify(motion_system: u8, quality_type: u8, mass: f32) -> BodyKind {
 /// glTF node index the exporter gives a NIF block: the static scene writes one node per
 /// `NiNode`, `BSFadeNode` and geometry block, in block order. The converter re-checks this
 /// against the model it exported (`mesh.rs`).
-fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
+pub(crate) fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
     fn exported(block: &NifBlock) -> bool {
         matches!(
             block,
