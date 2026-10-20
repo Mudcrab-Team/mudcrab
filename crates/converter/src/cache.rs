@@ -337,6 +337,18 @@ pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
     schema == current || matches!((schema, current), (24, 26))
 }
 
+/// Named changes to converted mesh bytes made without advancing `CONVERTER_SCHEMA_VERSION`.
+/// Each name enters the current producer's mesh settings proof, so a normal conversion rebuilds
+/// meshes an earlier converter of the same producer wrote. Append a name per change, never
+/// rename or reorder one, and clear the list when the producer advances.
+pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &["nif-root-transform-ignored"];
+
+/// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
+/// producers keep their recorded proofs; an empty list leaves every proof unchanged.
+pub(crate) fn mesh_output_contracts_apply(schema: u32) -> bool {
+    schema == CONVERTER_SCHEMA_VERSION && !MESH_OUTPUT_CONTRACTS.is_empty()
+}
+
 impl ConversionManifest {
     /// Load archive candidates independently of converted-output producer eligibility.
     pub fn load(path: &Path) -> Result<Self> {
@@ -554,7 +566,13 @@ pub fn asset_configuration_hash_for_schema(
     source_ext: &str,
 ) -> Result<String> {
     let mut relevant = match source_ext {
-        "nif" => serde_json::json!({"mesh_producer": schema}),
+        "nif" => {
+            let mut mesh = serde_json::json!({"mesh_producer": schema});
+            if mesh_output_contracts_apply(schema) {
+                mesh["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
+            }
+            mesh
+        }
         "dds" => serde_json::json!({
             "texture_producer": schema,
             "texture_etc1s_quality": config.texture_fallback_quality,
