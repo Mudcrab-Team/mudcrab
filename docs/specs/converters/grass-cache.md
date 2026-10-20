@@ -22,14 +22,16 @@ derived from heights at runtime rather than duplicated in this cache. No
 instance lists are saved.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
-Incomplete grass rules, missing model paths, and unresolved/deleted species
-links are skipped; raw database records remain available for diagnostics.
+Incomplete grass rules and missing model paths are skipped; unresolved/deleted
+species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
 bounded report warnings and mark the published run incomplete. Healthy neighboring
 cells still bake. A grass type without a model draws nothing in game either, so it
 is counted in one notice and does not affect completeness.
-These omissions also clear the manifest's record-data completeness proof, so
-repairing an unrelated asset cannot mark the pack complete without restoring grass.
+Only these grass warnings also clear the manifest's record-data completeness
+proof (`record_data_complete = Some(false)`); model-less types and optional
+obstruction omissions produce notices, and silently filtered species links do not
+affect that proof. Repairing an unrelated asset cannot restore a lost proof.
 
 Each quadrant stores a 64 by 64 exclusion field: 32 Creation units per bit,
 512 bytes, row-major with the least significant bit first. The converter uses
@@ -107,3 +109,10 @@ its masks are not reused and the source package remains unchanged.
 `metadata-rebuild.json` records
 `grass_baked_cells` and `grass_reused_cells` for that rebuild. Optional obstruction
 mask omissions use the same notice policy as a full conversion.
+
+Asset repair re-bakes and validates the staged grass cache after finalizing model
+bounds, reusing unchanged cells from the published cache and publishing the replacement
+in the same transaction as the repaired assets and database.
+If `cell_cache_preserved.rkyv` is absent, normal conversion regenerates the full
+terrain projection. Metadata rebuild is another route when a complete verified
+asset pack is available; repair never substitutes the capped runtime terrain cache.

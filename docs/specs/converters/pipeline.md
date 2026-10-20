@@ -366,11 +366,17 @@ the output locks, verifies existing outputs, updates the manifest and database,
 and publishes transactionally with recovery of the last good output after an
 interrupted swap. Missing winning sources remain failures; known authoring resources and geometryless overlay templates are recorded as excluded.
 Repaired outputs retain per-kind asset settings and source/integrity proofs.
+After finalizing model bounds, repair re-bakes and validates the staged grass cache,
+reuses unchanged cells from the published cache, and publishes it in the same transaction.
+Packs without `cell_cache_preserved.rkyv` need normal conversion to regenerate the full
+terrain projection, or a metadata rebuild using a complete verified asset pack.
+Repair does not substitute the capped runtime terrain cache.
 The manifest records record-data completeness separately from asset failures.
 Only normal conversion or a metadata rebuild can establish that proof from a
 fresh record read. Asset repair preserves unresolved record loss and missing
 historical proof: corrected assets may publish, but the pack remains incomplete
-and the repair CLI warns and exits `1`. Run normal conversion to recheck record
+and the repair CLI warns and exits `1`. Grass warnings from the repair bake also
+clear the proof; advisory notices do not. Run normal conversion to recheck record
 data; verified assets remain eligible for reuse. A healthy record source with
 only asset failures can become complete after repair. Preview remains separate
 from publication and succeeds when its assets and recorded record proof are valid.
