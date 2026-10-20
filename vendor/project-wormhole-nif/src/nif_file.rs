@@ -294,21 +294,39 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     .get_string(skel_node.name() as usize)
                     .unwrap();
 
-                // Get children names from string indices
+                // Get children names from string indices. Only the block
+                // variants `get_nodes` walks may become bones, so a child of
+                // any other type (and an unresolved block reference) is
+                // reported and dropped: naming it here would add a child
+                // without a matching bone entry, which the exporter cannot
+                // wire.
                 let children_names = skel_node
                     .children
                     .iter()
-                    .map(|index| {
-                        let child_node = skeleton.blocks.get(*index as usize).unwrap();
-
-                        match child_node {
-                            NifBlock::NiNode(child_real_node) => skeleton
-                                .header
-                                .get_string(child_real_node.name() as usize)
-                                .unwrap()
-                                .to_string(),
-                            _ => {
-                                panic!("Child node is not a NiNode")
+                    .filter_map(|index| {
+                        let Some(child_block) = skeleton.blocks.get(*index as usize) else {
+                            warn!(
+                                "skeleton node {node_name:?} references child block {index}, which is out of range; skipping it"
+                            );
+                            return None;
+                        };
+                        let child_node = match child_block {
+                            NifBlock::NiNode(child) | NifBlock::BSFadeNode(child) => child,
+                            NifBlock::BSMultiBoundNode(child) => &child.node,
+                            other => {
+                                warn!(
+                                    "skeleton node {node_name:?} references child block {index} of type {other:?}, which is not a skeleton node; skipping it"
+                                );
+                                return None;
+                            }
+                        };
+                        match skeleton.header.get_string(child_node.name() as usize) {
+                            Ok(name) => Some(name.to_string()),
+                            Err(error) => {
+                                warn!(
+                                    "skeleton node {node_name:?} child block {index} has an invalid name: {error}; skipping it"
+                                );
+                                None
                             }
                         }
                     })
@@ -324,8 +342,17 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     children: children_names.into_iter().collect(),
                 };
 
-                // Add bone to bone tree
-                mesh.bones.add_bone(node_name, bone_data).unwrap();
+                // Add bone to bone tree. Retail skeletons repeat a few helper
+                // leaves, and no skin binds a duplicated name, so the first
+                // occurrence wins and the later copy is dropped whole (its
+                // children are duplicates too).
+                if mesh.bones.has_bone(node_name) {
+                    warn!(
+                        "skeleton node {node_name:?} appears more than once; keeping the first occurrence"
+                    );
+                    continue;
+                }
+                mesh.bones.add_bone(node_name, bone_data)?;
             }
 
             let (meshes, material_indices) = if nif.get_skins().is_empty() {
