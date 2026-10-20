@@ -1004,8 +1004,10 @@ CREATE TABLE IF NOT EXISTS waters (
 `skyrim_world.db` built before they existed has a `waters` table without them, and
 `AssetCatalog::water_colors` (`crates/engine/src/world/database.rs`) returns `None` for every
 water against such a database rather than failing to open it. The engine falls back to Skyrim's
-DefaultWater values (`render::DEFAULT_WATER_FRESNEL` / `render::DEFAULT_WATER_REFLECTIVITY`, and
-`streaming.rs`'s deep-colour constant) until a reconversion populates them. Adding them did **not**
+DefaultWater values (`render::DEFAULT_WATER_FRESNEL`, `DEFAULT_WATER_REFLECTIVITY`,
+`DEFAULT_WATER_DEEP_COLOR`, `DEFAULT_WATER_SHALLOW_COLOR` and `DEFAULT_WATER_OPACITY`) until a
+reconversion populates them. `opacity` is not one of those additions: it has been in the table
+since the table was first created, so `water_colors` reads it without a probe. Adding them did **not**
 bump `shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads `waters` depends on their
 presence, and the fallback exists specifically so a reconversion is not required.
 

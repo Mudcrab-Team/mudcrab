@@ -50,6 +50,9 @@ pub const DEFAULT_WATER_REFLECTIVITY: f32 = 0.8;
 /// DefaultWater's Reflection Color after Update.esm (`#778C9D`): what the water reflects where the
 /// reflection image holds nothing, and what a water with no decoded colours falls back to.
 pub const DEFAULT_WATER_REFLECTION_COLOR: [u8; 3] = [0x77, 0x8C, 0x9D];
+/// DefaultWater's Deep Color (WATR DNAM): the material base colour, and the fallback deep colour
+/// for a water with no decoded colours.
+pub const DEFAULT_WATER_DEEP_COLOR: [u8; 3] = [0x05, 0x0E, 0x12];
 /// DefaultWater's Shallow Color (WATR DNAM): the fallback for a water with no decoded colours.
 pub const DEFAULT_WATER_SHALLOW_COLOR: [u8; 3] = [0x26, 0x27, 0x18];
 /// DefaultWater's opacity (WATR ANAM, 0-100).

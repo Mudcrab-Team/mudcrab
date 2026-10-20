@@ -1674,10 +1674,11 @@ fn spawn_cell(
                 // decoded colours yet (a database converted before the WATR colour export). The
                 // shader mixes the shallow colour in and writes the body alpha itself from the
                 // water's opacity and the depth behind it, so the material alpha stays opaque.
-                let base_color = water_colors.map_or(Color::srgb_u8(5, 14, 18), |colors| {
-                    let [r, g, b] = colors.deep;
-                    Color::srgb_u8(r, g, b)
-                });
+                let [r, g, b] = water_colors
+                    .map_or(crate::render::DEFAULT_WATER_DEEP_COLOR, |colors| {
+                        colors.deep
+                    });
+                let base_color = Color::srgb_u8(r, g, b);
                 let (fresnel, reflectivity) = water_colors.map_or(
                     (
                         crate::render::DEFAULT_WATER_FRESNEL,
