@@ -346,9 +346,10 @@ A converter change to mesh bytes that does not advance the producer appends a
 name to `MESH_OUTPUT_CONTRACTS` (`crates/converter/src/cache.rs`). The current
 producer's mesh settings proof includes the list, so a normal conversion and a
 resumed staging run rebuild meshes an earlier converter of the same producer
-wrote, while textures and scripts stay reusable. A combined proof from an older
-manifest cannot establish these contracts and rebuilds its meshes. The list is
-cleared when the producer advances. `--reuse-assets` still retains the source
+wrote, while textures and scripts stay reusable. Every producer-27 manifest
+records per-kind proofs, which arrived with producer 26, so the combined fallback
+below never decides current-producer meshes. The list is cleared when the
+producer advances. `--reuse-assets` still retains the source
 package's mesh bytes and its recorded mesh proof, so a later normal conversion
 of that package rebuilds them.
 
